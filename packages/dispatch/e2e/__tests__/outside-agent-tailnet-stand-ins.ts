@@ -967,6 +967,15 @@ export function unknownsCounted(stdout: string): number {
   return counted === null ? -1 : Number(counted[1]);
 }
 
+/** The directory the tailnet leg keeps what gh says and answers in, as its stderr names it
+ *  (`keep_gh`), or undefined where it names none. The leg leaves it in place, so a test that ran
+ *  the leg removes it. */
+export function ghKeptDirectory(stderr: string): string | undefined {
+  return /^outside-agent-tailnet: what gh says and answers is kept in (\/\S*\/outside-agent-tailnet-gh\.[A-Za-z0-9]{6})$/m.exec(
+    stderr
+  )?.[1];
+}
+
 export const passingControls: StandIns = {
   controls: "answered",
   canaryRefusal: memberRefusal,

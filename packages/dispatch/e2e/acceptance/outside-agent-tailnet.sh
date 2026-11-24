@@ -161,7 +161,12 @@
 # not pass. Progress goes to stderr. A row it could not run reads UNKNOWN naming what it could not
 # read, never PASS. Exit 0 when the gate passed, 1 when a row failed, 2
 # otherwise. It prints no secret value: T2 and T3 read the canary's length alone, and the full
-# member's cookie reaches curl in a header file alone.
+# member's cookie reaches curl in a header file alone. It prints no word gh said or answered but a
+# value it expects (a visibility, a run's or a step's status, a conclusion, a run id, a verdict, an
+# exit, a commit id, an image's sha256 digest): what gh says and answers, the pin files it reads and
+# the run's artifacts it downloads included, is kept in a directory `mktemp -d` makes under TMPDIR
+# (outside-agent-tailnet-gh.XXXXXX), which stderr names and the leg leaves in place, and a row names
+# the file that holds what it does not print.
 #
 # Usage: OUTSIDE_PINS=pins.txt OUTSIDE_ENROLL_REFUSAL_COMMIT=<sha> ... bash outside-agent-tailnet.sh EXAMPLE
 
@@ -243,6 +248,54 @@ mark_word() {
   rest=${rest#*" $1="}
   [ "$rest" != " $2" ] || return 0
   printf '%s' "${rest%%[ ;]*}"
+}
+
+# --- What the leg prints of what gh said or answered. Whatever answers gh's calls in GitHub's
+# place (a GH_HOST, a proxy, a stand-in) holds gh's token and writes all that gh hands on: gh's own
+# error message, its answer, the pin files `gh api` reads and the run's artifacts `gh run download`
+# writes. So none of those is printed but a closed value this leg expects (a visibility, a status
+# or a conclusion GitHub gives, a run id, a verdict, an exit, a count of seconds, a commit id, an
+# image's sha256 digest): each is kept in a file of gh_kept, a directory beside the scratch one that
+# outlives the leg, and a row names that file in this leg's own words.
+# A public leg run here (OUTSIDE_PUBLIC_COMMAND) writes its results itself, with no gh between,
+# so their words are printed as they are. ---
+gh_kept=''
+# results_gh: set once the public leg's results are the run's artifacts, which gh downloaded.
+results_gh=''
+# keep_gh: makes gh_kept, mode 0700, the first time a gh call needs it, and says where on stderr.
+keep_gh() {
+  [ -z "$gh_kept" ] || return 0
+  gh_kept=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet-gh.XXXXXX") || gh_kept=''
+  if [ -n "$gh_kept" ]; then
+    say "what gh says and answers is kept in $gh_kept"
+  else
+    gh_kept="$work/gh"
+    mkdir -p "$gh_kept"
+    say "mktemp -d made no directory to keep what gh says and answers in: it is kept in $gh_kept, which goes with the scratch directory"
+  fi
+}
+# artifact_text FILE TEXT: TEXT, words FILE holds, a file of the public leg's results, as a row
+# prints them: TEXT itself where the public leg ran here, and where FILE is an artifact gh
+# downloaded, words naming FILE in its place.
+artifact_text() {
+  if [ -n "$results_gh" ]; then
+    printf 'kept in %s, which gh downloaded, so not printed' "$1"
+  else
+    printf '%s' "$2"
+  fi
+}
+# artifact_word FILE WORD CLOSED...: WORD as artifact_text prints it, but printed as it is where it
+# is one of CLOSED, the values the leg expects of it.
+artifact_word() {
+  local file=$1 word=$2 each
+  shift 2
+  for each in "$@"; do
+    [ "$word" != "$each" ] || {
+      printf '%s' "$word"
+      return 0
+    }
+  done
+  artifact_text "$file" "$word"
 }
 
 public_rows='P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 C0 C1 C2 C3 C4 C5 C6 C7'
@@ -370,14 +423,17 @@ if [ -n "$pins_problem" ]; then
   gate
 fi
 pins_start=$pins_text
+pins_start_said=$pins_said
 read_serving
 serving_start=$serving_commit
 broker_revision=''
 dispatch_revision=''
-while IFS=' ' read -r name image revision; do
-  case $name in
-    broker) broker_revision=$revision ;;
-    dispatch) dispatch_revision=$revision ;;
+# A pin's revision is its line's last word, a whole commit id (read_pins): the image before it is
+# the pin file's, which may hold a blank.
+while IFS= read -r line; do
+  case ${line%% *} in
+    broker) broker_revision=${line##* } ;;
+    dispatch) dispatch_revision=${line##* } ;;
   esac
 done <<EOF
 $pins_text
@@ -416,7 +472,8 @@ else
     esac
   done
 fi
-pins_line="$(printf '%s' "$pins_text" | tr '\n' ';') Dispatch serves ${serving_commit:-no commit read} (fleet ${serving_fleet:-none})"
+# The pins as the rows print them (pins_said): an image gh read is named by the file that keeps it.
+pins_line="$(printf '%s' "$pins_said" | tr '\n' ';') Dispatch serves ${serving_commit:-no commit read} (fleet ${serving_fleet:-none})"
 if [ -n "$lacks" ]; then
   row pins "$want_pins" "$lacks${problem:+; $problem}; $pins_line" FAIL
   skip_from "a pin lacks a change the check needs, so the legs do not start" issue
@@ -867,6 +924,8 @@ results="$work/public"
 mkdir -p "$results"
 public_problem=''
 public_end=''
+# The public leg's end as a row prints it: its exit, or the run's conclusion where it is GitHub's.
+end_said=''
 public_pid=''
 run_id=''
 if [ "$outside_gate" = browser ] && [ -n "$link_problem" ]; then
@@ -893,14 +952,18 @@ else
   # as readable as its repository, so the workflow starts only in a private or an internal one: an
   # internal repository is readable by the owning enterprise's members alone, who can read those
   # inputs already. A public one, or a visibility not read, starts no run; a `gh repo view` that
-  # failed has read nothing, whatever it printed.
+  # failed has read nothing, whatever it printed. Its answer is printed only as one of GitHub's
+  # three visibilities, and kept in gh_kept.
   if [ -z "$problem" ]; then
-    visibility=$(gh repo view "$OUTSIDE_WORKFLOW_REPO" --json visibility --jq .visibility 2>/dev/null </dev/null)
+    keep_gh
+    gh repo view "$OUTSIDE_WORKFLOW_REPO" --json visibility --jq .visibility >"$gh_kept/repo-view" 2>/dev/null </dev/null
     viewed=$?
+    visibility=$(<"$gh_kept/repo-view")
     case $viewed:$visibility in
       0:PRIVATE | 0:INTERNAL) ;;
       0:) problem="the visibility of $OUTSIDE_WORKFLOW_REPO could not be read, and a run's inputs are as readable as its repository" ;;
-      0:*) problem="$OUTSIDE_WORKFLOW_REPO is $visibility, not PRIVATE or INTERNAL, and a run's inputs are as readable as its repository" ;;
+      0:PUBLIC) problem="$OUTSIDE_WORKFLOW_REPO is PUBLIC, not PRIVATE or INTERNAL, and a run's inputs are as readable as its repository" ;;
+      0:*) problem="gh repo view answered a visibility of $OUTSIDE_WORKFLOW_REPO that is none of PRIVATE, INTERNAL and PUBLIC (its answer is kept in $gh_kept/repo-view), and a run's inputs are as readable as its repository" ;;
       *) problem="the visibility of $OUTSIDE_WORKFLOW_REPO could not be read (gh repo view exited $viewed), and a run's inputs are as readable as its repository" ;;
     esac
   fi
@@ -937,13 +1000,15 @@ EOF
     inputs="$inputs}"
     workflow=${OUTSIDE_WORKFLOW:-outside-edge-e2e.yaml}
     say "gh workflow run $workflow -R $OUTSIDE_WORKFLOW_REPO --json, its inputs on stdin"
-    started=$(printf '%s' "$inputs" | gh workflow run "$workflow" -R "$OUTSIDE_WORKFLOW_REPO" --json 2>&1)
+    # What gh printed, its words and its answer alike, is kept: only the run's id is printed.
+    printf '%s' "$inputs" | gh workflow run "$workflow" -R "$OUTSIDE_WORKFLOW_REPO" --json >"$gh_kept/workflow-run" 2>&1
+    started=$(<"$gh_kept/workflow-run")
     case $started in */actions/runs/[0-9]*)
       run_id=${started##*/actions/runs/}
       run_id=${run_id%%[!0-9]*}
       ;;
     esac
-    [ -n "$run_id" ] || public_problem="gh workflow run printed no run URL: ${started:0:300}"
+    [ -n "$run_id" ] || public_problem="gh workflow run printed no run URL; what it printed is kept in $gh_kept/workflow-run"
   fi
 fi
 
@@ -1209,11 +1274,31 @@ listed_now() {
   esac
 }
 # window_read: the run's status and its step `The delisting window`'s, `<run> <step>` (the step
-# `absent` while the run lists no such step), read in one call.
+# `absent` while the run lists no such step), read in one call. gh's answer is kept in gh_kept as
+# well: the last read is printed only through window_words.
 window_read() {
   gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json status,jobs \
     --jq ".status + \" \" + ([.jobs[].steps[]? | select(.name == \"$window_step\") | .status] | first // \"absent\")" \
-    2>/dev/null </dev/null
+    >"$gh_kept/window-read" 2>/dev/null </dev/null
+  printf '%s' "$(<"$gh_kept/window-read")"
+}
+# window_words READ: READ, a window read, where the words before and after its first blank are
+# each a status GitHub gives a run or a step, `skipped`, which the wait reads a step as, or
+# `absent`, window_read's own word; nothing for an empty READ; else words naming the file that
+# keeps the last read.
+window_words() {
+  local word
+  [ -n "$1" ] || return 0
+  for word in "${1%% *}" "${1#* }"; do
+    case $word in
+      queued | in_progress | completed | waiting | requested | pending | skipped | absent) ;;
+      *)
+        printf 'an answer of no statuses GitHub gives, kept in %s' "$gh_kept/window-read"
+        return 0
+        ;;
+    esac
+  done
+  printf '%s' "$1"
 }
 # public_running: the public leg has not ended yet.
 public_running() {
@@ -1256,11 +1341,14 @@ if [ -z "$t5_problem" ]; then
       [ "$(now)" -lt "$window_deadline" ] || break
       sleep 10
     done
+    # The read is gh's answer: printed through window_words alone. A step read `completed` or
+    # `skipped` prints that word, which its pattern holds it to.
+    read_said=$(window_words "$read_status")
     case $opened:$read_status in
       yes:*) ;;
-      :'completed '*) window_problem="run $run_id ended before this leg read its step '$window_step' running (the step read ${read_status#completed })" ;;
+      :'completed '*) window_problem="run $run_id ended before this leg read its step '$window_step' running (the step read ${read_said#completed })" ;;
       :*' completed' | :*' skipped') window_problem="run $run_id's step '$window_step' read ${read_status##* } before this leg read it running" ;;
-      *) window_problem="run $run_id's step '$window_step' was not read running within an hour (last read: ${read_status:-nothing})" ;;
+      *) window_problem="run $run_id's step '$window_step' was not read running within an hour (last read: ${read_said:-nothing})" ;;
     esac
   else
     say "T5: waiting for the public leg to open its window"
@@ -1329,11 +1417,22 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
     artifacts='outside-agent-public outside-edge-revocations restricted-sweep'
     [ "$outside_gate" != browser ] ||
       artifacts='outside-edge-refusals outside-path-reach outside-edge outside-edge-grants restricted-sweep outside-edge-t5'
+    # The artifacts are gh's answer: they go into gh_kept, which outlives the leg, and from here on
+    # every row prints of them closed values alone and names the file for the rest (artifact_text).
+    results="$gh_kept/artifacts"
+    mkdir -p "$results"
+    results_gh=yes
     for artifact in $artifacts; do
       gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n "$artifact" -D "$results" >/dev/null 2>&1 </dev/null
     done
-    public_end=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion 2>/dev/null </dev/null)
-    say "run $run_id: ${public_end:-no conclusion read}"
+    gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json conclusion --jq .conclusion >"$gh_kept/run-conclusion" 2>/dev/null </dev/null
+    public_end=$(<"$gh_kept/run-conclusion")
+    # A conclusion is printed only as one GitHub gives a run.
+    case $public_end in
+      '' | success | failure | neutral | cancelled | skipped | timed_out | action_required | stale | startup_failure) end_said=$public_end ;;
+      *) end_said="no conclusion GitHub gives, kept in $gh_kept/run-conclusion" ;;
+    esac
+    say "run $run_id: ${end_said:-no conclusion read}"
   fi
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
@@ -1342,6 +1441,7 @@ elif [ -z "$public_problem" ]; then
     public_problem="the public leg's command had not ended within an hour"
   else
     public_end=$child_exit
+    end_said=$child_exit
   fi
 fi
 # The public leg has ended, so the sweep's writer has nothing more to show it.
@@ -1383,7 +1483,7 @@ else
   elif [ "$revoked" != PASS ]; then
     case $revoked in
       FAIL | UNKNOWN) row T4 "$want_t4" "revoke-$credential reads $revoked" "$revoked" ;;
-      *) row T4 "$want_t4" "revoke-$credential reads $(cell "$revoked"), which is no verdict" UNKNOWN ;;
+      *) row T4 "$want_t4" "revoke-$credential reads $(artifact_text "$results/outside-edge-revocations.tsv" "$(cell "$revoked")"), which is no verdict" UNKNOWN ;;
     esac
   elif [ "$ended_exit" -eq 0 ]; then
     row T4 "$want_t4" "revoked, and machine list through the scratch helper still answers" FAIL
@@ -1449,9 +1549,9 @@ else
     if [ -z "$read_row" ]; then
       unread="${unread:+$unread; }$t5_source has no $name row"
     elif [ "$verdict" = FAIL ]; then
-      wrong="${wrong:+$wrong; }$name: $got"
+      wrong="${wrong:+$wrong; }$name: $(artifact_text "$t5_tsv" "$got")"
     elif [ "$verdict" != PASS ] || [ -z "$at" ]; then
-      unread="${unread:+$unread; }$name ($key) not read: ${got:0:200}"
+      unread="${unread:+$unread; }$name ($key) not read: $(artifact_text "$t5_tsv" "${got:0:200}")"
     elif [ "$key" = socket_closed_at ] && { [ -z "$opened_at" ] || [ "$opened_at" -ge "$removal_from" ]; }; then
       unread="${unread:+$unread; }$name: the socket open at the refusal opened at ${opened_at:-no time read}, not before the removal began at $removal_from, so its close says nothing of the removal"
     elif [ "$at" -lt "$removal_from" ]; then
@@ -1487,8 +1587,13 @@ for name in $public_rows; do
   IFS="$tab" read -r _ want got verdict <<EOF
 $line
 EOF
+  # The row's want and got are the public leg's words, read for its decisions below as they are;
+  # where gh downloaded them, the row prints in their place its own words, naming the TSV.
+  want_said=$want
+  [ -z "$results_gh" ] || want_said="the public leg's row $name"
+  got_said=$(artifact_text "$public_tsv" "$got")
   case $verdict in PASS | FAIL | UNKNOWN) ;; *)
-    row "$name" "$want" "the public TSV's verdict is $verdict: $got" UNKNOWN
+    row "$name" "$want_said" "the public TSV's verdict is $(artifact_text "$public_tsv" "$verdict: $got")" UNKNOWN
     continue
     ;;
   esac
@@ -1519,12 +1624,17 @@ EOF
     P7:PASS) held_by=${p7_control_problem:+no positive control: $p7_control_problem} ;;
   esac
   if [ -n "$held_by" ] && [ "$verdict" != UNKNOWN ]; then
-    row "$name" "$want" "$verdict as the public leg read it, unproven here: $held_by; $got" UNKNOWN
+    row "$name" "$want_said" "$verdict as the public leg read it, unproven here: $held_by; $got_said" UNKNOWN
   elif [ "$name:$verdict" = P4:PASS ]; then
     # The public leg read the peer's answers on its side; the peer's side is read here: its ping
     # and the reply must each be shown to the peer within 10 s of the public side's stamp.
     exchange=${got##*nonce=}
     exchange=${exchange%% *}
+    # The nonce is the public leg's od hex (or its pid): from gh's download, printed only as that.
+    exchange_said=$exchange
+    case $results_gh:$exchange in
+      yes:*[!0-9a-f]* | yes:) exchange_said=$(artifact_text "$public_tsv" "$exchange") ;;
+    esac
     lags=''
     late=''
     ahead=''
@@ -1550,20 +1660,20 @@ EOF
       [ "$lag" -ge -2 ] || ahead="${ahead:+$ahead, }$word $lag s"
     done
     if [ -n "$late" ]; then
-      row P4 "$want" "the $peer_kind peer was shown the public side's $late after it was sent; $got" FAIL
+      row P4 "$want_said" "the $peer_kind peer was shown the public side's $late after it was sent; $got_said" FAIL
     elif [ -n "$unseen" ]; then
-      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's transcript never held its $unseen of nonce $exchange; $got" UNKNOWN
+      row P4 "$want_said" "PASS as the public leg read it, unproven here: the $peer_kind peer's transcript never held its $unseen of nonce $exchange_said; $got_said" UNKNOWN
     elif [ -n "$ahead" ]; then
-      row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer was shown the public side's $ahead, before it was sent, so the runner's clock and this box's disagree; $got" UNKNOWN
+      row P4 "$want_said" "PASS as the public leg read it, unproven here: the $peer_kind peer was shown the public side's $ahead, before it was sent, so the runner's clock and this box's disagree; $got_said" UNKNOWN
     elif [ "$peer_kind" = probe ]; then
-      row P4 "$want" "$got; the scripted control peer was shown the $lags after they were sent: the path passes with no model in the loop, and the gate needs the model peer (OUTSIDE_PEER=omp)" UNKNOWN
+      row P4 "$want_said" "$got_said; the scripted control peer was shown the $lags after they were sent: the path passes with no model in the loop, and the gate needs the model peer (OUTSIDE_PEER=omp)" UNKNOWN
     else
-      row P4 "$want" "$got; the $peer_kind peer was shown the $lags after they were sent" PASS
+      row P4 "$want_said" "$got_said; the $peer_kind peer was shown the $lags after they were sent" PASS
     fi
   elif [ "$name:$verdict" = P7:PASS ]; then
-    row P7 "$want" "$got; the positive control: $p7_control" PASS
+    row P7 "$want_said" "$got_said; the positive control: $p7_control" PASS
   else
-    row "$name" "$want" "$got" "$verdict"
+    row "$name" "$want_said" "$got_said" "$verdict"
   fi
 done
 
@@ -1585,12 +1695,14 @@ check_row() {
       [ -z "$line" ] || last=$line
     done <"$results/$2.txt"
   fi
+  # The check's last line is the run's, which gh downloaded: printed through artifact_text alone.
+  [ ! -f "$results/$2.txt" ] || last=$(artifact_text "$results/$2.txt" "${last:0:300}")
   case ${code:-} in
-    0) row "$1" "$3" "$2 exited 0: ${last:0:300}" PASS ;;
-    1) row "$1" "$3" "$2 exited 1: ${last:0:300}" FAIL ;;
-    2) row "$1" "$3" "$2 exited 2: ${last:0:300}" UNKNOWN ;;
-    '') row "$1" "$3" "the run left no $2.code, so its exit is not read: ${last:0:300}" UNKNOWN ;;
-    *) row "$1" "$3" "$2.code holds $(cell "${code:0:40}"), which is no exit of 0, 1 or 2: ${last:0:300}" UNKNOWN ;;
+    0) row "$1" "$3" "$2 exited 0: $last" PASS ;;
+    1) row "$1" "$3" "$2 exited 1: $last" FAIL ;;
+    2) row "$1" "$3" "$2 exited 2: $last" UNKNOWN ;;
+    '') row "$1" "$3" "the run left no $2.code, so its exit is not read: $last" UNKNOWN ;;
+    *) row "$1" "$3" "$2.code holds $(artifact_text "$results/$2.code" "$(cell "${code:0:40}")"), which is no exit of 0, 1 or 2: $last" UNKNOWN ;;
   esac
 }
 # driver_row ROW WANT: the driver's row ROW from outside-edge.tsv.
@@ -1608,16 +1720,17 @@ driver_row() {
   elif [ -z "$read_row" ]; then
     row "$1" "$2" "outside-edge.tsv holds no $1 row" UNKNOWN
   else
+    # The driver's words are the run's, which gh downloaded: printed through artifact_text alone.
     case $verdict in
-      PASS | FAIL | UNKNOWN) row "$1" "$2" "$got" "$verdict" ;;
-      *) row "$1" "$2" "the driver's verdict is $(cell "$verdict"): $got" UNKNOWN ;;
+      PASS | FAIL | UNKNOWN) row "$1" "$2" "$(artifact_text "$results/outside-edge.tsv" "$got")" "$verdict" ;;
+      *) row "$1" "$2" "the driver's verdict is $(artifact_text "$results/outside-edge.tsv" "$(cell "$verdict"): $got")" UNKNOWN ;;
     esac
   fi
 }
 # limits_row WANT: the limits row from every `limit-*` row of outside-edge.tsv (and its `limits`
 # row, the one it writes when it counted no request).
 limits_row() {
-  local tsv="$results/outside-edge.tsv" names='' each rest read_row verdict got failed='' unread='' read_ok=''
+  local tsv="$results/outside-edge.tsv" names='' each rest read_row verdict got failed='' unread='' read_ok='' each_said
   if [ -n "$public_problem" ]; then
     row limits "$1" "$public_problem" UNKNOWN
     return
@@ -1635,10 +1748,18 @@ limits_row() {
     read_row=$(tsv_part "$tsv" "$each")
     verdict=${read_row%%"$tab"*}
     got=${read_row#*"$tab"}
+    # The rows are the run's, which gh downloaded: a row's name is printed only as limits or
+    # limit-<count>-<seconds>s, as the driver names them, and its words through artifact_text.
+    each_said=$each
+    case $results_gh:$each in
+      yes:limits) ;;
+      yes:*) [[ $each =~ ^limit-[0-9]+-[0-9]+s$ ]] || each_said='a limit row' ;;
+    esac
+    got=$(artifact_text "$tsv" "$got")
     case $verdict in
-      PASS) read_ok="${read_ok:+$read_ok; }$each: $got" ;;
-      FAIL) failed="${failed:+$failed; }$each: $got" ;;
-      *) unread="${unread:+$unread; }$each $(cell "$verdict"): $got" ;;
+      PASS) read_ok="${read_ok:+$read_ok; }$each_said: $got" ;;
+      FAIL) failed="${failed:+$failed; }$each_said: $got" ;;
+      *) unread="${unread:+$unread; }$each_said $(artifact_word "$tsv" "$(cell "$verdict")" UNKNOWN ''): $got" ;;
     esac
   done
   if [ -n "$failed" ]; then
@@ -1667,7 +1788,9 @@ grants_row() {
   revoke_read=$(tsv_part "$tsv" grants-revoke)
   list_verdict=${list_read%%"$tab"*}
   revoke_verdict=${revoke_read%%"$tab"*}
-  got="grants-list ${list_verdict:-absent}${list_read:+: ${list_read#*"$tab"}}; grants-revoke ${revoke_verdict:-absent}${revoke_read:+: ${revoke_read#*"$tab"}}"
+  # The driver's rows are the run's, which gh downloaded: their verdicts are printed only as
+  # verdicts, and their words through artifact_text.
+  got="grants-list $(artifact_word "$tsv" "${list_verdict:-absent}" PASS FAIL UNKNOWN absent)${list_read:+: $(artifact_text "$tsv" "${list_read#*"$tab"}")}; grants-revoke $(artifact_word "$tsv" "${revoke_verdict:-absent}" PASS FAIL UNKNOWN absent)${revoke_read:+: $(artifact_text "$tsv" "${revoke_read#*"$tab"}")}"
   [ -f "$tsv" ] || got="the run left no outside-edge-grants.tsv"
   if [ -n "$grants_problem" ]; then
     control="no control: $grants_problem"
@@ -1725,10 +1848,11 @@ elif [ "$outside_gate" = browser ]; then
   for each in outside-edge-refusals.code outside-path-reach.code outside-edge.code outside-edge-grants.code restricted-sweep.exit outside-edge-t5.code; do
     read_exit=none
     [ ! -f "$results/$each" ] || read_exit=$(tr -d ' \r\n' <"$results/$each")
-    exits="${exits:+$exits, }${each%.*} $(cell "${read_exit:0:40}")"
+    # An exit file is the run's, which gh downloaded: printed only as an exit the leg reads.
+    exits="${exits:+$exits, }${each%.*} $(artifact_word "$results/$each" "$(cell "${read_exit:0:40}")" 0 1 2 none)"
     [ "$read_exit" != 1 ] || failed=yes
   done
-  read_public="conclusion ${public_end:-not read}; exits: $exits"
+  read_public="conclusion ${end_said:-not read}; exits: $exits"
   case $public_end:$failed in
     success:*) row public "$want_public" "$read_public" PASS ;;
     failure:yes) row public "$want_public" "$read_public" FAIL ;;
@@ -1748,7 +1872,9 @@ else
       ;;
     *) end_verdict=UNKNOWN ;;
   esac
-  read_public="verdict row ${public_verdict:-absent}${verdict_read:+ (${verdict_read#*"$tab"})}, revocations row ${revoke_verdict:-absent}, end ${public_end:-not read}"
+  # The verdict and revocations rows are the public leg's: where gh downloaded them, their verdicts
+  # are printed only as verdicts and their words through artifact_text.
+  read_public="verdict row $(artifact_word "$public_tsv" "${public_verdict:-absent}" PASS FAIL UNKNOWN absent)${verdict_read:+ ($(artifact_text "$public_tsv" "${verdict_read#*"$tab"}"))}, revocations row $(artifact_word "$public_tsv" "${revoke_verdict:-absent}" PASS FAIL UNKNOWN absent), end ${end_said:-not read}"
   case " $public_verdict $revoke_verdict $end_verdict " in
     *' FAIL '*) row public "$want_public" "$read_public" FAIL ;;
     ' PASS PASS PASS ') row public "$want_public" "$read_public" PASS ;;
@@ -1771,7 +1897,7 @@ else
   if [ -n "$pins_problem" ] || [ -n "$serving_problem" ]; then
     row pins-end "$want_pins_end" "at the end: $pins_problem${serving_problem:+${pins_problem:+; }$serving_problem}" UNKNOWN
   elif [ "$pins_text" != "$pins_start" ]; then
-    row pins-end "$want_pins_end" "a pin moved between the legs: at the start $(printf '%s' "$pins_start" | tr '\n' ';'), at the end $(printf '%s' "$pins_text" | tr '\n' ';')" UNKNOWN
+    row pins-end "$want_pins_end" "a pin moved between the legs: at the start $(printf '%s' "$pins_start_said" | tr '\n' ';'), at the end $(printf '%s' "$pins_said" | tr '\n' ';')" UNKNOWN
   elif [ "$serving_commit" != "$serving_start" ]; then
     row pins-end "$want_pins_end" "Dispatch served $serving_start at the start and serves $serving_commit (fleet ${serving_fleet:-none}) at the end" UNKNOWN
   else
