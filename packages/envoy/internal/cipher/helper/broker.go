@@ -537,6 +537,15 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 // (unpollableRemedy), not asking again, which would meet the same answer, but for the round trip,
 // which a faster answer cures, and where the answer outlasted the code, after which the codes must
 // also outlive the interval by more than the answers take.
+//
+// lived is the broker's whole seconds only as far as a clock reading is on time: x/oauth2's type
+// holds the code's end and no raw expires_in, and one it wraps forward keeps a fraction of a
+// second that no reading of lived tells from a pause. So a line never names a cure the code's own
+// end may already meet: where it names a lifetime the interval is no shorter than, it says the
+// codes must also outlive the interval by more than the answers take (transit), which holds
+// whatever lived holds, and a cure by the answer's speed that this answer already met names the
+// time lived leaves instead of the whole seconds. A code that had lapsed by the time its answer
+// arrived meets no cure by a lifetime: its end is past.
 func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool) error {
 	var poll string
 	switch {
@@ -550,8 +559,16 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 	}
 	const lapses = "the code would lapse before its first poll"
 	const verdict = "no machine login works at that broker until"
-	// The broker's whole seconds: lived is off them only by the moments between Login's and
-	// x/oauth2's clock readings, far under half a second.
+	// What a login needs of the codes once their lifetime outlasts the interval: true whatever
+	// lived hides, since a code is polled only where lived less the round trip is more than the
+	// interval.
+	const outlive = "once its codes outlive its poll interval by more than its answers take to arrive"
+	// The same, added where the interval is no shorter than the lifetime, a cure the code's own
+	// end may already meet (see above).
+	const transit = ", and then only " + outlive
+	// The broker's whole seconds, as far as lived says: it is off them by the moments between
+	// Login's and x/oauth2's clock readings, far under half a second, and by the fraction of a
+	// lifetime x/oauth2 wraps forward, which this cannot tell from a pause (see above).
 	lifetime := lived.Round(time.Second)
 	interval := time.Duration(used) * time.Second
 	if hourEnds || (used == cipherclient.MostDeviceInterval && lifetime > interval) {
@@ -564,18 +581,26 @@ func unpollableCode(lived, left time.Duration, named, used int64, hourEnds bool)
 	}
 	lives := fmt.Sprintf("the broker answered a device code that lives %d s, with %s", lifetime/time.Second, poll)
 	if interval >= lifetime && left > 0 {
-		return fmt.Errorf("%s: %s; %s %s", lives, lapses, verdict, unpollableRemedy(named, used, lifetime))
+		return fmt.Errorf("%s: %s; %s %s%s", lives, lapses, verdict, unpollableRemedy(named, used, lifetime), transit)
 	}
 	// The round trip took what the broker's numbers left, or the answer outlasted the code.
-	took := fmt.Sprintf("%s, but its answer took %.3f s to arrive", lives, (lived - left).Seconds())
+	trip := lived - left
+	took := fmt.Sprintf("%s, but its answer took %.3f s to arrive", lives, trip.Seconds())
 	if interval >= lifetime {
-		return fmt.Errorf("%s, so the code had lapsed; %s %s, and then only once its codes outlive its poll interval by more than its answers take to arrive", took, verdict, unpollableRemedy(named, used, lifetime))
+		return fmt.Errorf("%s, so the code had lapsed; %s %s%s", took, verdict, unpollableRemedy(named, used, lifetime), transit)
 	}
 	rest := "none of it, so the code had lapsed"
 	if left > 0 {
 		rest = fmt.Sprintf("%.3f s of it: %s", left.Seconds(), lapses)
 	}
-	return fmt.Errorf("%s, which left %s; a machine login works at that broker where its answer arrives in less than %d s, or once its codes outlive its poll interval by more than its answers take to arrive", took, rest, (lifetime-interval)/time.Second)
+	// An answer in less than the lifetime's whole seconds over the interval works, unless this one
+	// came in that and was refused: lived, short of those seconds, leaves less, to the millisecond.
+	over := lifetime - interval
+	within := fmt.Sprintf("%d s", over/time.Second)
+	if trip < over {
+		within = fmt.Sprintf("%.3f s", (lived - interval).Truncate(time.Millisecond).Seconds())
+	}
+	return fmt.Errorf("%s, which left %s; a machine login works at that broker where its answer arrives in less than %s, or "+outlive, took, rest, within)
 }
 
 // unpollableRemedy is what must change at the broker before a code it answers can be polled, for a
@@ -755,8 +780,15 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 //     which this helper takes for the broker's: 18446744974 s comes out as about 900 s, polled
 //     for that against a shorter interval and refused against a longer one, as against 1000 s,
 //     where the line names a code that lives about 900 s and asks for an interval shorter than its
-//     codes' lifetime; there the hour holds it, and a 1000 s interval is polled. Here the code's
-//     end is dated less the device authorization's round trip, as x/oauth2 dates it, and there
+//     codes' lifetime, and then that the codes must outlive the interval by more than the answers
+//     take; there the hour holds it, and a 1000 s interval is polled. x/oauth2's type keeps no raw
+//     expires_in, so this helper cannot read what the broker sent: a lifetime it wraps forward keeps
+//     a fraction that no reading tells from a pause, as 18446744075 s comes out as 1.29 s, polled
+//     where its answer arrives in under 0.29 s and refused, as "lives 1 s", where it takes longer.
+//     So a line that names a lifetime the interval is no shorter than never names a cure by the
+//     interval or the lifetime alone: it adds that the codes must outlive the interval by more
+//     than the answers take, which holds of a wrapped code as of any. Here the code's end is
+//     dated less the device authorization's round trip, as x/oauth2 dates it, and there
 //     from when the answer arrived, so on a slow path this helper refuses an answer that login
 //     shows: an interval of 599 s against a 600 s code, with a round trip over a second. There the
 //     test counts whole milliseconds, so it refuses an interval less than one shorter than its
