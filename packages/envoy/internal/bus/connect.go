@@ -256,6 +256,15 @@ func handshaking(nc *nats.Conn) bool {
 	return status == nats.CONNECTING || status == nats.RECONNECTING
 }
 
+// handshakeReadFailed says whether err is how a read of a connection fails: the peer closed it
+// (io.EOF, io.ErrUnexpectedEOF), or the read itself failed (a *net.OpError, which nats.go's read
+// returns for a reset connection and for one that passed its deadline). An error the handshake
+// builds itself, such as a credentials callback's (nats.go's connectProto), is neither.
+func handshakeReadFailed(err error) bool {
+	var readErr *net.OpError
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &readErr)
+}
+
 // serverList is urls as a log line names them: comma-separated, each without its userinfo
 // (natsURLWithoutUserinfo).
 func serverList(urls []string) string {
@@ -354,16 +363,17 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		}
 	}
 	opts.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
-		if sub == nil && errors.Is(err, io.EOF) && handshaking(nc) {
-			// A server that closes the connection during a reconnect's CONNECT and PING handshake
-			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
-			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
-			// It is a failed reconnect attempt, so it is logged as one, on the same
-			// throttle. Only that report is: the connection is still in that handshake
-			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
-			// and every other async error, an EOF on a connected connection included, stays an
-			// ERROR.
+		if sub == nil && handshakeReadFailed(err) && handshaking(nc) {
+			// A reconnect's CONNECT and PING handshake whose reply the client cannot read - a
+			// server that closes the connection (a server restarting, or one that accepted the dial
+			// as it shut down), resets it, or does not answer within the handshake's deadline -
+			// makes nats.go's sendConnect report the read's error here, and nowhere else: the
+			// reconnect loop then tries again without calling ReconnectErrCB (nats.go v1.55.0
+			// sendConnect, processConnectInit and doReconnect). It is a failed reconnect attempt,
+			// so it is logged as one, on the same throttle. Only that report is: the connection is
+			// still in that handshake (CONNECTING) or waiting for the next attempt (RECONNECTING)
+			// when the callback runs, and every other async error, the same read error on a
+			// connected connection included, stays an ERROR.
 			reconnectAttemptFailed(err)
 			if asyncErrCB != nil {
 				asyncErrCB(nc, err)

@@ -54,9 +54,23 @@ func (w *Watcher) Stop() {
 // work once: a later End, or one beside it, waits for the first to finish, within the first's ctx,
 // and ends nothing more.
 //
-// End stops each watcher at once, whether or not its scan has ended: the consumers must be gone
-// before the drain. That is safe with the jetstream watcher, which sends nothing once its
-// subscription has ended, and its consume reads it until it closes.
+// Once every watcher it stopped has returned from its stop, whatever the deletes found, and no
+// watch was left starting, End logs `<name> watcher ended` at INFO, with the number it stopped.
+// When ctx ended a wait first, the ERROR or WARN it logged for that wait is the record, and it logs
+// no such line. That line, and not the state of the watcher's consumer, is what says the watcher
+// ended: a consumer the server lost does not stay lost, since nats.go's ordered consumer creates a
+// new one in its place once its idle heartbeats have been missing for a whole check (5 s
+// heartbeats, checked every 10 s: nats.go v1.55.0 js.go, activityCheck). End then deletes that one
+// with nothing else to report, or, while its create is still in flight, deletes nothing, since
+// nats.go has not yet named it to the subscription (js.go deleteConsumer). nats.go deletes that
+// one itself once the create answers and it finds the subscription closed (resetOrderedConsumer),
+// but in a goroutine nothing waits for, so a connection that closes first leaves it for the server
+// to remove once its interest is gone.
+//
+// End stops each watcher at once, whether or not its scan has ended: each watcher's subscription
+// must end, and the consumer it names be deleted, before the connection drains (a consumer nats.go
+// has not yet named, above, may be left to the server). That is safe with the jetstream watcher,
+// which sends nothing once its subscription has ended, and its consume reads it until it closes.
 func (w *Watcher) End(ctx context.Context) {
 	w.endOnce.Do(func() { w.end(ctx) })
 }
@@ -73,17 +87,9 @@ func (w *Watcher) end(ctx context.Context) {
 	w.mu.Unlock()
 	var gaveUp error
 	if idle != nil {
-		// A watch that has finished is read before ctx, which can already be done: a hook's
-		// context ends the moment the connection is lost.
-		select {
-		case <-idle:
-		default:
-			select {
-			case <-idle:
-			case <-ctx.Done():
-				gaveUp = context.Cause(ctx)
-				w.logUnfinished(w.name+" watcher end found a watch still starting", gaveUp)
-			}
+		if _, finished := takeWithin(ctx, idle); !finished {
+			gaveUp = context.Cause(ctx)
+			w.logUnfinished(w.name+" watcher end found a watch still starting", gaveUp)
 		}
 	}
 	w.mu.Lock()
@@ -96,19 +102,47 @@ func (w *Watcher) end(ctx context.Context) {
 	for _, watcher := range retired {
 		go func() { results <- watcher.stop() }()
 	}
+	stopped := 0
 	for range retired {
-		select {
-		case err := <-results:
+		if err, returned := takeWithin(ctx, results); returned {
 			w.logEnd(err)
-			continue
-		default:
-		}
-		select {
-		case err := <-results:
-			w.logEnd(err)
-		case <-ctx.Done():
+			stopped++
+		} else {
 			w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
 		}
+	}
+	if gaveUp == nil && stopped == len(retired) {
+		w.logger().Info(w.name+" watcher ended", slog.String("bucket", w.bucket), slog.Int("stopped", stopped))
+	}
+}
+
+// takeWithin waits within ctx for a value on c, or for c's close, and reports whether it got one.
+// A value sent, or a close made, by the moment it reads ctx as ended is taken all the same: a
+// select on c and ctx picks either when both are ready, and ctx can already be done, since a
+// hook's context ends the moment the connection is lost and a drain of a connection already
+// reconnecting runs the hooks on one that has. So End never says that a stop or a watch had not
+// finished when it had.
+func takeWithin[T any](ctx context.Context, c <-chan T) (T, bool) {
+	return takeWithinAfter(ctx, c, nil)
+}
+
+// takeWithinAfter is takeWithin, running ended, when not nil, once it has read ctx as ended and
+// before it reads c that last time: a test sends there what a stop would send at that moment.
+func takeWithinAfter[T any](ctx context.Context, c <-chan T, ended func()) (T, bool) {
+	select {
+	case value := <-c:
+		return value, true
+	case <-ctx.Done():
+	}
+	if ended != nil {
+		ended()
+	}
+	select {
+	case value := <-c:
+		return value, true
+	default:
+		var none T
+		return none, false
 	}
 }
 

@@ -2,6 +2,7 @@ package kvwatch_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,54 @@ func warnings(records []map[string]any) []string {
 		found = append(found, level+" "+message+": "+errText)
 	}
 	return found
+}
+
+// endedLines counts the INFO records saying name's watcher ended (Watcher.End).
+func endedLines(records []map[string]any, name string) int {
+	count := 0
+	for _, record := range records {
+		if level, _ := record["level"].(string); level == "INFO" && record["msg"] == name+" watcher ended" {
+			count++
+		}
+	}
+	return count
+}
+
+// End's wait for a stop's result, or for a watch still starting, takes a result sent by the moment
+// it reads its context as ended: a result that came as the context ended is a stop that returned,
+// and saying it was unanswered would be a false ERROR. ended sends the result at exactly that
+// moment, after the wait has read the context as ended and before its last read. Every way it can
+// meet the two is held: the result before an ended context, the result at the context's end, a
+// context ended with no result, and a closed channel, as End's wait for a watch sees one.
+func TestEndsWaitTakesAResultSentAsItsContextEnded(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for attempt := range 1000 {
+		before := make(chan error, 1)
+		before <- nil
+		if _, taken := kvwatch.TakeWithinAfter(ended, before, nil); !taken {
+			t.Fatalf("attempt %d: a result sent before the wait was not taken once its context had ended", attempt)
+		}
+		at := make(chan error, 1)
+		if _, taken := kvwatch.TakeWithinAfter(ended, at, func() { at <- nil }); !taken {
+			t.Fatalf("attempt %d: a result sent as the wait read its context as ended was not taken", attempt)
+		}
+	}
+	if _, taken := kvwatch.TakeWithinAfter(ended, make(chan error, 1), nil); taken {
+		t.Fatal("a wait whose context ended with no result said it had one")
+	}
+	closed := make(chan struct{})
+	close(closed)
+	if _, taken := kvwatch.TakeWithinAfter(ended, closed, nil); !taken {
+		t.Fatal("a wait for a channel closed before its context ended said the channel was open")
+	}
+	live, stop := context.WithCancel(context.Background())
+	defer stop()
+	sent := make(chan error, 1)
+	sent <- errors.New("the stop's own error")
+	if err, taken := kvwatch.TakeWithinAfter(live, sent, nil); !taken || err == nil || err.Error() != "the stop's own error" {
+		t.Fatalf("a wait under a live context read %v, %t; want the stop's own error", err, taken)
+	}
 }
 
 // testConsumers lists the test bucket's consumers.
@@ -71,6 +120,9 @@ func TestEndEndsAWatcherArmedAfterTheStop(t *testing.T) {
 	if got := warnings(records()); len(got) != 0 {
 		t.Fatalf("End logged %q, want nothing", got)
 	}
+	if got := endedLines(records(), "test cache"); got != 1 {
+		t.Fatalf("End logged %d lines saying the watcher ended, want 1", got)
+	}
 }
 
 // A watch still starting when End's deadline passes is an ERROR, since End cannot say its watcher
@@ -91,6 +143,10 @@ func TestAWatchStillStartingAtEndsDeadlineIsAnError(t *testing.T) {
 	eventually(t, "the late watch to delete its consumer", func() bool { return len(testConsumers(t, conn)) == 0 })
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end found a watch still starting: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
+	}
+	// End gave up on the watch, so it cannot say the watcher ended.
+	if got := endedLines(records(), "test cache"); got != 0 {
+		t.Fatalf("End logged %d lines saying the watcher ended after it gave up on a watch, want none", got)
 	}
 }
 
@@ -265,5 +321,9 @@ func TestEndIsBoundedByItsContext(t *testing.T) {
 	}
 	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: context deadline exceeded"; got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
+	}
+	// The stop is still waiting on its delete, so End cannot say the watcher ended.
+	if got := endedLines(records(), "test cache"); got != 0 {
+		t.Fatalf("End logged %d lines saying the watcher ended while its stop was unanswered, want none", got)
 	}
 }
