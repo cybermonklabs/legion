@@ -9,7 +9,7 @@ What Dispatch records of each Legion daemon's own state, so the Legion board and
 `issue.go` holds the one per-issue rule of what the sampler recorded, which the board (`api/legion_board.go`) and one issue's read (`GET /api/v1/issues/{key}/legion`, `api/legion_issue.go`) share, so a card and the issue's answer agree on the phase, the roles in a turn and the slot.
 `IssueState` takes an issue's newest observations one by one (`Observe`): its phase and when Dispatch stored it, its slot, what it waits on as the daemon's own bytes, and the claim of each role with its state.
 `Working` answers the roles in a turn, which a card shows, and `Roles` every claim, the roles `legionagents.Roles` names first and then any other by name.
-`Admission`'s `Place` and `BlockersOf` answer where the daemon's waiting line puts an issue and which issues hold it.
+`AdmissionOf` decodes the stored `admission` block, which the board and `ReadIssue` both read through it, and `Admission`'s `Place`, `Blockers` and `BlockersOf` answer where the daemon's waiting line puts an issue and which issues hold it.
 `ReadIssue` reads one issue's state in one statement over `legion_current`: the issue's rows and the project's `admission` row, with `ReadCurrent`'s `null` rule, and no row of any other issue.
 It also answers whether Dispatch saw the issue's phase start (`PhaseStartSeen`): whether `legion_observations` holds an older `phase` row of the issue whose value is not the newest one's, read through the index `legion_observations_point`.
 `GetSettings` takes a `RowQueryer`, so the issue's read takes the setting, `ReadIssue` and the rest in one transaction, and its `configured` and its state answer one moment.

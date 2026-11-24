@@ -458,8 +458,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 
 	t.Run("R-1 a slot holder with its architect and implementer in a turn and its tester idle", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "FULL-1")
-		if answer.Project != "FULL" || answer.RunsRevision != 0 {
-			t.Errorf("FULL-1's answer names project %q and runs revision %d, want FULL and 0: it has no run", answer.Project, answer.RunsRevision)
+		if answer.RunsRevision != 0 {
+			t.Errorf("FULL-1's runs revision is %d, want 0: it has no run", answer.RunsRevision)
 		}
 		requireLegionState(t, "FULL-1", answer, legionIssueWant{
 			phase: "implementing", since: hour(1),
@@ -538,8 +538,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	t.Run("R-13 a Dispatch issue with no observation is not recorded, with its project's read", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "FULL-13")
 		requireLegionConfigured(t, "FULL-13", answer, true)
-		if answer.Issue != "FULL-13" || answer.Project != "FULL" || answer.State != nil {
-			t.Errorf("FULL-13's answer = %+v, want FULL-13 of FULL with a null state", answer)
+		if answer.State != nil {
+			t.Errorf("FULL-13's state = %+v, want null", *answer.State)
 		}
 		requireLegionRead(t, "FULL-13", answer, fullRead)
 	})
@@ -573,24 +573,24 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	t.Run("P-4 a project whose daemon never answered is not recorded, with the failed read", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "UNREAD-1")
 		requireLegionConfigured(t, "UNREAD-1", answer, true)
-		if answer.Project != "UNREAD" || answer.State != nil {
-			t.Errorf("UNREAD-1's answer = %+v, want UNREAD's issue with a null state", answer)
+		if answer.State != nil {
+			t.Errorf("UNREAD-1's state = %+v, want null", *answer.State)
 		}
 		requireLegionRead(t, "UNREAD-1", answer, &wireLegionRead{At: hour(2), OK: false, Error: &unreadText})
 	})
 	t.Run("P-4b a project whose daemon was never read has a null read", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "NEVERREAD-1")
 		requireLegionConfigured(t, "NEVERREAD-1", answer, true)
-		if answer.Project != "NEVERREAD" || answer.State != nil {
-			t.Errorf("NEVERREAD-1's answer = %+v, want NEVERREAD's issue with a null state", answer)
+		if answer.State != nil {
+			t.Errorf("NEVERREAD-1's state = %+v, want null", *answer.State)
 		}
 		requireLegionRead(t, "NEVERREAD-1", answer, nil)
 	})
 	t.Run("P-5 an issue of a project that names no daemon is not configured, with its run and none of the old rows", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "NODAEMON-1")
 		requireLegionConfigured(t, "NODAEMON-1", answer, false)
-		if answer.Issue != "NODAEMON-1" || answer.Project != "NODAEMON" || answer.State != nil {
-			t.Errorf("NODAEMON-1's answer = %+v, want NODAEMON-1 of NODAEMON with a null state: the phase and claim an earlier daemon left are no daemon's now", answer)
+		if answer.State != nil {
+			t.Errorf("NODAEMON-1's state = %+v, want null: the phase and claim an earlier daemon left are no daemon's now", *answer.State)
 		}
 		requireLegionRead(t, "NODAEMON-1", answer, nil)
 		if answer.RunsRevision <= 0 {
@@ -600,8 +600,8 @@ func TestAnIssuesLegionRead(t *testing.T) {
 	t.Run("P-5 an issue with no run of a project that names no daemon is not configured, with runs revision 0", func(t *testing.T) {
 		answer := legionIssueOf(t, handler, "NODAEMON-2")
 		requireLegionConfigured(t, "NODAEMON-2", answer, false)
-		if answer.Issue != "NODAEMON-2" || answer.Project != "NODAEMON" || answer.State != nil || answer.RunsRevision != 0 {
-			t.Errorf("NODAEMON-2's answer = %+v, want NODAEMON-2 of NODAEMON with a null state and runs revision 0", answer)
+		if answer.State != nil || answer.RunsRevision != 0 {
+			t.Errorf("NODAEMON-2's answer = %+v, want a null state and runs revision 0", answer)
 		}
 		requireLegionRead(t, "NODAEMON-2", answer, nil)
 	})

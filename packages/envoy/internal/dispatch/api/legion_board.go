@@ -347,10 +347,7 @@ func (p *legionBoardPopulation) readCurrent(ctx context.Context, tx pgx.Tx) erro
 func (p *legionBoardPopulation) observeProject(field string, value []byte) {
 	switch field {
 	case legion.FieldAdmission:
-		var admission legion.Admission
-		if err := json.Unmarshal(value, &admission); err == nil {
-			p.admission = &admission
-		}
+		p.admission = legion.AdmissionOf(value)
 	case legion.FieldSettings:
 		_ = json.Unmarshal(value, &p.settings)
 	}
@@ -527,20 +524,18 @@ func (c *legionBoardCards) nearestCard(key string) string {
 func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResponse {
 	cards := map[string][]legionBoardCard{}
 	placed := map[string]bool{}
-	// held is every issue a blocker link holds, which the Queue column carries; the issues holding
-	// each one are the admission block's own answer for it (card).
-	held := map[string]bool{}
+	// blockers is every issue a blocker link holds, with the issues holding it, by the admission
+	// block's one rule (legion.Admission.Blockers), read once for the whole answer: the Queue
+	// column carries each issue it names, and each card its own list (card).
+	blockers := p.admission.Blockers()
 	var waiting []string
 	if p.admission != nil {
 		waiting = p.admission.Waiting
-		for _, blocked := range p.admission.Blocked {
-			held[blocked.Issue] = true
-		}
 	}
 
 	// The queue: the daemon's waiting line in its own order, then the issues a blocker link holds
 	// that the line does not already name.
-	queued := make([]string, 0, len(waiting)+len(held))
+	queued := make([]string, 0, len(waiting)+len(blockers))
 	seen := map[string]bool{}
 	for _, key := range waiting {
 		if p.issues[key] == nil || seen[key] {
@@ -549,8 +544,8 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 		seen[key] = true
 		queued = append(queued, key)
 	}
-	blocked := make([]string, 0, len(held))
-	for key := range held {
+	blocked := make([]string, 0, len(blockers))
+	for key := range blockers {
 		if p.issues[key] != nil && !seen[key] {
 			blocked = append(blocked, key)
 		}
@@ -595,10 +590,10 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 			}
 		}
 		placed[key] = true
-		cards[column] = append(cards[column], p.card(issue, 0))
+		cards[column] = append(cards[column], p.card(issue, blockers[key], 0))
 	}
 	for _, key := range queued {
-		cards[legionColumnQueue] = append(cards[legionColumnQueue], p.card(p.issues[key], uncarded[key]))
+		cards[legionColumnQueue] = append(cards[legionColumnQueue], p.card(p.issues[key], blockers[key], uncarded[key]))
 	}
 	// A root's count is known only once every issue has been placed, so the cards already made
 	// take theirs now.
@@ -658,12 +653,12 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 }
 
 // card is one issue's card, with the issues holding it, as the admission block names them for it
-// (legion.Admission.BlockersOf, by which an issue's own read names them too), and the children of
-// its tree that are on no card of their own.
-func (p *legionBoardPopulation) card(issue *legionBoardIssue, children int) legionBoardCard {
+// (legion.Admission.Blockers, by whose rule an issue's own read names them too), and the children
+// of its tree that are on no card of their own.
+func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string, children int) legionBoardCard {
 	card := legionBoardCard{
 		Key: issue.key, Title: issue.title, Priority: issue.priority, Phase: issue.state.Phase,
-		Slot: issue.state.Slot, Roles: issue.state.Working(), BlockedBy: p.admission.BlockersOf(issue.key),
+		Slot: issue.state.Slot, Roles: issue.state.Working(), BlockedBy: blockedBy,
 		WaitingOn: legionBoardWaitOf(issue.state.WaitingOn), Tree: p.treeRoot(issue.key), Children: children,
 	}
 	if card.BlockedBy == nil {

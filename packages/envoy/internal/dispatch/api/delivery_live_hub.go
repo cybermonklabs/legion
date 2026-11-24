@@ -512,19 +512,19 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
 	case legion.StateChannel:
-		h.dirtyLegionBoard(g, payload)
+		h.dirtyLegionProject(g, payload)
 	case workflowstore.RunsChannel:
 		h.dirtyLegionIssue(g, payload)
 	}
 }
 
-// dirtyLegionBoard marks every Legion view of the project a read of a Legion daemon just recorded,
+// dirtyLegionProject marks every Legion view of the project a read of a Legion daemon just recorded,
 // or whose Legion setting a write just named or removed: its board, and the legion_issue view of
 // each of its issues. The sampler announces every read, failed or not: the header and an issue's
 // read carry the read itself, so a view whose daemon stopped answering moves as surely as one
 // whose issues did. A setting's write moves every such view too: the board appears or is refused,
 // and an issue's view says whether the project names a daemon (configured).
-func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
+func (h *deliveryHub) dirtyLegionProject(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()

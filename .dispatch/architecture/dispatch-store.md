@@ -22,7 +22,7 @@ So Postgres delivers the signal at the commit, to every Dispatch process that li
 A write sent again appends nothing and sends nothing, and a plan's write (`PutPlan`) sends nothing, because a plan is no run.
 A run's write appends no event, so this signal is how the live hub learns of a run (`dispatch-api`).
 `IssueRunsRevision` counts the tuples of an issue's runs, `0` for an issue with no run, through `workflow_tuples_inbound` and the two partial indexes that key a node's tuples by the node, so it reads the issue's own runs' tuples and nothing else.
-No write updates or deletes a tuple, so the count rises with each such commit and never falls.
+No write updates or deletes a tuple, so the count rises with each commit of a write that appends one, stays where it is for a write sent again, and never falls.
 It is a count and not the newest `seq`, because two writes of one issue's runs do not wait for each other, and the write that drew the earlier `seq` can commit after the other.
 
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).

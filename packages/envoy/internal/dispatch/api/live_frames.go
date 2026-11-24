@@ -251,7 +251,7 @@ const (
 	viewReadsDelivery viewReads = iota + 1
 	// viewReadsLegion is one project's Legion daemon as the sampler recorded it: the view's spec
 	// holds that project, a read of its daemon or a write of its Legion setting marks it
-	// (dirtyLegionBoard), and so does each connection of the hub's listener (dirtyLegionViews),
+	// (dirtyLegionProject), and so does each connection of the hub's listener (dirtyLegionViews),
 	// since no delivery change touches it; it judges no freshness. A project that names no daemon
 	// is LEGION_NOT_CONFIGURED to the board alone, whose read answers legion.ErrNoSettings for it:
 	// one issue's read answers an issue of such a project with its configured false body
@@ -389,8 +389,8 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// every field is sent whole, nothing is left out, and a recompute that finds nothing moved
 	// sends nothing. No Dispatch event moves it, so its read names no issue: a read of its
 	// project's daemon and a write of that project's Legion setting do (legion.StateChannel,
-	// dirtyLegionBoard), and so does a write of one of the issue's runs
-	// (workflowstore.RunsChannel, dirtyLegionIssue).
+	// dirtyLegionProject), and so does a write of one of the issue's runs that stores something
+	// new (workflowstore.RunsChannel, dirtyLegionIssue).
 	legionIssueView: {
 		body: reflect.TypeFor[legionIssueResponse](),
 		whole: map[string][]string{

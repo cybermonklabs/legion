@@ -2,13 +2,13 @@ package legion
 
 // issue.go holds the one per-issue rule of what the sampler recorded (dispatch://INFRA-4869): how
 // an issue's newest observations read as its phase, its slot, what it waits on and the claims of
-// its roles (IssueState), and where the project's admission block puts it (Admission's Place and
-// BlockersOf). Two readers take an issue through it: the Legion board, whose cards are every issue
-// of the project (api/legion_board.go), and one issue's read, GET /api/v1/issues/{key}/legion,
-// which reads that issue alone (ReadIssue). One rule stated twice is two rules, and a card that
-// put an issue in one phase, or a role in a turn, while the issue's own answer said another would
-// be two answers about the same issue a page draws side by side (the spec's R1: "the card and the
-// answer agree on the phase, the roles in a turn and the slot").
+// its roles (IssueState), and where the project's admission block puts it (AdmissionOf, and
+// Admission's Place, Blockers and BlockersOf). Two readers take an issue through it: the Legion
+// board, whose cards are every issue of the project (api/legion_board.go), and one issue's read,
+// GET /api/v1/issues/{key}/legion, which reads that issue alone (ReadIssue). One rule stated twice
+// is two rules, and a card that put an issue in one phase, or a role in a turn, while the issue's
+// own answer said another would be two answers about the same issue a page draws side by side (the
+// spec's R1: "the card and the answer agree on the phase, the roles in a turn and the slot").
 
 import (
 	"bytes"
@@ -141,20 +141,46 @@ func (a *Admission) Place(key string) (place, length int, ok bool) {
 	return index + 1, len(a.Waiting), true
 }
 
-// BlockersOf is the issues `admission.blocked` names as holding key, in the order the daemon
-// stored them, never sorted: nil where no entry names key, and for a nil Admission. An issue two
-// entries name, which no daemon sends, takes the last of them, as a map filled in the block's
-// order would. The slice is the block's own; a caller reads it and does not change it.
-func (a *Admission) BlockersOf(key string) []string {
+// AdmissionOf is the admission block a newest `admission` value holds, or nil where the value does
+// not decode as one. The board and one issue's read both take the project's `admission` row
+// through it (api/legion_board.go's observeProject, ReadIssue), so both read a value of another
+// shape as no block: the daemon owns the wire shape, and a reader of one names what it expects
+// rather than trusting it.
+func AdmissionOf(value []byte) *Admission {
+	var admission Admission
+	if err := json.Unmarshal(value, &admission); err != nil {
+		return nil
+	}
+	return &admission
+}
+
+// Blockers is the issues `admission.blocked` names as holding each issue, by that issue, each list
+// in the order the daemon stored it, never sorted, and nil for a nil Admission. It is the one rule
+// of which entry names an issue's blockers: the map is filled in the block's stored order, so an
+// issue two entries name, which no daemon sends, takes the last of them. The board reads the whole
+// map once for an answer (api/legion_board.go), and BlockersOf reads one issue's list from it. Each
+// list is the block's own; a caller reads it and does not change it.
+func (a *Admission) Blockers() map[string][]string {
 	if a == nil {
 		return nil
 	}
-	for index := len(a.Blocked) - 1; index >= 0; index-- {
-		if a.Blocked[index].Issue == key {
-			return a.Blocked[index].BlockedBy
-		}
+	blockers := make(map[string][]string, len(a.Blocked))
+	for _, blocked := range a.Blocked {
+		blockers[blocked.Issue] = blocked.BlockedBy
 	}
-	return nil
+	return blockers
+}
+
+// BlockersOf is the issues `admission.blocked` names as holding key, by Blockers' rule: in the
+// order the daemon stored them, never sorted, and the last entry's list where two entries name
+// key. It is an empty list, never nil, where no entry names key, where the entry's list is nil,
+// and for a nil Admission, so an answer that carries it says [] rather than null. A list that is
+// not empty is the block's own; a caller reads it and does not change it.
+func (a *Admission) BlockersOf(key string) []string {
+	if blockers := a.Blockers()[key]; blockers != nil {
+		return blockers
+	}
+	return []string{}
 }
 
 // IssueCurrent is one issue's Legion state as Dispatch holds it (ReadIssue): whether the daemon
@@ -182,7 +208,7 @@ type IssueCurrent struct {
 	PhaseStartSeen bool
 	// Admission is the project's admission block as the newest read recorded it, nil while no read
 	// has recorded one: before the first read of a daemon, for a daemon that sends none, and for a
-	// value of another shape, which the board reads as none too.
+	// value of another shape, which the board reads as none too (AdmissionOf).
 	Admission *Admission
 }
 
@@ -225,10 +251,7 @@ func ReadIssue(ctx context.Context, db Queryer, project, key string) (IssueCurre
 			return IssueCurrent{}, fmt.Errorf("scan a Legion observation of %s: %w", key, err)
 		}
 		if issueKey == AdmissionKey && field == FieldAdmission {
-			var admission Admission
-			if err := json.Unmarshal(value, &admission); err == nil {
-				current.Admission = &admission
-			}
+			current.Admission = AdmissionOf(value)
 			continue
 		}
 		if field == FieldPhase {

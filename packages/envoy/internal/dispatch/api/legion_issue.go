@@ -53,9 +53,10 @@ type legionIssueResponse struct {
 	// where Configured is false.
 	Read *legionIssueRead `json:"read"`
 	// RunsRevision is the count of the tuples of the issue's runs (workflowstore.IssueRunsRevision),
-	// 0 for an issue Legion never ran, whatever Configured says: each write of a run raises it, which
-	// is how an open page learns of a run, since a run's write appends no event. It is in the GET
-	// body as well as the live one, so the two are one body.
+	// 0 for an issue Legion never ran, whatever Configured says: each write of a run that stores
+	// something new raises it, while a write sent again, which stores nothing, leaves it, and that
+	// rise is how an open page learns of a run, since a run's write appends no event. It is in the
+	// GET body as well as the live one, so the two are one body.
 	RunsRevision int64 `json:"runs_revision"`
 }
 
@@ -184,9 +185,9 @@ func (s *server) readLegionIssue(ctx context.Context, key string) (legionIssueRe
 }
 
 // legionIssueStateOf is the answer's state of key as legion.ReadIssue read it, nil where the daemon
-// does not record the issue. The blockers are the admission block's, read by the method the
-// board's card reads them through (legion.Admission.BlockersOf), and the place in the line by its
-// sibling (legion.Admission.Place).
+// does not record the issue. The blockers are the admission block's, by the one rule the board's
+// cards read them through (legion.Admission.Blockers, which BlockersOf reads, [] where it names
+// none), and the place in the line by its sibling (legion.Admission.Place).
 func legionIssueStateOf(key string, current legion.IssueCurrent) *legionIssueState {
 	if !current.Recorded {
 		return nil
@@ -198,9 +199,6 @@ func legionIssueStateOf(key string, current legion.IssueCurrent) *legionIssueSta
 	}
 	if place, length, ok := current.Admission.Place(key); ok {
 		state.WaitingLine = &legionIssueWaitingLine{Place: place, Length: length}
-	}
-	if state.BlockedBy == nil {
-		state.BlockedBy = []string{}
 	}
 	return state
 }

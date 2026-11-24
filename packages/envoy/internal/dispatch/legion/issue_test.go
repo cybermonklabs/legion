@@ -87,8 +87,8 @@ func TestAPlaceInTheWaitingLineCountsFromOneAndTheBlockersKeepTheDaemonsOrder(t 
 			t.Errorf("%s's blockers are %v, want none", key, got)
 		}
 	}
-	if got := none.BlockersOf("INFRA-4"); got != nil {
-		t.Errorf("with no admission block INFRA-4's blockers are %v, want none", got)
+	if got := none.BlockersOf("INFRA-4"); len(got) != 0 || got == nil {
+		t.Errorf("with no admission block INFRA-4's blockers are %#v, want an empty list, not nil", got)
 	}
 }
 

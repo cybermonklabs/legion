@@ -29,8 +29,8 @@ import (
 // (requireLandsOnGET). A view of an issue of a project that names no daemon is never refused: its
 // body says so (configured false) and still moves with the issue's runs and with the setting.
 
-// issueLegionView is a subscribe frame's view of one issue's Legion state.
-func issueLegionView(key string) DeliveryLiveView {
+// legionIssueSubscription is a subscribe frame's view of one issue's Legion state.
+func legionIssueSubscription(key string) DeliveryLiveView {
 	return DeliveryLiveView{Kind: issueLegionKind, Issue: &key}
 }
 
@@ -55,7 +55,7 @@ type legionIssuePage struct {
 func openLegionIssuePage(t *testing.T, hub string, rig *hubRig, key string) *legionIssuePage {
 	t.Helper()
 	page := &legionIssuePage{hub: hub, rig: rig, conn: newFakeLiveConn(), key: key}
-	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, issueLegionView(key)))
+	rig.hub.Subscribe(page.conn, subscribeFrame(legionIssueSub, legionIssueSubscription(key)))
 	snapshot := page.conn.snapshot(t, 5*time.Second, legionIssueSub)
 	requireLegionNames(t, key, decodeLegionIssue(t, snapshot.Body))
 	requireSameBody(t, "hub "+hub+"'s snapshot of "+key, snapshot.Body,
@@ -412,7 +412,7 @@ func TestAnIssuesLegionLiveViewOfAKeyDispatchDoesNotHoldIsRefusedAsTheRouteRefus
 	seedLegionProjects(t, rig.handler, "LIVE")
 	nameLegionDaemon(t, rig.handler, "LIVE", "http://legion-live.internal:13370")
 	conn := newFakeLiveConn()
-	rig.hub.Subscribe(conn, subscribeFrame(legionIssueSub, issueLegionView("LIVE-999")))
+	rig.hub.Subscribe(conn, subscribeFrame(legionIssueSub, legionIssueSubscription("LIVE-999")))
 	refusal := conn.refusal(t, 5*time.Second, legionIssueSub, "NOT_FOUND")
 	conn.none(t, time.Second, "the refusal of a key Dispatch does not hold")
 	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/LIVE-999/legion", nil, "alice")

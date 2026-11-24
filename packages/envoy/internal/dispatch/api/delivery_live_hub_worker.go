@@ -285,7 +285,7 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 // the view's subscribers with once (viewReads.refusal). A project that names no daemon is the body
 // whose configured is false and never an error, so this view, unlike the board, is never refused
 // LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
-// only its project's notifications and its issue's runs move (dirtyLegionBoard, dirtyLegionIssue).
+// only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
 func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	answer, err := h.server.readLegionIssue(ctx, spec.issue)
 	if err != nil {
