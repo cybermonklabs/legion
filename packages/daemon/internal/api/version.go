@@ -3586,7 +3586,71 @@ package api
 // 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
 // again at every forward merge rather than from this line.)
 //
-// 254: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
+// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
+// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
+// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
+// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
+// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
+// it states, else its pod's) is below 250 is served every issue without either key (the band of
+// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
+// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
+// band and part rather than within the part across the whole line, and `admission.waiting` and
+// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
+// when main declared 220, with no reading of the other open pull requests. A reading of `const
+// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
+// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
+// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
+// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
+// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
+// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
+// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
+// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
+// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
+// main's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 256: #5349 -- each claim view of `GET /legion/v1/state` and of `GET
+// /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
+// `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
+// 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 256
+// hold the two keys on every claim view, and no record below 256 does: a caller whose contract
+// (the one it states, else its pod's lowest) is below 256 is served every claim view without
+// them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`), so a plugin from 250 to
+// 255 is served 250's keys. The operator's claim view
+// (`api.OperatorClaim`, which `legion claims list --json` prints) carries the same two keys; the
+// operator routes are not served down, since their reader is the `legion` built with this daemon.
+// No value of an enumerated field moves, and no request a plugin sends changes.
+// (This entry took 243 at first, above each number another open pull request declared. A reading
+// of `const DaemonAPIVersion` at the head of each of the 138 of the 513 open pull requests of this
+// repository that change version.go, made at 2026-11-24T07:23:50Z, found every number from 221
+// to 242 declared and nothing above 242, so 243 was the lowest number above main's 220 that no
+// open pull request declared at that reading. The forward merge of 2026-11-24 that brought in
+// e14345bfc8 brought main's 228 (#4590), below 243, so this entry kept 243, and the forward
+// merge of 2026-11-24 that brought in d27405712c brought main's 232 (#5271), below it too, so it
+// kept 243 again. The forward merge of 2026-11-24 that brought in 7e75126fae brought main's 246
+// (#4960), above 243. A reading of version.go at the head of each of the 473
+// open pull requests of this repository, between 2026-11-24T15:34:44Z and 15:48:04Z, found 55
+// that add an entry, and above main's 246 they declare 247 (#4580 and #5384), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432) and 255 (#5164), and 247 to 249 had been named for other
+// changes, so this entry moved to 256, above every number an open pull request
+// declares or a change had been named for. From this entry the last number of answers.go's
+// SupportedContracts is `api.causeTimesContract`, after podHoldContract's 246. The forward merge
+// of 2026-11-24 that brought in 5df00e2f13 brought main's 250 (#5365, the entry above), below
+// 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 258: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
 // (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
 // committed (state_publication.last_seq, record.Store.StatePublication), read in the route's own
 // repeatable-read snapshot: every state event at or below it is in the body and every one above
@@ -3601,13 +3665,13 @@ package api
 // `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
 // writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
 // project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
-// and a caller whose contract is below 254, whether it states it (`Legion-Plugin-Contract`) or
+// and a caller whose contract is below 258, whether it states it (`Legion-Plugin-Contract`) or
 // the claims of its pod record it, is served the daemon block without any of the three
 // (shaping.go's stateSeqContract and withoutStateSeq): one built before sjawhar/legion#2788 reads
 // the state with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the keys instead.
 // `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
-// contract served such a body, or the body of a daemon before 254, takes them as absent rather
+// contract served such a body, or the body of a daemon before 258, takes them as absent rather
 // than as 0.
 // The same contract adds the observed view of the route, `GET /legion/v1/state?view=observed`
 // (api.ObservedState, StateSource.ObservedState): what Dispatch observes of a daemon and nothing
@@ -3619,7 +3683,7 @@ package api
 // shaping.go's answer AnswerObservedState, which is no row of Answers, and observedFor shapes it:
 // it is served at the caller's contract by the whole state's own bands and value strips, so at
 // every contract this daemon serves, each member of the view is the whole state's member at that
-// contract: a caller below 254 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
+// contract: a caller below 258 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
 // caller below 51 no `admission.trees` and no issue's `tree`. A request with no `view` gets the
 // whole state, whose body does not change. A request with any other `view` gets the whole state
 // too, and the daemon logs a warning that names the values given and the one view the route
@@ -3689,9 +3753,17 @@ package api
 // rather than computed (dispatch://INFRA-1569).
 // The forward merge of 2026-11-24 that brought main in at eead7a5fd713 brought main's own 246 (the
 // pod hold's entry above, #4960), which stands below 254, so this entry kept 254.
-// A caller from 246 to 253 is served 246's `podHold` and none of the three keys.
-// stateSeqContract follows podHoldContract, 246, as the last number of answers.go's
+// The forward merge of 2026-11-24 that brought main in at 1af8002b42b5 brought main's own 250 and
+// 256 (the two entries above, the waiting line's priority, #5365, and the claim views' cause
+// times, #5349), and 256 stands above 254, so the number moved an eleventh time: a reading of
+// `const DaemonAPIVersion` at the head of each of the 141 of the 491 open pull requests that
+// change this file or whose file list GitHub cut short, made between 2026-11-24T20:23:31Z and
+// 20:26:26Z, found above main's 256 only 257 (#4580), 261 (#5332), 262 (#5204), 265 (#5285), 268
+// (#5384) and 271 (#4173), so this entry takes 258, the lowest number above main's 256 that no
+// open pull request declares.
+// A caller from 256 to 257 is served 256's keys and none of the three.
+// stateSeqContract follows causeTimesContract, 256, as the last number of answers.go's
 // SupportedContracts.
 // That is a reading and never the rule: read main's own number and every open head again at the
 // next forward merge rather than from this line.)
-const DaemonAPIVersion = 254
+const DaemonAPIVersion = 258

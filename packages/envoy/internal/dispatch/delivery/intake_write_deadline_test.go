@@ -23,7 +23,7 @@ import (
 // IntakeWriteDeadline and 5 s of the freeze; then it thaws the link, requires the same connection
 // to reconnect (its reconnect count grown by one), and publishes a fourth message. It requires
 // that each of the four messages is handled once and acknowledged: the third comes back to the
-// reconnected holder after the durable's ack wait (intakeAckWait, 80 s here, with
+// reconnected holder after the durable's ack wait (intakeTuning.ackWait, 80 s here, with
 // shrinkIntakeFlowControl), since the server counted it delivered to the socket that went. No
 // message is handed back outside a stop here: the GitHub intake hands one back only when a head
 // write or an acknowledgement fails.
@@ -78,7 +78,7 @@ func TestAWriteFrozenPastTheIntakesWriteDeadlineReconnectsAndLosesNoMessage(t *t
 	})
 	publishMergedPullRequest(t, publisher, numbers[3])
 
-	waitFor(t, intakeAckWait()+30*time.Second, func() bool {
+	waitFor(t, tuningFor(t).ackWait()+30*time.Second, func() bool {
 		for _, number := range numbers {
 			if holder.fetches(number) == 0 {
 				return false

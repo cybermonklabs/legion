@@ -24,9 +24,8 @@ import (
 func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	testnats.RequireSocketQueues(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -56,8 +55,8 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second and third messages: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(publisher))
 	})
 
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -141,9 +140,8 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	testnats.RequireSocketQueues(t)
 	logs := captureLogs(t)
 	shrinkIntakeFlowControl(t)
-	budget := intakeStopBudget
-	intakeStopBudget = stopBudget
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = stopBudget
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -168,8 +166,8 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 
 	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
 	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(int64(30 * time.Second))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	wait := tuning.callWait.Swap(int64(30 * time.Second))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var freezing sync.Once
 	frozen := make(chan struct{})

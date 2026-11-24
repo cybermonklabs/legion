@@ -113,18 +113,15 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 // holder's link from inside the stop's hand-back of the waiting message, after the connected read
 // has answered and before the publish (beforeHandBackPublish), so that publish waits for nats.go's
 // lock. It returns once the write is held, with the stop under way. The stop's deadline is
-// intakeStopBudget, set to budget.
+// the intakes' stopBudget (intakeTuning), set to budget.
 func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBack {
 	t.Helper()
 	// The holder's handler holds the first message until the row releases it or the stop gives it
 	// up, never until a deadline of its own: the second message has to queue behind it. Set before
-	// the intakes start, whose take-overs read it (intakeAckWait).
-	messageTimeout := intakeMessageTimeout
-	intakeMessageTimeout = untilTheBinaryDeadline(t)
-	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
-	before := intakeStopBudget
-	intakeStopBudget = budget
-	t.Cleanup(func() { intakeStopBudget = before })
+	// the intakes start, whose take-overs read it (intakeTuning.ackWait).
+	tuning := tuningFor(t)
+	tuning.messageTimeout = untilTheBinaryDeadline(t)
+	tuning.stopBudget = budget
 	var row heldHandBack
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
@@ -160,12 +157,12 @@ func stopWithAHeldHandBackWithin(t *testing.T, budget time.Duration) heldHandBac
 	})
 
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), and each of the
-	// stop's calls waits for NATS at most callNATSWait: a drain that answers after it has the stop
-	// withhold its hand-backs, and the row has no publish to hold. So the stop's calls wait as long
-	// as the test binary's deadline allows, and the wait is put back as the hand-back's publish
-	// begins, so the held write still outlives it.
-	wait := callNATSWait.Swap(int64(untilTheBinaryDeadline(t)))
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	// stop's calls waits for NATS at most the intakes' callWait: a drain that answers after it has
+	// the stop withhold its hand-backs, and the row has no publish to hold. So the stop's calls wait
+	// as long as the test binary's deadline allows, and the wait is put back as the hand-back's
+	// publish begins, so the held write still outlives it.
+	wait := tuning.callWait.Swap(int64(untilTheBinaryDeadline(t)))
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -532,8 +529,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			close(finalizing)
 			<-releaseFinalizer
 		}
-		finalizerBeforeRelease.Store(&hook)
-		t.Cleanup(func() { finalizerBeforeRelease.Store(nil) })
+		row.holder.intake.tuning.beforeRelease.Store(&hook)
 		var runs sync.WaitGroup
 		closed := make(chan struct{})
 		go func() {

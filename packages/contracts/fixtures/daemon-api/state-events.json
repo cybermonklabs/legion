@@ -73,11 +73,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.016667222222222222
@@ -431,11 +431,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.03333388888888889
@@ -795,11 +795,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.050000555555555555
@@ -1159,11 +1159,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.06666722222222222
@@ -1523,11 +1523,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.08333388888888889
@@ -1892,11 +1892,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.10000055555555555
@@ -2236,11 +2236,11 @@
               "partLength": 1,
               "holdsSlot": true,
               "since": "2026-11-18T16:06:00Z",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "why": {
               "state": "waiting",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "waitingOn": {
               "kind": "ask",
@@ -2279,11 +2279,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.11666722222222223
@@ -2623,11 +2623,11 @@
               "partLength": 1,
               "holdsSlot": true,
               "since": "2026-11-18T16:06:00Z",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "why": {
               "state": "waiting",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "waitingOn": {
               "kind": "ask",
@@ -2666,11 +2666,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.1333338888888889
@@ -3010,11 +3010,11 @@
               "partLength": 1,
               "holdsSlot": true,
               "since": "2026-11-18T16:06:00Z",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "why": {
               "state": "waiting",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "waitingOn": {
               "kind": "ask",
@@ -3053,11 +3053,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.15000055555555555
@@ -3389,11 +3389,11 @@
               "partLength": 1,
               "holdsSlot": true,
               "since": "2026-11-18T16:06:00Z",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "why": {
               "state": "waiting",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "waitingOn": {
               "kind": "ask",
@@ -3432,11 +3432,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8, which is not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.16666722222222222
@@ -3782,11 +3782,11 @@
               "partLength": 1,
               "holdsSlot": true,
               "since": "2026-11-18T16:06:00Z",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "why": {
               "state": "waiting",
-              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+              "reason": "A person answered it, and its work came back at 2026-11-18T16:06:00Z. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
             },
             "waitingOn": {
               "kind": "ask",
@@ -3825,11 +3825,11 @@
               "rootRank": "B",
               "ownRank": "B",
               "rootKey": "LEGION-2",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them."
             },
             "why": {
               "state": "waiting",
-              "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them. It waits on LEGION-8 and LEGION-9, which are not done."
+              "reason": "It has not started. It has no priority, so it waits after every issue at P0 to P3. It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank, and 1 issue with no priority whose work came back stands ahead of all of them. It waits on LEGION-8 and LEGION-9, which are not done."
             },
             "treeMovedAt": "2026-11-18T15:59:00Z",
             "quietHours": 0.18333388888888888

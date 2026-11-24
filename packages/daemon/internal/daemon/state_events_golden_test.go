@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +8,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -270,13 +270,15 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 	read := r.now.Add(time.Duration(len(commits)+1) * time.Millisecond)
 
 	body := r.getState(t)
-	// The state is rewritten through the type the route encodes, so it must come back from it as
-	// the route served it, byte for byte.
+	// The state is rewritten through the type the route encodes. So it must come back from that
+	// type with every member that carries a value. A null the route writes for none, such as each
+	// issue's `priority` (api.PriorityView), comes back absent. The type reads an absent member the
+	// same way. So the comparison drops every null member from both sides first.
 	var state api.State
 	if err := json.Unmarshal(body, &state); err != nil {
 		t.Fatalf("decode the state: %v", err)
 	}
-	if again, err := json.Marshal(state); err != nil || !bytes.Equal(append(again, '\n'), body) {
+	if again, err := json.Marshal(state); err != nil || !reflect.DeepEqual(withoutNullMembers(t, again), withoutNullMembers(t, body)) {
 		t.Fatalf("the state does not encode again as served (%v):\n got: %s\nwant: %s", err, again, body)
 	}
 	if state.Daemon.StateSeq == nil || *state.Daemon.StateSeq != r.seq {
@@ -309,6 +311,37 @@ func (r *stateGoldenRig) record(t *testing.T, name string) stateEventsStep {
 		t.Fatalf("encode the state: %v", err)
 	}
 	return step
+}
+
+// withoutNullMembers is the JSON value encoded holds, with every object member whose value is
+// null removed at every depth. A null element of an array stays.
+func withoutNullMembers(t *testing.T, encoded []byte) any {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatalf("decode %s: %v", encoded, err)
+	}
+	return dropNullMembers(value)
+}
+
+// dropNullMembers removes in place every object member of value whose value is null, at every
+// depth, and returns value.
+func dropNullMembers(value any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, member := range value {
+			if member == nil {
+				delete(value, key)
+				continue
+			}
+			value[key] = dropNullMembers(member)
+		}
+	case []any:
+		for i, element := range value {
+			value[i] = dropNullMembers(element)
+		}
+	}
+	return value
 }
 
 // The fixture of the state lane (packages/contracts/fixtures/daemon-api/state-events.json): a

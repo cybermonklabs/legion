@@ -40,11 +40,15 @@ type HeldMessage struct {
 // consumer lease on leases (ReserveDurableLeases), keying each message by key and handing it to
 // handle on that key's goroutine. bound, when not nil, runs once each take-over has bound the
 // durable, on the run loop: its first creation, and every take-over after it by this process. It
-// should only queue work (Queue), since the run loop waits for it.
+// should only queue work (Queue), since the run loop waits for it. The durable is timed by
+// production's tuning (newIntakeTuning): its stop's budget and its calls' waits. config names the
+// durable's whole config, its ack wait included, so the tuning's messageTimeout and maxAckPending,
+// which only the two intakes here read, play no part.
 func NewHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(HeldMessage), bound func(),
 ) *HeldDurable {
-	held := &HeldDurable{heldDurable: newHeldDurable(natsClient, leases, config, key, func(delivery *intakeDelivery, message intakeMessage) {
+	consumer := func(*intakeTuning) natsgo.ConsumerConfig { return config() }
+	held := &HeldDurable{heldDurable: newHeldDurable(newIntakeTuning(), natsClient, leases, consumer, key, func(delivery *intakeDelivery, message intakeMessage) {
 		handle(HeldMessage{Msg: message.msg, Envelope: message.envelope, Key: message.key, delivery: delivery})
 	})}
 	held.bound = bound
