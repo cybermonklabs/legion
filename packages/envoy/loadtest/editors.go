@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +26,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // editorMarkerEvery is how often an editor's update carries a durable-latency marker: its 50th,
@@ -440,12 +441,14 @@ type editorWorkload struct {
 	all       sync.WaitGroup
 }
 
-// startEditors starts the browser editors (nil in a step without editors): it connects
-// cfg.editors editors, editor i to the (i mod D)-th of the first D seeded specs in key order, as
-// person-<i>, and runs each one's schedule from the step's start to the window's end: updates at
-// cfg.rate a second, open-loop on stream 3+i of the step's RNG seed (openLoop). An update is
-// scheduled whether or not its editor is connected; one whose editor is not connected and synced
-// is counted as not sent. The durable probe reads its floors before the first editor connects.
+// startEditors starts the browser editors (nil in a step without editors, and in one whose
+// Dispatch URL does not join, which checkStack refuses first): it connects cfg.editors editors,
+// editor i to the (i mod D)-th of the first D seeded specs in key order, as person-<i>, and runs
+// each one's schedule from the step's start to the window's end: updates at cfg.rate a second,
+// open-loop on stream 3+i of the step's RNG seed (openLoop). An update is scheduled whether or not
+// its editor is connected; one whose editor is not connected and synced is counted as not sent.
+// The durable probe reads its floors before the first editor connects. Each document's socket is
+// its path joined onto the Dispatch URL (joinSocketURL).
 func (st *step) startEditors(ctx context.Context) *editorWorkload {
 	cfg := st.cfg.editors
 	if cfg.editors == 0 {
@@ -453,11 +456,18 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 	}
 	lg := st.lg
 	w := &editorWorkload{cfg: cfg, stats: newEditorStats()}
+	schema := strconv.Itoa(pmdoc.SchemaVersion())
 	ids := make([]string, cfg.docs)
+	sockets := make([]string, cfg.docs)
 	for i := range cfg.docs {
 		is := st.sf.Issues[i]
+		socket, err := joinSocketURL(st.cfg.ep.dispatch, "/ws/doc/"+url.PathEscape(is.ArtifactID)+"?schema_version="+schema)
+		if err != nil {
+			lg.Printf("editors: %v; the step runs no editors", err)
+			return nil
+		}
 		w.docs = append(w.docs, &editorDoc{key: is.Key, artifactID: is.ArtifactID})
-		ids[i] = is.ArtifactID
+		ids[i], sockets[i] = is.ArtifactID, socket
 	}
 	for i := range cfg.editors {
 		w.docs[i%cfg.docs].editors++
@@ -468,17 +478,14 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 	} else {
 		w.all.Go(func() { w.probe.loop(ctx) })
 	}
-	base := "ws" + strings.TrimPrefix(st.cfg.ep.dispatch, "http")
-	schema := strconv.Itoa(pmdoc.SchemaVersion())
 	lg.Printf("editors: %d on %d documents at %g updates/s each, schema_version %s", cfg.editors, cfg.docs, cfg.rate, schema)
 	for i := range cfg.editors {
-		d := w.docs[i%cfg.docs]
-		url := base + "/ws/doc/" + d.artifactID + "?schema_version=" + schema
+		d, socket := w.docs[i%cfg.docs], sockets[i%cfg.docs]
 		login := fmt.Sprintf("person-%d", i)
 		var current atomic.Pointer[editorConn]
 		w.all.Go(func() {
 			for ctx.Err() == nil {
-				c, err := dialEditor(ctx, url, login, schema, d, w.stats)
+				c, err := dialEditor(ctx, socket, login, schema, d, w.stats)
 				if err != nil {
 					if ctx.Err() == nil {
 						var ce *connectError
@@ -548,6 +555,28 @@ func (st *step) startEditors(ctx context.Context) *editorWorkload {
 		})
 	}
 	return w
+}
+
+// joinSocketURL is ref, a path with or without its own query, joined onto dispatch, Dispatch's
+// http(s) URL (urljoin.Join), under the scheme a websocket dials it by: ws for http, wss for
+// https. ref goes onto the URL's path and its query after the URL's own, and the fragment, which no
+// request sends, is dropped, where ref appended to the URL's text would sit inside a query or a
+// fragment and Dispatch would be asked another path. A URL that does not join, or that is neither
+// http nor https, is refused in fixed words, which quote none of it.
+func joinSocketURL(dispatch, ref string) (string, error) {
+	joined, err := urljoin.Join(dispatch, ref)
+	if err != nil {
+		return "", errors.New("the Dispatch URL is not an absolute URL with a host (it is not printed)")
+	}
+	switch joined.Scheme {
+	case "http":
+		joined.Scheme = "ws"
+	case "https":
+		joined.Scheme = "wss"
+	default:
+		return "", errors.New("the Dispatch URL is neither http:// nor https:// (it is not printed)")
+	}
+	return joined.String(), nil
 }
 
 type editorsSummary struct {

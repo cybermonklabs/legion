@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // roomConnectionsQuery counts, in one read, the backends of database dispatch that hold rooms'
@@ -119,14 +121,14 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 		r.proxyErr = "no proxy wire counts to read: -allow-foreign, or a stack.json from before proxy_stats"
 	default:
 		var s proxyStats
-		if err := getJSON(ep.proxyStats+"/stats", &s); err != nil {
+		if err := getJSON(ep.proxyStats, "/stats", &s); err != nil {
 			r.proxyErr = "the proxy serves no wire counts: " + err.Error()
 		} else {
 			r.proxy = &s
 		}
 	}
 	var vars map[string]json.RawMessage
-	if err := getJSON(ep.pprof+"/debug/vars", &vars); err != nil {
+	if err := getJSON(ep.pprof, "/debug/vars", &vars); err != nil {
 		r.roomsErr = notServed + " (" + err.Error() + ")"
 	} else if raw, ok := vars["dispatch_rooms"]; !ok {
 		r.roomsErr = notServed
@@ -153,10 +155,20 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 	return r
 }
 
-// getJSON decodes the body of a GET of url (getOK) into v. The body is the server's words, or the
-// words of whatever answers in its place, and a decoder's error can quote a value it could not read
-// (time.Time's does), so an answer that does not decode is named as such and none of it printed.
-func getJSON(url string, v any) error {
+// getJSON decodes the body of a GET of route joined onto base, an endpoint's URL (urljoin.Join:
+// onto its path, after its query, its fragment dropped, where route appended to the URL's text
+// would sit inside a query or a fragment and the endpoint would be asked another path), into v
+// (getOK). A base that does not join is refused in fixed words: url.Parse's error, which
+// http.NewRequest's carries, quotes the URL whole, user information and query included. The body
+// is the server's words, or the words of whatever answers in its place, and a decoder's error can
+// quote a value it could not read (time.Time's does), so an answer that does not decode is named
+// as such and none of it printed.
+func getJSON(base, route string, v any) error {
+	joined, err := urljoin.Join(base, route)
+	if err != nil {
+		return fmt.Errorf("GET %s: the URL it is joined onto is not an absolute URL with a host (it is not printed)", route)
+	}
+	url := joined.String()
 	body, err := getOK(context.Background(), shortClient, url)
 	if err != nil {
 		return err
