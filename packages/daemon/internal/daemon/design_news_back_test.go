@@ -36,56 +36,75 @@ func (r *newsReconcileRig) planSteps(key string, position int, words ...string) 
 }
 
 // The answer to the news of an issue in accepting names the phases a move back of it reaches,
-// which the send reads from the issue's task (moveBackOf): on the plan `implementer reviewer
-// acceptance:owner`, implementing and reviewing. The root architect's summary reads them for a
-// member it answers itself (workflow.NewsYouAnswer) and for no other member. A member in accepting
-// whose task holds no step before an acceptance is an error, so no news goes out whose answer
-// names no move back.
+// which the send reads from the issue's own task (moveBackOf), in each order a task's steps run:
+// the default steps, which hold no plan, reach planning, implementing, testing and reviewing; the
+// plan `implementer reviewer acceptance:owner` reaches implementing and reviewing; and the plan
+// `implementer acceptance:owner tester`, whose tester follows the acceptance, reaches implementing
+// alone. The root architect's summary reads them for a member it answers itself
+// (workflow.NewsYouAnswer) and for no other member. A member in accepting whose task holds no step
+// before an acceptance is an error, so no news goes out whose answer names no move back. Read from
+// the default steps, the answer would name the first row's phases on every row.
 func TestTheAcceptingAnswerReadsTheTasksStepsBeforeTheAcceptance(t *testing.T) {
 	t.Parallel()
-	r := newNewsReconcileRig(t)
-	r.member(reconcileRoot, "", phase.Implementing)
-	child := r.member(reconcileChild, reconcileRoot, phase.Accepting)
-	r.planSteps(reconcileChild, 3, "implementer", "reviewer", "acceptance:owner")
-	r.told(reconcileRoot, record.AudienceHolder, 5)
-	r.told(reconcileChild, record.AudienceHolder, 4)
-	r.holder(reconcileRoot, claim.RoleArchitect, supervise.StateWorking, "", 0)
+	for _, tc := range []struct {
+		name     string
+		position int
+		steps    []string
+		want     []phase.Phase
+	}{
+		{name: "the default steps", want: []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing}},
+		{name: "implementer reviewer acceptance:owner", position: 3, steps: []string{"implementer", "reviewer", "acceptance:owner"},
+			want: []phase.Phase{phase.Implementing, phase.Reviewing}},
+		{name: "implementer acceptance:owner tester", position: 2, steps: []string{"implementer", "acceptance:owner", "tester"},
+			want: []phase.Phase{phase.Implementing}},
+		{name: "a task with no acceptance", position: 2, steps: []string{"implementer", "reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newNewsReconcileRig(t)
+			r.member(reconcileRoot, "", phase.Implementing)
+			child := r.member(reconcileChild, reconcileRoot, phase.Accepting)
+			if tc.steps != nil {
+				r.planSteps(reconcileChild, tc.position, tc.steps...)
+			}
+			if tc.want == nil {
+				r.inTx(func(tx pgx.Tx) error {
+					if back, err := moveBackOf(r.ctx, tx, r.records, child); err == nil {
+						t.Errorf("the move back of %s in accepting on a task with no acceptance = %v, want an error", reconcileChild, back)
+					}
+					return nil
+				})
+				return
+			}
+			r.told(reconcileRoot, record.AudienceHolder, 5)
+			r.told(reconcileChild, record.AudienceHolder, 4)
+			r.holder(reconcileRoot, claim.RoleArchitect, supervise.StateWorking, "", 0)
 
-	want := []phase.Phase{phase.Implementing, phase.Reviewing}
-	var drafts []memberDraft
-	r.inTx(func(tx pgx.Tx) error {
-		back, err := moveBackOf(r.ctx, tx, r.records, child)
-		if err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(back, want) {
-			t.Errorf("the move back of %s reaches %v, want %v", reconcileChild, back, want)
-		}
-		root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
-		if err != nil {
-			return err
-		}
-		drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
-		return err
-	})
-	for _, draft := range drafts {
-		switch {
-		case draft.issue.Key == reconcileChild && (draft.state != workflow.NewsYouAnswer || !reflect.DeepEqual(draft.back, want)):
-			t.Errorf("the summary's draft of %s is %q with move back %v, want %q with %v", reconcileChild, draft.state, draft.back,
-				workflow.NewsYouAnswer, want)
-		case draft.issue.Key != reconcileChild && draft.back != nil:
-			t.Errorf("the summary's draft of %s carries move back %v, want none: the root architect answers it no move back", draft.issue.Key, draft.back)
-		}
+			var drafts []memberDraft
+			r.inTx(func(tx pgx.Tx) error {
+				back, err := moveBackOf(r.ctx, tx, r.records, child)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(back, tc.want) {
+					t.Errorf("the move back of %s reaches %v, want %v", reconcileChild, back, tc.want)
+				}
+				root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
+				if err != nil {
+					return err
+				}
+				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+				return err
+			})
+			for _, draft := range drafts {
+				switch {
+				case draft.issue.Key == reconcileChild && (draft.state != workflow.NewsYouAnswer || !reflect.DeepEqual(draft.back, tc.want)):
+					t.Errorf("the summary's draft of %s is %q with move back %v, want %q with %v", reconcileChild, draft.state, draft.back,
+						workflow.NewsYouAnswer, tc.want)
+				case draft.issue.Key != reconcileChild && draft.back != nil:
+					t.Errorf("the summary's draft of %s carries move back %v, want none: the root architect answers it no move back", draft.issue.Key, draft.back)
+				}
+			}
+		})
 	}
-
-	bad := newNewsReconcileRig(t)
-	bad.member(reconcileRoot, "", phase.Implementing)
-	held := bad.member(reconcileChild, reconcileRoot, phase.Accepting)
-	bad.planSteps(reconcileChild, 2, "implementer", "reviewer")
-	bad.inTx(func(tx pgx.Tx) error {
-		if back, err := moveBackOf(bad.ctx, tx, bad.records, held); err == nil {
-			t.Errorf("the move back of %s in accepting on a task with no acceptance = %v, want an error", reconcileChild, back)
-		}
-		return nil
-	})
 }

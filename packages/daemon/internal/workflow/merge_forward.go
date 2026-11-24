@@ -333,6 +333,30 @@ func (e *Engine) askAgainAtLaunch(ctx context.Context, tx pgx.Tx, issue record.I
 	return nil
 }
 
+// holdAtLaunch holds the worker of the phase issue stands at again at the ready of each launch of
+// its claim, where the merge of the head is owed to another role (heldWorker), by the rule that
+// holds a worker a move or a retry starts (holdStartedWorker). The daemon launches a worker again
+// on its own - a process that died and is relaunched within its budgets, a released pod a message
+// wakes, a session the runtime cannot resume and replaces with a fresh one in the same launch
+// (supervise's startFresh) - and a fresh session holds none of its predecessor's messages, the
+// hold among them, so every launch is held at its ready: a launch that resumes the session the
+// hold already reached reads it twice, which changes nothing it does. The asked role is never
+// held (heldWorker), and a pull request that is not open holds nobody.
+func (e *Engine) holdAtLaunch(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.ClaimReady) error {
+	if !record.InWorkflow(issue) {
+		return nil
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+		return err
+	}
+	if worker, held := heldWorker(issue, *pr); !held || worker != fact.Role {
+		return nil
+	}
+	_, err = e.holdStartedWorker(ctx, tx, issue, pr)
+	return err
+}
+
 // askAgain sends the record's ask of issue's pull request again to role at launch, a launch of
 // role's claim later than the one the ask was last told (record.MergeForward.SentLaunch), while
 // the merge of the head is still owed to role where issue stands (owedAsk) and no row of that ask
@@ -391,10 +415,13 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 // told, which can come after the delivery, sends nothing again. Then, delivered or not, the ask is
 // sent again at launch (askAgain): a launch whose ready came while the row was still queued sent
 // nothing and left the ask to the row, which reached an earlier launch or none. So each launch is
-// told the ask once, whichever of the row's end and the launch's ready comes first. Read before
-// the publish, told is never a launch later than the one whose session took the message: a launch
-// that came up and took the publish between that read and the publish is told the ask again here,
-// and no launch is left untold.
+// told the ask once, whichever of the row's end and the launch's ready comes first. told is a
+// launch whose own session the listener stored the message for, read before the publish, and 0
+// where the listener named no holder: the executor publishes the ask only once the launch it reads
+// has registered its session, and ends the row as delivered only where the listener stored it for
+// that session (the daemon's deliverHeld), so a copy an earlier launch's session took credits no
+// later launch, and a launch that came up and took the publish between that read and the publish
+// is told the ask again here. No launch is left untold.
 func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, head string, told, launch uint64, now time.Time) (bool, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -466,10 +493,11 @@ func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim
 
 // holdStartedWorker holds the worker that has just started in the phase issue stands at, where
 // the merge of the head pr stands at is owed to another role (heldWorker), and answers whether it
-// did. It is the one rule of every start of a phase's worker: a move's (mergeForwardOnEntry), and
-// the architect's retry of a held phase and the operator's restart of a phase's worker
-// (retryPhase), whose worker the first hold may never have reached, since a hold to a claim that
-// failed ends undelivered, or reached in a session the restart does not keep. The hold
+// did. It is the one rule of every start of a phase's worker: a move's (mergeForwardOnEntry), the
+// architect's retry of a held phase and the operator's restart of a phase's worker (retryPhase),
+// and the ready of each launch the daemon makes of that worker on its own (holdAtLaunch), whose
+// worker the first hold may never have reached, since a hold to a claim that failed ends
+// undelivered, or reached in a session the new launch does not keep. The hold
 // (record.MergeForwardHold) names the phase the issue stands at and has the worker stop writing
 // the workspace, merge nothing where it is the merger, and wait for the landed message, which
 // mergeForwardLanded sends it as the worker of that phase. The record's ask is left as it is. A
@@ -702,7 +730,7 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // (record.MergeForwardHold). Then the refusal names the head the pull request stands at, says its
 // merge forward is asked and has not landed, and tells the role to wait for the daemon's landed
 // message (record.MergeForwardLanded) and do the phase's work at the head that message names
-// (awaitedMergeForward). That wait is told only to a role the ask's hold was sent to: every other
+// (mergedForwardFence.Wait). That wait is told only to a role the ask's hold was sent to: every other
 // completion is answered as above, at the head the pull request stands at, since no hold told its
 // role not to complete there. The implementer, whose completion of retro is fenced, is sent no
 // hold, the merge being its own to make; and an ask made in implementing sends none, and stands
@@ -723,64 +751,86 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // move, at the head it reviewed, and the review a landed merge forward then asks of it is made
 // with no completion (record.MergeForwardReview), so a refusal would lose that report for good.
 // It answers false where it does not refuse.
-func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
+func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (mergedForwardFence, bool) {
 	switch reported {
 	case phase.Planning, phase.Testing, phase.Reviewing, phase.Retro:
 	default:
-		return intake.Result{}, false
+		return mergedForwardFence{}, false
 	}
 	if pr == nil || pr.MergeForward == nil || commit == pr.HeadSHA {
-		return intake.Result{}, false
+		return mergedForwardFence{}, false
 	}
 	asked := pr.MergeForward
-	// clause is what the completion reports - the head it is at, or that it names none - with the
-	// merge forward that replaced that head, or the newest that landed, and landed the head that
-	// merge left, whose merge the role can read.
-	var clause, landed string
+	fence := mergedForwardFence{Issue: issue.Key, Role: role, Reported: reported, Number: pr.Number, Head: pr.HeadSHA, Base: asked.Base}
 	if commit == "" {
-		landed = asked.Landed
-		if landed == "" && len(asked.Earlier) > 0 {
-			landed = asked.Earlier[len(asked.Earlier)-1].Landed
+		fence.Landed = asked.Landed
+		if fence.Landed == "" && len(asked.Earlier) > 0 {
+			fence.Landed = asked.Earlier[len(asked.Earlier)-1].Landed
 		}
-		if landed == "" {
-			return intake.Result{}, false
+		if fence.Landed == "" {
+			return mergedForwardFence{}, false
 		}
-		clause = fmt.Sprintf("names no head, so it says nothing about which head its work judged, and a merge of %s forward landed at head %s",
-			asked.Base, landed)
 	} else {
 		replaced, ok := mergedForwardOf(asked, commit)
 		if !ok {
-			return intake.Result{}, false
+			return mergedForwardFence{}, false
 		}
-		landed = replaced.Landed
-		clause = fmt.Sprintf("is at head %s, and a merge of %s forward replaced that head with head %s", replaced.Head, asked.Base, landed)
-	}
-	again := "complete again at that head"
-	if word, _, ok := phase.Handoff(reported); ok {
-		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
-			issue.Key, word)
+		fence.Replaced, fence.Landed = replaced.Head, replaced.Landed
 	}
 	held, holds := heldWorker(issue, *pr)
-	pending := holds && held == role
-	var next string
-	if pending {
-		next = awaitedMergeForward(pr, again)
-	} else {
-		next = fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
-			pr.Number, pr.HeadSHA, landed, pr.HeadSHA, again)
-	}
-	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", role, reported, issue.Key, clause, next)), true
+	fence.Wait = holds && held == role
+	return fence, true
 }
 
-// awaitedMergeForward ends a refusal of mergedForwardRefusal while the record's ask is of the head
-// pr stands at, has not landed, and sent its hold to the role that completes, which tells that
-// role not to complete at that head (record.MergeForwardHold). It names that head, says the merge
-// of the ask's base forward onto it is asked and has not landed, and tells the role to wait for
-// the daemon's landed message (record.MergeForwardLanded), do the phase's work at the new head
-// that message names, and then complete at it as again says.
-func awaitedMergeForward(pr *record.PullRequest, again string) string {
-	return fmt.Sprintf("Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
-		pr.Number, pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA, again)
+// mergedForwardFence is a refusal of mergedForwardRefusal as the values its sentence is composed
+// of (Message), so what the refusal tells its role is a value, not a reading of its words: the role
+// whose completion is refused, which the refusal answers; the phase it reported; the pull request
+// and the head it stands at; the base of the record's merge forward; the head the completion is
+// at, which a merge forward replaced, "" for a completion that names none; the head that merge
+// left, or the newest one that landed for a completion naming none, whose merge the role can read;
+// and the instruction. Wait is the instruction to wait for the daemon's message that the open
+// merge of Base onto Head landed and then do the phase's work at the new head that message names,
+// told only to the role the ask's hold told to wait (heldWorker); otherwise the role is told to do
+// the phase's work at Head now.
+type mergedForwardFence struct {
+	Issue    string
+	Role     claim.Role
+	Reported phase.Phase
+	Number   int
+	Head     string
+	Base     string
+	Replaced string
+	Landed   string
+	Wait     bool
+}
+
+// Message is the refusal's sentence: what the completion reports, the merge forward that replaced
+// that head or the newest that landed, and the instruction Wait names. A phase that ends with a
+// handoff record is told to write it again, its `head` set to the head it completes at.
+func (f mergedForwardFence) Message() string {
+	clause := fmt.Sprintf("is at head %s, and a merge of %s forward replaced that head with head %s", f.Replaced, f.Base, f.Landed)
+	if f.Replaced == "" {
+		clause = fmt.Sprintf("names no head, so it says nothing about which head its work judged, and a merge of %s forward landed at head %s",
+			f.Base, f.Landed)
+	}
+	again := "complete again at that head"
+	if word, _, ok := phase.Handoff(f.Reported); ok {
+		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
+			f.Issue, word)
+	}
+	next := fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
+		f.Number, f.Head, f.Landed, f.Head, again)
+	if f.Wait {
+		next = fmt.Sprintf("Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
+			f.Number, f.Head, f.Base, f.Head, again)
+	}
+	return fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", f.Role, f.Reported, f.Issue, clause, next)
+}
+
+// Result is the refusal as the completion route answers it: HANDOFF_HEAD_MERGED_FORWARD with
+// Message.
+func (f mergedForwardFence) Result() intake.Result {
+	return refused("HANDOFF_HEAD_MERGED_FORWARD", f.Message())
 }
 
 // mergedForwardOf is the merge forward of the record's stretch of work that replaced commit: the

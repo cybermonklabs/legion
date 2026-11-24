@@ -304,9 +304,10 @@ func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
 // reviewing. The reviewer's approval of that head starts the tester while the second merge is
 // open, so the tester is held, and its hold tells it not to complete at the head the pull request
 // stands at. A completion of testing at the head the first merge replaced is refused, and the
-// fence's held rule (heldWorker), which picks the refusal that tells the role to wait for the
-// landed message over the one that sends it to the head the pull request stands at, names the
-// tester.
+// refusal the route answers is the fence whose values say what it tells (mergedForwardFence): it
+// answers the tester, names the head the first merge replaced and the head it left, and tells the
+// tester to wait for the open merge of main onto the head the pull request stands at (Wait),
+// rather than to work at that head now, which words of its own say apart.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
@@ -325,8 +326,17 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Landed != "" || asked.Phase != phase.Reviewing {
 		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in reviewing, not landed", asked, forwardHead)
 	}
-	if worker, held := heldWorker(storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")); !held || worker != claim.RoleTester {
-		t.Errorf("the fence's held rule names %q (held %t), want the tester, whom the hold at its start told to wait", worker, held)
+	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
+	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
+	if !fenced || fence.Role != claim.RoleTester || !fence.Wait || fence.Head != forwardHead || fence.Base != "main" ||
+		fence.Replaced != conflictHead || fence.Landed != forwardHead {
+		t.Errorf("the fence of the tester's completion at %s is %+v (fenced %t), want the tester told to wait for the open merge of main onto %s, the head that replaced %s",
+			conflictHead, fence, fenced, forwardHead, conflictHead)
+	}
+	work := fence
+	work.Wait = false
+	if work.Message() == fence.Message() {
+		t.Errorf("the refusal tells waiting for the merge and working at once in the same words: %q", fence.Message())
 	}
 
 	result := applyFacts(t, pool, readsAfter(7*time.Minute))("the tester at the first replaced head", intake.HandoffComplete{Generation: 1,
@@ -334,6 +344,9 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 		HandoffRecord: "test-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
+	}
+	if result.Refusal.Message != fence.Message() {
+		t.Errorf("the tester's completion at %s was answered %q, want the refusal of that fence, %q", conflictHead, result.Refusal.Message, fence.Message())
 	}
 }
 

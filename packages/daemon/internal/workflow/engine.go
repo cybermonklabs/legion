@@ -1121,7 +1121,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// (record.MergeForwardReview).
 	if current {
 		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
-			return refusal, nil
+			return refusal.Result(), nil
 		}
 	}
 	if word, _, ok := phase.Handoff(reported); ok {

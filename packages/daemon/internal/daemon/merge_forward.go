@@ -98,7 +98,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		what: fmt.Sprintf("the merge-forward %s of %s", payload.Step, row.Issue), message: payload.Message(row.Issue, *pr),
 		attributes: attributes,
 		claimEnded: "outbox merge-forward message finished undelivered: the role's claim has failed or retired",
-		delivered:  "outbox merge-forward message delivered", end: end})
+		delivered:  "outbox merge-forward message delivered", toLaunch: true, end: end})
 }
 
 // endMergeForwardAsk ends row, a row of payload's ask, in one transaction that holds the fact lock

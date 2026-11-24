@@ -2,8 +2,10 @@ kind: Fixed
 body: |-
   A worker that starts while another role's merge forward of the head is still owed is told to
   wait for it, as the worker of the phase the merge was asked in is told: on a move forward or back,
-  in any order of a task's steps, after a read that finds the head mergeable, and on the
-  architect's retry of a held phase and the operator's restart of a phase's worker. The planner
+  in any order of a task's steps, after a read that finds the head mergeable, on the architect's
+  retry of a held phase and the operator's restart of a phase's worker, and at the ready of each
+  launch the daemon makes of that worker on its own, such as a relaunch after its process died or
+  a fresh session in place of one the runtime could not resume. The planner
   gets the hold and the landed message, and its completion at a head a merge forward replaced is
   refused as the tester's and the reviewer's are; on the default steps that is a planner that a
   move back starts while the implementer's ask is open. The reviewer's review of a landed merge
@@ -16,14 +18,20 @@ body: |-
   its own exit - keeps its held workers held and is sent again at the ready of that role's next
   launch, unless a row of it is still queued for that role; that row's end, delivered or not, reads
   the role's claim again and sends the ask to a later launch the row did not reach, so a launch that
-  comes ready while the row ends is told too. The record's ask keeps the launch it was delivered or
+  comes ready while the row ends is told too. A merge forward's message is published only once the
+  role's current launch has registered its session, and is delivered only where Envoy stored it for
+  that session: a copy Envoy stored for the session of an earlier launch, whose stop has not yet
+  reached Envoy, tells the new launch nothing, so the row waits until the new session holds the
+  role. The record's ask keeps the launch it was delivered or
   sent to (`sentLaunch`), and a failed claim's notice tells the owning architect. One case can be
   told two times: a launch that resumes the session of an earlier launch, where the message was
   stored for that session. Envoy stores a message for a session, and it cannot say which launch read
-  it. The second ask names the same merge. One more case can be told two times. It is a launch with
-  a new session that starts between the daemon's read of the launch and its publish. Its second ask
-  names the same merge and the same commit. A second ask of the same commit changes nothing that
-  the daemon holds. The news of an approved design to the architect that holds an issue in
+  it. The second ask names the same merge and the same commit, and changes nothing that the
+  daemon holds. A launch with a new session that takes the role between the daemon's read of the
+  launch and its publish is told once: the copy is stored for its session, which is not the one
+  the daemon read, so the row waits and ends at the next attempt, which Envoy answers with that
+  copy. A worker held at the ready of a launch that resumes its session reads the hold two times.
+  The news of an approved design to the architect that holds an issue in
   `accepting` names, as its move-back targets, the phases of the task's steps before the acceptance.
 
   The release before refuses a merge-forward row whose step is `withdrawn` and a hold or landed

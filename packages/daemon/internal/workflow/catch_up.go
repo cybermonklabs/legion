@@ -43,8 +43,9 @@ import (
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
 // or of a child that has left the workflow or is done. A phase worker's ready is answered
 // differently: a merge forward still owed to its role is asked again at a launch later than the one
-// the ask was last sent at (askAgainAtLaunch), and it is given its phase's task again when it holds
-// that phase with nothing pending (readyWorkerTask).
+// the ask was last sent at (askAgainAtLaunch), the worker another role's open merge holds is held
+// again (holdAtLaunch), and it is given its phase's task again when it holds that phase with
+// nothing pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -67,6 +68,9 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 			return intake.Result{}, err
 		}
 		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
+			return intake.Result{}, err
+		}
+		if err := e.holdAtLaunch(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
