@@ -34,18 +34,22 @@ and writes, in the working tree:
     `check-ci-filters.sh generate`, so it waits until the engine imports: while a file under
     .github/scripts or .github/ci-gates still holds a conflict marker it stops there, names the
     file, and is run again with `--filters` once that is resolved;
-  * each PUSH_WORKFLOWS workflow the merge left in conflict as main's, its push paths written again
-    by `check-ci-filters.sh write` from the filters computed now.
+  * each PUSH_WORKFLOWS workflow the merge left in conflict merged again with its push paths out of
+    the merge, so every edit either side made outside them is kept, then its push paths written by
+    `check-ci-filters.sh write` from the filters computed now; it stays unmerged until that write
+    goes through, and a working copy someone already resolved by hand is left as it is.
 
 It stages every path it writes, creates or deletes, so the merge's commit takes them all, and
 leaves unmerged in the index each path it leaves in conflict - a file holding a conflict marker, a
 file of main's kept beside the branch's gate or kept after the branch deleted that gate, a test file
-whose old //ci: lines are to be deleted by hand - with the merge base's text, the branch's (stage 2,
-its side first in the markers) and main's in the index's three stages where it has them, so a plain
-`git commit` after the hand merge refuses until that path is added too. A CONFLICT about a filter
-and a STOPPED line leave no file in conflict, and git refuses nothing for them: settle each, run this
-again with `--filters` until it exits 0, then commit. A side file it writes for a hand merge
-(`<gate file>.branch`) stays untracked.
+whose old //ci: lines are to be deleted by hand - so a plain `git commit` after the hand merge
+refuses until that path is added too. The index stages of a conflict this script makes hold the
+texts it merged, not the blobs of the merge's three commits: for a gate, the gate file the base's
+table would have written (stage 1), the branch's (stage 2, its side first in the markers) and
+main's (stage 3); for a test file, the file as this script wrote it (stage 2) and main's (stage 3),
+with no stage 1. A CONFLICT about a filter and a STOPPED line leave no file in conflict, and git
+refuses nothing for them: settle each, run this again with `--filters` until it exits 0, then
+commit. A side file it writes for a hand merge (`<gate file>.branch`) stays untracked.
 
 A conflict in any other file - code, a test the branch and main both edited - is the branch's own
 forward merge, which this script leaves as git left it: a test file git left unmerged stays so,
@@ -60,7 +64,8 @@ when it left one.
   --all --from <rev>   convert every gate and row of <rev> (the change that brought this script ran
                        it this way, from main's tree before the change)
   --base <rev> --from <rev>   name the two trees instead of reading the merge in progress
-  --filters            only the last step, the filters file's patterns
+  --filters            only the last steps: the filters file's patterns, then the push workflows'
+                       paths written again and what that wrote staged
 """
 
 from __future__ import annotations
@@ -839,18 +844,32 @@ def not_carried(edits: list, branch_filters: dict, computed: dict, expander) -> 
     return [edit for edit in edits if not carried(edit)]
 
 
+# How long the frozen install in main's checkout may take, in seconds: CI's own installs of the
+# workspace finish in a few minutes from a cold cache.
+INSTALL_SECONDS = 900
+
+
 def filters_computed_at(rev: str) -> tuple:
     """(the filters `rev`'s own tree computes, by name; None where they cannot be computed, and why):
     `check-ci-filters.sh generate` run in a checkout of `rev`, as the changes job runs it on that tree,
     after a frozen `bun install` there gives the listed blocks that tree's own node_modules, whose
     workspace links point into it (ci-filters-generate.sh computes a base tree's filters the same
     way). Another tree's node_modules would link its workspace packages into that tree, and the
-    listing leaves out every file outside the tree it lists."""
+    listing leaves out every file outside the tree it lists. An install that fails or runs past
+    INSTALL_SECONDS gives no filters: a listing can succeed over a node_modules missing a link, and
+    the file it then leaves out would read as one main's filter does not select."""
     import yaml
     tree = add_checkout(rev)
     try:
         if (tree / "package.json").is_file() and shutil.which("bun"):
-            subprocess.run(["bun", "install", "--frozen-lockfile"], cwd=tree, capture_output=True, text=True)
+            try:
+                install = subprocess.run(["bun", "install", "--frozen-lockfile"], cwd=tree, capture_output=True,
+                                         text=True, timeout=INSTALL_SECONDS)
+            except subprocess.TimeoutExpired:
+                return None, f"`bun install --frozen-lockfile` ran past {INSTALL_SECONDS} s in a checkout of {rev}"
+            if install.returncode != 0:
+                return None, (f"`bun install --frozen-lockfile` exited {install.returncode} in a checkout of {rev}:\n"
+                              + (install.stdout + install.stderr)[-2000:])
         out = tree.parent / "ci-filters.yaml"
         result = subprocess.run([".github/scripts/check-ci-filters.sh", "generate", str(out)], cwd=tree,
                                 capture_output=True, text=True)
@@ -868,9 +887,9 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
     no file a filter selected by hand stops starting its job; and each pattern both files have that
     selects a file the filter main computes selects and the one computed now does not."""
     # Computing the filters runs go list over the tree and loads every gate and //ci: line, so a
-    # conflict marker anywhere - this change's files or the branch's own forward merge - stops it.
-    marked = [p for p in run("git", "grep", "-l", "-e", "^<<<<<<< ", check=False).split()
-              if p not in push_workflows()]
+    # conflict marker anywhere - this change's files, a push workflow merge_push_workflows could not
+    # merge, or the branch's own forward merge - stops it.
+    marked = run("git", "grep", "-l", "-e", "^<<<<<<< ", check=False).split()
     if marked:
         report.append("STOPPED before the filters file: resolve the conflicts in " + ", ".join(marked)
                       + ", then run this again with --filters (computing the filters needs the workspace's "
@@ -929,6 +948,15 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
             main_filters = {}
         kept = {name: patterns for name, patterns in kept.items() if name in main_filters}
         at_main = {name: engine.selected(main_filters[name], expander) for name in kept}
+        if kept:
+            report.append(f"judged {sum(map(len, kept.values()))} pattern(s) the branch kept, in {len(kept)} "
+                          f"filter(s), against the filters main computes")
+    # The trees a filter lists file by file (ci_ts_programs.LISTED): which of their files it selects
+    # is its listed block's to say, and check-ts-filters.sh refuses a gate read that matches one.
+    import ci_ts_programs
+    listed_trees: dict = {}
+    for filter_name, tree, *_ in ci_ts_programs.LISTED:
+        listed_trees.setdefault(filter_name, []).append(tree.rstrip("/") + "/")
     for name in sorted(set(added) | set(kept)):
         if name not in generated:
             # A key no output of the changes job hands on: an anchor other filters took their
@@ -962,6 +990,15 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
                 continue
             for file in sorted(set(expander.expand(pattern)) & held - selected):
                 lost.setdefault(file, pattern)
+        inside = sorted(f for f in lost if f.startswith(tuple(listed_trees.get(name, []))))
+        if inside:
+            report.append(f"CONFLICT filter {name}: {whose} patterns {' '.join(sorted({lost[f] for f in inside}))} "
+                          f"selected {len(inside)} file(s) of its listed tree {' '.join(listed_trees[name])} the "
+                          f"computed filter does not ({' '.join(inside[:5])}); which of them it selects is the "
+                          f"listed block's to say, so no read is written for them: change ci_ts_programs.py or "
+                          f"the imports if the job still reads them")
+            for file in inside:
+                del lost[file]
         if not lost:
             continue
         if name not in gates:
@@ -972,9 +1009,9 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
         # Each pattern is carried whole, with the old filter's `!` patterns that leave part of it
         # out. A `!` pattern of Go test files is carried as `**/*_test.go`, unless the pattern
         # lost a test file: which tests a job compiles is go list's to say, and the old filter's
-        # such patterns kept the rest out the same way. A kept pattern whose read would select a file
-        # main's filter leaves out is carried as the files it lost instead, one read each, so that
-        # what main's own filter leaves out stays out.
+        # such patterns kept the rest out the same way. A pattern carried whole that would select a
+        # file of a listed tree, or a kept one that would select a file main's filter leaves out, is
+        # carried as the files it lost instead, one read each, so that neither moves.
         negated = [p[1:] for p in old.get(name, []) if p.startswith("!")]
         rows, wider = [], set()
         carrying = list(dict.fromkeys(lost.values()))
@@ -986,17 +1023,24 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
             if any(f.endswith("_test.go") for f in under) and not any(f.endswith("_test.go") for f in mine):
                 but.insert(0, "**/*_test.go")
             read = engine.Read(pattern, "", tuple(but))
+            reads = engine.read_files(read, expander)
             if pattern in carried_kept:
                 how = (f"by hand before the filters were computed, and {whose} edit kept it while it moved the "
                        f"gate read behind it")
-                if engine.read_files(read, expander) - at_main[name] - selected:
-                    for file in mine:
-                        why = f"filter {name} held {pattern} {how}: main's filter selected this file of it"
-                        rows.append(f"    Read({file!r}, {why!r}),\n")
-                    continue
             else:
                 how = f"by hand ({whose} edit) before the filters were computed"
-            wider |= engine.read_files(read, expander) - before - selected
+            if any(f.startswith(tuple(listed_trees.get(name, []))) for f in reads):
+                whole = "the pattern matches files of the filter's listed tree"
+            elif pattern in carried_kept and reads - at_main[name] - selected:
+                whole = "the pattern matches files main's filter leaves out"
+            else:
+                whole = ""
+            if whole:
+                for file in mine:
+                    why = f"filter {name} held {pattern} {how}: it selected this file, and {whole}"
+                    rows.append(f"    Read({file!r}, {why!r}),\n")
+                continue
+            wider |= reads - before - selected
             why = f"filter {name} held {pattern} {how}: it selected {len(mine)} file(s) no other read of this gate declares"
             rows.append(f"    Read({pattern!r}, {why!r}{f', but={tuple(but)!r}' if but else ''}),\n")
         write(gates[name], (ROOT / gates[name]).read_text().rstrip("\n")
@@ -1011,27 +1055,44 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
 
 def with_patterns(text: str, patterns: list) -> str:
     """An EXCLUDED file's text with `patterns` appended to its list - the third argument of its
-    `excluded(...)` call, found in its syntax tree: the comma after the list's last element, before
-    any comment that follows it, and the new elements before its closing `]`, so whatever follows
-    an element or the call stays where it is."""
+    `excluded(...)` call, found in its syntax tree: the comma after the list's last element, read
+    from the list's tokens so a parenthesized element's `)` and any comment after it stay before
+    and after it, and the new elements before its closing `]`, so whatever follows an element or
+    the call stays where it is."""
     import ast
+    import io
+    import tokenize
     node = next(n for n in ast.parse(text).body if isinstance(n, ast.Assign)
                 and any(getattr(t, "id", None) == "EXCLUDED" for t in n.targets))
     listed = node.value.args[2]
     lines = text.split("\n")
 
     def offset(lineno: int, column: int) -> int:
-        """The index into `text` of ast's (line, column), a column ast counts in UTF-8 bytes."""
-        before = sum(len(line) + 1 for line in lines[:lineno - 1])
-        return before + len(lines[lineno - 1].encode()[:column].decode())
+        """The index into `text` of a (line, column) whose column counts characters."""
+        return sum(len(line) + 1 for line in lines[:lineno - 1]) + column
 
-    close = offset(listed.end_lineno, listed.end_col_offset - 1)
-    if listed.elts:
-        last = offset(listed.elts[-1].end_lineno, listed.elts[-1].end_col_offset)
-        between = text[last:close]
-        head = text[:last] + ("" if between.lstrip().startswith(",") else ",") + between.rstrip()
-    else:
-        head = text[:close].rstrip()
+    def byte_column(lineno: int, column: int) -> int:
+        """ast counts a column in UTF-8 bytes: the same column in characters."""
+        return len(lines[lineno - 1].encode()[:column].decode())
+
+    close = offset(listed.end_lineno, byte_column(listed.end_lineno, listed.end_col_offset - 1))
+    if not listed.elts:
+        return text[:close].rstrip() + "\n" + "".join(f"    {p!r},\n" for p in patterns) + text[close:]
+    element = listed.elts[-1]
+    last = offset(element.end_lineno, byte_column(element.end_lineno, element.end_col_offset))
+    comma = False
+    for token in tokenize.generate_tokens(io.StringIO(text).readline):
+        at = offset(*token.start)
+        if at < last or token.type in (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT):
+            continue
+        if at >= close:
+            break
+        if token.string == ")":
+            last = offset(*token.end)  # the parentheses the last element is written in
+            continue
+        comma = token.string == ","
+        break
+    head = text[:last] + ("" if comma else ",") + text[last:close].rstrip()
     return head + "\n" + "".join(f"    {p!r},\n" for p in patterns) + text[close:]
 
 
@@ -1043,24 +1104,72 @@ def push_workflows() -> list:
     return list(ast.literal_eval(match.group(1)).values()) if match else []
 
 
-def take_main_push_workflows(report: list) -> list:
-    """Each PUSH_WORKFLOWS workflow the merge left in conflict, taken as main's text: its push
-    paths are the filter main computed, which the settle step writes again from this tree's."""
-    unmerged = run("git", "diff", "--name-only", "--diff-filter=U", check=False).split()
-    taken = [p for p in push_workflows() if p in unmerged]
-    for path in taken:
-        run("git", "checkout", "--theirs", "--", path)
-        report.append(f"took main's {path}, whose push paths are written again below")
-    return taken
+PATHS_KEY = re.compile(r"^(\s*)paths:\s*$")
 
 
-def settle_merge(report: list, taken: list) -> None:
+def paths_list(text: str) -> tuple | None:
+    """(the lines before a workflow's one `paths:` list, its items, the lines after), or None where
+    the text holds no such list or more than one (check-ci-filters.sh's write mode writes one)."""
+    lines = text.split("\n")
+    keys = [i for i, line in enumerate(lines) if PATHS_KEY.match(line)]
+    if len(keys) != 1:
+        return None
+    outer = len(PATHS_KEY.match(lines[keys[0]]).group(1))
+    stop = next((i for i in range(keys[0] + 1, len(lines))
+                 if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) <= outer), len(lines))
+    return lines[:keys[0] + 1], lines[keys[0] + 1:stop], lines[stop:]
+
+
+def with_paths_of(text: str, source: str) -> str | None:
+    """`text` with its one `paths:` list's items taken from `source`'s, or None where either has
+    no one such list."""
+    mine, theirs = paths_list(text), paths_list(source)
+    if mine is None or theirs is None:
+        return None
+    return "\n".join(mine[0] + theirs[1] + mine[2])
+
+
+def merge_push_workflows(report: list) -> list:
+    """Each PUSH_WORKFLOWS workflow the merge left in conflict, merged again with its push paths
+    out of the merge: the merge base's text and the branch's, each with main's `paths:` items, merged
+    with main's, so every edit either side made outside the push paths is kept and the paths are
+    main's until settle_merge writes them from the filters computed now. A workflow whose working
+    copy holds no conflict marker and differs from that merge is a resolution someone made by hand,
+    and is left as it is; so is one whose sides hold no one `paths:` list each. Returns the
+    workflows it wrote a merge into with no conflict left, which settle_merge resolves only once the
+    write of the push paths goes through."""
+    unmerged = set(run("git", "diff", "--name-only", "-z", "--diff-filter=U", check=False).split("\0")) - {""}
+    merged_clean = []
+    for path in [p for p in push_workflows() if p in unmerged]:
+        base, branch, main = (show(f":{stage}", path) for stage in (1, 2, 3))
+        sides = None if None in (base, branch, main) else (with_paths_of(base, main), with_paths_of(branch, main))
+        if sides is None or None in sides:
+            report.append(f"CONFLICT {path}: git left this push workflow unmerged, and its three sides do not each "
+                          f"hold one `paths:` list, so it is left as git left it; resolve it by hand")
+            continue
+        merged = three_way(sides[1], sides[0], main, path)
+        held = show_file(path)
+        ours = held is not None and with_paths_of(held, merged) == merged
+        if held is not None and "<<<<<<< " not in held and not ours:
+            report.append(f"left {path} as it is: its working copy holds no conflict marker and is not this run's "
+                          f"merge, so it is a resolution made by hand; `git add` it once it is right")
+            continue
+        write(path, merged)
+        if "<<<<<<<" in merged:
+            report.append(f"CONFLICT {path}: the branch and main changed the same lines of this push workflow "
+                          f"outside its push paths; it holds the merge, its push paths main's")
+            continue
+        merged_clean.append(path)
+        report.append(f"merged {path}, its push paths main's until they are written again below")
+    return merged_clean
+
+
+def settle_merge(report: list, merged: list) -> None:
     """In a merge, once the filters step ran: write each PUSH_WORKFLOWS workflow's push paths again
     from the filters computed now (`check-ci-filters.sh write`), a refusal of which stops the run;
-    then, whether or not a step stopped, hand the index what this run wrote (stage_writes), the push
-    workflows it took as main's (`taken`, which resolves their conflict) among it."""
-    WRITTEN.update(taken)
-    RESOLVED.update(taken)
+    then, whether or not a step stopped, hand the index what this run wrote (stage_writes). A push
+    workflow merge_push_workflows merged (`merged`) is resolved only once that write goes through:
+    until then its push paths are main's, and git's conflict stays."""
     if not any(line.startswith("STOPPED") for line in report):
         workflows = push_workflows()
         before = {path: show_file(path) for path in workflows}
@@ -1074,9 +1183,11 @@ def settle_merge(report: list, taken: list) -> None:
             report.append(f"STOPPED after the filters file: `check-ci-filters.sh write` exited {result.returncode}, "
                           f"so the push paths of {', '.join(workflows)} may not be the filters computed now"
                           f"{refusals}; fix what it refuses, then run this again with --filters")
-        elif rewritten:
-            report.append(f"ran `check-ci-filters.sh write`, which rewrote the push paths of {', '.join(rewritten)}")
         else:
+            RESOLVED.update(merged)
+        if result.returncode == 0 and rewritten:
+            report.append(f"ran `check-ci-filters.sh write`, which rewrote the push paths of {', '.join(rewritten)}")
+        elif result.returncode == 0:
             report.append(f"ran `check-ci-filters.sh write`, which left the push paths of {', '.join(workflows)} "
                           f"as they were")
     stage_writes(report)
@@ -1222,9 +1333,9 @@ def main() -> int:
         convert_filters(None, branch_rev, report, "main's")
         stage_writes(report)
     else:
-        taken = take_main_push_workflows(report)
+        merged = merge_push_workflows(report)
         convert_filters(base_rev, branch_rev, report)
-        settle_merge(report, taken)
+        settle_merge(report, merged)
     for line in report:
         print(line)
     return 1 if any(line.startswith(("CONFLICT", "STOPPED")) for line in report) else 0

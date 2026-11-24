@@ -996,6 +996,8 @@ replace "$root/.github/ci-gates/app.py" 'GATE = gate("app", "app", runs=[' $'# T
 out=$(filters_step "$root")
 check "a file main's own computed filter leaves out adds no read, though the branch edited the gate file" \
   "$(is "$(contains "$out" '^added ')" false)"
+check "  the kept pattern judged against main's filters, not passed over" \
+  "$(contains "$out" "^judged 3 pattern(s) the branch kept, in 1 filter(s), against the filters main computes$")"
 check "  and the gate is as the branch left it, one line added" \
   "$(is "$(git -C "$root" diff --numstat -- .github/ci-gates)" $'1\t0\t.github/ci-gates/app.py')"
 # In a merge the tree converted into is MERGE_HEAD, main, whose filters differ from HEAD's, the
@@ -1058,6 +1060,56 @@ out=$(filters_step "$root")
 check "main's filters unknown: names the kept patterns as not judged" \
   "$(contains "$out" "^CONFLICT .github/ci-filters.yaml: the patterns the branch kept are not judged, since the filters main computes are unknown")"
 check "  and carries nothing" "$(is "$(contains "$out" '^added ')" false)"
+# A frozen install that fails in main's checkout gives no filters of main's, though the generation
+# after it would succeed: the kept patterns are named as not judged, and nothing is carried.
+root=$(fixture convert-kept-install-fails)
+table_with_reads "$root"
+mkdir -p "$root/bin"
+printf '#!/bin/sh\n[ "$1" = install ] && { echo "a planted install failure" >&2; exit 37; }\nexit 0\n' > "$root/bin/bun"
+chmod +x "$root/bin/bun"
+replace "$root/.github/ci-gates/app.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), Read("docs/readme.md", "the app reads it")]'
+old_filters "$root" "$kept_filters" "# the branch moved the read of the docs to another job"$'\n'"$kept_filters"
+replace "$root/.github/ci-gates/app.py" ', Read("docs/readme.md", "the app reads it")' ''
+out=$(PATH="$root/bin:$PATH" filters_step "$root")
+check "main's install fails: names the kept patterns as not judged, and the install's exit" \
+  "$(contains "$out" '^CONFLICT .github/ci-filters.yaml: the patterns the branch kept are not judged, since the filters main computes are unknown: `bun install --frozen-lockfile` exited 37')"
+check "  and carries nothing" "$(is "$(contains "$out" '^added ')" false)"
+# A file of a filter's listed tree is the listed block's to say: a kept pattern's lost file there is
+# named, and no read is written for it or for a pattern that matches one; a lost file outside the
+# tree is carried as a read of its own. Main's listing gives pkg/lib/one.ts; this tree's gives
+# pkg/lib/two.ts, the block kept.
+root=$(fixture convert-kept-listed)
+table_with_reads "$root"
+mkdir -p "$root/pkg/app" "$root/pkg/lib" "$root/bin"
+printf 'export const one = 1;\n' > "$root/pkg/lib/one.ts"
+printf 'export const two = 2;\n' > "$root/pkg/lib/two.ts"
+printf 'export const other = 3;\n' > "$root/pkg/other.ts"
+printf '{}\n' > "$root/pkg/app/tsconfig.json"
+printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
+cat > "$root/bin/bunx" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+sed "s|^|$PWD/|" "$3/listed"
+SH
+printf '#!/bin/sh\nexit 0\n' > "$root/bin/bun"
+chmod +x "$root/bin/bunx" "$root/bin/bun"
+printf 'PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]\nBUNDLES = []\nLISTED = [("app", "pkg/lib", ("app",), "app loads what its program compiles")]\n' \
+  > "$root/.github/scripts/ci_ts_programs.py"
+replace "$root/.github/ci-gates/app.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), Read("pkg/other.ts", "the app reads it")]'
+listed_filters=$'app:\n  - mod/cmd/**\n  - mod/lib/**\n  - pkg/**\n'
+old_filters "$root" "$listed_filters" "# the branch changed one import and moved a read"$'\n'"$listed_filters"
+replace "$root/.github/ci-gates/app.py" ', Read("pkg/other.ts", "the app reads it")' ''
+printf 'pkg/lib/two.ts\n' > "$root/pkg/app/listed"
+out=$(PATH="$root/bin:$PATH" filters_step "$root")
+check "a kept pattern's lost file of the listed tree: named, no read written" \
+  "$(contains "$out" '^CONFLICT filter app: the branch.s patterns pkg/\*\* selected 1 file(s) of its listed tree pkg/lib/ the computed filter does not (pkg/lib/one.ts)')"
+check "  the lost file outside the tree carried as a read of its own" \
+  "$(contains "$(<"$root/.github/ci-gates/app.py")" "^    Read('pkg/other.ts', ")"
+check "  and no read matches a file of the tree" \
+  "$(is "$(grep -cE "Read\('pkg/(\*\*|lib)" "$root/.github/ci-gates/app.py")" 0)"
 
 # An excluded filter's file takes a pattern the branch added inside its list, after its last
 # element and before any comment that follows that element, whatever text follows the call, a
@@ -1085,6 +1137,13 @@ printf 'EXCLUDED = excluded("image", "an image build another check proves", [\n 
 old_filters "$root" $'image:\n  - docs/**\n' $'image:\n  - docs/**\n  - fixtures/**\n'
 out=$(filters_step "$root")
 check "a comment after the last element and no comma: the pattern is an element of its own" \
+  "$(is "$(excluded_of "$root")" "('docs/**', 'fixtures/**') None")"
+root=$(fixture convert-excluded-parenthesized)
+printf 'EXCLUDED = excluded("image", "an image build another check proves", [\n    ("docs/**")\n])\n' \
+  > "$root/.github/ci-gates/image.py"
+old_filters "$root" $'image:\n  - docs/**\n' $'image:\n  - docs/**\n  - fixtures/**\n'
+out=$(filters_step "$root")
+check "a parenthesized last element: the comma after its parentheses, not inside them" \
   "$(is "$(excluded_of "$root")" "('docs/**', 'fixtures/**') None")"
 
 # The converter finishes a merge, so every path it writes, creates or deletes is staged and the
@@ -1329,30 +1388,44 @@ print('stages', ' '.join(sorted(e.split('\t', 1)[0].split()[2] for e in entries 
 ")
 check "its stages are the branch's and main's" "$(contains "$out" '^stages 2 3$')"
 
-# A table and a push workflow git left unmerged are the files the converter writes whole: it
-# resolves both, and stages them.
+# push_conflict <root>: a merge in progress in which git left the table and site.yaml, a push
+# workflow, unmerged: the branch and main each changed site.yaml's push paths, and the branch its
+# name too; the branch added a line to the table and main took one out of it.
+push_conflict() {
+  local root=$1
+  cp "$root/.github/scripts/ci_job_reads.py" "$root.table"
+  printf '\nRULES = {}\n' >> "$root/.github/scripts/ci_job_reads.py"
+  replace "$root/.github/workflows/site.yaml" "      - 'docs/**'" $'      - \'docs/**\'\n      - \'old/**\''
+  base=$(commit_all "$root" base)
+  printf 'X_OF_THE_BRANCH = 1\n' >> "$root/.github/scripts/ci_job_reads.py"
+  replace "$root/.github/workflows/site.yaml" "      - 'old/**'" "      - 'branch/**'"
+  replace "$root/.github/workflows/site.yaml" "name: Site" "name: Site build"
+  branch=$(commit_all "$root" branch)
+  git -C "$root" checkout -q --detach "$base"
+  { cat "$root.table"; printf '\n'; } > "$root/.github/scripts/ci_job_reads.py"
+  replace "$root/.github/workflows/site.yaml" "      - 'old/**'" "      - 'main/**'"
+  main=$(commit_all "$root" main)
+  git -C "$root" checkout -q --detach "$branch"
+  git -C "$root" -c user.name=fixture -c user.email=fixture@example.invalid merge -q --no-ff --no-commit "$main" \
+    >/dev/null 2>&1 || true
+}
+# staged_paths <root> <path>: the on.push.paths a workflow's staged copy holds, one line.
+staged_paths() {
+  git -C "$1" show ":$2" | python3 -c 'import sys, yaml; d = yaml.safe_load(sys.stdin); print(" ".join(d[True]["push"]["paths"]))'
+}
+
+# A table and a push workflow git left unmerged are files the converter resolves: the table merged
+# outside its old regions, the workflow merged with its push paths out of the merge, which the write
+# then gives the filters computed now. Both are staged, every edit outside the push paths kept.
 echo "case: the converter resolves the table and a push workflow git left unmerged, and stages both"
 root=$(fixture convert-resolve)
-cp "$root/.github/scripts/ci_job_reads.py" "$root.table"
-printf '\nRULES = {}\n' >> "$root/.github/scripts/ci_job_reads.py"
-replace "$root/.github/workflows/site.yaml" "      - 'docs/**'" $'      - \'docs/**\'\n      - \'old/**\''
-base=$(commit_all "$root" base)
-printf 'X_OF_THE_BRANCH = 1\n' >> "$root/.github/scripts/ci_job_reads.py"
-replace "$root/.github/workflows/site.yaml" "      - 'old/**'" "      - 'branch/**'"
-branch=$(commit_all "$root" branch)
-git -C "$root" checkout -q --detach "$base"
-{ cat "$root.table"; printf '\n'; } > "$root/.github/scripts/ci_job_reads.py"
-replace "$root/.github/workflows/site.yaml" "      - 'old/**'" "      - 'main/**'"
-main=$(commit_all "$root" main)
-git -C "$root" checkout -q --detach "$branch"
-git -C "$root" -c user.name=fixture -c user.email=fixture@example.invalid merge -q --no-ff --no-commit "$main" \
-  >/dev/null 2>&1 || true
+push_conflict "$root"
 unmerged=$(git -C "$root" diff --name-only --diff-filter=U | tr '\n' ' ')
 out=$(convert "$root" "
 report = []
-taken = cv.take_main_push_workflows(report)
+merged = cv.merge_push_workflows(report)
 cv.merge_table('$base', '$branch', '$main', report)
-cv.settle_merge(report, taken)
+cv.settle_merge(report, merged)
 print('\n'.join(report))
 ")
 check "git left both unmerged (the case's own control)" \
@@ -1360,14 +1433,61 @@ check "git left both unmerged (the case's own control)" \
 check "neither is unmerged after" "$(is "$(git -C "$root" diff --name-only --diff-filter=U)" "")"
 check "the table holds the branch's edit, staged" \
   "$(is "$(git -C "$root" show :.github/scripts/ci_job_reads.py | grep -c '^X_OF_THE_BRANCH = 1$')" 1)"
-check "the push workflow holds the computed paths, staged" \
-  "$(is "$(git -C "$root" show :.github/workflows/site.yaml | grep -cE "(main|branch|old)/")" 0)"
+check "the push workflow's staged paths are exactly the computed filter's" \
+  "$(is "$(staged_paths "$root" .github/workflows/site.yaml)" 'go.work mod/go.mod docs/**')"
+check "  and it keeps the branch's edit outside its push paths" \
+  "$(is "$(git -C "$root" show :.github/workflows/site.yaml | grep -c '^name: Site build$')" 1)"
 
-echo "case: the converter's --help says what it stages and what it leaves unmerged"
+# A run that stops before the push paths are written leaves a push workflow git left unmerged so,
+# its push paths main's and its other edits merged, and a plain commit refused; a copy someone
+# resolved by hand before the run is left as it is.
+echo "case: a run that stops leaves a push workflow git left unmerged, and a hand resolution as it is"
+root=$(fixture convert-push-stopped)
+push_conflict "$root"
+# The table resolved and added, so the push workflow is the one path a commit can be refused for.
+git -C "$root" checkout -q --theirs -- .github/scripts/ci_job_reads.py
+git -C "$root" add .github/scripts/ci_job_reads.py
+check "the push workflow is the one unmerged path (the case's own control)" \
+  "$(is "$(git -C "$root" diff --name-only --diff-filter=U)" .github/workflows/site.yaml)"
+out=$(convert "$root" "
+report = []
+merged = cv.merge_push_workflows(report)
+report.append('STOPPED before the filters file: a stand-in for any stop')
+cv.settle_merge(report, merged)
+print('\n'.join(report))
+")
+check "the push workflow stays unmerged" "$(contains "$(git -C "$root" status --porcelain)" '^UU .github/workflows/site.yaml$')"
+check "  holding the branch's edit outside its push paths, and main's paths" \
+  "$(is "$(grep -c '^name: Site build$' "$root/.github/workflows/site.yaml") $(grep -c "main/" "$root/.github/workflows/site.yaml")" '1 1')"
+set +e
+git -C "$root" -c user.name=fixture -c user.email=fixture@example.invalid commit -q -m merge >/dev/null 2>&1
+committed=$?
+set -e
+check "  and a plain commit is refused" "$(is "$committed" 128)"
+root=$(fixture convert-push-hand)
+push_conflict "$root"
+printf 'name: resolved by hand\non:\n  push:\n    branches: [main]\n    paths:\n      - hand/**\njobs: {}\n' \
+  > "$root/.github/workflows/site.yaml"
+cp "$root/.github/workflows/site.yaml" "$root.hand"
+out=$(convert "$root" "
+report = []
+merged = cv.merge_push_workflows(report)
+report.append('STOPPED before the filters file: a stand-in for any stop')
+cv.settle_merge(report, merged)
+print('\n'.join(report))
+")
+check "a resolution made by hand is left as it is" "$(is "$(cat "$root/.github/workflows/site.yaml")" "$(cat "$root.hand")")"
+check "  and unmerged" "$(contains "$(git -C "$root" status --porcelain)" '^UU .github/workflows/site.yaml$')"
+
+echo "case: the converter's --help says what it stages, what it leaves unmerged and what --filters does"
 root=$(fixture convert-help)
 out=$(cd "$root" && python3 "$script_dir/ci-reads-convert" --help)
 check "names the files it leaves unmerged in the index" \
   "$(contains "$out" '^leaves unmerged in the index each path it leaves in conflict')"
+check "says the stages of a conflict it makes are the texts it merged" \
+  "$(contains "$out" 'texts it merged, not the blobs of the merge.s three commits')"
+check "says --filters writes the push workflows' paths again" \
+  "$(contains "$out" "^  --filters .*the push workflows'$")"
 
 echo "case: a gate file that cannot be read is named, and the generation falls open"
 root=$(fixture gate-file-broken)
