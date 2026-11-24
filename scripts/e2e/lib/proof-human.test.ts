@@ -21,13 +21,14 @@ exit "\${FAKE_GH_EXIT:-0}"
   );
 });
 
-// The stage scripts' shell options, ERR trap, and check helpers, then the lib.
+// The stage scripts' shell options, ERR trap, and check helpers, then the lib. The evidence
+// directory is where the lib keeps gh's own words (gh_kept).
 const prelude = `set -Eeuo pipefail
 check=prerequisites
 note() { printf '   %s\\n' "$*"; }
 fail() { printf 'FAIL %s: %s\\n' "$check" "$*" >&2; exit 1; }
 trap 'printf "FAIL %s: line %s exited %s: %s\\n" "$check" "$LINENO" "$?" "$BASH_COMMAND" >&2' ERR
-repo=sjawhar/legion-smoke project=S3TEST ptoken=s3test ok=
+repo=sjawhar/legion-smoke project=S3TEST ptoken=s3test ok= evidence="$work/evidence"
 . "$LIB"
 `;
 
@@ -49,20 +50,26 @@ function run(script: string, fake: { login?: string; stderr?: string; exit?: num
       FAKE_GH_EXIT: String(fake.exit ?? 0),
     },
   });
+  const kept = (name: string) => join(work, "evidence", "gh", name);
   return {
     status: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
     calls: readFileSync(log, "utf8").split("\n").filter(Boolean),
+    keptPath: kept,
+    kept: (name: string) => readFileSync(kept(name), "utf8"),
   };
 }
 
 // The refusal names the account it found right before the smoke repository; the proof human's own
-// name and the repository appear on every refusal, so only that position tells the two apart.
-const refusedAs = (login: string) =>
+// name and the repository appear on every refusal, so only that position tells the two apart. An
+// account other than the proof human is gh's answer, so the refusal names the file that keeps it
+// rather than its login (gh_kept).
+const refusedAs = (found: string) =>
   new RegExp(
-    `^FAIL prerequisites: .* ${login.replace(/[[\]]/g, "\\$&")} for sjawhar/legion-smoke\\b`
+    `^FAIL prerequisites: .* ${found.replace(/[[\]()]/g, "\\$&")} for sjawhar/legion-smoke\\b`
   );
+const otherAccount = "an account other than the proof human (its login, gh's answer, is in";
 
 describe("require_proof_human", () => {
   test("passes the sjawhar-agent App's bot, asking gh with GH_REPO naming the smoke repository", () => {
@@ -73,8 +80,9 @@ describe("require_proof_human", () => {
   });
 
   // A Legion pane's gh acts as its role's App, whatever GitHub names that App: the logins below are
-  // stand-ins for the two, and are refused as any account but the proof human is.
-  test("refuses every other account in one line naming it", () => {
+  // stand-ins for the two, and are refused as any account but the proof human is, the login kept in
+  // the file the refusal names and never printed.
+  test("refuses every other account in one line naming the file that keeps it", () => {
     for (const login of [
       "sjawhar",
       "sjawhar-agent",
@@ -85,7 +93,10 @@ describe("require_proof_human", () => {
       expect(r.status).toBe(1);
       expect(r.stdout).not.toContain("unreachable");
       expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
-      expect(r.stderr).toMatch(refusedAs(login));
+      expect(r.stderr).toContain(
+        `${otherAccount} ${r.keptPath("proof-human.answer")}) for sjawhar/legion-smoke`
+      );
+      expect(r.kept("proof-human.answer")).toBe(`${login}\n`);
     }
   });
 
@@ -96,23 +107,28 @@ describe("require_proof_human", () => {
   });
 
   // An agent session that inherited a personal GH_TOKEN still reaches the user's account; the
-  // devbox shim says so on stderr, which is the operator's only clue.
-  test("a refusal carries what gh said on stderr, joined into its one line", () => {
+  // devbox shim says so on stderr, which is the operator's only clue: the refusal names the file
+  // that keeps it, since gh's stderr is never printed (gh_kept).
+  test("a refusal names the file that keeps what gh said on stderr, in its one line", () => {
     const said =
       "gh shim: GH_TOKEN inherited from the environment (ghp_…, a PERSONAL token); not routing";
     const r = run("require_proof_human", { login: "sjawhar", stderr: `${said}\nsecond line` });
     expect(r.status).toBe(1);
     expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(r.stderr).toMatch(refusedAs("sjawhar"));
-    expect(r.stderr).toContain(`${said} second line`);
+    expect(r.stderr).toContain(otherAccount);
+    expect(r.stderr).toContain(`; gh's own words are in ${r.keptPath("proof-human.err")}`);
+    expect(r.stderr).not.toContain(said);
+    expect(r.kept("proof-human.err")).toBe(`${said}\nsecond line\n`);
   });
 
-  test("refuses a gh that cannot answer, with its reason", () => {
+  test("refuses a gh that cannot answer, naming the file that keeps its reason", () => {
     const reason = "gh: To use GitHub CLI in automation, set the GH_TOKEN environment variable.";
     const r = run("require_proof_human", { stderr: reason, exit: 4 });
     expect(r.status).toBe(1);
     expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
-    expect(r.stderr).toContain(reason);
+    expect(r.stderr).toMatch(refusedAs("no account"));
+    expect(r.stderr).toContain(`; gh's own words are in ${r.keptPath("proof-human.err")}`);
+    expect(r.kept("proof-human.err")).toBe(`${reason}\n`);
   });
 
   // Three ways reach a wrong account, and gh can fail outright: a plain shell (the user's login),
