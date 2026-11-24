@@ -57,6 +57,7 @@ func underAFile(t *testing.T, dir, name string) string {
 // and none holds the parser's words about its content either (a time error quotes the value it
 // could not read). Each names the setting instead, and still says what went wrong and the fix.
 func TestTheMachineFileIsNamedBySettingNeverByPath(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-mfile-Q7x3"
 	const expirySecret = "tokexp-9Zq4w"
 	dir := filepath.Join(t.TempDir(), secret)
@@ -176,6 +177,7 @@ func TestTheMachineFileIsNamedBySettingNeverByPath(t *testing.T) {
 // machine_file field nor their error holds the path. A login resumed from a directory the helper
 // can read but not write fails each of those, and each line still says why.
 func TestTheBrokersMachineFileLogLinesNameTheSettingNeverThePath(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-mlog-R4c9"
 	f := newFakeBroker(t)
 	dir := filepath.Join(t.TempDir(), secret)
@@ -223,6 +225,7 @@ func TestTheBrokersMachineFileLogLinesNameTheSettingNeverThePath(t *testing.T) {
 // its login_hint, and an error reading it names AGENT_SECRETS_OPERATOR_FILE and the system's
 // reason, never the path. That error is what the login op answers on the socket.
 func TestTheOperatorFileIsNamedBySettingNeverByPath(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-opfile-K2m8"
 	dir := filepath.Join(t.TempDir(), secret)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -262,6 +265,7 @@ func TestTheOperatorFileIsNamedBySettingNeverByPath(t *testing.T) {
 // error about it holds its path, nor the key parser's words: each names the identity key and
 // still says what went wrong and the fix.
 func TestTheIdentityKeyIsNamedNeverByPath(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-idkey-P5r1"
 	dir := filepath.Join(t.TempDir(), secret)
 	path := filepath.Join(dir, "identity-key.pem")
@@ -324,6 +328,7 @@ func TestTheIdentityKeyIsNamedNeverByPath(t *testing.T) {
 // its content (a time error quotes the value it could not read). The read error Recover logs and
 // the error Save returns, which the helper logs, name AGENT_SECRETS_STATE_FILE instead.
 func TestTheSessionRecordsAreNamedBySettingNeverByPath(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw-records-W3n6"
 	const goneSecret = "tokgone-4Hs8"
 	dir := filepath.Join(t.TempDir(), secret)
@@ -385,6 +390,7 @@ func TestTheSessionRecordsAreNamedBySettingNeverByPath(t *testing.T) {
 // the error for one that does not decode is the helper's own words, not the base64 or x509
 // parser's.
 func TestARecordedKeyThatDoesNotParseIsFixedText(t *testing.T) {
+	t.Parallel()
 	for name, encoded := range map[string]string{
 		"not base64": "hunter2pw!not*base64",
 		"not PKCS#8": base64.StdEncoding.EncodeToString([]byte("hunter2pw-der-not-pkcs8")),
@@ -418,6 +424,7 @@ func TestARecordedKeyThatDoesNotParseIsFixedText(t *testing.T) {
 // the address lets it (cipheraddr.Address.Words): withheld beside that address, whole beside a
 // clean one, for the enrolment and the renew alike.
 func TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords(t *testing.T) {
+	t.Parallel()
 	var lease string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"enrollment_id": "enr-1", "lease_expires_at": lease})

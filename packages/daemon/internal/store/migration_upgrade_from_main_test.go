@@ -175,12 +175,16 @@ import (
 // no row of its own here (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
 // (20261123224717) is applied after all of these but the waiting line's issue priority
-// (20261124060500) and dispatch://INFRA-3149's 20261124143026, and touches no outbox_kind_check
-// either: it adds issues.members_owed and marks the roots whose re-admitted generation no
-// promotion has opened.
-// The waiting line's issue priority (20261124060500) is applied after all of these but
-// dispatch://INFRA-3149's 20261124143026, and touches no outbox_kind_check: it adds
-// issues.priority, null on every row it finds, which reads as an issue with no priority.
+// (20261124060500) and touches no outbox_kind_check either: it adds issues.members_owed and marks
+// the roots whose re-admitted generation no promotion has opened.
+// The waiting line's issue priority (20261124060500) is applied after all of these but #5349's
+// cause times (20261124073512) and dispatch://INFRA-3149's 20261124143026, and touches no
+// outbox_kind_check: it adds issues.priority, null on every row it finds, which reads as an issue
+// with no priority.
+// #5349's cause times (20261124073512) are applied after all of these but
+// dispatch://INFRA-3149's 20261124143026, and touch no outbox_kind_check: they add
+// claims.last_death_at, claims.last_start_failure_at and the digest of the cause each dates, null
+// on every row they find, so they need no row of their own here.
 // dispatch://INFRA-3149's release teardown (20261124143026) is applied after all of these and
 // touches no outbox_kind_check: it adds issue_releases.teardown at its default, `reached`, on every
 // mark it finds, and pod_releases.issue_release_id, null on every row it finds, under a unique
@@ -197,7 +201,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
 	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
-	20261124143026,
+	20261124073512, 20261124143026,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -219,8 +223,9 @@ var thisBranchsMigrations = []int{
 // applied sequence, 20261121170714, the release that keeps no saved workspace's 20261123050533,
 // the plan of an experiment's draw (20261123165139), 20261123212127, #5303's 20261123224717 and
 // dispatch://INFRA-3149's 20261124143026, with the waiting line's issue priority, 20261124060500,
-// between the last two. That is why the loop below holds the list rather than counting it, so that
-// a version added above any of them is named here rather than read as main's.
+// and #5349's cause times, 20261124073512, between the last two. That is why the loop below holds
+// the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
