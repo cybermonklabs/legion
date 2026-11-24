@@ -125,6 +125,37 @@ func TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL(t *testing.T) {
 	}
 }
 
+// TestTheStateHeadingNamesTheDaemonURLWithNoCredential: `legion state` names the daemon it read
+// in its heading on stdout, which, unlike its stderr, no writer passes through the URL rule
+// (newRoot). A daemon_url, which the daemon tells every pane as LEGION_DAEMON_URL, can carry user
+// information, made-up credentials here: the heading names the daemon by its scheme, host, port
+// and path alone (heading). The twin shows the daemon URL holds the credentials. Captures
+// legion.daemon-url/state-heading.
+func TestTheStateHeadingNamesTheDaemonURLWithNoCredential(t *testing.T) {
+	const credentials = "not-a-secret-user:not-a-secret-password"
+	daemon, _ := urlRecordingDaemon(t, `{}`)
+	told := standInURL(daemon, credentials, "/daemon")
+	t.Run("twin", func(t *testing.T) {
+		if !strings.Contains(told, credentials) {
+			t.Fatalf("%q holds no %q, so the row cannot see a leak", told, credentials)
+		}
+	})
+	t.Run("heading", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("LEGION_DAEMON_URL", told)
+		t.Setenv("LEGION_ISSUE", "")
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+			t.Fatalf("legion state = %d, stderr %q; want the state printed", code, errb.String())
+		}
+		heading, _, _ := strings.Cut(out.String(), "\n")
+		oauth2calltest.RequireNoPiece(t, "legion.daemon-url/state-heading", heading)
+		if want := " on " + daemon.URL + "/daemon — "; !strings.Contains(heading, want) {
+			t.Errorf("the heading is %q, want it to name the daemon as %q", heading, want)
+		}
+	})
+}
+
 // TestADaemonURLThatDoesNotParsePrintsNoneOfIt: a daemon URL url.Parse refuses (an invalid escape
 // in its path), with made-up credentials in its user information and its query, fails an operator
 // call (operator-unparsed) and a state read (state-unparsed) in the CLI's own words, which hold
