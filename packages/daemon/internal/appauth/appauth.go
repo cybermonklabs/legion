@@ -101,35 +101,39 @@ type AnswerError struct {
 func (e *AnswerError) Error() string { return e.Err.Error() }
 func (e *AnswerError) Unwrap() error { return e.Err }
 
-// answered is err, the failure of a call GitHub answered with response, read as read, carrying
-// that answer (AnswerError), its path the request's under the Manager's base URL
-// (githubrest.PathUnder).
-func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err error) *AnswerError {
-	return m.answeredAs(response, read, "", err)
+// answered is err, the failure of the call request that GitHub answered with response, read as
+// read, carrying that answer (AnswerError): request's method and its path under the Manager's
+// base URL (githubrest.PathUnder), as githubrest's own Client names its answers. The answer is
+// named by the request the Manager sent and never by response.Request, which, once the client
+// has followed a redirect on its own origin (redirects.SameOrigin), is the Location the
+// answering party wrote: whatever answers in GitHub's place can write the request's JWT or
+// token into it.
+func (m *Manager) answered(request *http.Request, response *http.Response, read oauth2call.Answer, err error) *AnswerError {
+	return m.answeredAs(request, response, read, "", err)
 }
 
 // answeredAs is answered naming the call shown in place of its path, for a call whose path holds
 // GitHub's words, which a message prints only in their shape; "" names it by its path, as
 // answered does.
-func (m *Manager) answeredAs(response *http.Response, read oauth2call.Answer, shown string, err error) *AnswerError {
+func (m *Manager) answeredAs(request *http.Request, response *http.Response, read oauth2call.Answer, shown string, err error) *AnswerError {
 	path := shown
 	if path == "" {
-		path = githubrest.PathUnder(m.baseURL, response.Request.URL)
+		path = githubrest.PathUnder(m.baseURL, request.URL)
 	}
-	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, read)}
+	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(request.Method, path, response, read)}
 }
 
-// transient marks a response, read as read, as GitHub's trouble rather than an answer: a 5xx, or
-// a rate limit (the answer's RateLimited, which githubrest decides from the status, the rate-limit
-// headers and, for a secondary limit GitHub names in the body alone, the body as it came). Either
-// way err carries GitHub's answer (answered).
-func (m *Manager) transient(response *http.Response, read oauth2call.Answer, err error) error {
-	return m.transientAs(response, read, "", err)
+// transient marks a response to request, read as read, as GitHub's trouble rather than an
+// answer: a 5xx, or a rate limit (the answer's RateLimited, which githubrest decides from the
+// status, the rate-limit headers and, for a secondary limit GitHub names in the body alone, the
+// body as it came). Either way err carries GitHub's answer (answered).
+func (m *Manager) transient(request *http.Request, response *http.Response, read oauth2call.Answer, err error) error {
+	return m.transientAs(request, response, read, "", err)
 }
 
 // transientAs is transient naming the call shown, as answeredAs does.
-func (m *Manager) transientAs(response *http.Response, read oauth2call.Answer, shown string, err error) error {
-	refused := m.answeredAs(response, read, shown, err)
+func (m *Manager) transientAs(request *http.Request, response *http.Response, read oauth2call.Answer, shown string, err error) error {
+	refused := m.answeredAs(request, response, read, shown, err)
 	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
@@ -884,7 +888,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
+			return nil, m.transient(request, response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
 		}
 		body, err := readBody(response, "GitHub App installation discovery", responseBound)
 		if err != nil {
@@ -995,7 +999,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", redact.Unanswered(err, request, shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, m.transientAs(response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return GitIdentity{}, m.transientAs(request, response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
@@ -1030,7 +1034,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
+		return "", m.transient(request, response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App identity lookup", responseBound)
 	if err != nil {

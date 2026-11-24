@@ -153,6 +153,6 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	case own && redirects.Status(response.StatusCode):
 		return false, nil
 	default:
-		return false, m.transient(response, body, fmt.Errorf("read whether the %s App is installed on %s failed (%d)", role, repo, response.StatusCode))
+		return false, m.transient(request, response, body, fmt.Errorf("read whether the %s App is installed on %s failed (%d)", role, repo, response.StatusCode))
 	}
 }
