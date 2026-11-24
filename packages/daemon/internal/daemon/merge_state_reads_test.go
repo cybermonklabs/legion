@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -1728,6 +1730,106 @@ func TestAClimbLeavesTheOtherFollowersOnTheirLadders(t *testing.T) {
 	for _, asked := range rig.askedOf() {
 		if slices.Contains(asked, 86) && slices.Contains(asked, 87) {
 			t.Fatalf("GitHub was asked for %v, want 87's climb to read 87 alone while 86 is not due", rig.askedOf())
+		}
+	}
+}
+
+// A rate limit met again soon after the installation's last hold ended - here 10 s after it, as
+// the queries resume - holds twice as long as the last hold, up to queryHoldMost, as GitHub asks of
+// a client its secondary limit keeps meeting, and never less than GitHub asks. A query GitHub
+// answers with no limit ends the backoff, and so does a limit that comes long after the hold.
+func TestARepeatedLimitDoublesTheInstallationsHoldUpToItsCap(t *testing.T) {
+	t.Parallel()
+	gate := newQueryGate(config.DefaultGitHubGraphQLShare)
+	limit := func(after time.Duration) error {
+		return &githubrest.Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusForbidden, RateLimited: true, RetryAfter: after, Budget: githubrest.BudgetSecondary}
+	}
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	held := func(step string, err error, want time.Duration) {
+		t.Helper()
+		gate.settle(err, 0, now)
+		if got := gate.hold.Sub(now); got != want || gate.held != want {
+			t.Fatalf("%s: the installation is held %s (its backoff %s), want %s", step, got, gate.held, want)
+		}
+	}
+
+	held("the first limit", limit(time.Minute), time.Minute)
+	for _, want := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, queryHoldMost, queryHoldMost} {
+		now = gate.hold.Add(10 * time.Second)
+		held("a limit 10 s after the hold ended", limit(time.Minute), want)
+	}
+	now = gate.hold.Add(10 * time.Second)
+	held("GitHub asking for longer than the cap", limit(30*time.Minute), 30*time.Minute)
+
+	now = gate.hold.Add(time.Second)
+	gate.settle(nil, 0, now)
+	if gate.held != 0 {
+		t.Fatalf("after a query GitHub answered with no limit the backoff is %s, want none", gate.held)
+	}
+	now = now.Add(time.Second)
+	held("a limit after a query that was not refused", limit(time.Minute), time.Minute)
+	now = gate.hold.Add(2 * time.Minute)
+	held("a limit longer after the hold than the hold lasted", limit(time.Minute), time.Minute)
+}
+
+// The pause after each query is (1 - share) / share of the time it took: the same again at the
+// default share of one half, three times it at the share of a quarter a deployment of four daemons
+// sets, and nothing at 1. A runtime takes the share the configuration names and the default when it
+// names none.
+func TestAShareOfAQuarterWaitsThreeTimesTheQuerysTime(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		share float64
+		want  time.Duration
+	}{
+		{0.5, 40 * time.Millisecond},
+		{0.25, 120 * time.Millisecond},
+		{1, 0},
+	} {
+		if got := newQueryGate(tc.share).pause(40 * time.Millisecond); got != tc.want {
+			t.Errorf("the pause after a query of 40ms at a share of %v = %s, want %s", tc.share, got, tc.want)
+		}
+	}
+
+	gate := newQueryGate(0.25)
+	ctx := context.Background()
+	var end, start time.Time
+	took, err := gate.run(ctx, func() error {
+		time.Sleep(40 * time.Millisecond)
+		end = time.Now()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("the first query: %v", err)
+	}
+	if _, err := gate.run(ctx, func() error { start = time.Now(); return nil }); err != nil {
+		t.Fatalf("the second query: %v", err)
+	}
+	if gap := start.Sub(end); gap < 3*took || gap > 3*took+time.Second {
+		t.Fatalf("the second query began %s after the first ended, which took %s: want three times that at a share of a quarter", gap, took)
+	}
+
+	w := readRuntime(nil, "", quietLogger())
+	if got := w.queryGate("implement write acme").share; got != config.DefaultGitHubGraphQLShare {
+		t.Fatalf("a runtime with no share configured gates its queries at %v, want the default %v", got, config.DefaultGitHubGraphQLShare)
+	}
+	w = readRuntime(nil, "", quietLogger())
+	w.graphQLShare = 0.25
+	if got := w.queryGate("implement write acme").share; got != 0.25 {
+		t.Fatalf("a runtime configured with a share of 0.25 gates its queries at %v, want 0.25", got)
+	}
+}
+
+// A ctx that has ended makes no query, even when the gate's turn is free and nothing holds it.
+func TestAnEndedContextMakesNoQuery(t *testing.T) {
+	t.Parallel()
+	gate := newQueryGate(config.DefaultGitHubGraphQLShare)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range 100 {
+		queried := false
+		if _, err := gate.run(ctx, func() error { queried = true; return nil }); queried || !errors.Is(err, context.Canceled) {
+			t.Fatalf("with its ctx ended the gate queried %t and answered %v, want no query and the ctx's end", queried, err)
 		}
 	}
 }

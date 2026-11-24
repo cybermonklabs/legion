@@ -21,10 +21,17 @@ body: |-
   recorded and read on that base.
 
   The queries of every base of an installation's repositories go one at a time, and after each
-  the next waits as long as it took, which keeps them inside GitHub's limit on the processing time
-  of queries. A rate limit any of them meets holds them all as long as GitHub asks (its
-  Retry-After, its reset, or a minute for the secondary limit named by its message alone), before
-  any other query, including a 200 whose errors carry the secondary limit's Retry-After or message.
+  the next waits (1 - share) / share of the time it took, where share is the new
+  `github_graphql_share` key (0.5 by default: a pause as long as the query took). GitHub allows an
+  installation 60 seconds of query processing time in 60 seconds, shared by every daemon that
+  reads with that installation, so a deployment sets the key near 1 divided by the number of
+  those daemons; a value at or below 0, or above 1, is refused. A rate limit any of the queries
+  meets holds them all as long as GitHub asks (its Retry-After, its reset, or a minute for the
+  secondary limit named by its message alone), before any other query, including a 200 whose
+  errors carry the secondary limit's Retry-After or message. A limit met again less than the last
+  hold's length after that hold ended holds twice the longer of GitHub's wait and the last hold,
+  up to 15 minutes and never less than GitHub asks, and the first query GitHub answers with no
+  limit ends that backoff.
   Each read is logged as before, and each query logs
   `github: read the merge state of pull requests on a base by number` with how many pull requests
   it asked for and how many GitHub answered.

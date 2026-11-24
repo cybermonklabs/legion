@@ -324,9 +324,12 @@ type workflowRuntime struct {
 	baseChunk         int
 	// gates is each installation's GraphQL queries, by the token scope they are made under
 	// (merge_state_reads.go's queryGate): one rate-limit hold, one pace and one query at a time,
-	// shared by every base's batch of that installation. gateMu guards the map.
-	gateMu sync.Mutex
-	gates  map[string]*queryGate
+	// shared by every base's batch of that installation. gateMu guards the map. graphQLShare is
+	// the share of the time each gate's queries may keep GitHub at work, the configuration's
+	// `github_graphql_share` (queryShare).
+	gateMu       sync.Mutex
+	gates        map[string]*queryGate
+	graphQLShare float64
 	// etags is what the conditional reads of a pull request and of its base's rules keep
 	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
 	// costs the implement App's installation none of its rate limit.
@@ -691,7 +694,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
-		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
+		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
