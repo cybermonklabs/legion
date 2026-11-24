@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { staleGitLockNote } from "./git-lock";
@@ -49,6 +49,25 @@ test("says nothing of output that names no lock, or names one already gone", asy
   const gone = path.join(tmpdir(), "legion-git-lock-never-made", "index.lock");
   expect(await staleGitLockNote('Error: There is no jj repo in "."', NOW)).toBe("");
   expect(await staleGitLockNote(`fatal: Unable to create '${gone}': File exists.`, NOW)).toBe("");
+});
+
+// git and jj print the lock's path between single quotes and do not escape it, so a path holding a
+// quote of its own still names its lock: the path runs to the quote before the message's fixed
+// text, not to the first quote in it. As the daemon's StaleGitLockNote reads it.
+test("names a lock whose path holds a single quote, from either report, once", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "legion-git-lock-"));
+  scratch.push(dir);
+  const quoted = path.join(dir, "tmp-sq'x", "it's here");
+  await mkdir(quoted, { recursive: true });
+  const lock = path.join(quoted, "index.lock");
+  await writeFile(lock, "");
+  const written = new Date(NOW - (31 * 60 + 4) * 1000);
+  await utimes(lock, written, written);
+  const git = `error: cannot lock ref 'refs/heads/main': Unable to create '${lock}': File exists.`;
+  const jj = `2: The lock for resource '${lock.slice(0, -5)}' could not be obtained after 1.00s after 16 attempt(s). The lockfile at '${lock}' might need manual deletion.`;
+  for (const output of [git, jj, `${jj} ${git}`, `${jj}\n${git}`]) {
+    expect(await staleGitLockNote(output, NOW)).toBe(daemonNote(lock, "31m4s"));
+  }
 });
 
 /**

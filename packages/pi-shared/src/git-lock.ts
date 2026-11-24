@@ -1,10 +1,13 @@
 import { lstat } from "node:fs/promises";
 
 /** The ways a git or jj failure names the lock file it could not take: jj's git backend
- * (gitoxide), and git's own lockfile API, which every git jj runs reports through. */
+ * (gitoxide), and git's own lockfile API, which every git jj runs reports through. Both print the
+ * path between single quotes without escaping it, so a path may hold a quote of its own: each
+ * pattern takes the path up to the first quote that the message's fixed text follows, never up to
+ * the first quote alone, and `.` stops at the end of the line, as the daemon's gitLockReports do. */
 const GIT_LOCK_REPORTS = [
-  /The lockfile at '([^']+)' might need manual deletion/g,
-  /Unable to create '([^']+)': File exists/g,
+  /The lockfile at '(.+?)' might need manual deletion/g,
+  /Unable to create '(.+?)': File exists/g,
 ];
 
 /** `ms` as Go prints a time.Duration rounded to the second: `31m4s`, `2h0m5s`, `45s`. */

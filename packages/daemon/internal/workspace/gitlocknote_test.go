@@ -103,6 +103,30 @@ func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *test
 			t.Errorf("the note for a lock already gone is %q, want none", note)
 		}
 	})
+
+	// git and jj print the lock's path between single quotes and do not escape it, so a path that
+	// holds a quote of its own (a TMPDIR or a checkout named so) still names its lock: the path
+	// runs to the quote before the message's fixed text, not to the first quote in it. Each of the
+	// two reports, alone and both on one line of output, names the lock once.
+	t.Run("a lock whose path holds a single quote", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "tmp-sq'x", "it's here")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lock := plantedLock(t, dir, "index.lock", now)
+		opening := "git lock " + lock + " was last written " + ageWords + " ago"
+		for name, output := range map[string]string{
+			"git's report":     gitLockFailure(lock),
+			"jj's report":      jjLockFailure(lock),
+			"both on one line": jjLockFailure(lock) + " " + gitLockFailure(lock),
+			"both, two lines":  jjLockFailure(lock) + "\n" + gitLockFailure(lock),
+		} {
+			note := StaleGitLockNote(output, now)
+			if lines := strings.Split(note, "\n"); len(lines) != 1 || !strings.HasPrefix(note, opening) {
+				t.Errorf("%s: the note is %q, want one line that opens %q", name, note, opening)
+			}
+		}
+	})
 }
 
 func TestStaleGitLockNoteNamesHowLongTheSweepTakes(t *testing.T) {
