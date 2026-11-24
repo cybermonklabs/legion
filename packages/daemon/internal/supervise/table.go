@@ -443,14 +443,20 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
-	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
-	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
-	// the zero time for every caller but one: the boot's relaunch of the launches the previous
-	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
-	// one in the order their claims' work was owed before it posts them all at once, so the queue
-	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
-	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
-	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, and the
+	// zero time for every caller but one: the boot's relaunch of the launches the previous daemon
+	// left waiting (internal/daemon's launchUnfinished), which hands the turns out in the order its
+	// claims' work was owed before it posts every launch at once, so the queue a restart rebuilds
+	// keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	//
+	// The rule the gate holds a carried turn to (revive, launchAfter, reserveWake), stated here
+	// alone: a turn still to come is the launch's turn, and it parks for it; one the launch reached
+	// less than one interval late (WakePace.Interval) is its turn late, and it runs at once; one it
+	// reached later than that is reserved a turn afresh, and the spent turn stays charged, as a
+	// dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller posted together
+	// that reached its gate that late would otherwise run in one instant, outside the rate and the
+	// burst. The gate logs the last case. A launch the gate does not reach — refused, or held by a
+	// project pause — leaves its turn spent the same way.
 	Turn time.Time
 }
 
