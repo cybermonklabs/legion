@@ -40,14 +40,15 @@ var (
 )
 
 // basisDispatch is outboxDispatch with each document's own approval and reviews, by document id,
-// the issue each document belongs to, which the approval read names, and each issue as Dispatch
-// shows it, by key.
+// the issue each document belongs to, which the approval read names, each issue as Dispatch
+// shows it, by key, and each ask as Dispatch reads it by its id.
 type basisDispatch struct {
 	outboxDispatch
 	approvals map[string]dispatch.Approval
 	reviews   map[string][]dispatch.Review
 	owners    map[string]string
 	issues    map[string]dispatch.Issue
+	asks      map[string]dispatch.Ask
 }
 
 func (d *basisDispatch) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
@@ -68,6 +69,14 @@ func (d *basisDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue,
 	return issue, nil
 }
 
+func (d *basisDispatch) Ask(_ context.Context, id string) (dispatch.Ask, error) {
+	ask, ok := d.asks[id]
+	if !ok {
+		return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
+	}
+	return ask, nil
+}
+
 // basisSeedRig is the outbox of one daemon over a store holding the root, admitted in its own
 // running tree, and the ancestor, the root of a running tree of its own, with the workflow engine
 // applying the facts the seeds read.
@@ -86,7 +95,8 @@ func newBasisSeedRig(t *testing.T) *basisSeedRig {
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	client := &basisDispatch{approvals: map[string]dispatch.Approval{}, reviews: map[string][]dispatch.Review{},
 		owners: map[string]string{basisSeedDoc: basisSeedAncestor, basisSeedRootDoc: basisSeedRoot},
-		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}}}
+		issues: map[string]dispatch.Issue{basisSeedAncestor: {Key: basisSeedAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}},
+		asks:   map[string]dispatch.Ask{}}
 	rig := &basisSeedRig{t: t, pool: pool, records: records, client: client,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, handlers: []intake.Handler{engine}, now: time.Now}}
 	for _, issue := range []record.Issue{
@@ -182,17 +192,18 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 		Ask: "ask-100", Generation: generation}
 }
 
-// The pending-basis seed reads Dispatch's state of the ancestor's document and of its issue
-// (readBasis), the one read that opens or ends a step's wait on the ancestor's request, and the
-// workflow judges it by its one verdict: the person's approval of the version, as the document's
-// latest review of its latest version, opens the step; a changes request as that latest review
-// ends the wait, also where the review list shows the person's approval of the version before it
-// (decision E1: the seed no longer opens on that earlier approval and passes the changes request
-// on); a newer version ends it whatever the list shows of the version before; and so does the
-// request closed with no approval, while a request still waiting changes nothing. The person's
-// approval opens no step on an ancestor that Dispatch shows accepted or without the legion label:
-// the wait ends instead. A read for another generation changes nothing, and the same read again is
-// told nothing new.
+// The pending-basis seed reads Dispatch's state of the ancestor's document and of its issue, and
+// of the request's close where the document's approval shows the request closed (readBasis), the
+// one read that opens or ends a step's wait on the ancestor's request, and the workflow judges it
+// by its one verdict: the person's approval of the version, as the document's latest review of its
+// latest version, opens the step; a changes request as that latest review ends the wait, also where
+// the review list shows the person's approval of the version before it (decision E1: the seed no
+// longer opens on that earlier approval and passes the changes request on); a newer version ends
+// it whatever the list shows of the version before; and so does the request closed with no
+// approval, by whoever Dispatch shows closed it, while a request still waiting changes nothing.
+// The person's approval opens no step on an ancestor that Dispatch shows accepted or without the
+// legion label: the wait ends instead. A read for another generation changes nothing, and the
+// same read again is told nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
 	reason := "name the rollback path"
@@ -224,7 +235,7 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 		{name: "approved, sent back, and then a newer version", approval: dispatch.Approval{State: "draft", LatestVersion: 5}, reviews: history,
 			ended: "Version 5 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is newer than version 4"},
 		{name: "the request closed with no approval", approval: dispatch.Approval{State: "draft", LatestVersion: 4},
-			ended: "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval"},
+			ended: "session:session-architect closed approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec), as resolved, with no approval of that version."},
 		{name: "still waiting", approval: dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}, pending: true},
 		{name: "another generation", approval: approvedRead, generation: 2, pending: true},
 	} {
@@ -235,6 +246,8 @@ func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 			if tc.ancestor != nil {
 				rig.client.issues[basisSeedAncestor] = *tc.ancestor
 			}
+			// What Dispatch shows of the request, which only a read that finds it closed reads.
+			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
 			generation := max(tc.generation, 1)
 
 			rig.execute(basisSeedPending(generation))
@@ -425,18 +438,20 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 	}
 }
 
-// countedBasisDispatch is basisDispatch counting each document's approval reads and each issue's
-// reads, and answering failure to every read of the document or issue failing names.
+// countedBasisDispatch is basisDispatch counting each document's approval reads, each issue's
+// reads and each ask's reads, and answering failure to every read of the document, issue or ask
+// failing names.
 type countedBasisDispatch struct {
 	*basisDispatch
 	approvalReads map[string]int
 	issueReads    map[string]int
+	askReads      map[string]int
 	failing       string
 	failure       error
 }
 
 func newCountedBasisDispatch(client *basisDispatch) *countedBasisDispatch {
-	return &countedBasisDispatch{basisDispatch: client, approvalReads: map[string]int{}, issueReads: map[string]int{}}
+	return &countedBasisDispatch{basisDispatch: client, approvalReads: map[string]int{}, issueReads: map[string]int{}, askReads: map[string]int{}}
 }
 
 func (d *countedBasisDispatch) Approval(ctx context.Context, artifactID string) (dispatch.Approval, error) {
@@ -453,6 +468,14 @@ func (d *countedBasisDispatch) GetIssue(ctx context.Context, key string) (dispat
 		return dispatch.Issue{}, d.failure
 	}
 	return d.basisDispatch.GetIssue(ctx, key)
+}
+
+func (d *countedBasisDispatch) Ask(ctx context.Context, id string) (dispatch.Ask, error) {
+	d.askReads[id]++
+	if id == d.failing {
+		return dispatch.Ask{}, d.failure
+	}
+	return d.basisDispatch.Ask(ctx, id)
 }
 
 // cueReadsCounted is a record store counting its reads of the steps an event can be a cue for
@@ -517,9 +540,11 @@ const (
 // An event of an ancestor's document, of its approval request or of its issue leads to a read of
 // Dispatch only for a step it is a cue for (workflow.PendingBasisCue), and only through that step's
 // pending-basis seed: it queues one seed for each step it cues and none for any other, and those
-// seeds are the only reads of Dispatch it leads to, of the document and of its issue once each. A
-// document event at the basis version or a newer one, other than that version's own version event,
-// a close of the request other than a person's answer, and an event that shows the ancestor leaving
+// seeds are the only reads of Dispatch it leads to, of the document and of its issue once each,
+// and of the request none, since Dispatch shows it open (the cases that read the request are
+// TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClosed's). A document
+// event at the basis version or a newer one, other than that version's own version event, a close
+// of the request other than a person's answer, and an event that shows the ancestor leaving
 // R1's first condition are cues for the root's waiting step, and for no step that stands open on
 // the document. An event no step waits on queues no seed and leads to no read of Dispatch: the
 // version's own version event, an older version's review, another document's event, a close of
@@ -621,9 +646,9 @@ func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
 			for _, seed := range want {
 				rig.execute(seed)
 			}
-			if reads := len(want); client.approvalReads[cueDoc] != reads || client.issueReads[cueAncestor] != reads {
-				t.Fatalf("Dispatch was read for the document %d times and for the ancestor %d times, want %d each: the seeds' reads alone",
-					client.approvalReads[cueDoc], client.issueReads[cueAncestor], reads)
+			if reads := len(want); client.approvalReads[cueDoc] != reads || client.issueReads[cueAncestor] != reads || client.askReads[cueAsk] != 0 {
+				t.Fatalf("Dispatch was read for the document %d times, for the ancestor %d times and for the request %d times, want %d, %d and none: the seeds' reads alone, of a request Dispatch shows open",
+					client.approvalReads[cueDoc], client.issueReads[cueAncestor], client.askReads[cueAsk], reads, reads)
 			}
 			if tc.waits {
 				if gate := rig.gate(); !gate.PendingOnBasis() || record.GateOpen(gate) {
@@ -634,30 +659,127 @@ func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
 	}
 }
 
+// The pending-basis seed reads the request its step waits on by its id (dispatch.Client.Ask) only
+// where the approval it read shows that request no longer open with no approval of the version
+// (workflow.RequestClosed): no review of the latest version, and no open request or another one.
+// Every other seed reads the document's approval and the ancestor's issue once each and nothing
+// more: the person's approval, an approval that names nobody, a changes request on the version, a
+// newer version, and the request still waiting. The read of the close names who closed the request,
+// so the end of the wait names them in the closer's sentence and as its actor, and a read that
+// finds another closer is a fact of its own (basisReadFound). A request whose read shows it open
+// while its approval shows it closed, its approval and its ask read either side of a reopen, is no
+// close: the seed's run fails, to read again on its backoff, and the step still waits.
+func TestThePendingBasisSeedReadsTheCloseOnlyWhereTheApprovalShowsTheRequestClosed(t *testing.T) {
+	approvedAt := basisSeedApprovedAt.Add(24 * time.Hour)
+	reason := "name the rollback path"
+	closer := dispatch.Actor{Kind: "session", ID: "session-architect"}
+	const closedSentence = "session:session-architect closed approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec), as resolved, with no approval of that version."
+	for _, tc := range []struct {
+		name     string
+		approval dispatch.Approval
+		// closed says the approval shows ask-100 closed, so the seed reads it once.
+		closed bool
+	}{
+		{name: "approved by the person", approval: dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60, By: basisSeedPerson}},
+		{name: "approved naming nobody", approval: dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: approvedAt, Seq: 60}},
+		{name: "changes requested on the version", approval: dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), Reason: &reason,
+			At: approvedAt, Seq: 61, By: basisSeedPerson}},
+		{name: "a newer version", approval: dispatch.Approval{State: "awaiting", LatestVersion: 5, AskID: "ask-100", WaitingOn: "agent"}},
+		{name: "still waiting", approval: dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-100", WaitingOn: "human"}},
+		{name: "closed with no approval", approval: dispatch.Approval{State: "draft", LatestVersion: 4}, closed: true},
+		{name: "another request open on the version", approval: dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: "ask-200", WaitingOn: "human"},
+			closed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newBasisSeedRig(t)
+			rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
+			rig.client.approvals[basisSeedDoc] = tc.approval
+			rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: closer}
+			client := newCountedBasisDispatch(rig.client)
+			rig.runner.dispatch = client
+
+			rig.execute(basisSeedPending(1))
+
+			closes := 0
+			if tc.closed {
+				closes = 1
+			}
+			if client.approvalReads[basisSeedDoc] != 1 || client.issueReads[basisSeedAncestor] != 1 || client.askReads["ask-100"] != closes {
+				t.Fatalf("Dispatch was read for the document %d times, for the ancestor %d times and for the request %d times, want once, once and %d",
+					client.approvalReads[basisSeedDoc], client.issueReads[basisSeedAncestor], client.askReads["ask-100"], closes)
+			}
+			ended := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-ended")
+			if tc.closed && (len(ended) != 1 || !strings.Contains(ended[0].Reason, closedSentence) || ended[0].Actor != closer.Name()) {
+				t.Fatalf("basis-ended notices = %#v, want one naming %q, made by %s", ended, closedSentence, closer.Name())
+			}
+			if !tc.closed && slices.ContainsFunc(ended, func(n record.Notice) bool { return strings.Contains(n.Reason, "closed approval request") }) {
+				t.Fatalf("basis-ended notices = %#v, want none naming a close: the seed read none", ended)
+			}
+		})
+	}
+
+	t.Run("another closer is another fact", func(t *testing.T) {
+		read := func(actor dispatch.Actor) intake.BasisRead {
+			return intake.BasisRead{Approval: dispatch.Approval{State: "draft", LatestVersion: 4}, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true},
+				Closed: &intake.BasisClose{Actor: actor, State: "resolved"}}
+		}
+		if one, other := basisReadFound(read(closer)), basisReadFound(read(basisSeedPerson)); one == other {
+			t.Fatalf("the read closed by %s and the read closed by %s are both %q, want two facts", closer.Name(), basisSeedPerson.Name(), one)
+		}
+	})
+
+	t.Run("the request read open again", func(t *testing.T) {
+		rig := newBasisSeedRig(t)
+		rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
+		rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "draft", LatestVersion: 4}
+		rig.client.asks["ask-100"] = dispatch.Ask{State: "open"}
+
+		row := mustOutboxRow(t, basisSeedRoot, basisSeedPending(1), time.Now())
+		if err := rig.runner.execute(context.Background(), row); err == nil || permanentRefusal(row, err) {
+			t.Fatalf("the seed's run = %v, finished refused %t; want an error, retried", err, permanentRefusal(row, err))
+		}
+		if gate := rig.gate(); !gate.PendingOnBasis() || record.GateOpen(gate) {
+			t.Fatalf("the spec step = %#v, want it still waiting: no read ended it", gate)
+		}
+		if got := noticesOfKind(t, rig.pool, basisSeedRoot, "basis-ended"); len(got) != 0 {
+			t.Fatalf("basis-ended notices = %#v, want none", got)
+		}
+	})
+}
+
 // A pending-basis seed whose read of Dispatch fails returns that failure as the row's error, and
 // the outbox retries the row on its backoff rather than finishing it refused, however the read
-// fails: Dispatch down, a coded refusal that would finish a status write's row, or no answer for
-// the ancestor's issue (permanentRefusal names no pending-basis seed). The seed's read alone opens
-// or ends the wait and no event waits on it, so a long outage puts the opening or the end off by
-// the seed's retries and nothing else: the step stays waiting, and nobody is told anything.
+// fails: Dispatch down, a coded refusal that would finish a status write's row, no answer for the
+// ancestor's issue, or, where the approval shows the request closed, Dispatch down for the read
+// of that request's close (permanentRefusal names no pending-basis seed). The seed's read alone
+// opens or ends the wait and no event waits on it, so a long outage puts the opening or the end
+// off by the seed's retries and nothing else: the step stays waiting, and nobody is told anything.
 func TestAFailedPendingBasisSeedIsRetriedOnItsBackoff(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		failing string
 		failure error
+		// closed has Dispatch show the request closed with no approval, which the seed's read of
+		// it would end the wait on, rather than the person's approval, which would open the step.
+		closed bool
 	}{
-		{"Dispatch down for the document", basisSeedDoc, &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}},
-		{"Dispatch refusing the document", basisSeedDoc, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such artifact"}},
-		{"no answer for the ancestor's issue", basisSeedAncestor, &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}},
+		{"Dispatch down for the document", basisSeedDoc, &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}, false},
+		{"Dispatch refusing the document", basisSeedDoc, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such artifact"}, false},
+		{"no answer for the ancestor's issue", basisSeedAncestor, &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}, false},
+		{"Dispatch down for the request's close", "ask-100", &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			rig := newBasisSeedRig(t)
 			rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
 			// What Dispatch would answer: the person's approval of the version, which would open the
-			// step.
+			// step, or the request closed by a session, which would end the wait.
 			rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: basisSeedApprovedAt.Add(24 * time.Hour),
 				Seq: 60, By: basisSeedPerson}
+			if tc.closed {
+				rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "draft", LatestVersion: 4}
+				rig.client.asks["ask-100"] = dispatch.Ask{State: "resolved", ResolvedBy: dispatch.Actor{Kind: "session", ID: "session-architect"}}
+			}
 			client := newCountedBasisDispatch(rig.client)
 			client.failing, client.failure = tc.failing, tc.failure
 			now := time.Now().UTC().Truncate(time.Microsecond)

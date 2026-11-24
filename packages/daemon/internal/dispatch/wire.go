@@ -160,6 +160,17 @@ type approvalResponse struct {
 	By *actor `json:"by"`
 }
 
+// askReadResponse is one ask as GET /api/v1/asks/{id} answers it, its thread left undecoded: the
+// ask's state, and the actor its resolution names (no resolution for an open or answered ask).
+type askReadResponse struct {
+	Ask struct {
+		State      string `json:"state"`
+		Resolution *struct {
+			Actor actor `json:"actor"`
+		} `json:"resolution"`
+	} `json:"ask"`
+}
+
 // handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
 // callers hold a completion to who wrote which record, never to what it says.
 type handoffResponse struct {

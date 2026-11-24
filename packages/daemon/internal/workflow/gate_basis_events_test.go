@@ -70,6 +70,21 @@ func seedRead(approval dispatch.Approval, ancestor intake.AncestorRead) intake.P
 		BasisVersion: 4, Ask: "ask-100", Read: intake.BasisRead{Approval: approval, Ancestor: ancestor}}
 }
 
+// closedBy is the pending-basis seed's read (seedRead) once actor closed ask-100 with no review of
+// version 4 (requestClosed), with ancestor for LEGION-100's issue: the seed reads that close by the
+// request's id as well (intake.BasisRead.Closed), resolved by actor.
+func closedBy(actor dispatch.Actor, ancestor intake.AncestorRead) intake.PendingBasisRead {
+	read := seedRead(requestClosed(), ancestor)
+	read.Read.Closed = &intake.BasisClose{Actor: actor, State: "resolved"}
+	return read
+}
+
+// closedSentence is the act that ends LEGION-208's wait once closer, an actor's name or the words
+// for none, closed ask-100 with no approval of version 4 (closedBy).
+func closedSentence(closer string) string {
+	return closer + " closed approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec), as resolved, with no approval of that version."
+}
+
 // currentRead is the seed's read (seedRead) when act is the last thing done to LEGION-100's
 // document (latestOf) and LEGION-100 is at work.
 func currentRead(act intake.DispatchArtifact) intake.PendingBasisRead {
@@ -193,26 +208,27 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 // withdrawal of the request that the ancestor's close records (the ask event Dispatch appends
 // before the ancestor's own issue.closed), the ancestor done or in Dispatch's retro, and the
 // ancestor losing the legion label; and a newer version or a changes request of the root's own
-// document, which ends the wait as its own event. The read names nobody who closed the request,
-// so the end of a close names the close as Dispatch shows it, and, where the ancestor has left
-// R1's first condition, that leave first. The step stays closed, registered on the root's own
-// document with no basis and resting on nothing, the root's architect gets a basis-ended notice
-// that names the act, and the ancestor's architect a resting-root notice of the end, while the
-// ancestor's tree lives: an ancestor that is the root of its own tree and is set done has no live
-// tree once the seed reads, and its architect is told nothing.
+// document, which ends the wait as its own event. The seed reads the close of the request by its
+// id, so the end of a close names whoever closed it, as the end's actor too, and, where the
+// ancestor has left R1's first condition, that leave first. The step stays closed, registered on
+// the root's own document with no basis and resting on nothing, the root's architect gets a
+// basis-ended notice that names the act and who made it, and the ancestor's architect a
+// resting-root notice of the end: also where the ancestor is the root of its own tree, set done,
+// whose tree lingers once the seed reads. An ancestor the daemon records no tree of is told
+// nothing, of the registration or of the end.
 func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 	session := dispatch.Actor{Kind: "session", ID: "session-other"}
 	closed := func(actor dispatch.Actor) intake.DispatchAskClosed {
 		return intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc, State: "resolved",
 			Actor: actor, Mark: askSeq(61)}
 	}
-	const closedWithNoApproval = "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval of that version."
 	ancestorAt := func(status string, labelled bool) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: status, Title: "ancestor", Rank: "T", HandedOver: labelled}
 	}
 	shown := func(status string, labelled bool) *intake.PendingBasisRead {
 		return new(seedRead(requestOpen(), intake.AncestorRead{Status: status, HandedOver: labelled}))
 	}
+	done := intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}
 	changes := ancestorReview(intake.DispatchArtifactChangesRequested, 4, 61, "name the rollback path")
 	newer := ancestorReview(intake.DispatchArtifactVersion, 5, 61, "")
 	for _, tc := range []struct {
@@ -220,37 +236,39 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 		fact intake.Fact
 		// read is the pending-basis seed's read the event's seed makes, nil for an event of the
 		// root's own document, which ends the wait itself.
-		read    *intake.PendingBasisRead
-		act     string
+		read *intake.PendingBasisRead
+		act  string
+		// actor is who made the act, as the basis-ended notice names it ("" for nobody).
+		actor   string
 		version int
 		changes int
 		// member records LEGION-100 as a member issue of another live tree, LEGION-090, rather
 		// than as the root of its own.
 		member bool
-		// untold says the ancestor's architect gets no resting-root notice of the end.
-		untold bool
+		// unrecorded leaves LEGION-100 an issue the daemon does not record, so it records no tree
+		// of it, from before the registration.
+		unrecorded bool
 	}{
 		{name: "a changes request on the ancestor's version", fact: changes, read: new(currentRead(changes)),
-			act: `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`},
+			act: `user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): "name the rollback path".`, actor: "user:alice"},
 		{name: "a newer version of the ancestor's document", fact: newer, read: new(currentRead(newer)),
 			act: "Version 5 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is newer than version 4"},
-		{name: "a session's close of the request", fact: closed(session), read: new(seedRead(requestClosed(), ancestorAtWork)), act: closedWithNoApproval},
-		{name: "the person's close of the request with no review", fact: closed(basisPerson), read: new(seedRead(requestClosed(), ancestorAtWork)),
-			act: closedWithNoApproval},
-		{name: "the ancestor's close, which withdraws the request", fact: closed(basisPerson),
-			read: new(seedRead(requestClosed(), intake.AncestorRead{Status: record.DoneStatus, HandedOver: true})),
-			act:  "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. " + closedWithNoApproval},
+		{name: "a session's close of the request", fact: closed(session), read: new(closedBy(session, ancestorAtWork)),
+			act: closedSentence("session:session-other"), actor: "session:session-other"},
+		{name: "the person's close of the request with no review", fact: closed(basisPerson), read: new(closedBy(basisPerson, ancestorAtWork)),
+			act: closedSentence("user:alice"), actor: "user:alice"},
+		{name: "the ancestor's close, which withdraws the request", fact: closed(basisPerson), read: new(closedBy(basisPerson, done)),
+			act: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. " + closedSentence("user:alice"), actor: "user:alice"},
 		// The withdrawal read after the ancestor's reopen, which left ask-100 closed: the read shows
 		// the ancestor at work, so the end names no acceptance of it.
 		{name: "the ancestor's close, which withdraws the request, read after its reopen", fact: closed(basisPerson),
-			read: new(seedRead(requestClosed(), ancestorAtWork)), act: closedWithNoApproval},
-		// The ancestor set done is a root whose tree no longer lives when the seed's read ends the
-		// wait, and queueRestingRoot queues nothing for an ancestor in no live tree; the root's
-		// architect still gets basis-ended with the reason.
-		{name: "the ancestor done", fact: ancestorAt("done", true), read: shown("done", true), act: "Dispatch shows LEGION-100 done", untold: true},
+			read: new(closedBy(basisPerson, ancestorAtWork)), act: closedSentence("user:alice"), actor: "user:alice"},
+		{name: "the ancestor done", fact: ancestorAt("done", true), read: shown("done", true), act: "Dispatch shows LEGION-100 done"},
 		{name: "the ancestor done, a member issue of another live tree", fact: intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated",
 			Status: "done", Title: "ancestor", Rank: "T", HandedOver: true, Parent: "LEGION-090"}, read: shown("done", true),
 			act: "Dispatch shows LEGION-100 done", member: true},
+		{name: "the ancestor done, with no tree the daemon records", fact: ancestorAt("done", true), read: shown("done", true),
+			act: "Dispatch shows LEGION-100 done", unrecorded: true},
 		{name: "the ancestor in Dispatch's retro", fact: ancestorAt("retro", true), read: shown("retro", true), act: "Dispatch shows LEGION-100 retro"},
 		{name: "the ancestor without the legion label", fact: ancestorAt("in_progress", false), read: shown("in_progress", false),
 			act: "LEGION-100 no longer carries the legion label."},
@@ -258,10 +276,23 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 			Kind: intake.DispatchArtifactVersion, Version: 5, Mark: askSeq(9)}, act: "Version 5 of the primary document of LEGION-208", version: 5},
 		{name: "a changes request on the root's own document", fact: intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc,
 			Kind: intake.DispatchArtifactChangesRequested, Version: 4, Reason: "say more", Actor: basisPerson, Mark: askSeq(9)},
-			act: `user:alice requested changes on version 4 of the primary document of LEGION-208 (dispatch://LEGION-208/spec), the root's own document: "say more".`, changes: 1},
+			act:   `user:alice requested changes on version 4 of the primary document of LEGION-208 (dispatch://LEGION-208/spec), the root's own document: "say more".`,
+			actor: "user:alice", changes: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, _, apply := registeredPending(t)
+			var pool *pgxpool.Pool
+			var apply func(string, intake.Fact) intake.Result
+			if tc.unrecorded {
+				pool = migratedPool(t)
+				apply = applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+				seedGatedTree(t, pool)
+				apply("register-pending", onBasis(pendingBasis(), 6))
+				if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() {
+					t.Fatalf("the spec step after the pending registration on an ancestor the daemon does not record = %#v, want it pending", gate)
+				}
+			} else {
+				pool, _, apply = registeredPending(t)
+			}
 			if tc.member {
 				seedIssue(t, pool, record.Issue{Key: "LEGION-090", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: "LEGION-090", Project: "LEGION", Title: "tree", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "S",
@@ -285,14 +316,15 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 			}
 			ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
 			if len(ended) != 1 || ended[0].Ref != "dispatch://LEGION-100/spec" || ended[0].Version != 4 || ended[0].Role != claim.RoleArchitect ||
-				!strings.Contains(ended[0].Reason, tc.act) || !strings.Contains(ended[0].Reason, "no longer waits on approval request ask-100 of version 4") {
-				t.Fatalf("basis-ended notices = %#v, want one naming %q and the end of the wait on ask-100", ended, tc.act)
+				ended[0].Actor != tc.actor || !strings.Contains(ended[0].Reason, tc.act) ||
+				!strings.Contains(ended[0].Reason, "no longer waits on approval request ask-100 of version 4") {
+				t.Fatalf("basis-ended notices = %#v, want one naming %q, made by %q, and the end of the wait on ask-100", ended, tc.act, tc.actor)
 			}
 			resting := noticesOfKind(t, pool, basisAncestor, "resting-root")
 			switch {
-			case tc.untold && len(resting) != 1:
-				t.Fatalf("resting-root notices = %#v, want the pending registration's alone: the ancestor's tree no longer lives", resting)
-			case !tc.untold && (len(resting) != 2 || !strings.Contains(resting[1].Reason, tc.act)):
+			case tc.unrecorded && len(resting) != 0:
+				t.Fatalf("resting-root notices = %#v, want none: the daemon records no tree of the ancestor", resting)
+			case !tc.unrecorded && (len(resting) != 2 || !strings.Contains(resting[1].Reason, tc.act)):
 				t.Fatalf("resting-root notices = %#v, want the pending registration's and its end naming %q", resting, tc.act)
 			}
 			if got := noticesOfKind(t, pool, gatedRoot, "design-changes-requested"); len(got) != tc.changes {
@@ -316,7 +348,7 @@ func TestAPendingBasisOfAStepTheDeploymentDoesNotGateTakesNoEvent(t *testing.T) 
 		read intake.PendingBasisRead
 	}{
 		{"a session's close of the request", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc,
-			State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}, seedRead(requestClosed(), ancestorAtWork)},
+			State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}, closedBy(dispatch.Actor{Kind: "session", ID: "session-other"}, ancestorAtWork)},
 		{"the ancestor done", intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: "done", Title: "ancestor", Rank: "T", HandedOver: true},
 			seedRead(requestOpen(), intake.AncestorRead{Status: record.DoneStatus, HandedOver: true})},
 	} {
@@ -685,8 +717,9 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 			f.Read.Ancestor.HandedOver = false
 		}), ended: "LEGION-100 no longer carries the legion label."},
 		{name: "a newer version", fact: read(newer, as), ended: "Version 5 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is newer than version 4"},
-		{name: "the request closed with no approval", fact: read(requestClosed(), as),
-			ended: "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval"},
+		{name: "the request closed with no approval", fact: read(requestClosed(), func(f *intake.PendingBasisRead) {
+			f.Read.Closed = &intake.BasisClose{Actor: basisPerson, State: "resolved"}
+		}), ended: closedSentence("user:alice")},
 		{name: "still waiting", fact: read(requestOpen(), as), pending: true},
 		{name: "another generation", fact: read(approved, func(f *intake.PendingBasisRead) { f.Generation = 2 }), pending: true},
 		{name: "another request", fact: read(approved, func(f *intake.PendingBasisRead) { f.Ask = "ask-99" }), pending: true},
@@ -735,20 +768,27 @@ func TestThePendingBasisReadOpensOrEndsOnlyAStepStillPendingOnIt(t *testing.T) {
 // only a Dispatch that records no reviewer gives, decides nothing: on an ancestor that has left, as
 // the read or the daemon's own store shows it, the wait ends with the leave's words, and on one
 // still meeting the condition nothing changes. A request no longer open with no approval of the
-// version ends the wait, and on an ancestor that has left the end names the leave and then the
-// close. The read names nobody who closed the request, so none of these ends names an actor.
+// version ends the wait by whoever closed it, as the seed's read of the close names them, and on
+// an ancestor that has left the end names the leave and then that close. The closer is the end's
+// actor; a close that names no actor is named as Someone Dispatch does not name, and its end has no
+// actor. A read of a closed request that carries no read of its close is no read the seed makes,
+// and an error.
 func TestTheVerdictAsksTheAncestorsLeaveWhereNothingElseDecides(t *testing.T) {
 	gate := record.PendOnBasis(record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4}, *pendingBasis(), "ask-100")
 	nobody := dispatch.Approval{IssueKey: basisAncestor, State: "approved", LatestVersion: 4, Version: new(4), At: basisApprovedAt.Add(24 * time.Hour), Seq: 60}
-	const closedWithNoApproval = "Dispatch shows approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) closed with no approval of that version."
 	done, unlabelled := intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, intake.AncestorRead{Status: "in_progress"}
+	bySession := &intake.BasisClose{Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, State: "resolved"}
 	for _, tc := range []struct {
 		name     string
 		approval dispatch.Approval
 		ancestor intake.AncestorRead
+		// closed is the seed's read of the request's close, nil for none.
+		closed *intake.BasisClose
 		// accepted is what the daemon's own store shows of the ancestor's acceptance.
 		accepted string
 		want     basisVerdict
+		// fails says the verdict is an error.
+		fails bool
 	}{
 		{name: "an approval naming nobody, the ancestor done", approval: nobody, ancestor: done,
 			want: basisVerdict{kind: basisEnds, text: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."}},
@@ -758,17 +798,26 @@ func TestTheVerdictAsksTheAncestorsLeaveWhereNothingElseDecides(t *testing.T) {
 			accepted: "The daemon records LEGION-100 in retro", want: basisVerdict{kind: basisEnds, text: "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."}},
 		{name: "an approval naming nobody, the ancestor at work", approval: nobody, ancestor: ancestorAtWork,
 			want: basisVerdict{text: "an approval of the ancestor's version that names nobody opens and ends no step waiting on it"}},
-		{name: "the request closed, the ancestor done", approval: requestClosed(), ancestor: done,
-			want: basisVerdict{kind: basisEnds, text: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. " + closedWithNoApproval}},
-		{name: "the request closed, the ancestor without the legion label", approval: requestClosed(), ancestor: unlabelled,
-			want: basisVerdict{kind: basisEnds, text: "LEGION-100 no longer carries the legion label. " + closedWithNoApproval}},
-		{name: "the request closed, the ancestor at work", approval: requestClosed(), ancestor: ancestorAtWork,
-			want: basisVerdict{kind: basisEnds, text: closedWithNoApproval}},
+		{name: "the request closed, the ancestor done", approval: requestClosed(), ancestor: done, closed: bySession,
+			want: basisVerdict{kind: basisEnds, text: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. " + closedSentence("session:session-other"),
+				actor: "session:session-other"}},
+		{name: "the request closed, the ancestor without the legion label", approval: requestClosed(), ancestor: unlabelled, closed: bySession,
+			want: basisVerdict{kind: basisEnds, text: "LEGION-100 no longer carries the legion label. " + closedSentence("session:session-other"),
+				actor: "session:session-other"}},
+		{name: "the request closed, the store showing the ancestor accepted", approval: requestClosed(), ancestor: ancestorAtWork, closed: bySession,
+			accepted: "The daemon records LEGION-100 in retro", want: basisVerdict{kind: basisEnds,
+				text: "The daemon records LEGION-100 in retro, so LEGION-100 is accepted. " + closedSentence("session:session-other"), actor: "session:session-other"}},
+		{name: "the request closed, the ancestor at work", approval: requestClosed(), ancestor: ancestorAtWork, closed: bySession,
+			want: basisVerdict{kind: basisEnds, text: closedSentence("session:session-other"), actor: "session:session-other"}},
+		{name: "the request closed by an actor Dispatch does not name", approval: requestClosed(), ancestor: ancestorAtWork,
+			closed: &intake.BasisClose{State: "resolved"}, want: basisVerdict{kind: basisEnds, text: closedSentence("Someone Dispatch does not name")}},
+		{name: "the request closed, with no read of its close", approval: requestClosed(), ancestor: ancestorAtWork, fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := judgeBasisRead(gate, intake.BasisRead{Approval: tc.approval, Ancestor: tc.ancestor}, func() (string, error) { return tc.accepted, nil })
-			if err != nil || got != tc.want {
-				t.Fatalf("the verdict = %+v, %v; want %+v", got, err, tc.want)
+			got, err := judgeBasisRead(gate, intake.BasisRead{Approval: tc.approval, Ancestor: tc.ancestor, Closed: tc.closed},
+				func() (string, error) { return tc.accepted, nil })
+			if (err != nil) != tc.fails || got != tc.want {
+				t.Fatalf("the verdict = %+v, %v; want %+v, failing %t", got, err, tc.want, tc.fails)
 			}
 		})
 	}
@@ -994,7 +1043,7 @@ func TestAPendingBasisOnARootOutOfTheWorkflowEndsWithNobodyToldWhenItsRequestClo
 
 	cueThenRead(t, pool, apply, "request-withdrawn", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
 		Artifact: basisDoc, State: "resolved", Actor: basisPerson, Mark: askSeq(61)},
-		seedRead(requestClosed(), intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}))
+		closedBy(basisPerson, intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}))
 
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.PendingOnBasis() || gate.Basis != nil || record.GateOpen(gate) ||
 		gate.ArtifactID != gateDoc || gate.LatestVersion != 4 || gate.RestsOnIssue(basisAncestor) {

@@ -44,6 +44,9 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// Ask reads one ask by its id (GET /api/v1/asks/{id}): its state and who resolved it (the
+	// type Ask).
+	Ask(ctx context.Context, id string) (Ask, error)
 	// Reviews is every review Dispatch keeps of a document, newest first.
 	Reviews(ctx context.Context, artifactID string) ([]Review, error)
 	// DocumentVersion is the markdown one version of a document holds, as Dispatch stored it.
@@ -373,6 +376,18 @@ func (a Approval) LatestReviewer() Actor {
 		return Actor{}
 	}
 	return a.By
+}
+
+// Ask is one ask as Dispatch reads it by its id (GET /api/v1/asks/{id}). State is the ask's state,
+// `open`, `answered` or `resolved`, the word the type of the ask.* event that closed it ends in
+// (intake's DispatchAskClosed.State). ResolvedBy is the actor its resolution names, which is the
+// actor of the ask.resolved event that closed it (intake's DispatchAskClosed.Actor): the session
+// or the person that resolved it, whoever set its issue done for the withdrawal that close records,
+// or Dispatch's settlement. It is zero for an ask with no resolution, and for a resolution that
+// names no actor.
+type Ask struct {
+	State      string
+	ResolvedBy Actor
 }
 
 // Review is one review Dispatch keeps of a document, pinned to the version it was given on. State

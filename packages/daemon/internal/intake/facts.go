@@ -369,7 +369,9 @@ type AncestorRead struct {
 // ancestor's request for a person's approval of a version of the ancestor's document
 // (dispatch://INFRA-3320, R1): the document's approval as Dispatch derives it (Approval: its
 // latest version, its latest review with that review's sequence, time and reviewer, and the
-// request open on it), and the ancestor's issue (Ancestor). The step's pending-basis seed reads it
+// request open on it), the ancestor's issue (Ancestor), and, where the approval shows that request
+// no longer open with no approval of the version (workflow's RequestClosed), the request's close as
+// Dispatch records it (Closed; nil for every other read). The step's pending-basis seed reads it
 // (PendingBasisRead), which every event that is a cue for the step queues (workflow's
 // PendingBasisCue), and the workflow opens or ends the wait from it alone, never from the event:
 // an event delivered late, or replayed, says what Dispatch was when it was written, and the read
@@ -377,6 +379,18 @@ type AncestorRead struct {
 type BasisRead struct {
 	Approval dispatch.Approval
 	Ancestor AncestorRead
+	Closed   *BasisClose
+}
+
+// BasisClose is the close of the approval request a step waits on, read from Dispatch by the ask's
+// id (dispatch.Client.Ask) where the approval shows the request closed with no approval of the
+// version: who closed it (Actor, the actor its resolution names, zero where Dispatch names none)
+// and in what state (State, `resolved` for every close but an answer), as DispatchAskClosed.Actor
+// and State hold them for the ask.* event of that close. The end of the wait names that actor as
+// the one who closed the request (workflow's judgeBasisRead).
+type BasisClose struct {
+	Actor dispatch.Actor
+	State string
 }
 
 // PendingBasisRead is the pending-basis seed's read (record.PendingBasisSeed) of the ancestor's

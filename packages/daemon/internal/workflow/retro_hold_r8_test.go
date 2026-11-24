@@ -176,7 +176,7 @@ func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() {
 		t.Fatalf("R's spec step after the close = %#v, want it still waiting: the close queues its seed and ends nothing", gate)
 	}
-	if result := apply("request-closed-read", seedRead(requestClosed(), ancestorAtWork)); result.Refusal != nil {
+	if result := apply("request-closed-read", closedBy(dispatch.Actor{Kind: "session", ID: "session-other"}, ancestorAtWork)); result.Refusal != nil {
 		t.Fatalf("the seed's read of the closed request was refused: %+v", result.Refusal)
 	}
 

@@ -520,6 +520,24 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// Ask reads GET /api/v1/asks/{id}: the ask's state and the actor its resolution names (the type
+// Ask). An ask Dispatch does not have is its 404 NOT_FOUND (Missing), and an answer that names no
+// state is an error, never an ask read as open or closed.
+func (c *HTTPClient) Ask(ctx context.Context, id string) (Ask, error) {
+	var response askReadResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/asks/"+url.PathEscape(id), nil, &response); err != nil {
+		return Ask{}, err
+	}
+	if response.Ask.State == "" {
+		return Ask{}, fmt.Errorf("Dispatch ask %q answered no state", id)
+	}
+	read := Ask{State: response.Ask.State}
+	if response.Ask.Resolution != nil {
+		read.ResolvedBy = Actor(response.Ask.Resolution.Actor)
+	}
+	return read, nil
+}
+
 // Reviews reads GET /api/v1/artifacts/{id}/reviews: every review Dispatch keeps of the document,
 // newest first in the order their events committed, as Dispatch lists them.
 func (c *HTTPClient) Reviews(ctx context.Context, artifactID string) ([]Review, error) {

@@ -243,6 +243,11 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 	return primary(dispatch.Approval{State: "none", LatestVersion: 1}), nil
 }
 
+// Ask answers Dispatch's 404 for every ask: no route of the API reads an ask by its id.
+func (r *statusRecorder) Ask(context.Context, string) (dispatch.Ask, error) {
+	return dispatch.Ask{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "ask not found"}
+}
+
 // Artifacts answers Dispatch's list of an issue's documents and files: those the case under test
 // gave the issue.
 func (r *statusRecorder) Artifacts(_ context.Context, key string) ([]dispatch.Artifact, error) {
