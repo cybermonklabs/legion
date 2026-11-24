@@ -85,6 +85,7 @@ type tasksLive struct {
 // later versions while its first task runs, and the fourth is given a plan whose needs form a
 // cycle.
 func TestTasksLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newTasksLive).
 	l := newTasksLive(t)
 	example, agents, change, cycle := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key
 	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s and %s; daemon at dispatch_url %s",

@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
@@ -226,7 +227,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // handle every other call shares.
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     Pool
+	pool     store.TxPool
 	js       jetstream.JetStream
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
@@ -263,7 +264,7 @@ type Consumers struct {
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -358,7 +359,7 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, js, stream, pool, logger, config)
@@ -375,7 +376,7 @@ func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.
 // pool keeps one and at the next message otherwise (openConsumer). The stream's info it reads for
 // a stored position comes through a handle of its own on js, as DispatchTarget's does, and never
 // through stream, which other goroutines share.
-func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -635,9 +636,10 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 	lag := &lagWatch{consumer: consumer.CachedInfo().Name, logger: c.spec.Logger, now: time.Now}
 	names := &issueNames{}
 	dropped := newDroppedSettlements()
+	noHeadRepo := &pacedCount{}
 	consuming, err := consumer.Consume(func(message jetstream.Msg) {
 		lag.observe(message)
-		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers, names, dropped) {
+		if consumeMessage(ctx, message, c.spec, c.repositories(), c.pool, handlers, names, dropped, noHeadRepo) {
 			progress.handle(c.spec.Now())
 		}
 	}, jetstream.PullMaxMessages(consumerFetchBatch))
@@ -663,27 +665,56 @@ func (c *Consumers) consumeConsumer(ctx context.Context, consumer jetstream.Cons
 // as the poison it is. An old-form name is not: Dispatch publishes every issue event in the old
 // form until its producers move, and every daemon hears every project's, so the first is logged at
 // INFO at once and then at most one each issueNameLogEvery, each line with the running count, which
-// is what tells an operator the old form is still read here without a line per event.
+// is what tells an operator the old form is still read here without a line per event (pacedCount).
 type issueNames struct {
-	legacy, neither atomic.Uint64
-	// legacyLogged is when the last old-form name was logged, in Unix nanoseconds of the consumer
-	// spec's clock; zero before the first.
-	legacyLogged atomic.Int64
+	legacy  pacedCount
+	neither atomic.Uint64
 }
 
 // issueNameLogEvery is the most often an old-form issue name is logged (issueNames).
 const issueNameLogEvery = time.Minute
 
-// legacyRead counts one issue event named in the old form, read at now, and answers the running
-// count and whether this one is due to be logged.
-func (n *issueNames) legacyRead(now time.Time) (uint64, bool) {
-	count := n.legacy.Add(1)
-	last := n.legacyLogged.Load()
-	if last != 0 && now.Sub(time.Unix(0, last)) < issueNameLogEvery {
+// pacedCount counts, for one durable consumer, the events of one kind it read that it logs
+// without a line per event: the first at once, then at most one each interval, each line with the
+// running count. The old-form issue names are one such kind (issueNames), and the pull request
+// events that name no head repository another (noHeadRepoLine).
+type pacedCount struct {
+	count atomic.Uint64
+	// logged is when the last one was logged, in Unix nanoseconds of the consumer spec's clock;
+	// zero before the first.
+	logged atomic.Int64
+}
+
+// read counts one event, read at now, and answers the running count and whether this one is due
+// to be logged, the last one logged being at least every before it.
+func (p *pacedCount) read(now time.Time, every time.Duration) (uint64, bool) {
+	count := p.count.Add(1)
+	last := p.logged.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < every {
 		return count, false
 	}
-	return count, n.legacyLogged.CompareAndSwap(last, now.UnixNano())
+	return count, p.logged.CompareAndSwap(last, now.UnixNano())
 }
+
+// headRepoListenerRelease is the first release of the Envoy listener that names the repository of
+// a pull request's head (head_repo) in each pull request event it publishes: legion-envoy-v29.1.0
+// is the first legion-envoy tag whose commit holds the change that added the field.
+const headRepoListenerRelease = "legion-envoy-v29.1.0"
+
+// noHeadRepoLine is the line that names a pull request event of an issue's branch dropped
+// because it names no head repository (decodePullRequest). Two causes give such an event, and
+// nothing in its payload tells them apart, so the line names both, the likelier first: behind a
+// listener of an earlier release than headRepoListenerRelease every event of every pull request
+// comes so, while a current listener leaves the field out only for a fork, named like an issue's
+// branch, that GitHub no longer has. The first is the one an operator can act on, and the one
+// behind which the daemon records no pull request at all.
+const noHeadRepoLine = "intake: a pull request event of an issue's branch was dropped: it names no head repository, so no pull request is recorded from it: " +
+	"either an Envoy listener of an earlier release than " + headRepoListenerRelease + ", the first that sends head_repo, sent it, " +
+	"and this daemon records no pull request until that listener is upgraded, or its head is a fork that GitHub no longer has"
+
+// noHeadRepoLogEvery is the most often a pull request event that names no head repository is
+// logged (noHeadRepoLine).
+const noHeadRepoLogEvery = time.Minute
 
 // DroppedSettlementsKept is how many checks settlements each line that names a dropped settlement
 // remembers having logged (RecentKeys): the consumer's for the decoder's refusals, by event id,
@@ -843,8 +874,11 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 //
 // names counts the issue events this consumer read named in the old form, and the ones named in
 // neither form, which are poison (issueNames). dropped is what it remembers of the checks
-// settlements whose drop it logged (droppedSettlements).
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler, names *issueNames, dropped *droppedSettlements) bool {
+// settlements whose drop it logged (droppedSettlements). noHeadRepo counts the pull request events
+// of an issue's branch it read that name no head repository (noHeadRepoLine); only the GitHub
+// consumer reads pull request events, so its count is the daemon's.
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool store.TxPool, handlers []Handler, names *issueNames,
+	dropped *droppedSettlements, noHeadRepo *pacedCount) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		attributes := []any{"error", err}
@@ -871,8 +905,18 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		logMessage(spec.Logger, slog.LevelWarn, "intake: a checks settlement was dropped: the decoder refused it", message, attributes...)
 	}
 	if decoded.LegacyName {
-		if count, due := names.legacyRead(spec.Now()); due {
+		if count, due := names.legacy.read(spec.Now(), issueNameLogEvery); due {
 			logMessage(spec.Logger, slog.LevelInfo, "an issue event named in the old form", message, "legacy_count", count)
+		}
+	}
+	// A pull request event of an issue's branch that names no head repository decodes to no fact
+	// and is acknowledged below, so this line is all that is left of it: behind a listener of an
+	// earlier release than headRepoListenerRelease every pull request event comes so, and the
+	// daemon would record no pull request and say nothing. The first is logged at WARN at once,
+	// then at most one each noHeadRepoLogEvery, each with the running count (pacedCount).
+	if decoded.NoHeadRepo {
+		if count, due := noHeadRepo.read(spec.Now(), noHeadRepoLogEvery); due {
+			logMessage(spec.Logger, slog.LevelWarn, noHeadRepoLine, message, "event_id", decoded.EventID, "no_head_repo_count", count)
 		}
 	}
 
@@ -970,7 +1014,7 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
 // handling as a whole runs to HandlerLimit. dropped is the consumer's memory of the checks
 // settlements whose drop it logged (droppedSettlements).
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
@@ -978,7 +1022,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
+		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a fact transaction", message,
 			"event_id", decoded.EventID)
 		// Each checks settlement of a pull request the daemon does not record is named once at
 		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
@@ -1073,14 +1117,14 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
-// while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
-// recorded pull request, so one of any other pull request is acknowledged with no transaction
-// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a repository the daemon hears reviews and checks. A pull request recorded after this read, by
-// a later opened, gets its checks and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
+// while the fact names the one it moved to. It is one read-only transaction per name within the
+// one AckWait, made before the review's GitHub reads (resolveReviewBody,
+// resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
+// one of any other pull request is acknowledged with no transaction under the fact lock
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a repository the
+// daemon hears reviews and checks. A pull request recorded after this read, by a later opened,
+// gets its checks and reviews from their next event.
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {
@@ -1094,7 +1138,9 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(read, pool, name, number)
+		return store.ReadOnly(read, pool, fmt.Sprintf("read whether %s#%d is recorded", name, number), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, number)
+		})
 	})
 }
 

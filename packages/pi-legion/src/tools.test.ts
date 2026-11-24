@@ -204,8 +204,8 @@ const STOP_TASK_TERMS = {
   ],
 } as const;
 
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, and names
- * each refusal code its text gives. */
+/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names
+ * each refusal code its text gives, and says why a parent waits for the issues beneath it. */
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [
@@ -215,6 +215,7 @@ const SIGN_OFF_TERMS = {
     "ISSUE_OUTSIDE_TREE",
     "SIGNOFF_STALE_GENERATION",
     "SIGNOFF_STALE_ENTRY",
+    "since a parent is accepted only once no issue beneath it is still in the workflow",
   ],
 } as const;
 
@@ -245,7 +246,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-  "under it now: wait for the ancestor to close, then release it. " +
+  "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
@@ -2557,6 +2558,41 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   // A done issue's claims are retired, so its line stands alone: that is what pays for naming
   // every key.
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
+});
+
+// The controller reads the live trees and the held issues off the summary: one `trees` line
+// naming the root of every live tree, `(none)` when no tree runs and no line for a body the daemon
+// stripped of `trees`, and one `held` line per held issue with its reason and the issues that hold
+// it. The first state is the daemon's golden, read through the client.
+test("read_state's summary names the live trees and each held issue with its reason", async () => {
+  const admissionLines = (lines: readonly string[]) =>
+    lines.filter((line) => /^(active|waiting|trees|blocked|held) /.test(line));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(admissionLines(golden)).toEqual([
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-240 LEGION-241",
+    "waiting LEGION-212 LEGION-211",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219 LEGION-240 LEGION-241",
+    "blocked LEGION-209 on LEGION-210 LEGION-213",
+    "blocked LEGION-211 on LEGION-210",
+    "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
+    "held LEGION-214 label_off",
+  ]);
+
+  const idle = legionState({
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+  });
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
+    "active (none)",
+    "waiting (none)",
+    "trees (none)",
+  ]);
+
+  const stripped = legionState();
+  expect(stripped.admission?.trees).toBeUndefined();
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: stripped }).daemon))).toEqual(
+    ["active (none)", "waiting (none)"]
+  );
 });
 
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,

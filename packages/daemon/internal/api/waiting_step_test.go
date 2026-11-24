@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seedAWaitsForTheTester records key, at generation 1, in testing under an owner's plan where the
@@ -41,7 +42,7 @@ func seedAWaitsForTheTester(t *testing.T, h *harness, key string) {
 		step("z", 1, claim.RoleReviewer, "review", "reviewer"),
 	}
 	since := time.Date(2026, 11, 17, 7, 0, 0, 0, time.UTC)
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}
@@ -69,7 +70,7 @@ func plannedTasks(t *testing.T, h *harness, key string) map[string]record.PlanTa
 	t.Helper()
 	ctx := context.Background()
 	tasks := map[string]record.PlanTask{}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := record.NewStore().Plan(ctx, tx, key, 1)
 		if err != nil || stored == nil {
 			return err

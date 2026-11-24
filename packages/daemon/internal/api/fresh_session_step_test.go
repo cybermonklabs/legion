@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -126,7 +127,7 @@ func TestAControllersFreshSessionWhoseStepMovesUnderItRestartsNoOtherAgentsStep(
 			switch tc.at {
 			case "act":
 				h.supervisor.beforeMachine = func() {
-					if err := h.store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().PutPhase(ctx, tx, moved) }); err != nil {
+					if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutPhase(ctx, tx, moved) }); err != nil {
 						t.Errorf("move the tester's step: %v", err)
 					}
 				}

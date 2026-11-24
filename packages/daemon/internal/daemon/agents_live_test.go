@@ -31,6 +31,7 @@ import (
 // issues of one project: the first walks `implementer:a tester:a reviewer`, the second, the control,
 // `implementer:a tester reviewer`.
 func TestAgentsLive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newOwnerStepsLive).
 	l := newOwnerStepsLive(t, "scripts/e2e/agents.sh", 2)
 	keyed, control := l.issues[0].key, l.issues[1].key
 	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s and %s; daemon at dispatch_url %s",

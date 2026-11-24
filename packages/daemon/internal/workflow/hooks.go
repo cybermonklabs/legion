@@ -15,8 +15,8 @@ import (
 // fireWorkBackHooks fires each hook of the deployment that stands on the work-back event and
 // counts this move, now that recordPass has counted it and the move's start has written the agent
 // of the round it opened (transition). counts is the task's whole backward-move map after the move
-// (record.ReturnCounts.BackwardMoves), which is what each hook reads its own number from, and label
-// names that task before each prompt (taskLabel; "" for a run with no plan rows).
+// (record.ReturnCounts.BackwardMoves), which is what each hook reads its own number from, and w is
+// that task's walk, which each prompt and the firing's message name (fireHook).
 //
 // A hook fires when the move is one its Moves selects and the counts of the moves it selects,
 // added up after this move, are a positive whole multiple of its Every. Two hooks on one event
@@ -28,7 +28,7 @@ import (
 // A hook whose Every is not positive fires never. The loader refuses such a hook
 // (config's readHookEvery), so this is the guard that keeps a hook written by any other route
 // from dividing by nothing rather than a rule of its own.
-func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue record.Issue, label string, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
+func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, from, to phase.Phase, counts map[string]int, pr *record.PullRequest) error {
 	pair := phase.Pair(from, to)
 	for _, hook := range e.cfg.Hooks {
 		if hook.On != HookEventWorkBack || hook.Every <= 0 || !hookSelects(hook, pair) {
@@ -38,7 +38,7 @@ func (e *Engine) fireWorkBackHooks(ctx context.Context, tx pgx.Tx, issue record.
 		if count <= 0 || count%hook.Every != 0 {
 			continue
 		}
-		if err := e.fireHook(ctx, tx, issue, label, hook, from, to, count, counts, pr); err != nil {
+		if err := e.fireHook(ctx, tx, issue, w, hook, from, to, count, counts, pr); err != nil {
 			return err
 		}
 	}
@@ -76,8 +76,8 @@ func hookCount(hook Hook, counts map[string]int) int {
 
 // fireHook writes one firing, in the move's own transaction: one record.HookPrompt for each role
 // the hook names, in the hook's own order with repeats dropped, its prompt the hook's own after
-// label, which names the task whose returns fired it, and then one message on the issue naming
-// what fired and whom it reached.
+// the label that names w's task, whose returns fired it (taskLabel), and then one message on the
+// issue naming what fired and whom it reached, and ending with the task's sentence (taskSentence).
 //
 // Each prompt names the claim of the agent that works its role's step in the round the move
 // opened (workerClaim), read once the move's start has written that agent, and the outbox
@@ -92,7 +92,7 @@ func hookCount(hook Hook, counts map[string]int) int {
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
 // raised it, so the firing copies nothing.
-func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, label string, hook Hook, from, to phase.Phase, count int, counts map[string]int, pr *record.PullRequest) error {
+func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, hook Hook, from, to phase.Phase, count int, counts map[string]int, pr *record.PullRequest) error {
 	// The pull request is named as GitHub names it, owner/name#n, and is left out for an issue
 	// whose record holds none: a hook can fire on a move made before the pull request exists.
 	pull := ""
@@ -110,14 +110,15 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, la
 			return err
 		}
 		if err := e.enqueue(ctx, tx, issue.Key, record.HookPrompt{Hook: hook.Name, Role: role, Claim: worker, From: from, To: to,
-			Count: count, Counts: counts, PullRequest: pull, Prompt: label + hook.Prompt}); err != nil {
+			Count: count, Counts: counts, PullRequest: pull, Prompt: taskLabel(w) + hook.Prompt}); err != nil {
 			return err
 		}
 	}
-	// One fixed line, so that a reader of a fleet can grep the firings out of the issues' messages
-	// and count them, which is what today's cap message is read by in production. The count is the
-	// hook's own, so it is a whole multiple of that hook's `every`.
+	// One fixed start, so that a reader of a fleet can grep the firings out of the issues' messages
+	// and count them, which is what today's cap message is read by in production; a run with plan
+	// rows ends the line naming the task whose returns fired it. The count is the hook's own, so it
+	// is a whole multiple of that hook's `every`.
 	return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: fmt.Sprintf(
 		"Legion hook %s fired at %d moves back: %s to %s. Prompted: %s.",
-		hook.Name, count, from, to, strings.Join(prompted, ", "))})
+		hook.Name, count, from, to, strings.Join(prompted, ", ")) + taskSentence(w)})
 }

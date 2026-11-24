@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -180,30 +181,25 @@ func applyInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx 
 	factTx(t, pool, engine, apply)
 }
 
-// factTx runs apply in a transaction of its own and commits it, with the commit scope the
-// engine's deferred logging needs (intake.WithCommitHooks) and the settle of the runs its writes
-// end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and keeps what it
+// factTx runs apply in a transaction of its own and commits it (store.Transact), with the commit
+// scope the engine's deferred logging needs and the settle of the runs its writes end
+// (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and keeps what it
 // left for the next boot pass's check (factLeft). It runs no boot pass before it: a test that
 // writes what the store held before the daemon booted calls it alone.
 func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		if err := apply(ctx, tx); err != nil {
+			return fmt.Errorf("leave: %w", err)
+		}
+		if err := engine.SettleFact(ctx, tx); err != nil {
+			return fmt.Errorf("settle: %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
-	defer tx.Rollback(t.Context())
-	ctx, committed := intake.WithCommitHooks(t.Context())
-	ctx = engine.OpenFact(ctx)
-	if err := apply(ctx, tx); err != nil {
-		t.Fatalf("leave: %v", err)
-	}
-	if err := engine.SettleFact(ctx, tx); err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	committed()
 	factLeft(t, pool)
 }
 

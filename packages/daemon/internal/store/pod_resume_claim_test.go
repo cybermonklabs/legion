@@ -39,7 +39,7 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil || found {
 		t.Fatalf("the tester's own claim's open resume = %t, %v; want none: the wake brought key a's agent back", found, err)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, claim.RoleTester, own, at)
 		if err == nil && closed {
 			t.Errorf("a close for the tester's own claim closed key a's resume")
@@ -187,7 +187,7 @@ func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
 	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(time.Minute)); err != nil || !set {
 		t.Fatalf("key a's let-out as the tester = %t, %v; want its resume found", set, err)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, claim.RoleTester, keyed, at)
 		if err == nil && !closed {
 			t.Errorf("a close of key a's resume as the tester closed nothing, want the one its wake took")

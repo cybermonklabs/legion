@@ -244,26 +244,22 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 // that task (view), whose start waited for its join or for its agent, through Engine.start, the
 // start of every step: at the end of its join (taskJoined), at its join again at the issue's
 // generation (joinAgain) and at the hand-on of its freed agent (handOn). Its task is told where its
-// work stands (standingPart) and its own pull request (record.Store.PullRequestOfTask). Where the
-// start that waited was a start again of the task at its first step or a move back
-// (Walk.StartReason), the task is told why, and its entry counts as a move back, as that start's own
-// would have had it waited for nothing (restartTask, transition). said is the log line, which names
-// the issue, the task, its place and role, and args.
+// work stands and its own pull request (standingPart). Where the start that waited was a start
+// again of the task at its first step or a move back (Walk.StartReason), the task is told why, and
+// its entry counts as a move back, as that start's own would have had it waited for nothing
+// (restartTask, transition). said is the log line, which names the issue, the task, its place and
+// role, and args.
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
 	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil {
-		return err
-	}
 	reason := w.StartReason
 	e.logOnCommit(ctx, said, append([]any{"issue", view.Key, "tree", view.Tree, "task", w.Task, "place", placeWords(w.Place), "role", role,
 		"reason", reason}, args...)...)
-	return e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(view, at, record.PhaseRow{}, pr, reason)
+	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
+		return task(view, at, record.PhaseRow{}, reason)
 	}, reason != "")
 }
 

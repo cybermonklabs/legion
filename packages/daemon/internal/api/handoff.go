@@ -466,9 +466,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		return
 	}
 	if result.Duplicate {
+		// The pass is the completing task's own (completionPosition), so for an issue with plan
+		// rows the refusal names that task beside its phase; one with none names no task, as before.
+		phaseOf := string(issue.Phase)
+		if position.task != "" {
+			phaseOf += " of task " + position.task
+		}
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_ALREADY_RECORDED", fmt.Sprintf(
 			"the %s completion of phase %s (pass %d through it) %s was already received; this call changed nothing",
-			grant.Role, issue.Phase, pass, received))
+			grant.Role, phaseOf, pass, received))
 		return
 	}
 	if result.Refusal != nil {

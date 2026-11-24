@@ -26,7 +26,8 @@
 // The edge is recorded by EdgeMiddleware: its lines name port=edge and its samples carry
 // port="edge", so a reader can leave it out, and the mux's own 404 and 405 there, and the
 // refusals the edge's gates mark (NoteQuiet), which anyone on the internet can send at any rate,
-// are counted and write no line.
+// are counted and write no refusal line. The edge's access log (cmd/cipherd), outside this
+// recorder, writes a line of its own for every request the edge answers.
 //
 // The line never holds a secret's value or the refusal's message text: it names the code, and the
 // code is read from the answer (refusalCode), not the words around it.
@@ -443,6 +444,13 @@ type RefusalLine struct {
 	Correlation string
 }
 
+// refusalLineFields is the room Fields makes for a line's attributes, keys and values counted
+// alike, before it appends them: the line's own at most, 22 (its seven pairs, the names' three
+// pairs and correlation_id's pair), and the most a port adds, the airlock's proxy port's 10 (host,
+// reason and path before correlation_id, issue and slot after it), so no port's line grows its
+// list. A port that adds more is appended past it.
+const refusalLineFields = 32
+
 // Fields is the line's attributes as slog takes them, in the one order every port writes:
 // answer_id, status, code, method, route, caller_class, caller, the names
 // (SecretNames.AppendFields), then extras, a port's own fields that come before correlation_id,
@@ -455,8 +463,11 @@ type RefusalLine struct {
 // where it enters the line, rather than by each writer: the method, the host and the path are
 // the caller's own text, and a reason may quote the host, so a field a writer adds later is cut
 // with them. The secret names are a list, which SecretNames bounds.
+//
+// The list starts at refusalLineFields and grows by append past it, never at a capacity summed
+// from the lengths of extras and trailing, whose sum a caller's slices could overflow.
 func (l RefusalLine) Fields(extras []any, trailing ...any) []any {
-	fields := make([]any, 0, 22+len(extras)+len(trailing))
+	fields := make([]any, 0, refusalLineFields)
 	fields = append(fields,
 		"answer_id", l.ID,
 		"status", l.Status,
@@ -686,11 +697,14 @@ func (rec *Recorder) labels(labels ...[2]string) [][2]string {
 	return labels
 }
 
-// unrouted reports whether this is an edge answer the mux wrote itself for a path or a method the
-// edge serves no route for: a 404 or a 405 with no route matched. EdgeMiddleware counts such an
-// answer and writes it no line, since anyone on the internet can send it at any rate.
+// unrouted reports whether this is an edge answer the mux wrote itself for a request the edge
+// serves no route for: a 404 or a 405 with no route matched, and the 400 the mux answers a request
+// whose target is * (such as GET * HTTP/1.1; net/http answers OPTIONS * itself). EdgeMiddleware
+// counts such an answer and writes it no line, since anyone on the internet can send it at any
+// rate.
 func (rec *Recorder) unrouted(r *http.Request) bool {
-	return rec.port == PortEdge && r.Pattern == "" && (rec.status == http.StatusNotFound || rec.status == http.StatusMethodNotAllowed)
+	return rec.port == PortEdge && r.Pattern == "" &&
+		(rec.status == http.StatusNotFound || rec.status == http.StatusMethodNotAllowed || r.RequestURI == "*")
 }
 
 // CountCarried counts one answer the broker carried rather than wrote: a call the airlock's

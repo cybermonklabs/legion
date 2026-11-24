@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // putTasks puts version of the plan of issue at generation, giving one waiting task of each id with
@@ -74,7 +76,7 @@ func TestTheFirstTaskToStartTakesTheIssuesBranch(t *testing.T) {
 			t.Fatalf("task b's row holds branch %q, want %q", got, b)
 		}
 	})
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := NewStore().AssignTaskBranch(context.Background(), tx, planIssue, 1, "z")
 		return err
 	}); err == nil || !strings.Contains(err.Error(), "z") {
@@ -185,7 +187,7 @@ func TestACarriedTaskKeepsItsBranch(t *testing.T) {
 			t.Fatalf("the first task to start in the generation started from its start took %q, want the issue's branch", a)
 		}
 	})
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return NewStore().SetJoinConflicts(ctx, tx, planIssue, 1, "z", []string{"c"})
 	}); err == nil || !strings.Contains(err.Error(), "z") {
 		t.Fatalf("the join conflicts of a task the plan does not hold = %v, want a refusal naming it", err)
@@ -199,7 +201,7 @@ func TestTwoTasksThatStartAtOnceNeverShareTheIssuesBranch(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	inTx(t, st, func(tx pgx.Tx) { putTasks(t, tx, planIssue, 1, 1, "a", "b") })
-	first, err := st.Pool().Begin(ctx)
+	first, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = first.Rollback(ctx) }() // a no-op once the transaction commits
 	if a := assign(t, first, planIssue, 1, "a"); a != "legion/LEGION-208" {
@@ -212,7 +214,7 @@ func TestTwoTasksThatStartAtOnceNeverShareTheIssuesBranch(t *testing.T) {
 	second := make(chan answer, 1)
 	go func() {
 		var got answer
-		got.err = st.Tx(ctx, func(tx pgx.Tx) error {
+		got.err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			got.branch, err = NewStore().AssignTaskBranch(ctx, tx, planIssue, 1, "b")
 			return err

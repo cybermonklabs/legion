@@ -125,6 +125,7 @@ func databaseNow(t *testing.T, into queryer) time.Time {
 // from the Dismissed view leaves the thread there, exactly as their own reply leaves a Reply
 // thread's mark where it stands.
 func TestADismissedAgentThreadComesBackOnASessionReplyWhateverItsTime(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	if dismissed := dismissRows(t, handler, database, "alice", inboxDismissAgentPrefix+seed.agent); dismissed != 1 {
@@ -299,6 +300,7 @@ func dismissChangedNothingAndLeftTheThread(
 // waits on; on the Agent half the thread's root, which the dismiss takes at step 2 and the
 // clearing trigger takes `for key share` before its delete.
 func TestDismissLeavesAThreadRepliedToWhileItRan(t *testing.T) {
+	t.Parallel()
 	// The two Reply rows differ in the form the request takes and in nothing else: the same
 	// session writes in the same thread, and the same row must come out of it unread. So body is
 	// all either of them spells.
@@ -420,6 +422,7 @@ func holdSessionReply(t *testing.T, database *store.Store, parent string) gateHo
 // two deep, under the reply already in the thread, where a follow-up lands: its own foreign key
 // then holds its parent and not the root, so the only lock on the root is the trigger's.
 func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
@@ -455,6 +458,7 @@ func TestDismissLeavesAnAgentThreadWhoseReplyCommitsAsItWrites(t *testing.T) {
 // compares them with nothing): the thread comes back, unread, and the count the dismiss answered
 // says the mark it deleted was really written.
 func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
@@ -506,6 +510,7 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 // and the trigger that ran inside the reply's transaction found no mark to delete: a thread
 // dismissed with a reply nobody has read.
 func TestDismissLeavesAnAgentThreadWhoseOlderReplyCommitsAtItsRoot(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{inboxDismissAgentPrefix + seed.agent})
@@ -538,6 +543,7 @@ func TestDismissLeavesAnAgentThreadWhoseOlderReplyCommitsAtItsRoot(t *testing.T)
 // With the trigger's old comparison back - delete only a mark older than the reply - the mark
 // outlives a reply nobody has read, and nothing afterwards would remove it.
 func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
@@ -587,6 +593,7 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 // With the version check gone nothing is left between the update and the row: it writes the mark
 // over a comment nobody has read.
 func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
@@ -621,6 +628,7 @@ func TestDismissLeavesAReplyThreadWhoseOlderCommentCommitsBeforeItWrites(t *test
 // before the dismiss was sent, so its write is one the page cannot have drawn however the two
 // times fall, and the version the trigger moved under this row lock is what refuses the press.
 func TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	body := dismissBody(t, database, "alice", []string{
@@ -655,6 +663,7 @@ func TestDismissSkipsAReplyThreadWhoseTriggerHoldsTheRowItWrites(t *testing.T) {
 // With the drawn-unread test gone the equality passes alone and the mark is written over A; with
 // the check gone altogether nothing refuses the press at all.
 func TestDismissLeavesAnAgentThreadWhoseInterleavedRepliesInvertTheirStamps(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// A: begun first, written at its own transaction's stamp, left open.
@@ -693,6 +702,7 @@ func TestDismissLeavesAnAgentThreadWhoseInterleavedRepliesInvertTheirStamps(t *t
 // press through, and the thread is dismissed with A unread: the window the test above cannot
 // reach, since there the reply commits after that read has run.
 func TestDismissLeavesAnAgentThreadWhoseOlderReplyLandsBeforeThePress(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// A: begun first, written at its own transaction's stamp, left open.
@@ -738,6 +748,7 @@ func TestDismissLeavesAnAgentThreadWhoseOlderReplyLandsBeforeThePress(t *testing
 // Read off the row itself: the version moved, last_reply_id and replied_at did not. A dismissal
 // held to either of those columns dismisses this thread over a comment nobody has read.
 func TestDismissLeavesAReplyThreadWhoseOlderCommentLandsBeforeThePress(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// A: begun first, written at its own transaction's stamp, left open.

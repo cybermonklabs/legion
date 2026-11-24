@@ -92,17 +92,8 @@ func todaysWalk() Walk {
 	return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order, Merges: true}
 }
 
-// walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
-// once: today's walk alone for a run with no plan rows (todaysWalk).
-func (e *Engine) walks(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]Walk, error) {
-	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
-	if err != nil {
-		return nil, err
-	}
-	return walksOf(issue.Key, stored), nil
-}
-
-// walksOf is walks on stored, the plan of the run of the issue keyed key, nil for none.
+// walksOf is the walk of each task of stored, the plan of the run of the issue keyed key, in task
+// id order (record.StoredPlan.Tasks): today's walk alone for a run with no plan rows (todaysWalk).
 func walksOf(key string, stored *record.StoredPlan) []Walk {
 	if stored == nil {
 		return []Walk{todaysWalk()}

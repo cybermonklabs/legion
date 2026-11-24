@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { EnvelopeSchema } from "@legion/contracts";
 import type { LegionIssue } from "@legion/contracts/legion-api";
 import {
   createEnvoyClient,
@@ -342,6 +343,50 @@ test("the owner notice is kept", async () => {
     reportKey: published[2]?.idempotencyKey,
   });
   expect(warned).toEqual([]);
+});
+
+// A listener answers a notice whose key another sender's message already holds with that
+// message's ids and times alone (`requestSender.answer` in the listener). Nothing reached the
+// architect, so the notice is not reported, its key is cleared, and the next reminder publishes it
+// under a new key. The control is the envelope schema every answer was read by before, which
+// throws on that answer.
+test("a notice whose key another sender's message holds is sent again under a new key", async () => {
+  const taken = {
+    event_id: "event-other",
+    source: "",
+    source_event_id: "",
+    topic: "notifications.role.legion-legion-208-architect",
+    dedupe_key: "publish.key",
+    issued_at: 1,
+    payload_summary: "",
+    trace_id: "",
+    duplicate: true,
+  };
+  expect(() => EnvelopeSchema.parse(taken)).toThrow();
+  const client = createEnvoyClient({
+    baseUrl: "http://listener.test",
+    fetch: async () => Response.json(taken),
+  });
+  const { reminder, timers, entries, published, warned } = rig({
+    publish: (input) => client.publish(input),
+  });
+
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+
+  expect(published).toHaveLength(1);
+  expect(warned).toEqual([
+    "legion: another sender's message holds the architect notice's key; telling it again later",
+  ]);
+  const cleared = entries.at(-1);
+  expect(cleared).toMatchObject({ count: 2, reported: false });
+  expect(cleared).not.toHaveProperty("reportKey");
+
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(2);
+  expect(published[1]?.idempotencyKey).not.toBe(published[0]?.idempotencyKey);
 });
 
 // A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier

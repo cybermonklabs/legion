@@ -203,6 +203,7 @@ func (b *branchAdmission) launches() int {
 // the repository's default branch, which admission recorded. A branch GitHub already has (its
 // create answered 422 "Reference already exists") is the same success.
 func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStarts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		answer func() (int, string)
@@ -234,6 +235,7 @@ func TestAdmissionCreatesTheRootsBranchAtTheDefaultBranchBeforeItsArchitectStart
 // outbox's backoff, each attempt logged with the repository, the ref, GitHub's status and its body,
 // and the start behind it waits. Once a create passes, the architect starts.
 func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.T) {
+	t.Parallel()
 	admitted, github := newBranchAdmission(t, branchRefused)
 
 	for range 3 {
@@ -283,6 +285,7 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 // nothing and finishes: a refused create of a parked tree never retries forever, and the starts it
 // held back meet their own fences.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	github := newBranchGitHub(t, nil, branchRefused)
@@ -325,6 +328,7 @@ func (refusingOwnerTokens) ReadToken(context.Context, appauth.AppRole, string) (
 // record names, and a mint that fails names that owner, so the outbox's failure line says whose
 // installation refused.
 func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow",

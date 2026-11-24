@@ -320,7 +320,7 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	}
 	broker.lapse()
 
-	_, signer, err := selectSigner(keyDir)
+	_, signer, err := selectSigner(keyDir, io.Discard, true)
 	if err != nil {
 		t.Fatalf("selectSigner after the lease lapsed: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 			broker.lapse()
 			broker.refuseTrades(tc.status, tc.body)
 
-			_, signer, err := selectSigner(keyDir)
+			_, signer, err := selectSigner(keyDir, io.Discard, true)
 			if err == nil {
 				_, _, err = newClient(cipheraddr.New(broker.server.URL)).Self(context.Background(), signer)
 			}

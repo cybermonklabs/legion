@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -71,7 +72,7 @@ func seedMergedNeed(t *testing.T, conflict bool) *mergedNeedRig {
 		steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: row.Task, Position: 1, Role: "implementer",
 			Type: "implementation", AgentKey: row.Task})
 	}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 			return err
 		}
@@ -95,9 +96,8 @@ func seedMergedNeed(t *testing.T, conflict bool) *mergedNeedRig {
 	seeded.m1 = rig.github.Commit(t, "main", bFiles, "LEGION-208: b (#2)")
 	fixturegit.Isolated(t, t.TempDir()).Run(rig.github.Dir(), "git", "update-ref", "-d", "refs/heads/"+b)
 
-	factCtx, committed := intake.WithCommitHooks(ctx)
-	factCtx = engine.OpenFact(factCtx)
-	if err := pgx.BeginFunc(factCtx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(factCtx context.Context, tx pgx.Tx) error {
+		factCtx = engine.OpenFact(factCtx)
 		stored, err := rig.records.Issue(factCtx, tx, issue.Key)
 		if err != nil {
 			return err
@@ -109,7 +109,6 @@ func seedMergedNeed(t *testing.T, conflict bool) *mergedNeedRig {
 	}); err != nil {
 		t.Fatalf("open the gate of %s: %v", issue.Key, err)
 	}
-	committed()
 	return seeded
 }
 

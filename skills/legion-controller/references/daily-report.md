@@ -45,7 +45,7 @@ A day with nothing finished says so in one sentence; when the lists do not fit, 
   `dispatch issues --project <PROJECT> --status done --updated-since <the previous report's time, or 24 hours ago> --all`, keeping the issues `read_state` records whose `issue.closed` is after the previous report, each with the pull request under its `External links:`.
 
 - **Closed without a change.**
-  Those with no pull request, each with the reason its closing message gave (the `message.created` just before `issue.closed`).
+  Those with no pull request, each with the reason its closing message gave (the `message.created` before `issue.closed`, with only the close's own settlement and withdrawal lines between them).
 
 - **Running.**
   Each root in `admission.trees` with its phase, and under it each of its issues in `admission.active` with its own;

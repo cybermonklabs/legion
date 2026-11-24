@@ -97,7 +97,7 @@ func decisionTrail(t *testing.T, m *Machine, recordID, requestID string) (events
 func newSecretRequest(t *testing.T, m *Machine, box string) Request {
 	t.Helper()
 	enr, key := newEnrollment(t, m.Store, "session", box+"-"+t.Name(), new(fixtureOperator), nil)
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it on "+box, "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it on "+box, "DEEL_API_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create on %s = %+v, %v; want it pending on a record", box, req, err)
 	}
@@ -109,12 +109,18 @@ func newSecretRequest(t *testing.T, m *Machine, box string) Request {
 // is written. It answers the record's id; code is the login's user code.
 func insertMachineLogin(t *testing.T, m *Machine, approver, host, code string, expires time.Time) string {
 	t.Helper()
+	return insertLoginRecord(t, m, approver, approver, record.AuthorizationDetail{Type: record.KindLauncherCredential, Identifier: host}, code, expires)
+}
+
+// insertLoginRecord writes a machine login's record waiting on approver, its request object signed
+// with loginHint for detail, with the deadline expires and the user code code, and answers its id.
+func insertLoginRecord(t *testing.T, m *Machine, approver, loginHint string, detail record.AuthorizationDetail, code string, expires time.Time) string {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("generate the machine's key: %v", err)
 	}
-	compact, err := record.Sign(key, m.Audience, []record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: host}},
-		"", approver, nil, time.Now())
+	compact, err := record.Sign(key, m.Audience, []record.AuthorizationDetail{detail}, "", loginHint, nil, time.Now())
 	if err != nil {
 		t.Fatalf("sign the machine login: %v", err)
 	}
@@ -129,7 +135,7 @@ func insertMachineLogin(t *testing.T, m *Machine, approver, host, code string, e
 	}
 	if _, err := m.Store.Pool.Exec(context.Background(), `insert into credential_requests (id, body, kind, approver, code, expires_at)
 		values ($1,$2,'launcher_credential',$3,$4,$5)`, body.ID(), body.Canonical(), body.Approver, code, body.ExpiresAt); err != nil {
-		t.Fatalf("insert the machine login for %s: %v", host, err)
+		t.Fatalf("insert the machine login for %s: %v", detail.Identifier, err)
 	}
 	return body.ID()
 }
@@ -425,7 +431,7 @@ func TestExpiredSharedRequestOneLoginDismissesLeavesEveryList(t *testing.T) {
 	t.Run("a responsible person: that person's list, and anyone dismisses", func(t *testing.T) {
 		m, enr, key, operator := newFixture(t)
 		ctx := context.Background()
-		shared, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "", nil)
+		shared, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "")
 		if err != nil || shared.State != "pending" || shared.RecordID == nil {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending on a record", shared, err)
 		}
@@ -471,7 +477,7 @@ func TestExpiredRequestWhoseSessionEndedIsListedAndDismissed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
 			ctx := context.Background()
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 			if err != nil || req.RecordID == nil {
 				t.Fatalf("Create = %+v, %v; want it pending on a record", req, err)
 			}
@@ -512,7 +518,7 @@ func TestExpiredRequestWhoseSessionEndedIsListedAndDismissed(t *testing.T) {
 func TestExpiredRequestCancelledBeforeItsDeadlineIsNotListed(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record", req, err)
 	}
@@ -542,7 +548,7 @@ func TestExpiredRecordLeftOutOfAStatesListIsNotLogged(t *testing.T) {
 
 	current := m.Audience
 	m.Audience = "https://the-old-public-url.example"
-	live, err := m.Create(ctx, enr, signRequest(t, m, key, "asked before the URL moved", "DEEL_API_KEY"), "", nil)
+	live, err := m.Create(ctx, enr, signRequest(t, m, key, "asked before the URL moved", "DEEL_API_KEY"), "")
 	if err != nil || live.RecordID == nil {
 		t.Fatalf("Create under the old audience = %+v, %v", live, err)
 	}
@@ -608,12 +614,12 @@ func TestReadRecordReadsAnOverdueRecordExpiredBeforeTheSweep(t *testing.T) {
 func TestCoalescingSkipsARequestPastItsDeadline(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || first.RecordID == nil {
 		t.Fatalf("Create(first) = %+v, %v", first, err)
 	}
 	pastDeadline(t, m, first.ID)
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || again.Coalesced || again.State != "pending" || again.RecordID == nil || again.ID == first.ID || *again.RecordID == *first.RecordID {
 		t.Fatalf("Create(again) past the first one's deadline = %+v, %v; want a new pending request on a record of its own, not %s", again, err, *first.RecordID)
 	}

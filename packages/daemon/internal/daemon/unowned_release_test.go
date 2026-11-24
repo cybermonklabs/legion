@@ -212,6 +212,7 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
 // a claim an earlier release left `released`.
 func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the pod of an issue whose one claim failed", func(t *testing.T) {
@@ -365,6 +366,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 // mark: a mark standing is a state no later row could read around, so the three readings that
 // keep the pod come first and the release that takes it is last.
 func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -448,6 +450,7 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 // claim, so an issue it has decided stands in the answer for ever, and deciding a gone pod inside
 // a transaction would cost one of them a minute for ever.
 func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -508,6 +511,7 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 // deletes the Secrets, each one already gone counted as deleted, keeps the Sandbox with its uid,
 // and records the delete, and the next pass holds the issue and writes no row.
 func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name    string
@@ -650,6 +654,7 @@ const secretsReleased = "legion.dev/secrets-released"
 // left, counts each delete as done, writes the record and keeps the uid. Both cases run the real
 // Sandbox runtime over the test's API.
 func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overKeptSandbox is the idle rig whose issue's kept Sandbox the test API holds, Running, with
 	// its seven Secrets, behind a recorder of every write, and the real runtime of a deployment

@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // An implementer's completion after a version is held to the base its task's start fixed: d needs
@@ -41,7 +42,7 @@ func TestAnImplementersCompletionAfterAVersionKeepsTheStartsBase(t *testing.T) {
 		tasks = append(tasks, record.PlanTask{Issue: key, Generation: 1, Task: task.id, PlanVersion: 2, BlockText: "Task " + task.id + ".", Needs: task.needs, State: record.TaskWaiting})
 		steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: task.id, Position: 1, Role: "implementer", Type: "implementation", Agent: task.agent})
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}

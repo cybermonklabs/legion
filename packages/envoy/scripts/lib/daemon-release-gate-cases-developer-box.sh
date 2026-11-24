@@ -242,11 +242,14 @@ done
 # A link whose target is gone, or that never resolves, is something there that cannot be read, never
 # nothing there: not a record that is the dotfiles' own, and not a profiles directory with no
 # profile in it. ~/.omp, the profiles directory's parent, is read through ~/.omp/plugins. A link to
-# a link whose target is gone is named as one that does not resolve: its own target is there.
-for shape in package package-chain outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
+# a link whose target is gone is named as one that does not resolve: its own target is there. A
+# link whose target cannot be reached another way, through a directory the gate may not search or a
+# loop part-way along its path, is named with that error, never as one that does not exist.
+for shape in package package-chain package-unsearchable package-loop outside-record outside-record-loop outside-record-to-dotfiles dotfiles-record profiles profiles-chain profiles-newline omp omp-chain omp-not-utf8; do
   echo "case: --clients, a link that does not resolve (${shape})"
   box_case "box-dangling-${shape}"
   assign=()
+  hide=""
   case "$shape" in
     package)
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
@@ -257,6 +260,19 @@ for shape in package package-chain outside-record outside-record-loop outside-re
       at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
       rm -r "$at" && ln -s ../gone-link "$at" && ln -s gone "$(dirname "$at")/../gone-link"
       want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../gone-link, which does not resolve"
+      ;;
+    package-unsearchable)
+      # Its target is the install, behind a directory the gate may not search.
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      hide="${case_root}/home/.dotfiles/omp/plugins/node_modules/locked"
+      mkdir "$hide" && mv "$at" "$hide/real" && ln -s ../locked/real "$at"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../locked/real, which does not resolve: Permission denied"
+      ;;
+    package-loop)
+      # Its target's path loops part-way: ../loop is a link to itself.
+      at="${case_root}/home/.dotfiles/omp/plugins/node_modules/@sjawhar/pi-envoy"
+      rm -r "$at" && ln -s loop "$(dirname "$at")/../loop" && ln -s ../loop/x "$at"
+      want="UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.dotfiles/omp/plugins, a link to ../loop/x, which does not resolve: Too many levels of symbolic links"
       ;;
     outside-record)
       mkdir -p "${case_root}/home/.claude/plugins" && ln -s gone.json "${case_root}/home/.claude/plugins/installed_plugins.json"
@@ -309,7 +325,15 @@ for shape in package package-chain outside-record outside-record-loop outside-re
       want="UNKNOWN: dotfiles omp/plugins/package.json: cannot tell whether @sjawhar/pi-envoy is installed: ${case_root}/home/.omp is a link to gone\\udcff, which does not exist"
       ;;
   esac
+  if [ -n "$hide" ]; then
+    check "the link resolves while its directory may be searched, as the case needs" \
+      "$([ -e "$at/package.json" ] && echo true || echo false)"
+    chmod 000 "$hide"
+    check "this user cannot search the hidden directory, as the case needs" \
+      "$([ -e "$at" ] && echo false || echo true)"
+  fi
   run_gate "${assign[@]}" -- --clients "$commit"
+  [ -z "$hide" ] || chmod 755 "$hide"
   check "exits 3" "$(is "$status" 3)"
   check "refuses UNKNOWN naming the link" "$(grep -qF "$want" "$out" && echo true || echo false)"
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"

@@ -29,6 +29,7 @@ import (
 // The controls (the pull request records the runs): publish handing every topic to the publisher
 // as it came publishes to both claims that do not hold their sessions.
 func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
 		{Token: mustClaimToken(t, "LEGION-941", claim.RoleImplementer), Tree: "LEGION-941", Issue: "LEGION-941", Role: claim.RoleImplementer, Session: "ses_941", State: supervise.StateReady},
@@ -64,6 +65,7 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // PublishKept directly, as #4088 wrote it, publishes the row to the claim whose session another
 // claim holds as well.
 func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
 		{Token: mustClaimToken(t, "LEGION-941", claim.RoleTester), Tree: "LEGION-941", Issue: "LEGION-941", Role: claim.RoleTester, Session: "ses_941", State: supervise.StateReady},
@@ -110,6 +112,7 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 // either mode, as round 15 first did, holds the notice under `controller: operator` too; and
 // controllerNotice answering the gate's refusal as a plain failure fails the wait assertion.
 func TestTheControllerTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	controller := claim.ControllerToken("legion")
 	notice := func(t *testing.T) record.OutboxRow {
@@ -167,6 +170,7 @@ func TestTheControllerTopicIsHeldOnlyToTheDaemonsOwnController(t *testing.T) {
 // role whose holder is ses_942, the process of the claim that holds that session; the gate keyed
 // by row writes its Warn twice.
 func TestAForgetWaitsUntilTheListenerNoLongerNamesTheSharedSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	contained := mustClaimToken(t, "LEGION-942", claim.RoleImplementer)
 	const shared = "ses_942"

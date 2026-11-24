@@ -100,7 +100,7 @@ func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	}
 	fake := newFakeGitHub(t)
 	pushes := &recordingPushes{}
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings)
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settings, unrenamed())
 	intake.pushes = pushes
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)

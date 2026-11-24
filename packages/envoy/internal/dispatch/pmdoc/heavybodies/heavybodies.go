@@ -4,11 +4,11 @@
 // import, until the browser rows that wrote them through the API were moved into Go (INFRA-1404).
 //
 // Eight of these bodies are spelled a second time in TypeScript, in packages/dispatch/e2e/heavy-bodies.ts,
-// which the browser suite draws them from; the other three are Go's alone, drawn by no browser row.
-// What reads those three is Go: internal/dispatch/api's TestHeavyDocumentWriteVerdicts writes each
+// which the browser suite draws them from; the other four are Go's alone, drawn by no browser row.
+// What reads those four is Go: internal/dispatch/api's TestHeavyDocumentWriteVerdicts writes each
 // of them through the API, and pmdoc's own tests parse them. digests_test.go beside this file
-// hashes none of the three: it digests the bodies both sides spell and no others, and holds these
-// three only to standing in the table once each, as a body Go has alone, with why. A checked-in
+// hashes none of the four: it digests the bodies both sides spell and no others, and holds these
+// four only to standing in the table once each, as a body Go has alone, with why. A checked-in
 // digest table holds the two spellings to each other: testdata/shared-bodies.json names every
 // body both sides spell - by the ID each Shape and NestedDirective below carries - with that
 // body's length in bytes and the SHA-256 of those bytes, and every body only one side has, with
@@ -41,7 +41,8 @@ const BlockCap = contracts.DispatchBlockUnits
 // MaxNesting is how many blocks a markdown document may open inside one another, the bound the
 // refusals below quote. It is pmdoc's own maxNesting (internal/dispatch/pmdoc/nesting.go), copied
 // because this package may not import pmdoc; pmdoc's
-// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime holds the two to each other.
+// TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter holds the two
+// to each other.
 const MaxNesting = 100
 
 // Shape is one heavy body, at whatever length a caller asks of it.
@@ -92,15 +93,24 @@ func nestedRefusal(line int) string {
 // at 30,000: a plain list of 8,000 items; a quote and a list item each followed by lines that
 // carry no marker of their own; a run of brackets; 49 items nested by indentation and then blank
 // lines, and 100 items nested the same way; 49 markers on one line and then blank lines; a chain
-// of list markers on one line; and a typed fence whose label opens a run of brackets.
+// of list markers on one line; and a typed fence whose label opens a run of brackets. Two more
+// froze no tab. Footnote references and then their definitions hold the resolution of a body's
+// references to their definitions linear in their number, for a reference equal to a definition's
+// label, one equal to it up to case and one equal to none: goldmark's footnote parser found each
+// reference's definition by walking the definitions from the first (footnoteParser.Parse,
+// extension/footnote.go:155 at v1.8.6), work that grows with the square of the references, and
+// pmdoc's reference parser no longer calls it (footnoteReferenceParser, pmdoc/footnotes.go). A line
+// of bangs, each before a letter and a caret, beside a footnote definition, holds the reading of a
+// bang linear in the line: goldmark's parser read the byte after each such bang's letter as a
+// reference's caret, and looked for the label's closer to the end of the line for every one.
 //
 // A list opener opens a list and its first item, two of the blocks MaxNesting counts, so 49 items
 // nested by indentation stand inside 98 blocks and are stored, while the 51st line of 100 such
 // items opens a block inside 100 and is refused - as the chain of markers on one line is, at its
 // 51st marker. The browser draws exactly those lines as the text they are instead.
 //
-// Six of the nine are bytes for bytes what e2e/heavy-bodies.ts spells for the browser suite, and
-// three are Go's alone, drawn by no browser row: which is which, and what each of the six digests
+// Six of the eleven are bytes for bytes what e2e/heavy-bodies.ts spells for the browser suite, and
+// five are Go's alone, drawn by no browser row: which is which, and what each of the six digests
 // to, is testdata/shared-bodies.json, held over the shapes here by digests_test.go and over the
 // TypeScript by e2e/__tests__/heavy-bodies-digests.test.ts.
 func Shapes() []Shape {
@@ -111,6 +121,15 @@ func Shapes() []Shape {
 	// 15,000 brackets that the rest of the line closes all but eleven of.
 	const typedFence = ":::callout["
 	const bracketOpeners = 15_000
+	// A footnote pair is a reference on the body's first line and a definition below, both under a
+	// label of five characters, so each pair costs footnotePair characters wherever it is. Each
+	// definition's label is `a` and four digits; the references take, in turn, its label, the label
+	// with an `A` (equal up to case) and the label with a `q` (equal to none), so each of the
+	// parser's three ways of reading a reference is taken a third of the time.
+	const footnotePair = len("[^a0000] ") + len("[^a0000]: x\n")
+	// The bangs' line ends the body's first paragraph, and the definition its carets would name
+	// follows it.
+	const bangDefinition = "\n\n[^a]: d\n"
 	return []Shape{
 		{
 			ID:    "plain-list",
@@ -184,6 +203,27 @@ func Shapes() []Shape {
 			Grown: 30_000 - len(typedFence),
 			// The label swallows the line, so what stands there is a fence naming no typed block.
 			Refusal: "typed block directives use :::name{...}",
+		},
+		{
+			ID:   "footnote-references-then-definitions",
+			Name: "1,523 footnote references, equal, equal up to case and equal to none in turn, and 1,523 definitions",
+			Body: func(size int) string {
+				var references, definitions strings.Builder
+				for pair := range size / footnotePair {
+					fmt.Fprintf(&references, "[^%c%04d] ", "aAq"[pair%3], pair)
+					fmt.Fprintf(&definitions, "[^a%04d]: x\n", pair)
+				}
+				return references.String() + "\n\n" + definitions.String()
+			},
+			Grown: BlockCap - len("\n\n"),
+		},
+		{
+			ID:   "bangs-before-carets",
+			Name: "10,663 bangs each before a letter and a caret, beside a footnote definition",
+			Body: func(size int) string {
+				return strings.Repeat("!x^", (size-len(bangDefinition))/3) + bangDefinition
+			},
+			Grown: BlockCap,
 		},
 	}
 }

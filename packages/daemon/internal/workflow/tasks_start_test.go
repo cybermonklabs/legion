@@ -198,3 +198,198 @@ func TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone(t *testing.T) {
 		t.Fatalf("%s after version 2 stands in %s (hold %+v), want implementing", root.Key, issue.Phase, issue.Hold)
 	}
 }
+
+// A task stopped before its first step went out starts again with its pass where it was, since no
+// run of it ended: task a runs, b, which needs a, waits and is stopped there, at no act, and a
+// later version that changes b ends its stop. b waits for a again, its stop's reason gone and its
+// pass still 0 (startAtFirstStep raises the pass only where the task's place started).
+//
+// The fault it catches is a pass raised for a run that never was (its control: the pass raised by
+// the task's state, for every task that was not waiting, which raises b's to 1).
+func TestAStoppedTaskAtNoActKeepsItsPassWhenItStartsAgain(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, needs: []string{"a"}, state: record.TaskWaiting})
+	stopTasks(t, pool, root.Key, root.Generation, "b")
+
+	mustTake(t, "version 2", applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2, block("a", ""), block("b", " Again.", "a"))))
+
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
+	assertTask(t, tasks, "b", record.TaskWaiting, record.TaskPlace{})
+	if b := tasks["b"]; b.Counts.Pass != 0 || b.StoppedReason != "" {
+		t.Fatalf("task b after version 2 counts pass %d and is stopped for %q, want pass 0 and no stop's reason: no run of it ended", b.Counts.Pass, b.StoppedReason)
+	}
+}
+
+// A person's todo on a root held for the stopped task of a plan of several writes the Dispatch
+// status of the phase the root then stands in over the todo Dispatch shows, as it does for a plan of
+// one: task a, which b needs, is stopped at its step, so no task runs and the root is held from
+// implementing; the record keeps in_progress, that phase's status. The todo starts a again at its
+// first step, and one status write puts in_progress over the todo.
+//
+// The fault it catches is a status judged against the record's status, which the hold kept, rather
+// than against the status Dispatch shows (its control: startAtFirstStep comparing with Status,
+// which writes nothing, so the board stays at todo).
+func TestATodoOnARootHeldForAStoppedTaskOfSeveralWritesItsStatusOverTheTodo(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, needs: []string{"a"}, state: record.TaskWaiting})
+	apply := applyFacts(t, pool, engine)
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop of a was refused: %+v", result.Refusal)
+	}
+	held := issueOf(t, pool, engine, root.Key)
+	if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Implementing, Reason: record.HoldTaskStopped}) || held.Status != "in_progress" {
+		t.Fatalf("%s after the stop stands in %s (hold %+v) with status %q, want held from implementing for the stopped task, keeping in_progress", root.Key, held.Phase, held.Hold, held.Status)
+	}
+	statuses := len(statusWrites(t, pool, root.Key))
+
+	if result := apply("todo", personsTodo(root.Key)); result.Refusal != nil {
+		t.Fatalf("the todo was refused: %+v", result.Refusal)
+	}
+
+	assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atStep(1))
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil || issue.DispatchStatus != "todo" {
+		t.Fatalf("%s after the todo stands in %s (hold %+v), Dispatch at %q, want implementing with no hold, Dispatch at todo", root.Key, issue.Phase, issue.Hold, issue.DispatchStatus)
+	}
+	if got := statusWrites(t, pool, root.Key)[statuses:]; len(got) != 1 || got[0] != record.OrdinaryStatusWrite("in_progress", "todo", "") {
+		t.Fatalf("the todo queued the status writes %+v, want the one of in_progress over the todo Dispatch shows", got)
+	}
+}
+
+// The gate's opening writes its rows in one order for every plan: the branch row, the status of
+// the phase the first task's step puts the issue in, the plan node, the start of that step, and the
+// notice of the gate's opening. A root whose Dispatch status is todo opens its gate on a plan of one
+// task, and on a plan of two whose second task needs the first, so one task starts in each.
+//
+// The fault it catches is a plan of several that writes its node before the first task's status
+// (its control: the node written before the ready tasks start, as the gate wrote it for a plan of
+// several, which puts plan_record before dispatch_status there).
+func TestTheGatesOpeningWritesItsRowsInOneOrderForEveryPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tasks []planTask
+	}{
+		{"a plan of one task", []planTask{
+			{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskWaiting}}},
+		{"a plan of two tasks", []planTask{
+			{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskWaiting},
+			{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, needs: []string{"a"}, state: record.TaskWaiting}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			root.Status = "todo"
+			seedIssue(t, pool, root)
+			seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+			seedTasks(t, pool, root.Key, root.Generation, tc.tasks...)
+
+			firstStepOf(t, pool, engine, root.Key)
+
+			assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "plan_record", "supervise", "notice"})
+			assertWaits(t, tasksOf(t, pool, engine, root.Key), "a", atStep(1), record.StepWaitNone)
+			if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Status != "in_progress" {
+				t.Fatalf("%s after its gate opened stands in %s with status %q, want implementing with in_progress", root.Key, issue.Phase, issue.Status)
+			}
+		})
+	}
+}
+
+// A task of several whose first step names a role the deployment no longer defines stops where it
+// stands when its needs are done, as a move into such a step stops a task: task x's review passes,
+// which leaves x done and b, `checker`, ready, so b stops naming step 1 and the checker, the
+// checker is never started, and the owner is told once; a runs on, so the issue stands in
+// implementing with no hold.
+//
+// The fault it catches is the start of a role nobody defines (its control: startReady without the
+// check of the lost role, which starts b's checker).
+func TestALostRoleAtTheFirstStepOfATaskOfSeveralStopsIt(t *testing.T) {
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "b", steps: []string{"checker"}, agents: []claim.Agent{"checker"}, needs: []string{"x"}, state: record.TaskWaiting},
+		planTask{id: "c", steps: []string{"tester:c"}, agents: []claim.Agent{"test-c"}, needs: []string{"a", "b"}, state: record.TaskWaiting},
+		planTask{id: "x", steps: []string{"reviewer:x"}, agents: []claim.Agent{"rev-x"}, state: record.TaskRunning, place: atStep(1)})
+	seedTaskBranch(t, pool, root.Key, "x", "legion/"+root.Key+".x")
+
+	taskMoves(t, pool, engine, root.Key, "x", TriggerReviewApproved, "")
+
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertTask(t, tasks, "x", record.TaskDone, atStep(1))
+	assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
+	const why = "step 1 names the role checker, which the deployment no longer defines"
+	if b := tasks["b"]; b.State != record.TaskStopped || b.StoppedReason != why {
+		t.Fatalf("task b = %s stopped for %q, want stopped for %q", b.State, b.StoppedReason, why)
+	}
+	if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 0 {
+		t.Fatalf("the checker's starts of %s = %+v, want none: the deployment no longer defines it", root.Key, starts)
+	}
+	if stopped := noticesOf(t, pool, root.Key, "task-stopped"); len(stopped) != 1 || stopped[0].Role != "checker" || stopped[0].Reason != "task b of LEGION-208 was stopped: "+why {
+		t.Fatalf("the task-stopped notices of %s = %+v, want exactly one, the checker's, with the reason", root.Key, stopped)
+	}
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil {
+		t.Fatalf("%s after b stopped stands in %s (hold %+v), want implementing with no hold: a runs", root.Key, issue.Phase, issue.Hold)
+	}
+}
+
+// planReads is a store that counts its reads of a plan (record.Store.Plan).
+type planReads struct {
+	record.Store
+	reads int
+}
+
+func (s *planReads) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*record.StoredPlan, error) {
+	s.reads++
+	return s.Store.Plan(ctx, tx, issue, generation)
+}
+
+// A ready start reads the plan twice: where the start gives the task its branch (startTaskCopy,
+// after record.Store.AssignTaskBranch) and where the outbox queues the start (startBranch). Its
+// scope, its write of the issue and the next task's scope read the plan the caller read, as the
+// writes before them left it (TaskScope.plan). The one task of a plan of one, waiting at admitted,
+// starts at its first step under its agent's claim.
+//
+// The fault it catches is a start that reads the plan again for each part of it (its control:
+// putScope reading the plan again, which counts three).
+func TestAReadyStartReadsThePlanTwice(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	counting := &planReads{Store: engine.store}
+	engine.store = counting
+	root := stepRoot(t, pool, phase.Admitted)
+	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskWaiting})
+
+	reads := -1
+	onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		stored, err := engine.store.Plan(ctx, tx, issue.Key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		counting.reads = 0
+		if _, err := engine.startReady(ctx, tx, issue, stored, ""); err != nil {
+			return err
+		}
+		reads = counting.reads
+		return nil
+	})
+
+	if reads != 2 {
+		t.Fatalf("the ready start of task a read the plan %d times, want 2", reads)
+	}
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "a", atStep(1), record.StepWaitNone)
+	if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); !slices.Equal(claims, []claim.Token{agentClaim(t, root.Key, "impl-a")}) {
+		t.Fatalf("the implementer's starts of %s name %v, want a's agent impl-a alone", root.Key, claims)
+	}
+}

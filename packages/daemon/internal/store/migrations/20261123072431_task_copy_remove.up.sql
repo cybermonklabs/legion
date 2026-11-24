@@ -7,7 +7,7 @@
 -- migration touches no table but the outbox's check.
 --
 -- The outbox check is one list, so this migration names every kind, as 20261122122826 did: its
--- thirty-one kinds and task_copy_remove. Its version stands above 20261122122826 on purpose:
+-- thirty-two kinds and task_copy_remove. Its version stands above 20261122122826 on purpose:
 -- Migrate applies every unrecorded migration in version order, so the list with the higher version
 -- is the last word on any database.
 --
@@ -30,7 +30,7 @@
 --   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
 --   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
 --   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
---   'conflict_confirm', 'merge_forward', 'task_branch', 'task_pull_requests_close'));
+--   'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'task_pull_requests_close'));
 -- delete from schema_version where version = 20261123072431;
 -- commit;
 alter table outbox drop constraint if exists outbox_kind_check;
@@ -40,4 +40,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'task_branch', 'task_pull_requests_close', 'task_copy_remove'));

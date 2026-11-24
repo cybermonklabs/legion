@@ -26,10 +26,12 @@ import (
 // review of the reviewer's own whose footer names the entry its row stands at while the row holds
 // that entry's task (reviewedCommitStays), which reads the row, never the task.
 //
-// It is one of the two places the sentences enter a task, and its two callers are the places every
-// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow),
-// and the raise of an entry, which stores its task through it (enter). The other is the claim's
-// send of a task no such queue named (supervise's Delivery.message), which names `none` for both.
+// It is one of the two places the sentences enter a task, and its callers are the places every
+// reviewer's task this release composes passes: the queue, for every task it queues (queuedRow,
+// which calls it directly), the daemon's start of a reviewer queued for news alone (ReviewerTask,
+// which reads the issue and the reviewer's row to call it), and the raise of an entry, which
+// stores its task through it (enter). The other is the claim's send of a task no such queue named
+// (supervise's Delivery.message), which names `none` for both.
 // So the reviewer reads the difference from the commit to the head, or the whole change for
 // `none`, and writes the number of the newest entry a task of its session named into the footer of
 // its review.

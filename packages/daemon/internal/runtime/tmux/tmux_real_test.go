@@ -494,12 +494,24 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	if err := os.WriteFile(r.instructions, []byte("# Deployment instructions (demo)\n\nRun the checks.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon's HOME is an empty directory of the rig's own. tmux reads ~/.tmux.conf from the
+	// HOME of the client that starts its server, and the runtime hands every tmux client the
+	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
+	// server, and the new-session that starts it returned only once that file had run: a `run`
+	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
+	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
+	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
+	// these tests prove.
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") {
+		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") && !strings.HasPrefix(entry, "HOME=") {
 			r.environ = append(r.environ, entry)
 		}
 	}
-	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
+	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)

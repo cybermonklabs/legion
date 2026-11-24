@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -240,6 +242,8 @@ func populatedState(t *testing.T) State {
 	t.Helper()
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	reviewApproval, stuckApproval := 5, 2
+	// The specs of the two step roots, each approved at the version Dispatch holds.
+	stepApproval, heldStepApproval := 2, 1
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
 	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
@@ -328,8 +332,11 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    6,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240"},
+			// The state lists `active` by slot index (record.Store.Slots), so each issue's `slot`
+			// below is its place in it, 0 to 6: the lowest index free at the pass that took it
+			// (admit's nextSlotIndex), at a moment before anything its own record says it did since.
+			Cap:    7,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -340,12 +347,16 @@ func populatedState(t *testing.T) State {
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
 			// the holder's clause rather than in one about queuing for a free slot. LEGION-218 and
 			// LEGION-219 are the two reviewing roots whose round waits on GitHub's merge state, and
-			// each holds a slot of its own, which the cap counts.
+			// each holds a slot of its own, which the cap counts. LEGION-240 holds one at step, and
+			// LEGION-241, held from step when its checker's claim failed, keeps the one that step
+			// held, since the slot rule reads where a hold is from (record.KeepsSlot, StandsAt), as
+			// LEGION-210, held from implementing, keeps its own.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed,
 			// LEGION-214 is held with its Legion label off and so stands in no live tree, and every
-			// other root of the fixture is a tree of its own, each named below.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// other root of the fixture is a tree of its own, each named below, LEGION-240 and
+			// LEGION-241 among them.
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -611,6 +622,10 @@ func populatedState(t *testing.T) State {
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				Slot: &SlotView{
+					Index:      1,
+					AdmittedAt: time.Date(2026, 9, 21, 19, 5, 26, 0, time.UTC),
+				},
 				// Its implementer failed while implementing and nothing will wake that claim, so
 				// the issue's one rendered answer is the stopped claim rather than a queue
 				// (`why`, api.WhyClaimStopped).
@@ -665,6 +680,11 @@ func populatedState(t *testing.T) State {
 				// architect (workflow.StartArchitect).
 				PhaseEntry: 2,
 				GivenEntry: 1,
+				DesignGate: &GateView{
+					ArtifactID:      "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
+					CurrentVersion:  3,
+					ApprovedVersion: &lineApproval,
+				},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -734,6 +754,10 @@ func populatedState(t *testing.T) State {
 					AnsweredAt: &answeredAt,
 					AnsweredBy: record.AnsweredByAsk,
 				},
+				DesignGate: &GateView{
+					ArtifactID:     "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
+					CurrentVersion: 2,
+				},
 				// Its spec's reviewer asked for changes at the version Dispatch holds, which the
 				// architect was told of: the one status that carries the reviewer's reason.
 				GatedSteps: []GatedStepView{{
@@ -776,6 +800,24 @@ func populatedState(t *testing.T) State {
 				DefaultBranch:    "main",
 				Workers:          map[claim.Role]PhaseView{},
 				StartWaitsForPod: []string{"checker"},
+				// Its work began once a person approved its spec, which stands approved at the
+				// version Dispatch holds: the one step `root-issues` gates, served twice.
+				DesignGate: &GateView{
+					ArtifactID:      "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+					CurrentVersion:  2,
+					ApprovedVersion: &stepApproval,
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
+					CurrentVersion:  2,
+					ApprovedVersion: &stepApproval,
+					Status:          GatedStepApproved,
+				}},
+				Slot: &SlotView{
+					Index:      5,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 36, 5, 0, time.UTC),
+				},
 			},
 			"LEGION-241": {
 				Key:           "LEGION-241",
@@ -790,6 +832,30 @@ func populatedState(t *testing.T) State {
 				Workers: map[claim.Role]PhaseView{
 					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
 				},
+				// Its spec stands approved at the version Dispatch holds, as LEGION-240's does: the
+				// hold is its checker's failed claim, not the gate.
+				DesignGate: &GateView{
+					ArtifactID:      "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+					CurrentVersion:  1,
+					ApprovedVersion: &heldStepApproval,
+				},
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "9d3a6c18-2e7f-4b50-8c41-6f0b3e9a5d27",
+					CurrentVersion:  1,
+					ApprovedVersion: &heldStepApproval,
+					Status:          GatedStepApproved,
+				}},
+				Slot: &SlotView{
+					Index:      6,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 39, 47, 0, time.UTC),
+				},
+				// Its checker failed at step and nothing will wake that claim, so its one rendered
+				// answer is the stopped claim, as LEGION-210's is (`why`, api.WhyClaimStopped).
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is held and the checker's claim is stranded at failed, so nothing will wake it.",
+				},
 			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
@@ -800,6 +866,16 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers:       map[claim.Role]PhaseView{},
+				// Nothing hands it to the daemon, so no architect of it has registered its spec:
+				// its one gated step carries no document, as LEGION-210's does.
+				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				// It stands in none of `active`, `waiting` and `blocked` and no stranded claim names
+				// it, so its one rendered answer is `unlisted`, with the sentence of its held word,
+				// `label_off` (`why`, api.WhyUnlisted).
+				Why: &WhyView{
+					State:  WhyUnlisted,
+					Reason: "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon.",
+				},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -840,6 +916,11 @@ func populatedState(t *testing.T) State {
 				// holds it alone and `check` is it.
 				Check:  &goldenCheck,
 				Checks: []CheckView{goldenCheck},
+				DesignGate: &GateView{
+					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+					CurrentVersion:  4,
+					ApprovedVersion: &mergedApproval,
+				},
 				// A root whose spec a person approved at the version Dispatch holds: the status
 				// that lets the tree's work past the step.
 				GatedSteps: []GatedStepView{{
@@ -896,6 +977,11 @@ func populatedState(t *testing.T) State {
 					WaitsOn:       "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
 					HeadUpdatedAt: &waitingHeadUpdatedAt,
 				},
+				DesignGate: &GateView{
+					ArtifactID:      "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+					CurrentVersion:  5,
+					ApprovedVersion: &reviewApproval,
+				},
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
 					ArtifactID:      "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
@@ -903,6 +989,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &reviewApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      3,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 14, 52, 0, time.UTC),
+				},
 			},
 			"LEGION-219": {
 				Key:           "LEGION-219",
@@ -950,6 +1040,11 @@ func populatedState(t *testing.T) State {
 					ToldHead:      "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 					ToldState:     "blocked",
 				},
+				DesignGate: &GateView{
+					ArtifactID:      "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+					CurrentVersion:  2,
+					ApprovedVersion: &stuckApproval,
+				},
 				GatedSteps: []GatedStepView{{
 					Step:            record.DesignStepSpec,
 					ArtifactID:      "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
@@ -957,6 +1052,10 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &stuckApproval,
 					Status:          GatedStepApproved,
 				}},
+				Slot: &SlotView{
+					Index:      4,
+					AdmittedAt: time.Date(2026, 9, 19, 10, 27, 44, 0, time.UTC),
+				},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -969,13 +1068,14 @@ func populatedState(t *testing.T) State {
 		// the contract before this one parses; who suspended a claim is read on the operator claim
 		// routes. LEGION-210's entry is one workflow.Stranded writes for the record this state
 		// describes: its implementer failed while implementing, its issue is held from that phase,
-		// and nothing retries the claim until its architect retries the phase. The other two stand
-		// here for their states and are not entries the rule would write: LEGION-211's released
-		// implementer, whose wake never brought its pod back, is on a root whose own tree has not
-		// been opened, which runs nothing (record.TreeRuns), and LEGION-212's retired tester is on
-		// a root that waits on a person, whose answer resumes its architect; workflow.Stranded
-		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
-		// projection's reading of this list.
+		// and nothing retries the claim until its architect retries the phase. LEGION-241's entry
+		// is one of the same kind: its checker failed at step and its issue is held from that step.
+		// The other two stand here for their states and are not entries the rule would write:
+		// LEGION-211's released implementer, whose wake never brought its pod back, is on a root
+		// whose own tree has not been opened, which runs nothing (record.TreeRuns), and
+		// LEGION-212's retired tester is on a root that waits on a person, whose answer resumes its
+		// architect; workflow.Stranded passes over every claim of both. The `why` of each of the
+		// four issues is the projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed", Token: "legion-legion-legion-210-implementer"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended", Token: "legion-legion-legion-211-implementer"},
@@ -1033,11 +1133,19 @@ func populatedState(t *testing.T) State {
 		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
 		// an open row beside the present, unchecked and withheld ones, rendered by the report
 		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// stale. Its one repository cache, acme/widgets' (Ready and read, as `repositories` below
+		// says), last answered its health with a repack that failed for lack of space, so the
+		// repository-cache-room row is open too, with the third source, `caches`, which a caller
+		// below cachesSourceContract is served without.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
 			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
+			Caches: []capabilities.Cache{{
+				Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
+				VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
+				RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
+			}},
 		}.Report()),
 		// Five repositories the live records name, of three owners, sorted by name, each showing
 		// an answer the block carries: acme/gadgets, the review App not installed on it, which
@@ -1092,8 +1200,9 @@ func populatedState(t *testing.T) State {
 		}),
 	}
 	// LEGION-208's tree was drawn into the memory group, so its root and LEGION-209, a child of
-	// that tree, both show the draw as internal/projection fills them, while every other issue of
-	// the fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
+	// that tree, which its `tree` names, both show the draw as internal/projection fills them (a
+	// tree row is its root's, shown to each issue of the tree), while every other issue of the
+	// fixture belongs to a tree no draw has reached. `memory` is the arm of the experiment of
 	// that name (config.Project.ExperimentsDeclared), and the three memory fields are that one
 	// assignment spelled out as the readers of contract 49 have always read it.
 	//
@@ -1121,6 +1230,7 @@ func populatedState(t *testing.T) State {
 		Generation:    1,
 		Phase:         phase.Admitted,
 		Status:        "in_progress",
+		Tree:          "LEGION-208",
 		Repo:          "acme/widgets",
 		DefaultBranch: "main",
 		Workers:       map[claim.Role]PhaseView{},
@@ -1147,10 +1257,10 @@ func populatedState(t *testing.T) State {
 	state.LowestPluginContract = &lowest
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
 	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
-	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
-	// fixture, so neither of them is measured, which is what a reader is served for an issue no
-	// live tree holds. Every pair is one reading, at quietReadAt, a little after the newest step
-	// record of this state.
+	// carries the same pair, LEGION-209, a child of LEGION-208's tree, carrying that tree's.
+	// LEGION-207's tree closed, so its issue is not measured, which is what a reader is served for
+	// an issue no live tree holds. Every pair is one reading, at quietReadAt, a little after the
+	// newest step record of this state.
 	//
 	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
 	// members and the step times of their claims (record.QuietTrees) — and its hours are the
@@ -1164,6 +1274,8 @@ func populatedState(t *testing.T) State {
 	// read. LEGION-219's head was read again a minute before this state, and that read only
 	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
 	// tree has been still for more than a day although its read stamp is a minute old.
+	// LEGION-240 last moved when it entered step, and LEGION-241 when its checker's claim failed
+	// and the hold took it out of step; the failed claim carries no step record.
 	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
 	quietMoved := map[string]time.Time{
 		"LEGION-208": implementerStep.At,
@@ -1172,6 +1284,8 @@ func populatedState(t *testing.T) State {
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
 		"LEGION-218": waitingApprovedAt,
 		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
+		"LEGION-240": time.Date(2026, 9, 22, 8, 52, 16, 0, time.UTC),
+		"LEGION-241": time.Date(2026, 9, 22, 9, 4, 39, 0, time.UTC),
 	}
 	for key, issue := range state.Issues {
 		movedAt, measured := quietMoved[issue.Tree]
@@ -1207,19 +1321,277 @@ func TestStateGolden(t *testing.T) {
 	golden(t, "state.json", state)
 }
 
+// The populated state is written by hand, as a state the daemon serves, so its admission block
+// holds to the rules the daemon's own pass builds that block by. An issue that holds a slot or
+// waits in the line stands in a live tree, so its tree is one `trees` names (record.LiveRoots: a
+// root at work has its lifecycle open, and a root in the line is queued). Every issue the
+// state records that has not finished stands in `active`, `waiting` or `held`, since the held
+// list is every candidate that stands in neither of the other two (record.HeldList). And
+// `active` and each issue's `slot` are read from the same slot rows (internal/projection's
+// slotViews), in the order of their index, which the slots table keeps unique and never negative
+// (record.Store.Slots): so an issue carries a slot view exactly when `active` names it, and
+// `active` lists its issues by that index, each a different one, each slot with the moment the
+// pass took it (admit's PutSlot of the pass's now). Each issue the state records in a tree
+// `trees` names carries that tree's quiet time, and no other issue carries one
+// (internal/projection's quietTrees): one pair for the whole tree, each pair read at the one
+// instant the state is measured at, unless its movement stands at or after that instant and it
+// reads 0 (record.QuietTrees). The spec row of a root is served twice, as `designGate`
+// (record.SpecGate) and as the spec entry of `gatedSteps` (GatedStepViewsOf), so where the
+// deployment gates spec an issue carries `designGate` exactly when that entry names a document,
+// and the two name the same artifact and versions (internal/projection). Every root carries one
+// `gatedSteps` entry for each step its tree is gated on (record.TreeSteps over the steps the
+// deployment gates, `settings.gates.design`), and an issue that is no root carries none. Every
+// issue the record holds in the workflow that `strandedClaims` names reads `why` claim_stopped,
+// with the sentence naming its phase and that claim, and no other issue reads it (projection's
+// whyStates reads that very list first). Every other issue in the workflow that stands in none
+// of `active`, `waiting` and `blocked` reads `unlisted`, unless its work runs past its review,
+// and no other issue reads it. Every issue the workflow records names the root of its tree, a
+// root the state records, and carries that root's `memory` draw (internal/projection's
+// assignmentViews). A golden that breaks any of these rules shows every reader of state.json a
+// state the daemon never serves.
+func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
+	state := populatedState(t)
+	admission := state.Admission
+	trees := map[string]bool{}
+	for _, tree := range admission.Trees {
+		trees[tree] = true
+	}
+	named := map[string]bool{}
+	for _, list := range [][]string{admission.Active, admission.Waiting} {
+		for _, key := range list {
+			named[key] = true
+			issue, recorded := state.Issues[key]
+			if !recorded {
+				t.Errorf("the admission names %s in a slot or in the line, and the state records no such issue", key)
+				continue
+			}
+			if !trees[issue.Tree] {
+				t.Errorf("%s holds a slot or waits in the line in the tree of %s, which `trees` does not name: %v", key, issue.Tree, admission.Trees)
+			}
+		}
+	}
+	for _, row := range admission.Held {
+		named[row.Issue] = true
+	}
+	for key, issue := range state.Issues {
+		if issue.Phase != phase.Done && !named[key] {
+			t.Errorf("%s stands at %s, and the admission names it in none of `active`, `waiting` and `held`", key, issue.Phase)
+		}
+	}
+	active := map[string]bool{}
+	previous, previousKey := -1, ""
+	for _, key := range admission.Active {
+		active[key] = true
+		issue, recorded := state.Issues[key]
+		if !recorded {
+			continue
+		}
+		if issue.Slot == nil {
+			t.Errorf("%s stands in `active`, and its issue carries no `slot`", key)
+			continue
+		}
+		if issue.Slot.AdmittedAt.IsZero() {
+			t.Errorf("%s holds slot %d, and its `slot` names no moment it took it", key, issue.Slot.Index)
+		}
+		if issue.Slot.Index <= previous {
+			t.Errorf("%s holds slot %d after %s at slot %d in `active`, which lists the slots by their index, each a different one from 0", key, issue.Slot.Index, previousKey, previous)
+		}
+		previous, previousKey = issue.Slot.Index, key
+	}
+	for key, issue := range state.Issues {
+		if issue.Slot != nil && !active[key] {
+			t.Errorf("%s carries slot %d, and `active` does not name it", key, issue.Slot.Index)
+		}
+	}
+	type quiet struct {
+		movedAt time.Time
+		hours   float64
+	}
+	treeQuiet := map[string]quiet{}
+	var readAt time.Time
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		measured := issue.TreeMovedAt != nil || issue.QuietHours != nil
+		if !trees[issue.Tree] || issue.Phase == Unrecorded {
+			if measured {
+				t.Errorf("%s carries a quiet time, and its tree %q is no live tree of a record: %v", key, issue.Tree, admission.Trees)
+			}
+			continue
+		}
+		if issue.TreeMovedAt == nil || issue.QuietHours == nil {
+			t.Errorf("%s stands in the live tree of %s, and carries no whole quiet time (treeMovedAt %v, quietHours %v)", key, issue.Tree, issue.TreeMovedAt, issue.QuietHours)
+			continue
+		}
+		pair := quiet{movedAt: *issue.TreeMovedAt, hours: *issue.QuietHours}
+		if first, seen := treeQuiet[issue.Tree]; seen && (!first.movedAt.Equal(pair.movedAt) || first.hours != pair.hours) {
+			t.Errorf("%s carries the quiet time moved %s, quiet %g hours, and another issue of the tree of %s carries moved %s, quiet %g hours",
+				key, pair.movedAt.Format(time.RFC3339), pair.hours, issue.Tree, first.movedAt.Format(time.RFC3339), first.hours)
+		}
+		treeQuiet[issue.Tree] = pair
+		if pair.hours == 0 {
+			continue
+		}
+		at := pair.movedAt.Add(time.Duration(pair.hours * float64(time.Hour))).Round(time.Millisecond)
+		if readAt.IsZero() {
+			readAt = at
+		} else if !at.Equal(readAt) {
+			t.Errorf("%s's quiet time is read at %s, and the state's other quiet times at %s", key, at, readAt)
+		}
+	}
+	// The design gate: one spec row, served as `designGate` and as the spec entry of `gatedSteps`.
+	// Only a root holds gate rows, so an issue that is no root carries neither, and the spec entry
+	// names a document exactly when the row exists, which is when `designGate` is served.
+	if !slices.Contains(state.Settings.Gates.Design, record.DesignStepSpec) {
+		t.Errorf("the golden's deployment gates %v, no spec step, so no issue's `designGate` can be read against its spec entry", state.Settings.Gates.Design)
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		var spec *GatedStepView
+		for i, entry := range issue.GatedSteps {
+			if entry.Step == record.DesignStepSpec && entry.ArtifactID != "" {
+				spec = &issue.GatedSteps[i]
+			}
+		}
+		gate := issue.DesignGate
+		switch {
+		case spec == nil && gate != nil:
+			t.Errorf("%s carries the design gate of document %s, and no spec step of its `gatedSteps` names a document", key, gate.ArtifactID)
+		case spec != nil && gate == nil:
+			t.Errorf("%s's spec step names document %s at version %d, and the issue carries no `designGate`", key, spec.ArtifactID, spec.CurrentVersion)
+		case spec != nil && (gate.ArtifactID != spec.ArtifactID || gate.CurrentVersion != spec.CurrentVersion || !reflect.DeepEqual(gate.ApprovedVersion, spec.ApprovedVersion)):
+			t.Errorf("%s carries the design gate of document %s at version %d approved at %s, and its spec step names document %s at version %d approved at %s",
+				key, gate.ArtifactID, gate.CurrentVersion, approvedAt(gate.ApprovedVersion), spec.ArtifactID, spec.CurrentVersion, approvedAt(spec.ApprovedVersion))
+		}
+	}
+	// The gated steps: the projection gives every root GatedStepViewsOf(TreeSteps(steps, rows)),
+	// one entry for each step the deployment gates, an `unregistered` one where the root holds no
+	// row, with criteria after them where the root registered a criteria document beside a
+	// deployment that gates spec and not criteria; and an issue that is no root holds no gate rows
+	// and is given no entry. The rows a root holds are the entries that name a document.
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		rows := map[record.DesignStep]record.DesignGate{}
+		steps := make([]record.DesignStep, 0, len(issue.GatedSteps))
+		for _, entry := range issue.GatedSteps {
+			steps = append(steps, entry.Step)
+			if entry.ArtifactID != "" {
+				rows[entry.Step] = record.DesignGate{Issue: key, Step: entry.Step, ArtifactID: entry.ArtifactID}
+			}
+		}
+		var want []record.DesignStep
+		if key == issue.Tree {
+			want = record.TreeSteps(state.Settings.Gates.Design, rows)
+		}
+		if !slices.Equal(steps, want) {
+			t.Errorf("%s, of the tree of %q, carries the gated steps %v, and its tree's gate gives it %v", key, issue.Tree, steps, want)
+		}
+	}
+	// The stopped claims: the daemon hands the projection the claims it judges nothing will wake
+	// and serves the same list as `strandedClaims` (internal/daemon's state read), and whyStates
+	// reads it before anything else, so every issue the record holds in the workflow that one of
+	// them names reads claim_stopped, with the sentence of claimStoppedReason, the worker's claim
+	// named over the tree architect's where one issue has both. An issue the workflow does not
+	// record is in no record whyStates reads, and no other issue reads that state.
+	stopped := map[string]StrandedClaim{}
+	for _, stranded := range state.StrandedClaims {
+		if named, known := stopped[stranded.Issue]; known && named.Role != claim.RoleArchitect {
+			continue
+		}
+		stopped[stranded.Issue] = stranded
+	}
+	inWorkflow := func(issue Issue) bool {
+		return issue.Phase != Unrecorded && record.InWorkflow(record.Issue{Phase: issue.Phase, Status: issue.Status})
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		stranded, named := stopped[key]
+		if !named || !inWorkflow(issue) {
+			if issue.Why != nil && issue.Why.State == WhyClaimStopped {
+				t.Errorf("%s reads %s (%q), and no stranded claim of an issue in the workflow names it", key, WhyClaimStopped, issue.Why.Reason)
+			}
+			continue
+		}
+		want := fmt.Sprintf("Its phase is %s and the %s's claim is stranded at %s, so nothing will wake it.", issue.Phase, stranded.Role, stranded.State)
+		if stranded.Role == claim.RoleArchitect {
+			want = fmt.Sprintf("Its phase is %s and its tree's architect claim is stranded at %s, so nothing will wake it.", issue.Phase, stranded.State)
+		}
+		if issue.Why == nil || *issue.Why != (WhyView{State: WhyClaimStopped, Reason: want}) {
+			t.Errorf("%s's %s claim is stranded at %s, and its `why` is %+v, want %s: %q", key, stranded.Role, stranded.State, issue.Why, WhyClaimStopped, want)
+		}
+	}
+	// The unlisted issues: whyStates' last arm. An issue the record holds in the workflow that no
+	// stranded claim names, which stands in none of `active`, `waiting` and `blocked`, reads
+	// `unlisted` with the sentence of its word in `admission.held` (heldSentences, the
+	// unclassified sentence where the table serves none), and no other issue reads that state.
+	// The arm passes over an issue whose work runs past its own review in a tree that runs
+	// (atWorkPastReview); the state does not say which trees run, so such an issue, one standing
+	// in accepting, retro or merging and not held, may read `unlisted` or nothing.
+	lined, blocked := map[string]bool{}, map[string]bool{}
+	for _, key := range admission.Waiting {
+		lined[key] = true
+	}
+	for _, row := range admission.Blocked {
+		blocked[row.Issue] = true
+	}
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		_, stranded := stopped[key]
+		unlisted := inWorkflow(issue) && !stranded && !active[key] && !lined[key] && !blocked[key]
+		reads := issue.Why != nil && issue.Why.State == WhyUnlisted
+		if unlisted && issue.Phase != phase.Held && record.PastReview(record.Issue{Phase: issue.Phase}) {
+			continue
+		}
+		switch {
+		case unlisted && (!reads || issue.Why.Reason == ""):
+			t.Errorf("%s stands in the workflow at %s, in none of `active`, `waiting` and `blocked`, no stranded claim names it, and its `why` is %+v, want %s with a sentence", key, issue.Phase, issue.Why, WhyUnlisted)
+		case !unlisted && reads:
+			t.Errorf("%s reads %s (%q), and it is not an issue in the workflow standing in none of `active`, `waiting` and `blocked` that no stranded claim names", key, WhyUnlisted, issue.Why.Reason)
+		}
+	}
+	// The tree: the projection copies each record's tree, the key of its tree's root, which the
+	// issues table holds for every record (`tree text not null`); only an issue the workflow does
+	// not record stands in no tree (api.Issue.Tree). The `memory` experiment draws for a tree,
+	// since config refuses it any other unit, and a tree row is its root's, shown to each issue of
+	// the tree (assignmentViews): so every recorded issue carries its root's `memory` draw, the
+	// group, the mode and the instant, or none where its root carries none.
+	for _, key := range slices.Sorted(maps.Keys(state.Issues)) {
+		issue := state.Issues[key]
+		if issue.Phase == Unrecorded {
+			continue
+		}
+		root, recorded := state.Issues[issue.Tree]
+		if issue.Tree == "" || !recorded {
+			t.Errorf("%s is recorded at %s, and names no root the state records as its tree (tree %q)", key, issue.Phase, issue.Tree)
+			continue
+		}
+		if root.MemoryGroup != issue.MemoryGroup || root.MemoryDrawMode != issue.MemoryDrawMode || !reflect.DeepEqual(root.MemoryDrawnAt, issue.MemoryDrawnAt) {
+			t.Errorf("%s carries the memory draw %q (mode %q, at %v), and %s, the root of its tree, carries %q (mode %q, at %v)",
+				key, issue.MemoryGroup, issue.MemoryDrawMode, issue.MemoryDrawnAt, issue.Tree, root.MemoryGroup, root.MemoryDrawMode, root.MemoryDrawnAt)
+		}
+	}
+}
+
+// approvedAt is an approved version as a person reads it: the number, or none.
+func approvedAt(version *int) string {
+	if version == nil {
+		return "none"
+	}
+	return fmt.Sprint(*version)
+}
+
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
-// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
-// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
-// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
-// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
-// schema of the block, so the narrowing is held to the reader it is written for, and its drift
-// gate holds every key of the file to that copy.
+// own state, asked through the route itself. The caller is served at the recorded contract at or
+// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
+// block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
+// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
+// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
+// view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
+// copy of contract 152's schema of the block, so the narrowing is held to the reader it is written
+// for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
@@ -1583,7 +1955,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
@@ -1729,7 +2101,8 @@ func operatorClaim() OperatorClaim {
 			Interrupted: true,
 			// The record of the sends that failed, carried here beside the confirmation the way
 			// this fixture carries every other optional at once. A live delivery shows one or
-			// the other: the send that confirms a task clears all three (supervise's confirm).
+			// the other: the send that confirms a task clears all three (supervise's
+			// confirmCarrying).
 			SendFailures:      2,
 			LastSendFailureAt: &lastSendFailure,
 			LastSendError:     "prompt the agent: context deadline exceeded",
@@ -1852,10 +2225,10 @@ func TestTask310RouteGoldens(t *testing.T) {
 }
 
 // The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
-// the routes above are. register_plan answers the plan it took, each task with the steps its block
-// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
-// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
-// there.
+// the routes above are. register_plan answers the plan it took, the tasks its version added and
+// each task with the steps its block names as the plan writes them (registeredPlan), and stop_task
+// answers the empty object of a fact route. `@legion/contracts` parses both, so a field the daemon
+// adds to either is caught there.
 func TestOwnerPlanRouteGoldens(t *testing.T) {
 	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
 		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
@@ -1864,7 +2237,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 			ID:    "a",
 			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
-	})})
+	}, []string{"a"})})
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 

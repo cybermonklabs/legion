@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A copy of an issue read for one of its tasks (Issue.ViewTask) stands in the phase of that task,
@@ -26,7 +27,7 @@ func TestAWriteOfACopyReadForATaskIsRefused(t *testing.T) {
 
 	view := issue
 	view.ViewTask, view.Phase = "a", phase.Reviewing
-	err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, view) })
+	err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, view) })
 	want := "put issue LEGION-208: a copy read for task a is written by the workflow's putIssue, which derives the issue's phase"
 	if err == nil || err.Error() != want {
 		t.Fatalf("the write of %s read for task a = %v, want the refusal %q", issue.Key, err, want)

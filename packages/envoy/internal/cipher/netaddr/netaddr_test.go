@@ -1,6 +1,7 @@
 package netaddr
 
 import (
+	"errors"
 	"net/netip"
 	"testing"
 )
@@ -47,6 +48,31 @@ func TestHostWritesAnAddressLiteralAsCanonicalDoes(t *testing.T) {
 	} {
 		if got := Host(in); got != want {
 			t.Errorf("Host(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+// TestForwardedClientReadsTheEntryTheBalancerAppends: the second-to-last entry of the one line, as
+// a bucket's key, and an error for every header no such balancer wrote.
+func TestForwardedClientReadsTheEntryTheBalancerAppends(t *testing.T) {
+	for _, tc := range []struct {
+		lines []string
+		want  string
+		err   error
+	}{
+		{lines: []string{"203.0.113.9, 34.120.0.1"}, want: "203.0.113.9"},
+		{lines: []string{"198.51.100.7, 203.0.113.9,34.120.0.1"}, want: "203.0.113.9"},
+		{lines: []string{"::ffff:203.0.113.9, 34.120.0.1"}, want: "203.0.113.9"},
+		{lines: []string{"2001:db8:1:2::ff, 34.120.0.1"}, want: "2001:db8:1:2::/64"},
+		{lines: nil, err: ErrForwardedLines},
+		{lines: []string{"198.51.100.7", "203.0.113.9, 34.120.0.1"}, err: ErrForwardedLines},
+		{lines: []string{"203.0.113.9"}, err: ErrForwardedEntries},
+		{lines: []string{" , 34.120.0.1"}, err: ErrForwardedAddress},
+		{lines: []string{"unknown, 34.120.0.1"}, err: ErrForwardedAddress},
+	} {
+		got, err := ForwardedClient(tc.lines)
+		if got != tc.want || !errors.Is(err, tc.err) {
+			t.Errorf("ForwardedClient(%q) = %q, %v; want %q, %v", tc.lines, got, err, tc.want, tc.err)
 		}
 	}
 }

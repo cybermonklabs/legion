@@ -16,6 +16,7 @@ import (
 // a value ParseValue decodes, so the two lists cannot drift apart.
 const (
 	typeGitHubApp            = "github-app"
+	typeGitHubInstallations  = "github-installations"
 	typeGoogleLogin          = "google-login"
 	typeGoogleServiceAccount = "google-service-account"
 	typeAzureLogin           = "azure-login"
@@ -26,6 +27,7 @@ const (
 // decoded as holds its fields, and every other field is zero.
 type Value struct {
 	GitHubApp            GitHubAppValue
+	GitHubInstallations  GitHubInstallationsValue
 	GoogleLogin          GoogleLoginValue
 	GoogleServiceAccount GoogleServiceAccountValue
 	AzureLogin           AzureLoginValue
@@ -104,12 +106,14 @@ type (
 )
 
 // ParseValue is the one reader of a type secret's stored value: it decodes value as type stores
-// it and refuses every value that type's minter cannot mint from. The five minters call it
+// it and refuses every value that type's minter cannot mint from. The six minters call it
 // before anything else they do with the value, and agent-secrets calls it before it writes one,
 // so a value one refuses the other refuses too, in the same words.
 //
 //   - github-app: a JSON object whose app_id is a run of ASCII digits and whose private_key
 //     githubappjwt.ParseKey reads and githubappjwt.Sign signs a JWT with.
+//   - github-installations: a JSON object of installations, each an installation token a minter
+//     stored under its account's GitHub login (parseGitHubInstallations).
 //   - google-login: a JSON object of type authorized_user, naming its client_id, client_secret
 //     and refresh_token.
 //   - google-service-account: a JSON object whose service_account is one account
@@ -128,6 +132,9 @@ func ParseValue(secretType, value string) (Value, error) {
 	case typeGitHubApp:
 		parsed, err := parseGitHubApp(value)
 		return Value{GitHubApp: parsed}, err
+	case typeGitHubInstallations:
+		parsed, err := parseGitHubInstallations(value)
+		return Value{GitHubInstallations: parsed}, err
 	case typeGoogleLogin:
 		parsed, err := parseGoogleLogin(value)
 		return Value{GoogleLogin: parsed}, err

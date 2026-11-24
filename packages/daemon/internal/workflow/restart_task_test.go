@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -36,7 +37,13 @@ func loggedEngine() (*Engine, *bytes.Buffer) {
 // owner at step 2, so the root is held from testing for the stopped task.
 func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Issue {
 	t.Helper()
-	root := stepRoot(t, pool, phase.Admitted)
+	return stopsAtTesting(t, pool, engine, stepRoot(t, pool, phase.Admitted))
+}
+
+// stopsAtTesting walks root, standing at admitted, through the plan `implementer tester` to its
+// step 2, where its owner stops its task a, so the root is held from testing for the stopped task.
+func stopsAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue) record.Issue {
+	t.Helper()
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
@@ -248,4 +255,110 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			t.Fatalf("the log of the todo = %q, want the release of a held phase and no restart of a task", line)
 		}
 	})
+}
+
+// A restart takes the issue out of held into the phase of step 1, as a move takes an issue into a
+// phase (transition), so after its start it does what a move does there (startAtFirstStep). It
+// queues the reconcile of the tree's news (queueMovedNews): a hold owes the issue nothing
+// (record.OwedNews names a held issue UntoldHeld), so a version of the design approved while the
+// task was stopped would reach step 1's worker with no change set recorded, which its start cannot
+// carry. The
+// control is a holder that took the approved version, which is owed nothing and queues no
+// reconcile. And it acts on the pull request's merge forward (mergeForwardOnEntry): a move into
+// implementing drops the record's ask, since the implementer works the head there, so an ask made
+// before the stop no longer holds back a later ask of that head (mergeForward asks once for each
+// head). The deployment gates the spec of each root, and the root's gate stands open at version 3
+// from the start.
+func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
+	stopped := func(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.Issue {
+		t.Helper()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+		return stopsAtTesting(t, pool, engine, root)
+	}
+	restarts := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+		t.Helper()
+		if result := applyFacts(t, pool, engine)("todo", personsTodo(key)); result.Refusal != nil {
+			t.Fatalf("the todo was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+	}
+	for _, tc := range []struct {
+		name string
+		took int
+		want int
+	}{
+		{name: "a holder that took the version before the approved one", took: 3, want: 1},
+		{name: "control: a holder that took the approved version", took: 4, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
+			root := stopped(t, pool, engine)
+			// A person approves version 4 of the spec while the task is stopped: the hold owes the
+			// root nothing, so no reconcile stands for it.
+			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
+			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
+			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
+			assertOutboxCount(t, pool, "design_changes", 0)
+
+			restarts(t, pool, engine, root.Key)
+
+			assertOutboxCount(t, pool, "design_changes", tc.want)
+		})
+	}
+
+	t.Run("an ask of the merge forward made before the stop is dropped", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := gatedStepEngine(config.DesignGateRootIssues, nil)
+		root := stopped(t, pool, engine)
+		pr := recordedPR(t, pool, root.Key)
+		pr.MergeForward = &record.MergeForward{Head: pr.HeadSHA, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+			Why: record.ConflictCheckNotGreen, AskedAt: stepClock}
+		seedPR(t, pool, pr)
+
+		restarts(t, pool, engine, root.Key)
+
+		if mf := recordedPR(t, pool, root.Key).MergeForward; mf != nil {
+			t.Fatalf("after the restart into implementing the record's merge forward = %+v, want none, as a move into implementing leaves it", mf)
+		}
+	})
+}
+
+// The release of any other hold puts the issue back in the phase the hold is from and starts that
+// phase's worker again (retryPhase), and the hold owed the issue nothing either (record.OwedNews
+// names every held issue UntoldHeld), so the release queues the reconcile of the tree's news as the
+// restart above does (queueMovedNews): a version approved while the issue was held reaches the
+// restarted worker with its change set recorded. The control is a holder that took the approved
+// version, which queues no reconcile. The release is a person's todo on a root with no plan rows
+// that a failed claim holds; the deployment gates the spec of each root.
+func TestTheReleaseOfAHeldPhaseQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		took int
+		want int
+	}{
+		{name: "a holder that took the version before the approved one", took: 3, want: 1},
+		{name: "control: a holder that took the approved version", took: 4, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
+			root := stepRoot(t, pool, phase.Held)
+			root.Hold = &record.Hold{From: phase.Implementing}
+			seedIssue(t, pool, root)
+			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
+			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
+			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
+			assertOutboxCount(t, pool, "design_changes", 0)
+
+			if result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key)); result.Refusal != nil {
+				t.Fatalf("the todo was refused: %+v", result.Refusal)
+			}
+			if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil {
+				t.Fatalf("%s after the todo stands in %s with hold %+v, want implementing with no hold", root.Key, issue.Phase, issue.Hold)
+			}
+			assertOutboxCount(t, pool, "design_changes", tc.want)
+		})
+	}
 }

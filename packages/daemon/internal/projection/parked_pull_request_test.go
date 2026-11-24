@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
@@ -30,7 +31,7 @@ func TestAParkedIssueServesItsLeftTasksPullRequest(t *testing.T) {
 	records := record.NewStore()
 	given := time.Date(2026, 11, 24, 4, 0, 0, 0, time.UTC)
 	review := record.TaskPlace{Kind: record.PlaceStep, Position: 2}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		must(t, records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Tree: key, Project: "LEGION", Title: "Park a review", Phase: phase.Done, Generation: 1,
 			Status: "backlog", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -50,7 +51,7 @@ func TestAParkedIssueServesItsLeftTasksPullRequest(t *testing.T) {
 		t.Fatalf("write the parked %s: %v", key, err)
 	}
 	var state api.State
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		state, err = Project(ctx, Inputs{Tx: tx, Store: records, Project: "LEGION", Now: given.Add(time.Hour)})
 		return err

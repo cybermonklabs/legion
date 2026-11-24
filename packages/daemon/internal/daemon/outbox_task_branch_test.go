@@ -78,7 +78,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: task.id, Position: i + 1, Role: role, Type: roles[role].Type})
 		}
 	}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 func (rig *taskBranchRig) task(t *testing.T, id string) record.PlanTask {
 	t.Helper()
 	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = rig.records.Plan(context.Background(), tx, taskBranchIssue.Key, taskBranchIssue.Generation)
 		return err
@@ -150,6 +150,7 @@ func (rig *taskBranchRig) refs(t *testing.T) string {
 // A task that needs no task starts at the issue's default branch, whether it holds the issue's own
 // branch or one of its own, and joins nothing.
 func TestATaskWithNoNeedsStartsAtTheDefaultBranch(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "b"})
 	main := rig.github.Head(t, "main")
 	for _, id := range []string{"a", "b"} {
@@ -169,6 +170,7 @@ func TestATaskWithNoNeedsStartsAtTheDefaultBranch(t *testing.T) {
 
 // A task that needs one task starts at the head of that task's branch.
 func TestATaskWithOneNeedStartsAtItsHead(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "d", needs: []string{"a"}})
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")
 
@@ -186,6 +188,7 @@ var twoNeeds = []plannedTask{{id: "a"}, {id: "c"}, {id: "d", needs: []string{"a"
 // in the order of its needs, and the second need is merged into it, so the branch's head is a merge
 // commit whose parents are the two needs' heads, in that order.
 func TestATaskWithTwoNeedsStartsAtTheirMerge(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, twoNeeds...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")
 	c := rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"c.txt": "c\n"}, "c")
@@ -204,6 +207,7 @@ func TestATaskWithTwoNeedsStartsAtTheirMerge(t *testing.T) {
 // A need whose changes conflict with the needs joined before it is no refusal: GitHub's 409 is
 // recorded as a join conflict of that need, and the branch stands on the needs that joined.
 func TestAJoinThatConflictsIsRecordedAndTheBranchStandsOnTheFirstNeed(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, twoNeeds...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n"}, "a")
 	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n"}, "c")
@@ -223,6 +227,7 @@ func TestAJoinThatConflictsIsRecordedAndTheBranchStandsOnTheFirstNeed(t *testing
 // refused as a conflict, under an id of the issue, the generation, the task and the row, so a row
 // that runs again applies one fact. The handler's failure is the row's, which retries.
 func TestTheEndOfAJoinIsAppliedAsAFact(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, twoNeeds...)
 	handler := &outboxFactHandler{}
 	rig.runner.handlers = []intake.Handler{handler}
@@ -262,6 +267,7 @@ func TestTheEndOfAJoinIsAppliedAsAFact(t *testing.T) {
 // A row that runs again, as an outbox row can, finds each need joined already: GitHub answers each
 // merge with 204, and no ref of the repository moves.
 func TestARowThatRunsAgainMovesNoRef(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, twoNeeds...)
 	rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")
 	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"c.txt": "c\n"}, "c")
@@ -280,6 +286,7 @@ func TestARowThatRunsAgainMovesNoRef(t *testing.T) {
 // now is in its branch. No start again queues such a row at this release (taskBranch); only a
 // task's first start does.
 func TestAStartAgainJoinsANeedItLacks(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, twoNeeds...)
 	a := rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"a.txt": "a\n"}, "a")
 	c := rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"c.txt": "c\n"}, "c")
@@ -300,6 +307,7 @@ func TestAStartAgainJoinsANeedItLacks(t *testing.T) {
 // the issue has left finishes without acting: no branch is made and no join written, so the starts
 // it held back meet their own fences.
 func TestATaskBranchRowThatServesNoStartingTaskFinishesWithoutActing(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "b"})
 	before := rig.refs(t)
 	execute := func(task string, generation uint64) {

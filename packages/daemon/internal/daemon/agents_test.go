@@ -147,6 +147,7 @@ var implementCompletion = api.HandoffCompleteRequest{Summary: "implemented", Com
 // The control takes the key off step 2 (`implementer:a tester reviewer`): step 2 then gets an agent
 // of its own, `…-tester`, in a session of its own, which the same reads must show.
 func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -255,6 +256,7 @@ func oneKeyHolds(r *ownerStepsRig, steps [3]stepRecordRead, keyed bool) error {
 // so no task the claim is handed falls at or below one it was handed before. The reviewer's row
 // stays its own. The task then walks to done again in the same two agents.
 func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer:a", "tester:a", "reviewer")
 	r.openGate(phase.Implementing)
@@ -345,6 +347,7 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // done with the claims `…-implementer` and `…-reviewer` of its steps and no other: a step whose row
 // names no agent reads as its role (record.PlanStep.AgentName).
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
+	t.Parallel()
 	r := newAgentsRig(t)
 	r.givePlan("implementer", "reviewer")
 	r.openGate(phase.Implementing)

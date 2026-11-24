@@ -27,6 +27,7 @@ import (
 // round replaces it, the waiting row starts, and the delivery its claim's adoption reads names the
 // task's branch.
 func TestAStepOfASecondTaskWaitsForAPodOfAnEarlierImage(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

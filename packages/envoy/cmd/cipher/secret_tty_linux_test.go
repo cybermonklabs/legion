@@ -118,12 +118,13 @@ func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*o
 	}
 }
 
-// awaitEchoOff waits until the prompt has turned the terminal's echo off, failing t after ten
-// seconds: a prompt in a process of its own may take a while to start on a loaded machine.
+// awaitEchoOff waits until the prompt has turned the terminal's echo off. Its one bound is the
+// moment the prompt job tests' waits give up (waitsGaveUp, in secret_job_harness_linux_test.go): a
+// prompt in a process of its own may take a while to start on a loaded machine.
 func awaitEchoOff(t *testing.T, terminal int) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
-		if time.Now().After(deadline) {
+	for ; lflag(t, terminal)&unix.ECHO != 0; time.Sleep(5 * time.Millisecond) {
+		if waitsGaveUp(t) {
 			t.Fatal("the reader never turned echo off")
 		}
 	}

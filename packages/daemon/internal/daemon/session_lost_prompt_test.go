@@ -15,6 +15,7 @@ import (
 )
 
 func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
+	t.Parallel()
 	token, err := claim.NewToken("legion", "LEGION-209", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 // branch (its control: the sentence naming claim.IssueBranch, under which the agent of b is told
 // legion/LEGION-209).
 func TestTheRecreatedWorkspaceSentenceNamesTheClaimsOwnBranch(t *testing.T) {
+	t.Parallel()
 	token, err := claim.NewToken("legion", "LEGION-209", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)

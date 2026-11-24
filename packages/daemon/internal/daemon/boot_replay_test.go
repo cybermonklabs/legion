@@ -61,6 +61,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 // the lock for the whole replay; the replay of facts already applied finishes anyway and applies
 // nothing again, and a claim's fact no daemon applied is still applied, once the lock is free.
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
@@ -72,7 +73,7 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 		t.Fatalf("the first replay applied %d facts, want %d", got, len(claims))
 	}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,6 +155,7 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 // replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
 // applied exactly once.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
+	t.Parallel()
 	const budget = 5 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
@@ -237,6 +239,7 @@ func (r *bootReconcileHeld) ReconcileOrphans(ctx context.Context, known []runtim
 // fact. Here every one of 200 ready claims' shims has sent its hello before the boot's orphan
 // reconciliation returns, and each, as its hello_ack arrives, finds all 200 facts applied.
 func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
+	t.Parallel()
 	const n = 200
 	cfg := workflowConfig(t, workflowNATS(t))
 	project, err := claim.ProjectToken(cfg.Project)

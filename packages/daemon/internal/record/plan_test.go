@@ -533,7 +533,7 @@ func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tx, err := st.Pool().Begin(ctx)
+			tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 			must(t, err)
 			defer func() { _ = tx.Rollback(ctx) }()
 			if err := tc.act(tx); err == nil {
@@ -570,7 +570,7 @@ func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
 	}
 	try := func(t *testing.T, act func(tx pgx.Tx) error) error {
 		t.Helper()
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		must(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 		return act(tx)
@@ -819,34 +819,11 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 			t.Fatalf("the implementer's row of %s = %#v, want the counts on it and every other column kept: %#v", noPlan, got, want)
 		}
 	})
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := records.ReturnCounts(ctx, tx, planIssue, 1, "z"); err == nil {
 		t.Fatalf("the counts of a task the plan does not hold were read, want them refused")
-	}
-}
-
-// The task a run with plan rows is on, for a reader of a plan of one task, is that one task,
-// whatever its state. A plan that holds none, or more than one, names no task, and says how many
-// it holds: a reader of a plan of several reads each of its tasks.
-func TestThePlansTaskIsItsOneTask(t *testing.T) {
-	v := PlanVersion{Issue: "LEGION-212", Generation: 1}
-	stopped := PlanTask{Issue: "LEGION-212", Generation: 1, Task: "a", State: TaskStopped}
-	if got, err := (&StoredPlan{Version: v, Tasks: []PlanTask{stopped}}).Task(); err != nil || !reflect.DeepEqual(got, stopped) {
-		t.Fatalf("the task of a plan of one task = %+v, %v; want %+v", got, err, stopped)
-	}
-	for _, tc := range []struct {
-		tasks []PlanTask
-		want  string
-	}{
-		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, not one"},
-		{[]PlanTask{{Task: "a", State: TaskWaiting}, {Task: "b", State: TaskRunning}},
-			"the plan of LEGION-212 at generation 1 holds 2 tasks, not one"},
-	} {
-		if got, err := (&StoredPlan{Version: v, Tasks: tc.tasks}).Task(); err == nil || err.Error() != tc.want || !reflect.DeepEqual(got, PlanTask{}) {
-			t.Errorf("the task of a plan of %d tasks = %+v, %v; want no task and %q", len(tc.tasks), got, err, tc.want)
-		}
 	}
 }
 

@@ -256,7 +256,7 @@ func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named st
 // conflictConfirm).
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key, named string) (issueRecords, error) {
 	var read issueRecords
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if read.issue, err = records.Issue(ctx, tx, key); err != nil || read.issue == nil {
 			return err
@@ -336,7 +336,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 func (w *workflowRuntime) issuesInWorkflow(ctx context.Context) ([]taskRead, error) {
 	var open []record.PullRequest
 	var waiting []record.HandedOff
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if open, err = w.records.OpenPullRequests(ctx, tx, w.dispatchProject); err != nil {
 			return err

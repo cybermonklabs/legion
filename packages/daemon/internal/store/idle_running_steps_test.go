@@ -61,7 +61,7 @@ func TestTheIdleViewReadsEachRunningStep(t *testing.T) {
 	}
 	held := issue("LEGION-212", phase.Held)
 	held.Hold = &record.Hold{From: phase.Step, Reason: record.HoldEscalated}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range []record.Issue{issue("LEGION-208", phase.Step), issue("LEGION-209", phase.Implementing),
 			issue("LEGION-210", phase.Implementing), issue("LEGION-211", phase.Implementing), held} {
 			if err := records.PutIssue(ctx, tx, seeded); err != nil {
@@ -82,7 +82,7 @@ func TestTheIdleViewReadsEachRunningStep(t *testing.T) {
 	for key, count := range steps {
 		view := idleViewOf(t, st, key)
 		var recorded *record.Issue
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = records.Issue(ctx, tx, key)
 			return err

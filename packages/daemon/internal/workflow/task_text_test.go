@@ -151,7 +151,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
 	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
-		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
+		" Step 1 (implementer) reported: implement version 1. Pull request: #42. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
@@ -346,7 +346,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 			})
 
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
-				" Resume the existing phase work."; resumed != want {
+				" Pull request: #42. Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
 			}
 		})
@@ -421,7 +421,7 @@ func stepLines(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task strin
 	onTask(t, pool, engine, key, task, func(ctx context.Context, tx pgx.Tx, s TaskScope) error {
 		s.walk.State, s.walk.Place = record.TaskRunning, place
 		s.issue.Phase = issuePhaseOf(s.walk, place, record.TaskRunning)
-		at, err := engine.standingPart(ctx, tx, s)
+		at, err := engine.standingPart(ctx, tx, s, taskPull{})
 		lines = at.lines
 		return err
 	})
@@ -660,12 +660,12 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 		Line:  []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{}, &record.PullRequest{Number: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
-	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
+	written := task(issue, at, tester, "the reviewer asked again")
 
 	labels := map[string]string{
 		phaseLabel: "`" + phaseLabel + ": ", workingCopyLabel: "`" + workingCopyLabel + ":", planTaskLabel: "`" + planTaskLabel + ":",
@@ -710,7 +710,7 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
 		after, there := issue, w
 		after.Phase, there.Place = p, place
-		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows, planTold{})
+		at, err := standingText(after, func(record.Issue, string) string { return "/work" }, there, rows, planTold{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -741,7 +741,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{})
+	at, err := standingText(issue, func(record.Issue, string) string { return "/work" }, w, rows, planTold{}, &record.PullRequest{Number: 42})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	reviewer := record.PhaseRow{Role: claim.RoleReviewer, ReviewedHead: daemons, Entry: 3, EntryTask: "the entry's task"}
 	round := reviewedPartOf(daemons) + reviewEntryPartOf(3)
 	for name, composed := range map[string]string{
-		"a start":  task(issue, at, handoff, &record.PullRequest{Number: 42}, "the reviewer asked again"),
+		"a start":  task(issue, at, handoff, "the reviewer asked again"),
 		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {

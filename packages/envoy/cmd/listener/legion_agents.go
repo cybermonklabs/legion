@@ -312,6 +312,20 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
+			if err == nil {
+				// At the edge an agent it does not show - one of another project's issue, or of a
+				// session that is no session of its issue's project confirmed by its stored record -
+				// is answered as one the registry does not hold (edgeScope.showsAgentConfirmed); a
+				// confirmation read that did not answer is the bus-unavailable 503
+				// writeLegionAgentError gives it.
+				var shown bool
+				var confErr error
+				if agent, shown, confErr = edgeScopeOf(r, nil).showsAgentConfirmed(ctx, d.sessions, agent); confErr != nil {
+					err = confErr
+				} else if !shown {
+					err = legionagents.ErrNotFound
+				}
+			}
 			switch {
 			case errors.Is(err, legionagents.ErrNotFound):
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
@@ -321,6 +335,10 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusOK, answerLegionAgent(d.sessions, agent))
 			}
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			if err := legionagents.ValidateSessionID(sessionID); err != nil {
 				writeLegionAgentError(w, err)
 				return
@@ -373,6 +391,11 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
+		agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 	}
 }
@@ -403,8 +426,17 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
+			agents, err = edgeScopeOf(r, nil).agentsConfirmed(ctx, d.sessions, agents)
+			if err != nil {
+				writeLegionAgentError(w, err)
+				return
+			}
 			writeJSON(w, http.StatusOK, answerLegionAgents(d.sessions, agents))
 		case http.MethodPut:
+			if refusal := edgeLegionWriteRefusal(r); refusal != nil {
+				refusal.write(w)
+				return
+			}
 			var body struct {
 				Entries []legionagents.Entry `json:"entries"`
 			}

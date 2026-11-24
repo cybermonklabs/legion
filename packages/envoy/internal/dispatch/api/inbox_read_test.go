@@ -164,6 +164,7 @@ func unreadThreads(t *testing.T, handler http.Handler, login string) []string {
 // mark. It answers the number of threads it marked and appends one event per project and one per
 // session it touched; a second request, which moves nothing, answers 0 and appends none.
 func TestInboxReadMarksEveryUnreadThreadThroughTheMark(t *testing.T) {
+	t.Parallel()
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 
@@ -241,6 +242,7 @@ func TestInboxReadMarksEveryUnreadThreadThroughTheMark(t *testing.T) {
 // leaves it unread; a Reply thread has no urgency, so an urgency the Inbox can filter by marks
 // nothing at all.
 func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
+	t.Parallel()
 	t.Run("kind", func(t *testing.T) {
 		seed := seedInboxRead(t)
 		if marked := markedThrough(t, seed.handler, "alice", seed.cutoff, map[string]any{"kind": []string{"reply"}}); marked != 4 {
@@ -305,6 +307,7 @@ func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
 // of an absent ?kind= stands for - a document id that is not one, and a session, for whom the
 // Inbox is nobody's.
 func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -342,6 +345,7 @@ func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 // holds that issue's lock exclusively while its trigger moves those rows, so one of the two
 // waits at the issue holding nothing the other wants.
 func TestInboxReadRacingASessionReply(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Race", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -394,6 +398,7 @@ func TestInboxReadRacingASessionReply(t *testing.T) {
 // the two reaches the shared row first: it marks that thread every round, so it takes the
 // project lock every round, which is the lock the pair would cross on.
 func TestInboxReadRacingOneThreadsOwnMark(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Mark race", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -658,6 +663,7 @@ func holdGateThread(t *testing.T, database *store.Store, gate string) gateHold {
 // The two presses carry marks a millisecond apart, so one of them moves every row whichever
 // order they commit in.
 func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Two presses", "A spec")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
@@ -730,6 +736,7 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 // whose appends took the projects as they reached them would hold the second project's lock while
 // it waited for the first's, and Postgres would break the cycle as a deadlock.
 func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	// Two project keys whose order by name, which the events follow, is the opposite of their

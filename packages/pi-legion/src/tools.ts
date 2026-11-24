@@ -218,7 +218,9 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
+  "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
+  "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
@@ -257,8 +259,18 @@ function stateSummary(state: LegionState): string {
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
+    // The daemon leaves `trees` out of a body it strips for a caller below the contract that
+    // added it, and an absent list says nothing of which trees run, where `trees (none)` would
+    // say that none does.
+    if (admission.trees !== undefined) {
+      lines.push(`trees ${admission.trees.join(" ") || "(none)"}`);
+    }
     for (const blocked of admission.blocked ?? []) {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
+    }
+    for (const held of admission.held ?? []) {
+      const by = held.heldBy === undefined ? "" : ` by ${held.heldBy.join(" ")}`;
+      lines.push(`held ${held.issue ?? "-"} ${held.reason ?? "-"}${by}`);
     }
   }
   const wakesWaiting = wakesWaitingSummary(state);
@@ -537,8 +549,9 @@ export function createLegionTool(deps: {
         'merges into the default branch by itself when its block says `merges="true"` or no task needs it. Legion runs the retro ' +
         "and the merge itself after such a task's last step. Every other task's work merges with the task that needs it. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: " +
+        "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first " +
+        "version. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task or moves the base of a started task's pull request: " +
         "stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
@@ -561,8 +574,8 @@ export function createLegionTool(deps: {
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
-        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
-        "work. " +
+        "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent is accepted only once no issue beneath " +
+        "it is still in the workflow. " +
         "Sign off again when each of them has left the workflow. " +
         "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
         "End a child with your own status write in Dispatch. " +
@@ -588,7 +601,7 @@ export function createLegionTool(deps: {
         "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it. " +
+        "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +

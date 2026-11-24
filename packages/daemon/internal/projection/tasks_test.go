@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
@@ -67,7 +68,7 @@ func TestTheStateServesEachTaskOfAnIssue(t *testing.T) {
 		{id: "y", state: record.TaskRunning, place: step1, agents: [2]claim.Agent{"k", "reviewer-8"}},
 	}
 	branches := map[string]string{}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		must(t, records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Tree: key, Project: "LEGION", Title: "Serve each task", Phase: phase.Implementing, Generation: 1,
 			Status: "in_progress", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -114,7 +115,7 @@ func TestTheStateServesEachTaskOfAnIssue(t *testing.T) {
 	}
 
 	var state api.State
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		state, err = Project(ctx, Inputs{Tx: tx, Store: records, Project: "LEGION", Now: given.Add(time.Hour)})
 		return err

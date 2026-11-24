@@ -44,9 +44,10 @@ func TestTheCapNoticeAndTheHookPromptNameTheTask(t *testing.T) {
 			t.Fatalf("the %s's prompt reads %q, want `task a: ` before the hook's own text", prompt.Role, prompt.Prompt)
 		}
 	}
-	// The issue's message keeps its one fixed line, which a reader of a fleet counts the cap by.
+	// The issue's message keeps its fixed start, which a reader of a fleet counts the cap by; how
+	// it ends is TestTheIssuesMessagesOfATasksCountsNameTheTask's.
 	if messages, _ := capPosts(t, pool); len(messages) != 1 || strings.HasPrefix(messages[0], "task ") {
-		t.Fatalf("the cap's messages = %q, want the one fixed line", messages)
+		t.Fatalf("the cap's messages = %q, want the one line with its fixed start", messages)
 	}
 }
 
@@ -130,5 +131,44 @@ func TestTwoTasksOfOneIssueKeepTheirOwnCounts(t *testing.T) {
 	}
 	if len(prompts) != 3 || claims[claim.RoleImplementer] != agentClaim(t, root.Key, "impl-a") || claims[claim.RoleReviewer] != agentClaim(t, root.Key, "rev-a") {
 		t.Fatalf("the hook prompts of %s = %+v, want one firing whose implementer and reviewer are a's agents impl-a and rev-a", root.Key, prompts)
+	}
+}
+
+// The messages a task's counts post on the issue name that task too: of tasks a and b, each
+// `implementer reviewer` with agents of their own, both at their review, b's review requests
+// changes once and a's five times, so a reaches review_round_cap at its third round, and its fifth
+// return fires the hook a deployment runs that names none (config.DefaultHooks). The cap's message
+// and the firing's message keep the fixed start a reader of a fleet greps them out by, and each
+// ends `Task: a.`: a's counts, said as a's and not b's. An issue with no plan rows posts both lines
+// as before (TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound, TestAFiringReachesEachRoleItNames).
+//
+// The fault it catches is a message that tells the count of one task of several as the issue's,
+// so its reader cannot say whose rounds or returns they were (its control: the task's sentence
+// left off each message).
+func TestTheIssuesMessagesOfATasksCountsNameTheTask(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Reviewing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a", "reviewer:ar"}, agents: []claim.Agent{"impl-a", "rev-a"}, state: record.TaskRunning, place: atStep(2)},
+		planTask{id: "b", steps: []string{"implementer:b", "reviewer:br"}, agents: []claim.Agent{"impl-b", "rev-b"}, state: record.TaskRunning, place: atStep(2)},
+		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "b", "legion/LEGION-208.b")
+	seedTaskPR(t, pool, engine, root.Key, "b", 45)
+
+	taskMoves(t, pool, engine, root.Key, "b", TriggerReviewRejected, changesBody)
+	taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+	for range 4 {
+		taskMoves(t, pool, engine, root.Key, "a", TriggerImplementationReady, "")
+		taskMoves(t, pool, engine, root.Key, "a", TriggerReviewRejected, changesBody)
+	}
+
+	capped := "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted. Task: a."
+	if messages, _ := capPosts(t, pool); !sameStrings(messages, []string{capped}) {
+		t.Fatalf("the cap's messages on %s = %q, want the one message %q, naming task a", root.Key, messages, capped)
+	}
+	fired := "Legion hook work-back fired at 5 moves back: reviewing to implementing. Prompted: implementer, tester, reviewer. Task: a."
+	if posted := firingMessages(t, pool); !sameStrings(posted, []string{fired}) {
+		t.Fatalf("the hook's messages on %s = %q, want the one message %q, naming task a", root.Key, posted, fired)
 	}
 }

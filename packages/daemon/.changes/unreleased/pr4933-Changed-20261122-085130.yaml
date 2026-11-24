@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The worker image''s test PostgreSQL (`legion-testpg`) allows 487 connections, up from 483, because a Dispatch process now opens up to 116 Postgres connections (one more lease-pool connection, for the CI verify loop): `testlimits.ServerConnections` is 484, plus PostgreSQL''s default 3 superuser slots.'
+time: 2026-11-22T08:51:30.015782910Z
+custom:
+    Issue: pr4933

@@ -1,0 +1,19 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The architect's prompt no longer says that its move back from `accepting` counts a review round:
+  `review_round_cap` counts only a review that requests changes. Where the issue stands in
+  `reviewing` (a red required check, a `behind` or `blocked` head, a path filter that skips the
+  change), the prompt has the architect tell the reviewer to make the `request_backward_move`,
+  since the daemon refuses the architect's own move outside `accepting`. Under an ancestor in
+  `retro` or `merging`, it no longer tells the architect to move the ancestor back, which the
+  daemon refuses it, and neither does the `child-status` notice for an issue held beneath such an
+  ancestor or the `CHILD_UNDER_ACCEPTED_PARENT` refusal: the notice says the issue is held while
+  the ancestor stands in `retro` or `merging`, as the issue's `why` in `read_state` now does in
+  place of "before that issue closes", and the refusal says to call again once the ancestor has
+  closed, where it is not the tree's root. The reviewer's prompt no longer says
+  that nothing holds the head that merges to the head the reviewer approved: a forward merge past
+  the review is the exception, and the reviewer's prompt excepts a forward merge of the base and a
+  backward move from its "no implementation or further review change" after approval and from
+  "nothing of this tree pushes above" the approved head.

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -64,7 +65,7 @@ func newWindowRig(t *testing.T, during func(rig *taskBranchRig), tasks ...planne
 func asAFact(t *testing.T, rig *taskBranchRig, what string, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func readmitted(carried bool) func(ctx context.Context, rig *taskBranchRig, tx p
 func (rig *taskBranchRig) taskAt(t *testing.T, generation uint64, id string) record.PlanTask {
 	t.Helper()
 	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = rig.records.Plan(context.Background(), tx, taskBranchIssue.Key, generation)
 		return err
@@ -165,6 +166,7 @@ func holdsOnlyItsNeeds(t *testing.T, rig *taskBranchRig) {
 // row joins the needs the task holds then. The controls: a conflict of a need the task holds is
 // recorded, and a later version taken before the row runs is joined as it stands.
 func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
+	t.Parallel()
 	t.Run("control: a conflict of a need d holds is recorded", func(t *testing.T) {
 		rig := newWindowRig(t, nil, twoNeeds...)
 		conflictingNeeds(t, rig)
@@ -220,6 +222,7 @@ func TestTheJoinsConflictsNameOnlyNeedsTheTaskHolds(t *testing.T) {
 // re-admission after the row carries the conflicts the row wrote, and a re-admission that starts
 // the plan from its start gets none, since its task's first start there joins its needs itself.
 func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
+	t.Parallel()
 	next := taskBranchIssue.Generation + 1
 	t.Run("control: the re-admission after the row", func(t *testing.T) {
 		rig := newWindowRig(t, nil, twoNeeds...)
@@ -273,10 +276,11 @@ func TestTheJoinsConflictsReachTheGenerationTheRunGoesOnAt(t *testing.T) {
 // no longer waits for that join. An end read beside the lock would read the version the fact has
 // not committed yet, and write c's conflict onto a task that no longer needs c.
 func TestTheJoinsConflictsAreJudgedUnderTheFactLock(t *testing.T) {
+	t.Parallel()
 	held := make(chan pgx.Tx, 1)
 	rig := newWindowRig(t, func(rig *taskBranchRig) {
 		ctx := context.Background()
-		tx, err := rig.pool.Begin(ctx)
+		tx, err := rig.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			t.Errorf("begin the later version's fact: %v", err)
 			return

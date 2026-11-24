@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -88,6 +89,7 @@ Check the whole change.
 // answering true for every task, so c starts at the gate beside b, and the check that c waits
 // fails.
 func TestTheExamplePlanRunsItsTasksAtOneTime(t *testing.T) {
+	t.Parallel()
 	r := newTasksRig(t)
 	r.walkExamplePlan()
 	r.onePod(claim.RoleImplementer, claim.RoleReviewer, claim.RolePlanner, claim.RoleTester)
@@ -112,6 +114,7 @@ func TestTheExamplePlanRunsItsTasksAtOneTime(t *testing.T) {
 // names no branch: no working copy of b is made, and the check of the directory b's implementer is
 // told fails.
 func TestEachTaskOfTheExamplePlanWorksInItsOwnCopyFromItsJoin(t *testing.T) {
+	t.Parallel()
 	r := newTasksRig(t)
 	r.walkExamplePlan()
 	issue, b := claim.IssueBranch(r.key), r.branchOf("b")
@@ -203,6 +206,7 @@ Join the parser and the store.
 // workflow's waitForAgent answering that no step waits, so y's step starts at the gate beside x's,
 // and the check that y's step waits for its agent fails.
 func TestTheAgentsOfTasksWithOneLastTask(t *testing.T) {
+	t.Parallel()
 	r := newTasksRig(t)
 	r.givePlanText(agentsPlan)
 	r.firstStep()
@@ -253,6 +257,7 @@ Check the whole change.
 // workflow's joinToRepair answering nothing, so the agent, which acts on that text alone, repairs
 // no join, and the check that d's join branch holds c's last commit fails.
 func TestAJoinThatConflictsIsRepairedByTheFirstStep(t *testing.T) {
+	t.Parallel()
 	r := newTasksRig(t)
 	r.gh.repo.Commit(t, "main", map[string]string{"x.txt": "line 1\n"}, "the file a and c change")
 	r.givePlanText(conflictPlan)
@@ -340,11 +345,12 @@ func newTasksRig(t *testing.T) *tasksRig {
 func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, titles ...string) *tasksRig {
 	t.Helper()
 	// The daemon's own log, the one a run names (liveDaemonLogEnv) or one of the test's own, is
-	// printed when the test fails.
+	// printed when the test fails. The test's own is handed to the proof (liveProof.logPath)
+	// rather than set in the process's environment, which every test of the package shares.
 	logPath := os.Getenv(liveDaemonLogEnv)
 	if logPath == "" {
 		logPath = filepath.Join(t.TempDir(), "daemon.log")
-		t.Setenv(liveDaemonLogEnv, logPath)
+		proof.logPath = logPath
 	}
 	t.Cleanup(func() {
 		if !t.Failed() {
@@ -377,7 +383,7 @@ func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, t
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Several tasks"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for _, title := range titles {
 		var spec struct {
 			createdIssue
@@ -835,12 +841,31 @@ func tasksCopyTools(t *testing.T) map[string]string {
 		}
 		wrapper := filepath.Join(dir, tool)
 		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
-		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		writeExecutable(t, wrapper, script, 0o700)
 		tools[tool] = wrapper
 	}
 	return tools
+}
+
+// writeExecutable writes body to path, a file of mode that a child of this process then runs.
+// syscall.ForkLock is held for reading while the file is open for writing, as leakguard's
+// writeCopyFile holds it: a child another test forks in that span would hold the write descriptor
+// until its own exec closed it, and the kernel refuses to run a file open for writing (ETXTBSY).
+func writeExecutable(t *testing.T, path, body string, mode os.FileMode) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		t.Fatalf("write the executable %s: %v", path, err)
+	}
+	if _, err := file.WriteString(body); err != nil {
+		_ = file.Close()
+		t.Fatalf("write the executable %s: %v", path, err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("write the executable %s: %v", path, err)
+	}
 }
 
 // tasksGitHub is GitHub's REST API over one real repository, liveRepo (githubtest.GitRepository):
@@ -1050,6 +1075,7 @@ func (i *acrossIssue) stands() phase.Phase {
 // reviewer`, whose review then requests changes: the daemon starts its step 1 again, which is the
 // start the fault makes, and the same check must say so.
 func TestAnIssueOfOneTaskGoesOnAcrossTheRelease(t *testing.T) {
+	t.Parallel()
 	r, walks, control := newAcrossRig(t)
 	for _, issue := range walks {
 		r.on(issue.key)
@@ -1164,7 +1190,7 @@ func newAcrossRig(t *testing.T) (*sliceFourRig, []*acrossIssue, *acrossIssue) {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Across the release"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	implementerReviewer := []claim.Role{claim.RoleImplementer, claim.RoleReviewer}
 	walks := []*acrossIssue{
 		{title: "Implementer resumes its step", steps: implementerReviewer, place: 1},

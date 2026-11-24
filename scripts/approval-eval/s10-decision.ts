@@ -36,7 +36,11 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * calls: the `--draw`, `--inputs` and `--claim-s10` path options of `runDigestOf` and the file
  * options of `s10_judge.py`, the two sha256s `readCorpus` records and the four field readers the
  * claim's stage readers share (`parsed`, `countAt`, `textAt`, `sha256At`), and `pageEventLog`'s
- * `after` and the new `readBytes`. So the pinned closure is the 651db8d5 decision, and any later
+ * `after` and the new `readBytes`; and `dispatch-read.ts` differs in one path the decision does
+ * call, its retry ladder, only in form: the waits are held as 1, 2, 4 and 8 units of a second,
+ * beside two functions only a test calls to shorten that unit (`setRetryWaitUnitForTests`,
+ * `resetRetryWaitUnitForTests`), so the decision still waits 1, 2, 4 and 8 seconds. So the
+ * pinned closure is the 651db8d5 decision, and any later
  * change to a pinned file fails this check until a reviewed pull request moves the pin. The
  * pinned files are checked again once, right before the first child is spawned
  * (`Decision.confirm`).
@@ -58,7 +62,7 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
   "corpus-io.ts": "fa89727871dcf12c849756f84a888e52c6141c81467a353277fbaf98aba03198",
   "decision-preload.ts": "50ff3dd835d4345aac95c64df7a3e820a30c625b1e1e63e1c0277ea278dccad3",
-  "dispatch-read.ts": "d1732d4c3d8a0d4e86496da5223e125335ea623df93f9249ad07ee30c03883d7",
+  "dispatch-read.ts": "60353edd7f7d8b078aba0c2473f52dc138d587b14dd0fd18afa9f82e5e120a9b",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
   "reserve.ts": "9debce6d78cc8f6579f5a393540fb97124db53ca25401e9d617a41615320724d",
   "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",

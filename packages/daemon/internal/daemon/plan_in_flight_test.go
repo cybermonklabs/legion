@@ -76,6 +76,7 @@ var inFlightTitles = []string{"Planner drafts outline", "Implementer writes code
 // rows at the end. The control is an eighth issue seeded as the one in testing with its phase
 // deleted from the seed: it starts again from its first step, and the same check must say so.
 func TestAnIssueThatRanBeforeTheReleaseGoesOn(t *testing.T) {
+	t.Parallel()
 	r := newInFlightRig(t)
 	for _, issue := range r.walks {
 		r.on(issue.key)
@@ -212,7 +213,7 @@ func (r *inFlightRig) wentOn(issue *inFlightIssue) error {
 		}
 	}
 	var stored *record.StoredPlan
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = r.records.Plan(context.Background(), tx, issue.key, 1)
 		return err
@@ -262,7 +263,7 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "In flight"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	stands := append(slices.Clone(phase.Order), phase.Admitted)
 	for place, stood := range stands {
 		status := workflow.PhaseStatus(stood)

@@ -611,6 +611,10 @@
         "since": 46
       },
       {
+        "value": "caches",
+        "since": 213
+      },
+      {
         "value": "configuration",
         "since": 46
       }

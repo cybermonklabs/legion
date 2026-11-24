@@ -15,6 +15,7 @@ import (
 // the file and the role. The roles it walks are Legion's (config.RoleConfigRoles), then each role
 // of `roles` in the file's order (overlayRoles).
 func TestTheBootChecksADeploymentRolesOverlays(t *testing.T) {
+	t.Parallel()
 	missing := filepath.Join(t.TempDir(), "checker.yml")
 	cfg := config.Config{
 		Roles:           []config.Role{{Name: "checker", Type: "testing"}},

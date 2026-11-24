@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seedTwoTasks gives key, at generation 1, an owner's plan of two tasks, each with the steps
@@ -38,7 +39,7 @@ func seedTwoTasks(t *testing.T, h *harness, key string) {
 			record.PlanStep{Issue: key, Generation: 1, Task: task.id, Position: 1, Role: "implementer", Type: "implementation", Agent: task.implementer},
 			record.PlanStep{Issue: key, Generation: 1, Task: task.id, Position: 2, Role: "tester", Type: "testing", Agent: task.test})
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}
@@ -147,7 +148,7 @@ func TestACompletionOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 		seedIssueAt(t, h, key, phase.Testing)
 	}
 	seedTaskPlan(t, h, delivered, taskStanding{task: "a", state: record.TaskRunning, place: 2})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().SetStepWait(context.Background(), tx, delivered, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("deliver the start of task a of %s: %v", delivered, err)
@@ -194,7 +195,7 @@ func TestALateCompletionIsOfTheTaskItsPhasesRowNames(t *testing.T) {
 	seedIssueAt(t, h, several, phase.Implementing)
 	seedTwoTasks(t, h, several)
 	// Task a's tester's step ended: a moved back to its implementer's step, which runs.
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.MoveTask(ctx, tx, several, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
 			return err
 		}
@@ -209,7 +210,7 @@ func TestALateCompletionIsOfTheTaskItsPhasesRowNames(t *testing.T) {
 	} {
 		tester := newLiveClaim(t, h, tc.key, claim.RoleTester)
 		// The row the start of a's tester's step raised, which names its claim and its step.
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: tc.key, Role: claim.RoleTester, Claim: tester.token, StepTask: "a", StepPlace: 2})
 		}); err != nil {
 			t.Fatalf("seed the tester's row of %s: %v", tc.key, err)
@@ -242,7 +243,7 @@ func TestAWorkersMoveBackOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 	const one, none = "LEGION-216", "LEGION-217"
 	seedIssueAt(t, h, one, phase.Testing)
 	seedTaskPlan(t, h, one, taskStanding{task: "a", state: record.TaskRunning, place: 2})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().SetStepWait(context.Background(), tx, one, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("deliver the start of task a of %s: %v", one, err)
@@ -260,5 +261,34 @@ func TestAWorkersMoveBackOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 		if fact, ok := applied[len(applied)-1].(intake.BackwardMove); !ok || fact.Task != tc.want {
 			t.Fatalf("the tester's move back of %s naming task %q applied %#v, want a move of task %q", tc.key, tc.named, applied[len(applied)-1], tc.want)
 		}
+	}
+}
+
+// A completion sent again is refused HANDOFF_ALREADY_RECORDED in words that name its task, since
+// the pass the refusal counts is that task's own (completionPosition): with task a of LEGION-211 at
+// its tester's step at pass 3 and task b at its implementer's at pass 1, the tester's completion
+// sent again is refused naming task a, a's phase and a's pass, and nothing of b. The completion of
+// LEGION-215, which has no plan rows, sent again is refused in the words it was before plans.
+//
+// The fault it catches is a refusal that tells one task's pass as the issue's, so the worker reading
+// it cannot say whose pass it was (its control: the task left out of the refusal's words).
+func TestACompletionSentAgainIsRefusedNamingItsTask(t *testing.T) {
+	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	const several, none = "LEGION-211", "LEGION-215"
+	seedIssueAt(t, h, several, phase.Implementing)
+	seedTwoTasks(t, h, several)
+	seedIssueAt(t, h, none, phase.Testing)
+
+	for _, tc := range []struct{ key, words string }{
+		{several, "the tester completion of phase testing of task a (pass 3 through it)"},
+		{none, "the tester completion of phase testing (pass 0 through it)"},
+	} {
+		tester := newLiveClaim(t, h, tc.key, claim.RoleTester)
+		written := tester.writeHandoff("test", 1)
+		request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
+		completion(t, h.complete(request))
+		request.GrantID = tester.grant(t)
+		refusedSaying(t, h.complete(request), http.StatusConflict, "HANDOFF_ALREADY_RECORDED",
+			tc.words+" naming handoff record "+written+" (test version 1) was already received; this call changed nothing")
 	}
 }

@@ -18,11 +18,12 @@ import (
 
 // A confirmed conflict is merged forward in the phase the issue stands in, with no phase moved and
 // no start written (dispatch://INFRA-4374 R1), so it changes nothing of what the cap counts: an
-// issue past its review, in accepting, retro or merging, takes no slot for the merge, and an issue
-// in testing keeps the slot it already held (record.KeepsSlot). The conflict is read through the
-// workflow engine as the daemon reads it, two CONFLICTING reads of the head a minute apart against
-// a base that requires a check the head has not passed, so the merge forward is asked in every
-// phase. The cap has room for every issue here, so a merge forward that owed a worker a start
+// issue past its review takes no slot for the merge, and an issue in testing keeps the slot it
+// already held (record.KeepsSlot). The conflict is read through the workflow engine as the daemon
+// reads it, two CONFLICTING reads of the head a minute apart against a base that requires a check
+// the head has not passed. In testing that asks the implementer and in merging the merger
+// (cybermonklabs/legion#4979); in accepting and retro the conflict waits for merging and nothing is
+// asked. The cap has room for every issue here, so a merge forward that owed a worker a start
 // would put the issue in the waiting line and the pass would grant it a slot; none does. The
 // active set the state shows (projection.Project's Admission.Active) agrees with the slot rows.
 func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
@@ -86,7 +87,10 @@ func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
 				t.Fatalf("read the pull request of %s: %v", key, err)
 			}
 		})
-		if asked := pr.MergeForward; asked == nil || asked.Head != "head" || asked.Phase != tc.row.stands {
+		waits := tc.row.stands == phase.Accepting || tc.row.stands == phase.Retro
+		if asked := pr.MergeForward; waits && asked != nil {
+			t.Fatalf("the merge forward of %s = %+v, want none asked in %s: the conflict waits for merging", key, asked, tc.row.stands)
+		} else if !waits && (asked == nil || asked.Head != "head" || asked.Phase != tc.row.stands) {
 			t.Fatalf("the merge forward of %s = %+v, want one asked of head in %s", key, asked, tc.row.stands)
 		}
 		var starts int

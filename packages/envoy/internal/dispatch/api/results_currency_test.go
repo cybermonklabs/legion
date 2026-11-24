@@ -97,6 +97,7 @@ func currencyIs(
 // which no such client makes and where `current` would mean "the commit the reader named"
 // rather than the work as it stands.
 func TestEachResultAnswersTheCurrencyOfTheClientBeforeTheResultsContract(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Currency")
@@ -169,6 +170,7 @@ func TestEachResultAnswersTheCurrencyOfTheClientBeforeTheResultsContract(t *test
 // issue that resolves to no repository has nothing to compare with, and its results stand at
 // another commit: older.
 func TestAResultDispatchCannotPlaceAnswersNoCurrency(t *testing.T) {
+	t.Parallel()
 	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 
@@ -193,6 +195,7 @@ func TestAResultDispatchCannotPlaceAnswersNoCurrency(t *testing.T) {
 // including fields absent from a result's own POST answer. A fail has the same currency as a
 // pass but cannot make the gate answer yes.
 func TestCurrencyAndTheGateAgreeOnEveryResultState(t *testing.T) {
+	t.Parallel()
 	unmoved, moved := false, true
 	rows := []struct {
 		commit            string
@@ -294,6 +297,7 @@ func oldClientResults(t *testing.T, read rawCheckResults) string {
 // is at the pull request's head and `older` for one whose newest result is at the head a push
 // replaced, and "unknown" for neither, as it did against the server it was released with.
 func TestTheClientBeforeTheResultsContractPrintsCurrentAndOlder(t *testing.T) {
+	t.Parallel()
 	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
 		func(string, string) string { return "diverged" })
 	issue := issueInRepository(t, handler, "RESCV", "acme/widgets", "Printed")

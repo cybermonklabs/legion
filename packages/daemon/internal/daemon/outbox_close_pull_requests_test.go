@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // closingGitHub answers, beside the fake repository, the calls that close a pull request the fake
@@ -168,9 +169,10 @@ func (g *closingGitHub) pull(number int) (string, []closingComment) {
 // The fault it catches is the pull requests of the other tasks left open after the issue merged,
 // which GitHub leaves open (its control: merged without the row).
 func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "b", needs: []string{"a", "c", "d"}}, plannedTask{id: "c"}, plannedTask{id: "d"})
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, move := range []struct {
 			task  string
 			place record.TaskPlace
@@ -201,7 +203,7 @@ func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
 	}{{1, "a"}, {2, "b"}, {3, "c"}, {4, "d"}} {
 		pr := record.PullRequest{Issue: taskBranchIssue.Key, Repo: "acme/widgets", Number: seed.number, Branch: rig.branch(t, seed.task), Base: "main",
 			HeadSHA: "head-" + seed.task, Failing: []string{}, State: record.PullRequestOpen, MergeState: record.MergeStateClean}
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error { return rig.records.PutPullRequest(ctx, tx, pr) }); err != nil {
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error { return rig.records.PutPullRequest(ctx, tx, pr) }); err != nil {
 			t.Fatalf("record pull request #%d: %v", seed.number, err)
 		}
 	}
@@ -282,7 +284,7 @@ func (rig *taskBranchRig) queueClose(t *testing.T, numbers []int, comment string
 		t.Fatalf("make the row that closes %v: %v", numbers, err)
 	}
 	var id int64
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		id, err = rig.records.EnqueueID(ctx, tx, row)
 		return err
 	}); err != nil {
@@ -423,9 +425,9 @@ func TestACloseGitHubRefusesForGoodEndsItsRowAndTellsTheArchitectOnce(t *testing
 					t.Fatalf("the notice's reason %q names #3, which closed", notices[0].Reason)
 				}
 				var due []record.OutboxRow
-				if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
-					due, err = rig.records.DueRows(context.Background(), tx, "LEGION", taskBranchIssue.Key, nil, queued.Add(3*time.Hour))
+					due, err = rig.records.DueRows(ctx, tx, "LEGION", taskBranchIssue.Key, nil, queued.Add(3*time.Hour))
 					return err
 				}); err != nil {
 					t.Fatalf("read the due rows of %s: %v", taskBranchIssue.Key, err)

@@ -179,7 +179,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
-	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
+	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
+		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
@@ -340,7 +341,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 			wanted[role] = token
 		}
 	}
-	r.pods.podReady(pod, uid, wanted, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(pod, uid, wanted, func(role, dir string, _ *idleRigPodProcesses) { r.agents.setPrivate(key, role, dir) })
 }
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as
@@ -360,7 +361,7 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 		r.t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Project: r.cfg.Project,
 			Tree: key, Title: "An idle pod", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
@@ -660,9 +661,8 @@ func (idleRigTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 
 // launch waits until the issue's pod runs its role, registered, ready and having told the daemon
 // it runs no background work (its claim's activity report, reported): the state the idle rule
-// releases. The rig's quiet back-dates only a claim that has reported, so a claim stopped or
-// suspended before its first report would keep that write as its pod's last and hold the pod for
-// the whole idle period, which a loaded run of the whole package met. The daemon starts the
+// releases. A claim stopped or suspended before that first report is quiet's to move as well
+// (quiet says why). The daemon starts the
 // implementer of an admitted issue whose phase is its own, so nothing here asks for the launch; a
 // claim still suspended is nudged with the operator's resume, which is what a boot that left it
 // suspended needs.
@@ -777,15 +777,24 @@ func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
 }
 
 // quiet back-dates when every claim of the project was last written, so the next pass of the
-// daemon's idle tick reads a pod that has done nothing for longer than the idle period. The
-// session's own report is left as the session wrote it, because the rule reads it against that
-// session's last turn and not against the clock. The rule reads the claim rows and nothing else
-// (pods.IdleView), so the rows are the clock it is measured against.
+// daemon's idle tick reads a pod that has done nothing for longer than the idle period. Every row
+// is moved, a row whose session has reported nothing (activity_at null) among them: an operator's
+// stop that lands before the session's first report (before launch has read it) leaves such a
+// row on a retired claim, and the release of a pod no claim owns measures the period against that
+// row as against any other (pods.IdleView.QuietSince). Left out, the row kept the moment of the
+// stop, so that release waited the idle period out on the wall clock, which is longer than the
+// rig's wait for it (CI run 44911423665). The idle rule's decision is not moved by it: it keeps a
+// live claim whose session has reported nothing since its last turn whatever the row's time
+// (workflow.IdleRelease, IdleHoldUnreported). What such a pod can gain is a hold row, which the
+// daemon records only for a pod past the quiet period (recordKeptPod); no row of this rig reads
+// that hold. The session's own report is left as the session wrote it, because the rule reads it
+// against that session's last turn and not against the clock. The rule reads the claim rows and
+// nothing else (pods.IdleView), so the rows are the clock it is measured against.
 func (r *idleWakeRig) quiet() {
 	r.t.Helper()
 	if _, err := r.pool.Exec(context.Background(),
 		`update claims set updated_at = now() - interval '30 minutes'
-		 where project = $1 and activity_at is not null`, r.project); err != nil {
+		 where project = $1`, r.project); err != nil {
 		r.t.Fatalf("back-date the project's claims: %v", err)
 	}
 }

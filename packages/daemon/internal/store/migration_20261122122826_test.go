@@ -100,7 +100,7 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 	read := func(name string, fn func(tx pgx.Tx) (*record.PullRequest, error)) *record.PullRequest {
 		t.Helper()
 		var pr *record.PullRequest
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			pr, err = fn(tx)
 			return err

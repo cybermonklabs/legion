@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -34,9 +35,10 @@ import (
 // (RenewRoleClaims), which the registration route logs at DEBUG and the tests read to tell where
 // a renewal took a role from.
 type RoleRenewal struct {
-	// Set is every role whose claim record the renewal read, sorted and without repeats: the
-	// role topics of the interest record it was given (rolesOfTopics) and the roles the role
-	// claim copy names for the session (RolesHeldBy) while that copy can be served (weighedRoles).
+	// Set is every role whose claim record the renewal read to renew it, sorted and without
+	// repeats: the role topics of the interest record it was given (rolesOfTopics) and the roles
+	// the role claim copy names for the session (RolesHeldBy) while that copy can be served
+	// (weighedRoles), less the roles its hold refused (RenewRoleClaims' holds).
 	Set []string
 	// Renewed is the roles of Set whose claim the renewal wrote, sorted. A role of Set it did
 	// not renew is one whose claim record names another session, a process this registration is
@@ -105,12 +107,22 @@ type RoleRenewal struct {
 // Each bucket call waits no longer than ctx (bus.Bounded): the route passes its request's own
 // context. A write ctx abandoned may still land after this answer, which is safe - it is
 // conditional on the revision it read and renews that claim alone.
-func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest) (RoleRenewal, error) {
+//
+// holds holds the renewal to a rule of the caller's own, nil for none: cmd/listener's edge
+// listener holds a session to the projects of the broker token that registered it, and so holds
+// its roles as it holds a new claim (edgeRoleRefusal). A role of the weighed set that holds
+// refuses is not renewed. Freeing such a claim is ReleaseRefusedRoleClaims', which the edge asks
+// before it registers the session.
+func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest, holds func(role string) bool) (RoleRenewal, error) {
 	// A view that cannot be served leaves the record's roles alone and is no failure of the renewal.
 	set, _ := r.weighedRoles(sessionID, record.Topics)
-	renewal := RoleRenewal{Set: set}
+	var renewal RoleRenewal
 	var failures []error
-	for _, role := range renewal.Set {
+	for _, role := range set {
+		if holds != nil && !holds(role) {
+			continue
+		}
+		renewal.Set = append(renewal.Set, role)
 		renewed, err := r.renewRoleClaim(ctx, role, sessionID, clientInstanceID)
 		if err != nil {
 			failures = append(failures, err)
@@ -121,6 +133,132 @@ func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanc
 		}
 	}
 	return renewal, errors.Join(failures...)
+}
+
+// ReleaseRefusedRoleClaims frees each claim sessionID holds of a role holds refuses, whatever
+// process the claim names (releaseHeldRoleClaim), and answers the roles it freed, sorted; a nil
+// holds refuses none, as a nil holds renews every role (RenewRoleClaims). The roles it weighs are
+// the role topics of the session's interest row as this registry's copy holds it (Cached) and the
+// roles the role claim copy names for the session (weighedRoles), as a renewal's are, so the
+// caller hands it nothing of the registry's own. cmd/listener's edge listener asks it at each
+// registration, before it registers the session, for the roles of no project of the session's
+// token: a role another listener granted the session, or one it held under a token that listed
+// more, ends with the registration that may not keep it. Each release is forced and frees the
+// claim it read (releaseReadRoleClaim): a claim granted to the session again after that read is
+// left standing, as one granted a moment after the delete is, and the next registration's release,
+// which reads it, frees it.
+//
+// A role claim copy that cannot be served (ErrRoleViewNotReady) names no roles, which is not the
+// answer that the session holds none, and a claim whose lane topic the row does not carry is then
+// in neither source. So a refusal of the copy is answered as a deregistration answers it
+// (releaseAllRoleClaims): the roles of the row are released, and then the role bucket itself is
+// read (releaseRefusedRoleClaimsByScan) for the roles the row does not name. A role the row named
+// was read once already, so the scan leaves it alone, whatever that release did: a grant made
+// since that read is the next registration's, as it is where the copy names the role, and a
+// release that failed is already the error.
+//
+// Every release that failed is the error, joined and each naming its role: a claim that could
+// not be read or deleted stands, and nothing else frees it while its holder is live (the role
+// claim reaper keeps an unmarked claim of a live holder), so the caller refuses the
+// registration rather than serve a session that still holds another project's role. A claim of
+// another session and a role no record claims are none of its business, and neither is an error.
+// Each bucket call waits no longer than ctx (bus.Bounded).
+func (r *Registry) ReleaseRefusedRoleClaims(ctx context.Context, sessionID string, holds func(role string) bool) ([]string, error) {
+	if holds == nil {
+		return nil, nil
+	}
+	var topics []string
+	if row, ok := r.Cached(sessionID); ok {
+		topics = row.Topics
+	}
+	set, viewErr := r.weighedRoles(sessionID, topics)
+	var weighed, released []string
+	var failures []error
+	for _, role := range set {
+		if holds(role) {
+			continue
+		}
+		weighed = append(weighed, role)
+		freed, err := r.releaseHeldRoleClaim(ctx, sessionID, role)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if freed {
+			released = append(released, role)
+		}
+	}
+	// weighedRoles returns only RolesHeldBy's refusal, so any refusal is the copy that could not
+	// say which roles the session holds, and the scan is its answer.
+	if viewErr != nil {
+		scanned, err := r.releaseRefusedRoleClaimsByScan(ctx, sessionID, holds, weighed, viewErr)
+		released = append(released, scanned...)
+		failures = append(failures, err)
+		slices.Sort(released)
+		released = slices.Compact(released)
+	}
+	return released, errors.Join(failures...)
+}
+
+// releaseRefusedRoleClaimsByScan is ReleaseRefusedRoleClaims' fallback while the role claim copy
+// cannot be served (viewErr, which the one INFO line it writes carries, as
+// releaseAllRoleClaimsByScan's does): every claim of sessionID the role bucket holds of a role
+// holds refuses, read from one scan of the bucket (roleClaimsUntil, bounded by ctx), is freed from
+// the record the scan delivered (releaseReadRoleClaim, forced as releaseHeldRoleClaim forces it),
+// and the roles freed are answered. A role of weighed, which the caller's release of the row's
+// roles read already, is left alone: reading it again here would take a grant made since that
+// read for the claim this release read, and free it. A key the bus refuses and a record no build
+// can decode name no holder, and are left as they stand: the copy decodes each record it holds,
+// so neither is a claim a servable copy would have named either. A listing that did not answer
+// and a release that failed are the error, each naming what failed, and the caller refuses the
+// registration.
+func (r *Registry) releaseRefusedRoleClaimsByScan(ctx context.Context, sessionID string, holds func(role string) bool, weighed []string, viewErr error) ([]string, error) {
+	r.logger().Info("role registry fell back to a scan of the role bucket to release a session's claims of roles it may not hold; its claim view cannot be served",
+		slog.String("session_id", sessionID),
+		slog.String("reason", viewErr.Error()),
+	)
+	claims, answered, err := bus.Bounded(ctx, func() ([]scannedRoleClaim, error) { return r.roleClaimsUntil(ctx) })
+	if !answered || err != nil {
+		return nil, fmt.Errorf("list the role bucket's keys to release %s's claims of roles it may not hold: %w", sessionID, err)
+	}
+	var released []string
+	var failures []error
+	for _, scanned := range claims {
+		if scanned.Err != nil || scanned.Claim.HolderSessionID != sessionID || holds(scanned.Role) || slices.Contains(weighed, scanned.Role) || r.roles().RefusesRead(scanned.Role) != nil {
+			continue
+		}
+		stands, err := r.releaseReadRoleClaim(ctx, sessionID, scanned.Role, scanned.Claim, RoleReleaseAuthority{Force: true})
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if !stands {
+			released = append(released, scanned.Role)
+		}
+	}
+	return released, errors.Join(failures...)
+}
+
+// releaseHeldRoleClaim frees role's claim when it names sessionID, whatever process it names, and
+// reports whether it freed it: the release of a refused role (ReleaseRefusedRoleClaims), which
+// the registration of that very session asks for, so the process a claim names does not decide
+// it as it decides a hand-back (RoleReleaseAuthority.Force). A claim of another session, a role no
+// record claims and a claim granted since the read, to another or to this session again
+// (RoleClaim.sameGrant), are none of its business, and none is an error. A claim it could not
+// read is: nothing can say it is not the session's.
+func (r *Registry) releaseHeldRoleClaim(ctx context.Context, sessionID, role string) (bool, error) {
+	claim, err := r.RoleClaim(ctx, role)
+	if err != nil {
+		return false, fmt.Errorf("read role %s's claim to release it from %s: %w", role, sessionID, err)
+	}
+	if claim.Revision == 0 || claim.HolderSessionID != sessionID {
+		return false, nil
+	}
+	stands, err := r.releaseReadRoleClaim(ctx, sessionID, role, claim, RoleReleaseAuthority{Force: true})
+	if err != nil {
+		return false, err
+	}
+	return !stands, nil
 }
 
 // weighedRoles is the roles an act on sessionID's claims weighs: the role topics of topics, an
@@ -161,14 +299,21 @@ func rolesOfTopics(topics []string) []string {
 	return slices.Compact(roles)
 }
 
-// roleOfTopic is the role whose lane topic (contracts.RoleTopicPrefix) topic is, and false for a
-// topic that is not a role lane's. The lane is read in either form: the new form names a project
-// before the role (contracts.RoleSubject), and its old form (contracts.LegacyTwin) is the role's
-// lane as a record of the old form holds it. A lane topic whose role is empty, or holds a
-// subscription wildcard (* or >), names no one role and answers false too. It is the one reading
-// of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
+// roleOfTopic is the claim key of the role whose lane topic (contracts.RoleTopicPrefix) topic is,
+// and false for a topic that is not a role lane's. The lane is read in either form: the new form
+// names a project before the role (contracts.RoleSubject) and is keyed as a claim of that name is
+// (RoleClaimKeyOf), so a free-form role under a project key reads as that project's own claim;
+// its old form (contracts.LegacyTwin) is the role's lane as a record of the old form holds it,
+// which is also how a lane under every project (`*`) reads. A lane topic whose role is empty, or
+// holds a subscription wildcard (* or >), names no one role and answers false too. It is the one
+// reading of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
 // (rolesOfTopics) read a topic the same way.
 func roleOfTopic(topic string) (string, bool) {
+	if lane, found := strings.CutPrefix(topic, contracts.RoleTopicPrefix); found && !strings.ContainsAny(lane, "*>") {
+		if _, _, legacy := contracts.CanonicalRole(lane); !legacy {
+			return RoleClaimKeyOf(lane), true
+		}
+	}
 	if twin, ok := contracts.LegacyTwin(topic); ok {
 		topic = twin
 	}
@@ -210,7 +355,7 @@ func roleOfTopic(topic string) (string, bool) {
 // the claim before it (Registry.markRoleClaimHandedBack). A claim with no grant id, which an
 // earlier build wrote, keeps none.
 //
-// A lost compare-and-swap (nats.ErrKeyExists for the wrong last sequence, nats.ErrKeyNotFound for
+// A lost compare-and-swap (bus.IsCASConflict for the wrong last sequence, nats.ErrKeyNotFound for
 // a claim deleted in between) means another claim landed after this call read the record. The
 // renewal is dropped and logged, never read again and retried: the record is now another
 // claimant's, and a renewal retried into it would stamp this process's heartbeat on a claim it

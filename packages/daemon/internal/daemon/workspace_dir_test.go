@@ -19,6 +19,7 @@ import (
 // under the task's working copy name (workspace.Name), beside the issue's. An issue whose recorded
 // repository does not parse, and a branch that is no task's of the issue, name the branch alone.
 func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
+	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion"}
 	repo := ghrepo.MustParse("sjawhar/legion")
 	stateDir := t.TempDir()

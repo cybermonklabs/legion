@@ -707,7 +707,7 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 		if err != nil {
 			t.Fatalf("the merger's claim of %s: %v", issue, err)
 		}
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, err := CloseRoleOpenResumeTx(ctx, tx, "legion", issue, claim.RoleMerger, merger, resumedAt.Add(3*time.Minute))
 			return err
 		}); err != nil {

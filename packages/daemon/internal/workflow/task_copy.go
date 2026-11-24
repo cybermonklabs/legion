@@ -29,7 +29,7 @@ import (
 // (gateOpened). Its one caller is the start of every step (Engine.start), at each start of a task,
 // the first and a start again, and the join again at a new generation (joinAgain). A task the plan
 // does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bool, error) {
 	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
@@ -53,6 +53,13 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 	if err := e.store.SetTaskBase(ctx, tx, issue.Key, issue.Generation, task, base); err != nil {
 		return false, err
 	}
+	for i := range stored.Tasks {
+		if stored.Tasks[i].Task == task {
+			stored.Tasks[i].Base = base
+			break
+		}
+	}
+	s.plan = stored
 	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
 	}

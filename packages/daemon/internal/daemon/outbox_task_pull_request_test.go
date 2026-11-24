@@ -20,6 +20,7 @@ import (
 // once main moved, so the issue never merges (its controls: the open only where the compare's
 // status is ahead, and the executor without the open).
 func TestASinkWithNoImplementationStepGetsItsPullRequestFromLegion(t *testing.T) {
+	t.Parallel()
 	t.Run("a branch ahead of its base", func(t *testing.T) {
 		rig := newTaskBranchRig(t, plannedTask{id: "d"}, plannedTask{id: "e", needs: []string{"d"}, roles: []string{"tester"}})
 		rig.github.Commit(t, rig.branch(t, "d"), map[string]string{"d.txt": "d\n"}, "d")

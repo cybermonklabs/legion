@@ -82,6 +82,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
 	{file: "internal/api/operator.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{"TestOnlyAPhaseWorkerHoldsAMembersPhase"}},
 	// Whether the task the per-issue read judges stands in implementing, for a plan of several tasks:
 	// a running step of that task at implementing, which no step at admitted is.
 	{file: "internal/daemon/issue_reads.go", fn: "issueRecords.implementing"}: {calls: 1, tests: []string{
@@ -93,6 +94,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
+	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
 	// Whether queued work stands at a running step's phase, away from step, where it reads only
 	// whether the step is held and never its role; at admitted, where no step runs, the issue's own
 	// phase answers, as it did before running steps were read.
@@ -109,6 +111,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAnIssueReadsEachOfItsRunningSteps", "TestTheStepThatWaitedLongestForItsAgentIsNext"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
+	{file: "internal/workflow/design_news.go", fn: "memberWords"}: {calls: 1, tests: []string{
+		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"}},
 	// The role of the held step, and of the phase the hold is from where no step stands there.
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 2, tests: []string{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
@@ -129,6 +133,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestArchitectUnchangedByABackwardMoveFromAdmitted", "TestABackwardMoveToStepNamesWhichStep", "TestADeploymentRoleMovesItsTaskBack"}},
 	// The retro's role, the merge's, and the role a step's role runs as.
 	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 3, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports"}},
+	// The running steps a settlement of a held issue's checks tells, at the phase its hold is
+	// from (record.Issue.RunningAt). A hold from admitted names the architect's role, whom
+	// tellChecks tells as the issue's owner too.
+	{file: "internal/workflow/review.go", fn: "Engine.checksSteps"}: {calls: 1, tests: []string{
+		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase"}},
 	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
 	// endOfTransition read it), read by the place on a task with plan rows and by the phase on an
 	// issue with none.

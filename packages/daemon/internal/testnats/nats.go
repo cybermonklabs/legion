@@ -15,11 +15,11 @@
 // server, emptied for each test exactly as the container is, starts no container, and Main removes
 // nothing; one set without the other fails the test, since a half-named server is a mistake rather
 // than a reason to fall back to Docker. The reset holds the server for one test of one test binary
-// at a time, waits for every client connection to it to end, and empties each stream before it
-// deletes it, so the server is the tests' alone and the packages using it run one after another
-// (go test -p 1). The leak check at the end of each test depends on that rule too: with one
-// binary on the server, every connection it holds is this binary's, so one that appeared while a
-// test held the server is that test's own.
+// at a time, waits for every client connection to it to end, and deletes each stream's consumers
+// and empties the stream before it deletes it, so the server is the tests' alone and the packages
+// using it run one after another (go test -p 1). The leak check at the end of each test depends
+// on that rule too: with one binary on the server, every connection it holds is this binary's, so
+// one that appeared while a test held the server is that test's own.
 package testnats
 
 import (
@@ -116,11 +116,13 @@ func Main(m *testing.M) int {
 // otherwise the package's container, started on first use. The reset waits for the server
 // to report no client connection first: a previous test that published without waiting for acks
 // leaves messages the server still routes after the test ends, into a stream this test recreates.
-// The reset then purges each stream and deletes it, so a test creates its own there and finds it
-// empty with CreateStream: a deleted stream's store can outlive the delete that answered, and a
-// purged one carries no message into the next test, though it does carry its sequence. The purge,
-// below, states the mechanism and names the source lines; the comments elsewhere in this package
-// point to it rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
+// The reset then deletes each stream's consumers, purges it and deletes it, so a test creates its
+// own there and finds it empty with CreateStream, and a durable it creates there starts where its
+// own configuration says. A deleted stream's store can outlive the delete that answered; a purged
+// one carries no message into the next test, though it does carry its sequence, and one whose
+// consumers were deleted first carries no consumer's position. The purge and the consumer deletes,
+// below, state the mechanism and name the source lines; the comments elsewhere in this package
+// point to them rather than stating it again. Last, the reset arms the leak check (leakcheck.go),
 // which fails t at its end for a client connection t left open on the server.
 func URL(t testing.TB) string {
 	t.Helper()
@@ -195,6 +197,47 @@ func URL(t testing.TB) string {
 		stream, err := js.Stream(t.Context(), name)
 		if err != nil {
 			t.Fatalf("take the NATS server's stream %s to empty it: %v", name, err)
+		}
+		// Delete the stream's consumers before the purge and the delete, so the store the delete
+		// can leave behind (the purge, above, says how) holds no consumer's state either.
+		//
+		// A durable on this one server writes its position to a state file in the stream's
+		// directory when it is created, unless it or its stream asks for memory storage (v2.15.1:
+		// consumer.go:6481-6488, SetStarting, under selectStartingSeqNo, for a consumer on one
+		// replica; filestore.go:13513-13521), and a consumer deleted with its stream leaves that
+		// file for the stream's own removal (filestore.go:14607-14612). When the rename that
+		// removal starts with fails, the file stays in streams/<name>/obs/<consumer>, and a
+		// durable of the same name created on the next stream of that name finds it: a consumer
+		// whose store has a state file restores it rather than selecting its start
+		// (consumer.go:1350-1353, the else of :1399-1402; filestore.go:13819-13828). It starts
+		// where the earlier test's durable stood, which for one created on a stream that never
+		// held a message is sequence 1, whatever deliver policy the test gave it, and delivers
+		// every message the test published before creating it: the "1 messages of history
+		// pending, want 0" of intake's TestAFreshConsumerStartsAtTheNextMessage, run after a test
+		// that made the same durables. nats-server 2.10.29 does the same (consumer.go:962-965,
+		// 4945-4947, 5280-5281).
+		//
+		// A consumer delete removes the consumer's directory before it answers (jetstream_api.go:
+		// 5835 answers after obs.delete(), which reaches consumer.go:6887's store.Delete(),
+		// filestore.go:14582-14583, whose removal at :14607-14611 runs inline), so once these
+		// deletes have answered, nothing of a consumer is left for the stream's delete to leave.
+		// They come before the purge because a purge updates each consumer's position
+		// (consumer.go:6691), which starts a write of its state file the delete would then race.
+		// A consumer the server removed itself after the list, an ephemeral one past its
+		// inactivity threshold, is gone or going already, and its generated name is not one a
+		// later test's durable takes.
+		var consumers []string
+		listed := stream.ConsumerNames(t.Context())
+		for consumer := range listed.Name() {
+			consumers = append(consumers, consumer)
+		}
+		if err := listed.Err(); err != nil {
+			t.Fatalf("list the consumers of the NATS server's stream %s: %v", name, err)
+		}
+		for _, consumer := range consumers {
+			if err := stream.DeleteConsumer(t.Context(), consumer); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+				t.Fatalf("delete consumer %s of the NATS server's stream %s: %v", consumer, name, err)
+			}
 		}
 		if err := stream.Purge(t.Context()); err != nil {
 			t.Fatalf("purge the NATS server's stream %s: %v", name, err)
@@ -321,19 +364,23 @@ var monitorClient = &http.Client{Timeout: 5 * time.Second}
 // every read fails.
 var readConnections = clientConnections
 
-// clientConnections lists the server's open client connections, each by id and name, by reading
-// the monitoring endpoint's /connz. It is readConnections' one implementation here, and the one
-// function to re-point: a server running inside the test process answers the same question from
-// the server object instead, which is the shape this fixture takes under dispatch://INFRA-1524's
-// rewrite.
-func clientConnections() ([]Connection, error) {
-	response, err := monitorClient.Get(monitorURL + "/connz")
+// clientConnections lists the shared server's open client connections (connectionsAt its
+// monitoring endpoint). It is readConnections' one implementation here, and the one function to
+// re-point: a server running inside the test process answers the same question from the server
+// object instead.
+func clientConnections() ([]Connection, error) { return connectionsAt(monitorURL) }
+
+// connectionsAt lists the open client connections of the server whose monitoring endpoint's base
+// URL is monitor, each by id and name, by reading its /connz: the shared server's
+// (clientConnections) or a test's own (armServerLeakCheck).
+func connectionsAt(monitor string) ([]Connection, error) {
+	response, err := monitorClient.Get(monitor + "/connz")
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, response.Status)
+		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, response.Status)
 	}
 	var connz struct {
 		Connections []struct {
@@ -342,7 +389,7 @@ func clientConnections() ([]Connection, error) {
 		} `json:"connections"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
-		return nil, fmt.Errorf("decode %s/connz: %w", monitorURL, err)
+		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))
 	for _, c := range connz.Connections {
@@ -360,8 +407,8 @@ func monitor(container *tcnats.NATSContainer) (string, error) {
 	return "http://" + address, nil
 }
 
-// clientURL returns a container's NATS client URL, at the loopback address start published its
-// client port on.
+// clientURL returns a container's NATS client URL, where start published its client port
+// (endpoint).
 func clientURL(container *tcnats.NATSContainer) (string, error) {
 	address, err := endpoint(container, clientPort)
 	if err != nil {
@@ -509,12 +556,16 @@ func retryStreamStoreFailure(create func() error) error {
 
 // hostConfig caps a NATS test container at one CPU and 512 MiB, as every container the
 // repository's tests and proofs start is capped on a shared host (a test server holds a few small
-// streams), and publishes its client and monitoring ports at host on the ports given. It is one
-// modifier because testcontainers keeps only the last a request is given.
+// streams), and publishes its client and monitoring ports at host on the ports given, or leaves
+// them on Docker's default binding when host is "". It is one modifier because testcontainers
+// keeps only the last a request is given.
 func hostConfig(host string, client, monitoring int) testcontainers.CustomizeRequestOption {
 	return testcontainers.WithHostConfigModifier(func(config *container.HostConfig) {
 		config.NanoCPUs = 1_000_000_000
 		config.Memory = 512 << 20
+		if host == "" {
+			return
+		}
 		if config.PortBindings == nil {
 			config.PortBindings = nat.PortMap{}
 		}
@@ -523,8 +574,9 @@ func hostConfig(host string, client, monitoring int) testcontainers.CustomizeReq
 	})
 }
 
-// startTries bounds the starts start makes, each on a fresh address and ports, while Docker
-// refuses to publish a port because something took the probed one first (loopbackPorts).
+// startTries bounds the starts start makes while Docker refuses to publish a port as in use:
+// something took the probed one first (loopbackPorts), or, on a Docker daemon on another machine,
+// every port Docker tried was held (defaultBinding).
 const startTries = 5
 
 // start runs a NATS container, with its monitoring endpoint on 8222. It publishes the client and
@@ -537,7 +589,11 @@ const startTries = 5
 // the port is not published; each caller's own connect (connect, ready, answering) is the proof a
 // client reaches the server. A container Docker created and never saw ready (a readiness wait that
 // timed out under load, or a refused publish) comes back beside the error, and is removed before
-// start returns: no test's end would remove a container the package shares.
+// start returns: no test's end would remove a container the package shares. A Docker daemon on
+// another machine (localDaemon) publishes on that machine, whose loopback this one does not reach,
+// so there the ports take Docker's default binding and its choice of port (defaultBinding), and
+// endpoint names the daemon's host; Docker can refuse that publish as in use too, having tried
+// ports another process holds, and the start is tried again the same way.
 //
 // options, when not nil, builds the caller's options, and each attempt calls it for options of its
 // own: an option can carry a reader that an attempt uses up, as a configuration file's does
@@ -545,10 +601,18 @@ const startTries = 5
 // Docker refuses a publish at the start), and a retry handed the first attempt's would start a
 // server with an empty configuration.
 func start(image string, options func() []testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
+	local, err := localDaemon(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("find where the Docker daemon publishes a container's ports: %w", err)
+	}
+	publishOn := loopbackPorts
+	if !local {
+		publishOn = defaultBinding
+	}
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
-		host, ports, err := loopbackPorts(2)
+		host, ports, err := publishOn(2)
 		if err != nil {
 			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
@@ -564,7 +628,11 @@ func start(image string, options func() []testcontainers.ContainerCustomizer) (*
 		if err == nil {
 			return started, nil
 		}
-		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
+		where := "Docker's default binding"
+		if host != "" {
+			where = fmt.Sprintf("%s ports %d and %d", host, ports[0], ports[1])
+		}
+		err = fmt.Errorf("%s: %w", where, errors.Join(err, testcontainers.TerminateContainer(started)))
 		if !addressInUse(err) {
 			return started, errors.Join(append(refused, err)...)
 		}
@@ -572,6 +640,10 @@ func start(image string, options func() []testcontainers.ContainerCustomizer) (*
 	}
 	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
 }
+
+// defaultBinding is where each start publishes on a Docker daemon on another machine: no address,
+// so hostConfig leaves Docker's default binding of every address and Docker chooses each port.
+func defaultBinding(n int) (string, []int, error) { return "", make([]int, n), nil }
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients
 // authenticating as the nkey user whose public key is user, removed when t ends, and returns its
@@ -613,7 +685,12 @@ func StartNkeyAuthorizedUsers(t testing.TB, image string, users ...NkeyUser) (*t
 	if err != nil {
 		t.Fatalf("NATS connection string: %v", err)
 	}
+	monitoring, err := monitor(container)
+	if err != nil {
+		t.Fatalf("NATS monitoring URL: %v", err)
+	}
 	answering(t, url)
+	armServerLeakCheck(t, monitoring)
 	return container, url
 }
 

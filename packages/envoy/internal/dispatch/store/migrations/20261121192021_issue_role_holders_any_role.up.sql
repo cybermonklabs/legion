@@ -10,10 +10,15 @@
 -- project's role and no issue's.
 --
 -- The check widens what the table takes and narrows nothing, so it rolls
--- (packages/envoy/cmd/dispatch/README.md, "Database migrations"): the release before this one
--- writes only the six, each a name of the grammar, and reads a stored role as text, ordering a role
--- it does not list last. It is dropped without `cascade` and added back `not valid`, which records
--- the check for every row written from now on and reads no stored row: every stored row was written
+-- (packages/envoy/cmd/dispatch/README.md, "Database migrations"). It follows every legion-envoy
+-- release up to the one that carries it: v34.11.0 to v34.11.8, whose newest migration is
+-- 20261121060636, and v34.12.0 to v34.14.0 on 2026-11-23, whose newest is 20261123080000. Its
+-- version stands below that one, which is no refusal: the runner applies every version
+-- schema_migrations does not record, so a store any of them migrated applies this file at the next
+-- boot. Each of those releases writes only the six, each a name of the grammar, and reads a stored
+-- role as text, ordering a role it does not list last. It is dropped without `cascade` and added
+-- back `not valid`, which records the check for every row written from now on and reads no stored
+-- row: every stored row was written
 -- under the narrower check, which no name of it can fail. Each statement is one of the census's
 -- catalog-only forms (pgmigrate's catalogOnlyAlterTable), so it is exempt from the table size limit
 -- at any size, and holds ACCESS EXCLUSIVE on issue_role_holders for its catalogue write alone, under

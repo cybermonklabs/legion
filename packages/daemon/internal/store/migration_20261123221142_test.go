@@ -61,7 +61,7 @@ func seedTaskBaseRows(t *testing.T, store *Store) {
 		steps = append(steps, record.PlanStep{Issue: key, Generation: 2, Task: r.id, Position: 1, Role: r.role, Type: plan.BuiltinRoles()[r.role].Type, Agent: claim.Agent("agent-" + r.id)})
 	}
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
 			Project: "LEGION", Title: key, Phase: "implementing", Generation: 2, Status: "in_progress", Rank: "U"}); err != nil {
 			return err
@@ -84,7 +84,7 @@ func seedTaskBaseRows(t *testing.T, store *Store) {
 			t.Fatalf("stand task %s of %s %s: %v", r.id, key, state, err)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, pr := range []struct {
 			number int
 			branch string
@@ -134,7 +134,7 @@ func TestTheTaskBaseMigrationWritesTheBaseOfEachRunningTask(t *testing.T) {
 		t.Fatalf("the other columns after the migration = %q, want them as before, %q", after, before)
 	}
 	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = record.NewStore().Plan(ctx, tx, taskBaseIssue, 2)
 		return err
@@ -171,7 +171,7 @@ func TestTheWayBackOfTheTaskBaseDropsTheColumn(t *testing.T) {
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, kind := range []string{"pull-request-close-refused", "task-join-failed"} {
 			payload := `{"kind":"` + kind + `","role":"architect","reason":"a notice of ` + kind + `"}`
 			if err := record.NewStore().Enqueue(ctx, tx, record.OutboxRow{Kind: record.OutboxKindNotice, Issue: taskBaseIssue, Payload: []byte(payload),

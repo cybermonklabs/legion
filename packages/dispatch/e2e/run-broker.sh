@@ -56,6 +56,10 @@ mode="${1:-}"
 e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
+# psql is given a database URL without its password, and the password in PGPASSWORD, as
+# e2e/psql.ts gives it; packages/envoy's scripts and this one share the one shell split.
+# shellcheck source-path=SCRIPTDIR source=../../envoy/scripts/lib/pg-url.sh
+. "$e2e_dir/../../envoy/scripts/lib/pg-url.sh"
 
 # The one directory this script serves: the build below writes the three binaries into it, a
 # handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the fake secrets file is written in
@@ -169,16 +173,18 @@ if [ -z "$prebuilt_bin" ]; then
 fi
 
 if [ "$mode" = issuer ]; then
-  # One client, the broker's, whose secret the issuer reads from the file once at its start. An
-  # authorization with nobody queued signs alice in, so every sign-in that reaches the issuer ends
-  # with a person; her hd claim is signin_domain, the domain the broker requires.
+  # One client, the broker's, whose secret the issuer reads from the file once at its start, and
+  # whose one callback is the approval page's on loopback, taken at whatever port the broker row
+  # binds. An authorization with nobody queued signs alice in, so every sign-in that reaches the
+  # issuer ends with a person; her hd claim is signin_domain, the domain the broker requires.
   exec "$work/dev-oidc-issuer" \
-    --code-flow "$signin_client=$signin_secret_file" \
+    --code-flow "$signin_client=$signin_secret_file=http://127.0.0.1/signin/callback" \
     --sign-in-as "alice@$signin_domain"
 fi
 
-# The broker's database, beside DATABASE_URL's on the same server. psql runs without PGHOSTADDR,
-# as e2e/psql.ts runs it: libpq would otherwise connect to that address instead of the URL's host.
+# The broker's database, beside DATABASE_URL's on the same server. psql runs as e2e/psql.ts runs
+# it: the URL without its password and the password in PGPASSWORD (pg_url_run), and without
+# PGHOSTADDR, since libpq would otherwise connect to that address instead of the URL's host.
 if ! [[ "$DATABASE_URL" =~ ^(postgres(ql)?://[^/?]+)/([^/?]+)(\?.*)?$ ]]; then
   echo "run-broker.sh: DATABASE_URL must be postgres://<user>@<host>:<port>/<database>" >&2
   exit 2
@@ -186,8 +192,11 @@ fi
 broker_server="${BASH_REMATCH[1]}"
 broker_database="${BASH_REMATCH[3]}_broker"
 broker_database_url="${broker_server}/${broker_database}${BASH_REMATCH[4]}"
-env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
-  -c "drop database if exists \"$broker_database\" with (force)" \
+# psql_without_hostaddr ARGS...: psql with PGHOSTADDR left out of its environment. broker_psql
+# ARGS...: that psql on DATABASE_URL's database, its password in PGPASSWORD alone.
+psql_without_hostaddr() { env -u PGHOSTADDR psql "$@"; }
+broker_psql() { pg_url_run "$DATABASE_URL" psql_without_hostaddr -X -q -v ON_ERROR_STOP=1 "$@"; }
+broker_psql -c "drop database if exists \"$broker_database\" with (force)" \
   -c "create database \"$broker_database\""
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
@@ -235,34 +244,38 @@ curl -sf -o /dev/null "$issuer_url/.well-known/openid-configuration" || {
 # Playwright, and no home directory. BROKER_DRAIN_SECONDS=0 stops it at once, with no load
 # balancer to drain from. BROKER_MACHINE_LOGIN_URL is the harness Dispatch's machine-login page.
 # BROKER_METRICS_LISTEN_ADDR is a port the kernel picks, since each stack of the harness runs a
-# broker of its own and nothing here scrapes it.
+# broker of its own and nothing here scrapes it. The settings reach the broker through this
+# shell's environment, which it execs into (exec_broker), and through no process's arguments: the
+# database URL keeps DATABASE_URL's password, and env's arguments would carry it.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
     BROKER_*) unset "$name" ;;
   esac
 done
-exec env \
-  BROKER_DATABASE_URL="$broker_database_url" \
-  BROKER_LISTEN_ADDR="127.0.0.1:$broker_port" \
-  BROKER_PUBLIC_URL="http://127.0.0.1:$broker_port" \
-  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
-  BROKER_SECRETS_PREFIX="$secrets_prefix" \
-  BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \
-  BROKER_FAKE_SECRETS_FILE="$fake_secrets_file" \
-  BROKER_DRAIN_SECONDS=0 \
-  BROKER_K8S_OIDC_ISSUER="$issuer_url" \
-  BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \
-  BROKER_SERVICE_LOGINS="$launcher_service=$launcher_account" \
-  BROKER_SERVICES="$launcher_service=$pod_account" \
-  BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
-  BROKER_SIGNIN_ISSUER="$issuer_url" \
-  BROKER_SIGNIN_CLIENT_ID="$signin_client" \
-  BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
-  BROKER_SIGNIN_DOMAIN="$signin_domain" \
-  HOME=/nonexistent \
-  XDG_CACHE_HOME=/nonexistent \
-  XDG_CONFIG_HOME=/nonexistent \
-  XDG_DATA_HOME=/nonexistent \
-  "$work/broker"
+exec_broker() {
+  export BROKER_DATABASE_URL="$broker_database_url" \
+    BROKER_LISTEN_ADDR="127.0.0.1:$broker_port" \
+    BROKER_PUBLIC_URL="http://127.0.0.1:$broker_port" \
+    BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
+    BROKER_SECRETS_PREFIX="$secrets_prefix" \
+    BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \
+    BROKER_FAKE_SECRETS_FILE="$fake_secrets_file" \
+    BROKER_DRAIN_SECONDS=0 \
+    BROKER_K8S_OIDC_ISSUER="$issuer_url" \
+    BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \
+    BROKER_SERVICE_LOGINS="$launcher_service=$launcher_account" \
+    BROKER_SERVICES="$launcher_service=$pod_account" \
+    BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
+    BROKER_SIGNIN_ISSUER="$issuer_url" \
+    BROKER_SIGNIN_CLIENT_ID="$signin_client" \
+    BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
+    BROKER_SIGNIN_DOMAIN="$signin_domain" \
+    HOME=/nonexistent \
+    XDG_CACHE_HOME=/nonexistent \
+    XDG_CONFIG_HOME=/nonexistent \
+    XDG_DATA_HOME=/nonexistent
+  exec "$work/broker"
+}
+exec_broker
