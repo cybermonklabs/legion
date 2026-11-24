@@ -16,7 +16,7 @@ import (
 // line of this branch nor the words that open the owner's part in the title can hide the
 // daemon's line. A task from an earlier release that holds no working copy line is sent as
 // composed, including any similar text inside the owner's fence.
-func TestATaskSentAfterACorrectionNamesTheWorkingCopyOfTheRepositoryTheRecordHoldsThen(t *testing.T) {
+func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *testing.T) {
 	engine := stepEngine(nil)
 	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Repo + "/" + issue.Key }
 	const (

@@ -1500,8 +1500,10 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 // and the process only at its next launch: a tmux pane goes on in the workspace of the repository
 // the issue left until it is launched again, and nothing makes the new repository's workspace
 // before that launch; a pod goes on in its clone until its update round replaces it. So the line
-// names the workspace the agent that reads it is in, and a relaunch moves it, where the task's
-// correction note (addressingFragment) already tells that agent the work moved. The line is the
+// names the workspace the agent that reads it is in, and a relaunch moves it. The agent is told
+// the work moved by the correction sentences in the addressing of each launch after the
+// correction (addressingFragment), not by this line: a process launched before the correction
+// gets neither until its next launch. The line is the
 // engine's, written under the directory the runtime gives that repository
 // (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), with no repository for a launch that
 // named none, whose line names the branch alone.

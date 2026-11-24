@@ -9,4 +9,3 @@ body: |-
   answer `get_state` within the RPC bound, or its turn ended between its refusal and the ask, as a
   notice's turn can when the refusal came during its pre-turn work. Its refusal is then charged as
   unrecognised, and its prompt's result as a prompt that ran no turn.
-  A launch charge and a relaunch that already counted the same death use the same launch limit check.

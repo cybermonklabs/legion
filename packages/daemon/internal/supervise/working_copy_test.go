@@ -150,27 +150,6 @@ func TestEverySendOfAPhaseTaskNamesTheWorkingCopyTheAnswerGivesAtThatSend(t *tes
 	})
 }
 
-// launchSpecs builds every launch naming the repository it holds when the launch is built, as the
-// daemon's own spec builder names the repository the issue's record holds at that launch.
-type launchSpecs struct {
-	mu         sync.Mutex
-	repository ghrepo.Repository
-}
-
-func (s *launchSpecs) SpawnSpec(context.Context, Claim) (runtime.SpawnSpec, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return runtime.SpawnSpec{Repository: s.repository}, nil
-}
-
-// names is a correction of the issue's repository: every launch built from here on names
-// repository.
-func (s *launchSpecs) names(repository ghrepo.Repository) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.repository = repository
-}
-
 // repositoryText is a claim's working repository as a failure names it.
 func repositoryText(repository *ghrepo.Repository) string {
 	switch {
@@ -193,10 +172,10 @@ func repositoryText(repository *ghrepo.Repository) string {
 // the next launch records the repository of its own process.
 func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 	acme, zeta := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools")
-	launched := func(t *testing.T, specs *launchSpecs, place func(h *harness)) *harness {
+	launched := func(t *testing.T, repository ghrepo.Repository, place func(h *harness)) *harness {
 		t.Helper()
 		h := newBareHarness(t)
-		h.deps.Specs = specs
+		h.specs.names(repository)
 		if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 			t.Fatal(err)
 		}
@@ -220,12 +199,12 @@ func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 	nothing := func(*harness) {}
 
 	t.Run("a runtime whose processes share no place records the spec's repository", func(t *testing.T) {
-		h := launched(t, &launchSpecs{repository: acme}, nothing)
+		h := launched(t, acme, nothing)
 		wantWorking(t, h, &acme)
 	})
 
 	t.Run("the place's own repository comes before the spec's", func(t *testing.T) {
-		h := launched(t, &launchSpecs{repository: zeta}, func(h *harness) { h.rt.ScriptPodRepository(h.token, acme.String()) })
+		h := launched(t, zeta, func(h *harness) { h.rt.ScriptPodRepository(h.token, acme.String()) })
 		wantWorking(t, h, &acme)
 		if asked := h.wantCalls("PodRepository", 1)[0].Pod; asked.Locator == nil || asked.Locator.Incarnation != h.locator().Incarnation {
 			t.Fatalf("the launch asked the runtime about %+v, want the process it launched, %s", asked, h.locator().Incarnation)
@@ -233,7 +212,7 @@ func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 	})
 
 	t.Run("a runtime that cannot answer leaves the spec's repository, said at Warn", func(t *testing.T) {
-		h := launched(t, &launchSpecs{repository: zeta}, func(h *harness) { h.rt.FailPodRepository(errors.New("the cluster did not answer")) })
+		h := launched(t, zeta, func(h *harness) { h.rt.FailPodRepository(errors.New("the cluster did not answer")) })
 		wantWorking(t, h, &zeta)
 		if lines := h.logs.lines("level=WARN", "did not say which repository", "specRepository=zeta/tools", "the cluster did not answer"); len(lines) != 1 {
 			t.Fatalf("logged %v, want one warning naming the spec's repository and the runtime's error", lines)
@@ -241,13 +220,12 @@ func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 	})
 
 	t.Run("a launch that names no repository records the zero Repository", func(t *testing.T) {
-		h := launched(t, &launchSpecs{}, nothing)
+		h := launched(t, ghrepo.Repository{}, nothing)
 		wantWorking(t, h, &ghrepo.Repository{})
 	})
 
 	t.Run("the let-go that clears the locator clears it, and the next launch records its own", func(t *testing.T) {
-		specs := &launchSpecs{repository: acme}
-		h := launched(t, specs, nothing)
+		h := launched(t, acme, nothing)
 		h.reach(StateReady)
 		wantWorking(t, h, &acme)
 
@@ -258,7 +236,7 @@ func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 		}
 		wantWorking(t, h, nil)
 
-		specs.names(zeta)
+		h.specs.names(zeta)
 		h.must(RequestResume{Claim: h.token})
 		h.wantState(StateLaunching)
 		wantWorking(t, h, &zeta)

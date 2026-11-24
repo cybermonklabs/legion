@@ -150,11 +150,7 @@ func (r *workingCopyRig) run(start entryStartRow) {
 // agent ready.
 func (r *workingCopyRig) launch() {
 	r.t.Helper()
-	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: workingCopyIssue,
-		Issue: workingCopyIssue, Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
-	if err != nil {
-		r.t.Fatalf("create the implementer claim: %v", err)
-	}
+	machine := startedClaim(r.t, r.sup, claim.RoleImplementer)
 	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
 		r.t.Fatalf("spawn the implementer: %v", err)
 	}

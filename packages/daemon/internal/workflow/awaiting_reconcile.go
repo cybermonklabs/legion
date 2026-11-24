@@ -878,8 +878,9 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 // gates.design: off rule gave (gateOff), which is no person's approval, so the predicate answers
 // nil for it. The review is of step's document, the document it was of (answeredDocument; "" for
 // an answer an earlier release wrote of a wait on a question, which is asked of the document the
-// gate holds), so an approval of a document registered on the step since answers nothing of it, as
-// every other sender asks; and at the version the answer recorded beside its detail
+// gate holds), so, for a changes request, an approval of a document registered on the step since
+// answers nothing of it, as every other sender asks, and an approval of a document the step no
+// longer holds no longer stands; and at the version the answer recorded beside its detail
 // (record.AnsweredDocument.Version; 0 for an answer a daemon of an earlier release wrote, which is
 // then asked at the version the gate holds approved, as a sender that knows no version asks).
 //
