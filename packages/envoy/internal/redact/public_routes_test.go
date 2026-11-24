@@ -87,7 +87,9 @@ func requireRoutes(t *testing.T, values []routedValue) {
 	}
 }
 
-// routedWords is the words of a refusal of v's request that quotes v's value.
+// routedWords is the words of a refusal of v's request that quotes v's value, the request's method
+// v's as written: http.NewRequest turns an empty one into GET before the rule could read it, and a
+// request built by hand keeps it.
 func routedWords(t *testing.T, v routedValue) string {
 	t.Helper()
 	target, body, headers := v.Target, "", map[string]string{}
@@ -111,8 +113,10 @@ func routedWords(t *testing.T, v routedValue) string {
 	default:
 		t.Fatalf("no place %q", v.At)
 	}
+	request := newRequest(t, v.Method, target, body, headers)
+	request.Method = v.Method
 	said := "the request's " + v.Name + " " + v.Value + " was refused"
-	answer, err := redact.ReadAnswer(&http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(said)), Request: newRequest(t, v.Method, target, body, headers)}, 1<<10)
+	answer, err := redact.ReadAnswer(&http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(said)), Request: request}, 1<<10)
 	if err != nil {
 		t.Fatal(err)
 	}

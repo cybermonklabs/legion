@@ -358,10 +358,11 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
  *  which is on no route. */
 export type RequestRoute = { readonly method: string; readonly path: string } | undefined;
 
-/** The {@link RequestRoute} of a request to `url` sent with `method`, GET where it names none. */
+/** The {@link RequestRoute} of a request to `url` sent with `method`, GET where it names none or
+ *  names the empty string, as net/http sends it and Go's `publicOn` reads it. */
 export function requestRoute(url: string, method: string | undefined): RequestRoute {
   if (!URL.canParse(url)) return undefined;
-  return { method: (method ?? "GET").toUpperCase(), path: new URL(url).pathname };
+  return { method: (method || "GET").toUpperCase(), path: new URL(url).pathname };
 }
 
 /** Whether the value under `name`, carried at `place` by a request on `route`, is public by its

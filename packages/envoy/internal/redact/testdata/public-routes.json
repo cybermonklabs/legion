@@ -940,6 +940,44 @@
           "on": false
         }
       ]
+    },
+    {
+      "id": "empty-method",
+      "about": "A request whose method is the empty string is a GET, as net/http sends it (http.Request: \"For client requests, an empty string means GET\"): page, Metadata-Flavor and wait print on such a request on their GET routes, and a token request's grant_type, public on a POST alone, is a credential on it. Both halves read the empty method as GET, so neither redacts what the other prints.",
+      "rows": [
+        {
+          "method": "",
+          "target": "https://api.github.com/installation/repositories",
+          "at": "query",
+          "name": "page",
+          "value": "10000001",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+          "at": "header",
+          "name": "Metadata-Flavor",
+          "value": "flavor-of-google",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "https://broker.example/v1/requests/request-id",
+          "at": "query",
+          "name": "wait",
+          "value": "30000000",
+          "on": true
+        },
+        {
+          "method": "",
+          "target": "https://broker.example/v1/oauth/token",
+          "at": "query",
+          "name": "grant_type",
+          "value": "token-exchange-grant",
+          "on": false
+        }
+      ]
     }
   ]
 }
