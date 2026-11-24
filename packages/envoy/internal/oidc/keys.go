@@ -94,6 +94,8 @@ type Keys struct {
 	// instrumented transport; it is never nil.
 	HTTPClient *http.Client
 
+	// jwksURI is the key set's address: the jwks_uri of the issuer's discovery document, the
+	// issuer's own words, so every error prints it only as the rule reads it (redact.Field).
 	jwksURI string
 
 	mu       sync.Mutex
@@ -125,17 +127,17 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	s := redact.Scope[*gooidc.Provider](ctx)
 	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), err)
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	claims := redact.Scope[struct{}](ctx)
 	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&discovery))); err != nil {
-		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), err)
 	}
 	if discovery.JWKSURI == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
 	return NewKeysAt(discovery.JWKSURI), nil
 }
@@ -277,7 +279,7 @@ func (k *Keys) settleMiss(ctx context.Context, kid, alg string) (bool, crypto.Pu
 		key, err := selectKey(set, kid, alg)
 		return true, key, err
 	case failedRecently:
-		return true, nil, fmt.Errorf("%w: key id %s is not in the cached set, and the last read of %s failed: %w", ErrKeySet, keyIDName(kid), k.jwksURI, failure)
+		return true, nil, fmt.Errorf("%w: key id %s is not in the cached set, and the last read of %s failed: %w", ErrKeySet, keyIDName(kid), redact.Field(k.jwksURI), failure)
 	}
 	return false, nil, nil
 }
@@ -359,7 +361,7 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 	case <-inflight.done:
 		return inflight.keys, inflight.err
 	case <-wait.Done():
-		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
+		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, redact.Field(k.jwksURI), wait.Err())
 	}
 }
 
@@ -406,23 +408,25 @@ func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.jwksURI, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: requesting %s: %w", ErrKeySet, k.jwksURI, err)
+		// net/http's parse error quotes the address whole; redact.Cause prints, for an address
+		// that is no clean URL, the failure's class alone.
+		return nil, fmt.Errorf("%w: requesting %s: %w", ErrKeySet, redact.Field(k.jwksURI), redact.Cause(err, k.jwksURI))
 	}
 	resp, err := k.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, redact.Field(k.jwksURI), err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, redact.StatusLine(resp.StatusCode))
+		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, redact.Field(k.jwksURI), redact.StatusLine(resp.StatusCode))
 	}
 	answer, err := redact.ReadAnswer(resp, maxKeySetBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, redact.Field(k.jwksURI), err)
 	}
 	var set jose.JSONWebKeySet
 	if err := answer.Decode(&set); err != nil {
-		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, k.jwksURI, err)
+		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, redact.Field(k.jwksURI), err)
 	}
 	return set.Keys, nil
 }

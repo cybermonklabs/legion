@@ -288,9 +288,15 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
 	case !v.namesIssuer(claims.Issuer):
-		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
+		// The claims are the token's own words, read unverified, and the issuer is configured text:
+		// each prints only as the rule for remote text, or redact.URL, reads it.
+		return fmt.Errorf("%w: %q, want %q", ErrIssuer, redact.Field(claims.Issuer), redact.URL(v.issuer))
 	case !slices.Contains(claims.Audience, v.audience):
-		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
+		shown := make([]string, len(claims.Audience))
+		for n, aud := range claims.Audience {
+			shown[n] = redact.Field(aud)
+		}
+		return fmt.Errorf("%w: %q, want %q", ErrAudience, shown, v.audience)
 	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):

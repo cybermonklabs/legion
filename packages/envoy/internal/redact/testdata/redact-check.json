@@ -629,6 +629,209 @@
         "capture": "oidc.discovery"
       },
       {
+        "row": "oidc-configured-issuer-discovery-unread",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery/unread"
+      },
+      {
+        "row": "oidc-configured-issuer-discovery-no-sign-in",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery/no-sign-in"
+      },
+      {
+        "row": "oidc-configured-issuer-discovery-metadata",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery/metadata"
+      },
+      {
+        "row": "oidc-configured-issuer-client-check-unanswered",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-client-check/unanswered"
+      },
+      {
+        "row": "oidc-configured-issuer-client-check-refused",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-client-check/refused"
+      },
+      {
+        "row": "oidc-configured-issuer-client-check-outage",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-client-check/outage"
+      },
+      {
+        "row": "oidc-configured-issuer-client-check-no-refusal",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-client-check/no-refusal"
+      },
+      {
+        "row": "oidc-configured-issuer-verifier",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-verifier"
+      },
+      {
+        "row": "oidc-configured-issuer-keys-unread",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-keys/unread"
+      },
+      {
+        "row": "oidc-configured-issuer-keys-no-jwks-uri",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-keys/no-jwks-uri"
+      },
+      {
+        "row": "oidc-configured-issuer-discovery-wait",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery-wait"
+      },
+      {
+        "row": "oidc-configured-issuer-discovery-log-discovered",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery-log/discovered"
+      },
+      {
+        "row": "oidc-configured-issuer-discovery-log-failed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.configured-issuer-discovery-log/failed"
+      },
+      {
+        "row": "oidc-id-token-issuer-claim",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/issuer_words_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.id-token-issuer-claim"
+      },
+      {
+        "row": "oidc-id-token-audience-claim",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/issuer_words_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.id-token-audience-claim"
+      },
+      {
+        "row": "oidc-revoke-endpoint",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/issuer_words_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.revoke-endpoint"
+      },
+      {
+        "row": "oidc-key-set-url-miss",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/miss"
+      },
+      {
+        "row": "oidc-key-set-url-waiting",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/waiting"
+      },
+      {
+        "row": "oidc-key-set-url-unparsed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/unparsed"
+      },
+      {
+        "row": "oidc-key-set-url-unparsed-class",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/unparsed"
+      },
+      {
+        "row": "oidc-key-set-url-unanswered",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/unanswered"
+      },
+      {
+        "row": "oidc-key-set-url-refused",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/refused"
+      },
+      {
+        "row": "oidc-key-set-url-too-large",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/too-large"
+      },
+      {
+        "row": "oidc-key-set-url-not-a-set",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/oidc/key_set_url_test.go",
+          "packages/envoy/internal/oidc/configured_issuer_test.go"
+        ],
+        "capture": "oidc.key-set-url/not-a-set"
+      },
+      {
         "row": "leak-loadtest-events.go_verdict_and_its_page_read",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
@@ -9930,6 +10133,342 @@
       }
     },
     {
+      "id": "oidc-configured-issuer-discovery-unread",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryErrorPrintsNoCredentialOfTheConfiguredIssuer/unread",
+      "production": "oidc discoverCodeFlow, through CodeFlow.Discover: a configured issuer that carries a credential, in the error of a discovery document that cannot be read, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.discoverCodeFlow",
+      "capture": "oidc.configured-issuer-discovery/unread",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/codeflow.go",
+        "preimage": "\"oidc: discovering issuer %s: %w\", redact.URL(issuer)",
+        "replacement": "\"oidc: discovering issuer %s: %w\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-discovery-no-sign-in",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryErrorPrintsNoCredentialOfTheConfiguredIssuer/no-sign-in",
+      "production": "oidc discoverCodeFlow, through CodeFlow.Discover: a configured issuer that carries a credential, in the error of a document that names no authorization or token endpoint, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.discoverCodeFlow",
+      "capture": "oidc.configured-issuer-discovery/no-sign-in",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/codeflow.go",
+        "preimage": "so it offers no sign-in\", redact.URL(issuer)",
+        "replacement": "so it offers no sign-in\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-discovery-metadata",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryErrorPrintsNoCredentialOfTheConfiguredIssuer/metadata",
+      "production": "oidc discoverCodeFlow, through CodeFlow.Discover: a configured issuer that carries a credential, in the error of a document whose revocation_endpoint is null, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.discoverCodeFlow",
+      "capture": "oidc.configured-issuer-discovery/metadata",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/codeflow.go",
+        "preimage": "token_endpoint_auth_methods_supported: %w\", redact.URL(issuer)",
+        "replacement": "token_endpoint_auth_methods_supported: %w\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-client-check-unanswered",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckClientsErrorPrintsNoCredentialOfTheConfiguredIssuer/unanswered",
+      "production": "oidc CheckClient: a configured issuer that carries a credential, in the error of a token endpoint that answers nothing, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
+      "capture": "oidc.configured-issuer-client-check/unanswered",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/clientcheck.go",
+        "preimage": "\"oidc: check the client at %s: %w\", redact.URL(issuer)",
+        "replacement": "\"oidc: check the client at %s: %w\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-client-check-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckClientsErrorPrintsNoCredentialOfTheConfiguredIssuer/refused",
+      "production": "oidc CheckClient: a configured issuer that carries a credential, in the error of a token endpoint that refuses the client, prints only as redact.URL prints it; the client id prints as configured",
+      "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
+      "capture": "oidc.configured-issuer-client-check/refused",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/clientcheck.go",
+        "preimage": "redact.URL(issuer), clientID",
+        "replacement": "issuer, clientID"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-client-check-outage",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckClientsErrorPrintsNoCredentialOfTheConfiguredIssuer/outage",
+      "production": "oidc CheckClient: a configured issuer that carries a credential, in the error of a token endpoint that cannot answer, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
+      "capture": "oidc.configured-issuer-client-check/outage",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/clientcheck.go",
+        "preimage": "could not answer the client check: HTTP %d: %w\", redact.URL(issuer)",
+        "replacement": "could not answer the client check: HTTP %d: %w\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-client-check-no-refusal",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestACheckClientsErrorPrintsNoCredentialOfTheConfiguredIssuer/no-refusal",
+      "production": "oidc CheckClient: a configured issuer that carries a credential, in the error of a token endpoint that answers an error with no refusal's status, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.CheckClient",
+      "capture": "oidc.configured-issuer-client-check/no-refusal",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/clientcheck.go",
+        "preimage": "redact.URL(issuer), retrieve.Response.StatusCode, redact.NewRemoteText",
+        "replacement": "issuer, retrieve.Response.StatusCode, redact.NewRemoteText"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-verifier",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAnIssuerRefusalPrintsNoCredentialOfTheConfiguredIssuer",
+      "production": "oidc Verifier.classify, through Verify and CodeFlow.Exchange: a token from another issuer is refused naming the configured issuer only as redact.URL prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Verifier).classify",
+      "capture": "oidc.configured-issuer-verifier",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/verifier.go",
+        "preimage": "redact.URL(v.issuer)",
+        "replacement": "v.issuer"
+      }
+    },
+    {
+      "id": "oidc-id-token-issuer-claim",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAnIDTokensIssuerClaimPrintsAsTheRuleReadsIt",
+      "production": "oidc Verifier.classify, through Verify, CodeFlow.Exchange and CodeFlow.Refresh: an ID token's unverified iss claim prints through the rule (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Verifier).classify",
+      "capture": "oidc.id-token-issuer-claim",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/verifier.go",
+        "preimage": "redact.Field(claims.Issuer)",
+        "replacement": "claims.Issuer"
+      }
+    },
+    {
+      "id": "oidc-id-token-audience-claim",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAnIDTokensAudienceClaimPrintsAsTheRuleReadsIt",
+      "production": "oidc Verifier.classify, through Verify, CodeFlow.Exchange and CodeFlow.Refresh: each audience of an ID token's unverified aud claim prints through the rule (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Verifier).classify",
+      "capture": "oidc.id-token-audience-claim",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/verifier.go",
+        "preimage": "redact.Field(aud)",
+        "replacement": "aud"
+      }
+    },
+    {
+      "id": "oidc-revoke-endpoint",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestARevocationEndpointThatDoesNotParsePrintsNoCredential",
+      "production": "oidc CodeFlow.Revoke: a revocation_endpoint that carries a credential and does not parse is named by its class (redact.Cause), never net/http's parse error, which quotes it whole",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke",
+      "capture": "oidc.revoke-endpoint",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/codeflow.go",
+        "preimage": "redact.Cause(err, issuer.revocationURL)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-keys-unread",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAKeySetDiscoveryErrorPrintsNoCredentialOfTheConfiguredIssuer/unread",
+      "production": "oidc NewKeys, through New: a configured issuer that carries a credential, in the error of a discovery document that cannot be read, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.NewKeys",
+      "capture": "oidc.configured-issuer-keys/unread",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "\"oidc: discovering issuer %s: %w\", redact.URL(issuer)",
+        "replacement": "\"oidc: discovering issuer %s: %w\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-keys-no-jwks-uri",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAKeySetDiscoveryErrorPrintsNoCredentialOfTheConfiguredIssuer/no-jwks-uri",
+      "production": "oidc NewKeys, through New: a configured issuer that carries a credential, in the error of a document that names no jwks_uri, prints only as redact.URL prints it",
+      "function": "github.com/sjawhar/envoy/internal/oidc.NewKeys",
+      "capture": "oidc.configured-issuer-keys/no-jwks-uri",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "names no jwks_uri in its discovery document\", redact.URL(issuer)",
+        "replacement": "names no jwks_uri in its discovery document\", issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-discovery-wait",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheCodeFlowsDiscoveryPrintsNoCredentialOfTheConfiguredIssuer/waiting",
+      "production": "oidc discovery.discover, through CodeFlow.Discover: a caller that stops waiting on a discovery in flight is answered naming the configured issuer only as redact.URL prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.discovery).discover",
+      "capture": "oidc.configured-issuer-discovery-wait",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/discovery.go",
+        "preimage": "redact.URL(d.issuer), ctx.Err()",
+        "replacement": "d.issuer, ctx.Err()"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-discovery-log-discovered",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheCodeFlowsDiscoveryPrintsNoCredentialOfTheConfiguredIssuer/discovered",
+      "production": "oidc discovery.run, through CodeFlow.Run: the INFO line of a discovered issuer names the configured issuer only as redact.URL prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.discovery).run",
+      "capture": "oidc.configured-issuer-discovery-log/discovered",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/discovery.go",
+        "preimage": "\"issuer\", redact.URL(d.issuer)",
+        "replacement": "\"issuer\", d.issuer"
+      }
+    },
+    {
+      "id": "oidc-configured-issuer-discovery-log-failed",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheCodeFlowsDiscoveryPrintsNoCredentialOfTheConfiguredIssuer/failed",
+      "production": "oidc discovery.logFailure, through CodeFlow.Run: the ERROR line of a failed discovery names the configured issuer only as redact.URL prints it",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.discovery).logFailure",
+      "capture": "oidc.configured-issuer-discovery-log/failed",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/discovery.go",
+        "preimage": "\"issuer\", redact.URL(d.issuer)",
+        "replacement": "\"issuer\", d.issuer"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-miss",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/miss",
+      "production": "oidc Keys.settleMiss, through Keys.Key: a key id the cached set lacks, while the read that would settle it failed, is refused naming the key set's address (the issuer's jwks_uri) only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).settleMiss",
+      "capture": "oidc.key-set-url/miss",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "keyIDName(kid), redact.Field(k.jwksURI)",
+        "replacement": "keyIDName(kid), k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-waiting",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/waiting",
+      "production": "oidc Keys.wait, through Keys.Key: a caller that stops waiting on the key-set read is answered naming the key set's address only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).wait",
+      "capture": "oidc.key-set-url/waiting",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "\"%w: waiting on %s: %w\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "\"%w: waiting on %s: %w\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/unparsed",
+      "production": "oidc Keys.read, through Keys.Key: a key-set address that does not parse is named only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "\"%w: requesting %s: %w\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "\"%w: requesting %s: %w\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-unparsed-class",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/unparsed",
+      "production": "oidc Keys.read, through Keys.Key: the parse error of a key-set address that does not parse prints its class (redact.Cause), never net/http's text, which quotes the address whole",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/unparsed",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "redact.Cause(err, k.jwksURI)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-unanswered",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/unanswered",
+      "production": "oidc Keys.read, through Keys.Key: a key-set read with no answer names the address only as the rule reads it (redact.Field); net/http's own text after it is not this site's",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/unanswered",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "k.HTTPClient.Do(req)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%w: reading %s: %w\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "k.HTTPClient.Do(req)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%w: reading %s: %w\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/refused",
+      "production": "oidc Keys.read, through Keys.Key: a refused key-set read names the address only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/refused",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "\"%w: %s answered %s\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "\"%w: %s answered %s\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-too-large",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/too-large",
+      "production": "oidc Keys.read, through Keys.Key: a key-set answer too long to read names the address only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/too-large",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "redact.ReadAnswer(resp, maxKeySetBytes)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%w: reading %s: %w\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "redact.ReadAnswer(resp, maxKeySetBytes)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"%w: reading %s: %w\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
+      "id": "oidc-key-set-url-not-a-set",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestTheKeySetsAddressPrintsOnlyAsTheRuleReadsIt/not-a-set",
+      "production": "oidc Keys.read, through Keys.Key: a key-set answer that is no key set names the address only as the rule reads it (redact.Field)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.key-set-url/not-a-set",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "\"%w: parsing %s: %w\", ErrKeySet, redact.Field(k.jwksURI)",
+        "replacement": "\"%w: parsing %s: %w\", ErrKeySet, k.jwksURI"
+      }
+    },
+    {
       "id": "oidc-revoke-redirect",
       "requirement": "r3-each-site",
       "package": "./internal/oidc",
@@ -11378,6 +11917,121 @@
       "site": "oidc CodeFlow.Revoke's code",
       "source": "the spec's census",
       "guard": "oidc-revoke"
+    },
+    {
+      "site": "oidc codeflow.go discoverCodeFlow: the configured issuer in a discovery document's read error",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-discovery-unread"
+    },
+    {
+      "site": "oidc codeflow.go discoverCodeFlow: the configured issuer in the error of a document that offers no sign-in",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-discovery-no-sign-in"
+    },
+    {
+      "site": "oidc codeflow.go discoverCodeFlow: the configured issuer in the error of a document whose revocation_endpoint or token_endpoint_auth_methods_supported does not read",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-discovery-metadata"
+    },
+    {
+      "site": "oidc clientcheck.go CheckClient: the configured issuer in the error of a token request with no answer",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-client-check-unanswered"
+    },
+    {
+      "site": "oidc clientcheck.go CheckClient: the configured issuer in the error of a refused client",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-client-check-refused"
+    },
+    {
+      "site": "oidc clientcheck.go CheckClient: the configured issuer in the error of an issuer that could not answer",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-client-check-outage"
+    },
+    {
+      "site": "oidc clientcheck.go CheckClient: the configured issuer in the error of an answer that refuses nothing",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-client-check-no-refusal"
+    },
+    {
+      "site": "oidc codeflow.go Revoke: a revocation_endpoint that does not parse, quoted by net/http's request-build error",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-revoke-endpoint"
+    },
+    {
+      "site": "oidc verifier.go classify: the configured issuer in the refusal of a token from another issuer",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-configured-issuer-verifier"
+    },
+    {
+      "site": "oidc verifier.go classify, wrapped by codeflow.go session for Exchange and Refresh: an ID token's unverified iss claim",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-id-token-issuer-claim"
+    },
+    {
+      "site": "oidc verifier.go classify, wrapped by codeflow.go session for Exchange and Refresh: an ID token's unverified aud claim",
+      "source": "the second pull request's site census at 17c8ec356a8",
+      "guard": "oidc-id-token-audience-claim"
+    },
+    {
+      "site": "oidc discovery.go discover: the configured issuer in the error of a caller that stopped waiting on discovery",
+      "source": "the class search of the second pull request's oidc slice (the configured issuer)",
+      "guard": "oidc-configured-issuer-discovery-wait"
+    },
+    {
+      "site": "oidc discovery.go run: the configured issuer in the INFO line of a discovered issuer",
+      "source": "the class search of the second pull request's oidc slice (the configured issuer)",
+      "guard": "oidc-configured-issuer-discovery-log-discovered"
+    },
+    {
+      "site": "oidc discovery.go logFailure: the configured issuer in the ERROR line of a failed discovery",
+      "source": "the class search of the second pull request's oidc slice (the configured issuer)",
+      "guard": "oidc-configured-issuer-discovery-log-failed"
+    },
+    {
+      "site": "oidc keys.go NewKeys: the configured issuer in a discovery document's read error",
+      "source": "the class search of the second pull request's oidc slice (the configured issuer)",
+      "guard": "oidc-configured-issuer-keys-unread"
+    },
+    {
+      "site": "oidc keys.go NewKeys: the configured issuer in the error of a document that names no jwks_uri",
+      "source": "the class search of the second pull request's oidc slice (the configured issuer)",
+      "guard": "oidc-configured-issuer-keys-no-jwks-uri"
+    },
+    {
+      "site": "oidc keys.go settleMiss: the key set's address (the issuer's jwks_uri) in the refusal of a key id whose settling read failed",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-miss"
+    },
+    {
+      "site": "oidc keys.go wait: the key set's address in the error of a caller that stopped waiting on the read",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-waiting"
+    },
+    {
+      "site": "oidc keys.go read: a key-set address that does not parse, in the read's request-build error and in net/http's parse error under it",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-unparsed"
+    },
+    {
+      "site": "oidc keys.go read: the key set's address in the error of a read with no answer",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-unanswered"
+    },
+    {
+      "site": "oidc keys.go read: the key set's address in the error of a refused read",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-refused"
+    },
+    {
+      "site": "oidc keys.go read: the key set's address in the error of an answer too long to read",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-too-large"
+    },
+    {
+      "site": "oidc keys.go read: the key set's address in the error of an answer that is no key set",
+      "source": "the class search of the second pull request's oidc slice (the key set's address)",
+      "guard": "oidc-key-set-url-not-a-set"
     },
     {
       "site": "token-client.ts:661, a token type openid-client refuses, with the token the broker minted",
