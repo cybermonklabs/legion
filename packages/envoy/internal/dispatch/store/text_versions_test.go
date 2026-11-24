@@ -251,6 +251,7 @@ func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 // versions written straight into the table; one more comment version names an id that is no
 // uuid, which names no post and answers null.
 func TestTheKeywordRelationAnswersEachDeletedPostsDeletedAt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	seedCoreWithADefaultAssignee(t, store)
