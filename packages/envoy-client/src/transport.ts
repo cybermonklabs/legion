@@ -148,6 +148,14 @@ const RoleWireSchema = z.object({
   handed_back: z.boolean().optional(),
 });
 
+/** The listener's 409 to a soft claim of a role a live session holds: its words, the role and
+ *  the holder's id (`roleHeldAnswer`, packages/envoy/cmd/listener/role_grant_guard_test.go). */
+const RoleHeldWireSchema = z.object({
+  error: z.string(),
+  role: z.string(),
+  holder: z.string(),
+});
+
 /**
  * A listener's error body. Beyond the message and its `code`, a refusal that names a session
  * names that session's state and its last registration, and a role's 404 names its holder too:
@@ -825,11 +833,12 @@ export interface EnvoyApiErrorDetails {
 
 /**
  * The listener's refusal, or an answer something in its place wrote. Each of its words the
- * listener wrote (`code`, `reason`, `holder`, `expected`, `refused` and the body) is held as a
- * {@link RemoteText} that carries the credentials the request carried, so it prints only as the
- * rule reads it, one of those credentials echoed back redacted; code that branches on one compares
- * through the box (`reason.equals`, `refused[i].equals`), and a holder's id comes back only through
- * `holder.sendBack()`. The state, the last registration, the claim and the wait are closed values.
+ * listener wrote (`code`, `reason`, `holder`, `expected`, `refused`, a held role's role and holder,
+ * and the body) is held as a {@link RemoteText} that carries the credentials the request carried,
+ * so it prints only as the rule reads it, one of those credentials echoed back redacted; code that
+ * branches on one compares through the box (`reason.equals`, `refused[i].equals`), and a holder's
+ * id comes back only through `roleHeld.holder.sendBack()`. The state, the last registration, the
+ * claim and the wait are closed values.
  */
 export class EnvoyApiError extends Error {
   readonly name = "EnvoyApiError";
@@ -864,6 +873,13 @@ export class EnvoyApiError extends Error {
   /** The topics a registration's project refusal names (`topic_not_in_project`,
    *  `repository_not_in_project`), each as the registration carried it, when the body names any. */
   readonly refused: readonly RemoteText[] | undefined;
+  /**
+   * A soft claim's 409 that names the role and its live holder (`RoleHeldWireSchema`: the error,
+   * the role and the holder, each a string), the role and the holder held as boxes; undefined for
+   * any other body. setRole reads it as the claim not granted, the holder's id sent back through
+   * `sendBack`.
+   */
+  readonly roleHeld: { readonly role: RemoteText; readonly holder: RemoteText } | undefined;
 
   /**
    * `answer.responseBody` is the answer's body as it came. The message names the listener's error
@@ -882,13 +898,14 @@ export class EnvoyApiError extends Error {
     },
     shown: { readonly tokens?: Tokens; readonly redirectTo?: string | undefined } = {}
   ) {
-    let parsed: z.infer<typeof ErrorWireSchema> | undefined;
+    let body: unknown;
     try {
-      const result = ErrorWireSchema.safeParse(JSON.parse(answer.responseBody));
-      if (result.success) parsed = result.data;
+      body = JSON.parse(answer.responseBody);
     } catch {
       // A body that is not JSON is no error of the listener's: the message names it below.
     }
+    const result = ErrorWireSchema.safeParse(body);
+    const parsed = result.success ? result.data : undefined;
     const tokens = shown.tokens ?? "";
     const carried = typeof tokens === "string" ? [tokens] : [...tokens];
     const said = (field: string): string => redactRemoteText(field, carried);
@@ -904,12 +921,7 @@ export class EnvoyApiError extends Error {
         : `${said(parsed.error)}${parsed.reason === undefined ? "" : ` (reason: ${said(parsed.reason)})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.map(said).join(", ")})`}${refusalStateText(parsed, carried)}`
     );
     const held = (field: string): RemoteText => new RemoteText(field, carried);
-    this.details = {
-      method: answer.method,
-      url: answer.url,
-      status: answer.status,
-      responseBody: held(answer.responseBody),
-    };
+    this.details = { ...answer, responseBody: held(answer.responseBody) };
     this.expected = parsed?.expected?.map(held);
     this.code = parsed?.code === undefined ? undefined : held(parsed.code);
     this.reason = parsed?.reason === undefined ? undefined : held(parsed.reason);
@@ -919,6 +931,10 @@ export class EnvoyApiError extends Error {
     this.claimReleased = parsed?.claim_released;
     this.retryAfterSeconds = parsed?.retry_after_seconds;
     this.refused = parsed?.refused?.map(held);
+    const roleHeld = RoleHeldWireSchema.safeParse(body);
+    this.roleHeld = roleHeld.success
+      ? { role: held(roleHeld.data.role), holder: held(roleHeld.data.holder) }
+      : undefined;
   }
 }
 
@@ -1481,13 +1497,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         raw = await post("/v1/roles/set", body, { actingSession: input.sessionID });
       } catch (error) {
         // A soft claim refused by a live holder is an outcome, not a failure: the listener
-        // answers 409 with the holder's id. The id is the listener's word, kept only where a
-        // print of it shows it whole (`sendBack`), as Dispatch's client keeps a holder's
-        // (`keptSessionID`); a 409 that names no such holder, or whose body did not arrive or is
-        // not JSON, stays the refusal.
+        // answers 409 naming the role and the holder's id (`RoleHeldWireSchema`, `roleHeld`).
+        // The id is the listener's word, kept only where a print of it shows it whole
+        // (`sendBack`), as Dispatch's client keeps a holder's (`keptSessionID`); a 409 that names
+        // no role or no such holder, or whose body did not arrive or is not JSON, stays the
+        // refusal.
         const holder =
           error instanceof EnvoyApiError && error.details.status === 409
-            ? error.holder?.sendBack()
+            ? error.roleHeld?.holder.sendBack()
             : undefined;
         if (holder !== undefined) return { claimed: false, holder };
         throw error;

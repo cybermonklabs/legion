@@ -2431,6 +2431,18 @@
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
         "capture": "dispatch.page"
+      },
+      {
+        "row": "dispatch-client-refusal-data",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.data"
+      },
+      {
+        "row": "dispatch-client-duplicates-cli",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy-client/src/__tests__/remote-words.test.ts"],
+        "capture": "dispatch.duplicates"
       }
     ],
     "boundary_fields": {
@@ -9968,6 +9980,27 @@
       "file": "packages/pi-legion/src/holders-print.test.ts",
       "test": "box print test: pi-legion.NoticeAttempt prints no secret by any printer at any placement",
       "production": "packages/pi-legion/src/stall-evidence.ts#NoticeAttempt: every printer at every placement"
+    },
+    {
+      "id": "envoy-client-soft-claim-no-role",
+      "requirement": "r4-unchanged",
+      "file": "packages/envoy-client/src/__tests__/transport.test.ts",
+      "test": "EnvoyClient > a 409 naming a holder and no role stays a typed API error",
+      "production": "packages/envoy-client/src/transport.ts#createEnvoyClient setRole: a 409 is role-held only where it names the role and a holder (RoleHeldWireSchema)"
+    },
+    {
+      "id": "dispatch-client-refusal-data",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a Dispatch refusal whose candidates, current tokens and mismatches quote a URL prints none of them",
+      "production": "packages/envoy-client/src/dispatch-http.ts#DispatchServiceError: candidates, current and mismatches held, each string a box"
+    },
+    {
+      "id": "dispatch-client-duplicates-cli",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
+      "test": "a near copy whose candidates quote a URL reaches the dispatch command's text with no secret",
+      "production": "packages/envoy-client/src/dispatch-commands/issues.ts#issueCommand: a near copy's candidates printed through their boxes in the dispatch command's text"
     }
   ],
   "recall": [
@@ -11478,6 +11511,16 @@
       "site": "envoy-client errors.ts messageFor and dispatch-commands/failures.ts: Dispatch's code prefixed to the command's text as it came",
       "source": "the site census of the second pull request at 17c8ec356a, item 9",
       "guard": "dispatch-client-code-cli"
+    },
+    {
+      "site": "envoy-client dispatch-http.ts DispatchServiceError: candidates, current and mismatches kept as Dispatch's JSON, printed whole by JSON.stringify and inspection of the error",
+      "source": "the coordinator's review of the TypeScript slice of the second pull request",
+      "guard": "dispatch-client-refusal-data"
+    },
+    {
+      "site": "envoy-client dispatch-commands/issues.ts issueCommand: a near copy's candidates printed in the dispatch command's text and its details as Dispatch wrote them",
+      "source": "the coordinator's review of the TypeScript slice of the second pull request",
+      "guard": "dispatch-client-duplicates-cli"
     }
   ]
 }

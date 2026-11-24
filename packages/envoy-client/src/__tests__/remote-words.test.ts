@@ -156,11 +156,15 @@ beforeEach(() => {
   resetAdviceMemory();
 });
 
-/** What `dispatch priorities` prints when Dispatch answers every request with `answer`. */
-async function cliText(answer: () => Response): Promise<string> {
+/** What `dispatch <argv>` prints (`dispatch priorities` where it names none) when Dispatch
+ *  answers every request with `answer`. */
+async function cliText(
+  answer: () => Response,
+  argv: readonly string[] = ["priorities"]
+): Promise<string> {
   let stdout = "";
   await runDispatchCli(
-    ["priorities"],
+    argv,
     {
       HOME: stateDir,
       DISPATCH_HOST: "omp",
@@ -208,4 +212,46 @@ test("a page in Dispatch's place that quotes a URL reaches the dispatch command'
   );
   requireNone("dispatch.page/cli", text, PROBE);
   expect(text).toContain("HTTP_403");
+});
+
+/** A refusal's data whose every word quotes the probe: a near copy's candidates (the shape the
+ *  `dispatch issue` command lists), an edit's current tokens and its mismatches. */
+const refusalData = {
+  candidates: [
+    {
+      key: "DSP-9",
+      title: REMOTE_WORDS,
+      status: "in_progress",
+      snippet: REMOTE_WORDS,
+      shared_terms: 3,
+      href: "/issues/DSP-9",
+    },
+  ],
+  current: { document: REMOTE_WORDS, blocks: [{ id: "block-1", token: REMOTE_WORDS }] },
+  mismatches: [
+    { scope: "block", block_id: "block-1", expected: REMOTE_WORDS, current: REMOTE_WORDS },
+  ],
+};
+
+test("a Dispatch refusal whose candidates, current tokens and mismatches quote a URL prints none of them", async () => {
+  const client = new DispatchClient("http://dispatch.test", bearerCredential(TOKEN), (async () =>
+    Response.json(
+      { error: "the write was refused", code: "PRECONDITION_FAILED", ...refusalData },
+      { status: 409 }
+    )) as unknown as typeof fetch);
+  const error = await client.listProjects().catch((caught: unknown) => caught);
+  requireNoneIn("dispatch.data", error, PROBE);
+});
+
+test("a near copy whose candidates quote a URL reaches the dispatch command's text with no secret", async () => {
+  const text = await cliText(
+    () =>
+      Response.json(
+        { error: "possible duplicate of DSP-9", code: "POSSIBLE_DUPLICATE", ...refusalData },
+        { status: 409 }
+      ),
+    ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"]
+  );
+  requireNone("dispatch.duplicates/cli", text, PROBE);
+  expect(text).toContain("DSP-9 [in_progress]");
 });

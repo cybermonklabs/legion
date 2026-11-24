@@ -1189,6 +1189,19 @@ describe("EnvoyClient", () => {
     ).rejects.toBeInstanceOf(EnvoyApiError);
   });
 
+  // The listener's soft-claim 409 names the role and its holder (RoleHeldWireSchema); a 409 that
+  // names a holder and no role is no such answer, and stays the refusal, as it always did.
+  test("a 409 naming a holder and no role stays a typed API error", async () => {
+    const recorded = recordFetch([
+      Response.json({ error: "held by ses_live", holder: "ses_live" }, { status: 409 }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await expect(
+      client.setRole({ sessionID: "ses_x", role: "controller", soft: true })
+    ).rejects.toBeInstanceOf(EnvoyApiError);
+  });
+
   // The holder a 409 names is the listener's word, which setRole hands back as an id its callers
   // compare and print: kept only where a print of it shows it whole, as Dispatch's client keeps a
   // holder's (keptSessionID). One that quotes a credential's URL, or echoes the bearer the claim

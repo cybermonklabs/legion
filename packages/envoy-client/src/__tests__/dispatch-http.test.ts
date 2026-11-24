@@ -9,7 +9,7 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -608,7 +608,7 @@ describe("DispatchClient", () => {
         code: remoteText("TARGET_AMBIGUOUS"),
         status: 409,
         message: "quote is ambiguous",
-        candidates,
+        candidates: remoteTexts(candidates),
       })
     );
   });
@@ -654,8 +654,8 @@ describe("DispatchClient", () => {
         name: "DispatchServiceError",
         code: remoteText("PRECONDITION_FAILED"),
         status: 409,
-        current,
-        mismatches,
+        current: remoteTexts(current),
+        mismatches: remoteTexts(mismatches),
       })
     );
   });

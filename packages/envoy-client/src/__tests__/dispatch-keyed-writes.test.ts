@@ -14,7 +14,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
 } from "@legion/contracts";
-import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -408,7 +408,7 @@ describe("DispatchClient's writes", () => {
         code: remoteText("TARGET_AMBIGUOUS"),
         status: 409,
         message: "quote is ambiguous",
-        candidates,
+        candidates: remoteTexts(candidates),
       })
     );
   });

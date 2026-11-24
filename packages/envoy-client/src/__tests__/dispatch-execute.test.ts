@@ -26,7 +26,7 @@ import {
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
-import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { bearerCredential } from "../bearer";
@@ -2809,8 +2809,8 @@ describe("executeDispatchTool", () => {
         code: remoteText("PRECONDITION_FAILED"),
         status: 409,
         message: "PRECONDITION_FAILED: stale",
-        current,
-        mismatches,
+        current: remoteTexts(current),
+        mismatches: remoteTexts(mismatches),
       })
     );
   });
@@ -3839,7 +3839,7 @@ describe("executeDispatchTool", () => {
         "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
         "If none is, run dispatch issue again with --force, and write in the new issue's spec why it is not each issue named here.",
       ].join("\n"),
-      details: { duplicates: candidates },
+      details: { duplicates: remoteTexts(candidates) },
       refused: true,
     });
   });
@@ -11531,7 +11531,7 @@ describe("executeDispatchTool", () => {
         code: remoteText("PRECONDITION_FAILED"),
         status: 409,
         message: error,
-        current: { document: "sha256:live-spec", blocks: [], version: 7 },
+        current: remoteTexts({ document: "sha256:live-spec", blocks: [], version: 7 }),
       })
     );
     expect(uploads).toEqual([expect.stringMatching(/\/api\/v1\/issues\/DSP-42\/artifacts$/)]);

@@ -101,6 +101,7 @@ const listenerRefusal = {
   expected: [REMOTE_WORDS],
   refused: [REMOTE_WORDS],
   holder: REMOTE_WORDS,
+  role: REMOTE_WORDS,
   holder_state: "unresponsive",
 };
 const envoyRefusal = new EnvoyApiError({
@@ -126,6 +127,7 @@ class EnvoyApiErrorTwin extends Error {
   readonly holder = REMOTE_WORDS;
   readonly sessionState = "unresponsive";
   readonly refused = [REMOTE_WORDS];
+  readonly roleHeld = { role: REMOTE_WORDS, holder: REMOTE_WORDS };
   constructor() {
     super(`${REMOTE_WORDS} (reason: ${REMOTE_WORDS}) Holder ${REMOTE_WORDS} is unresponsive.`);
   }
@@ -139,8 +141,14 @@ async function dispatchRefusal(answer: () => Response): Promise<unknown> {
   return client.listProjects().catch((caught: unknown) => caught);
 }
 
+/** A refusal's data whose every word quotes the probe: candidates, current tokens, mismatches. */
+const refusalData = {
+  candidates: [{ from: 1, to: 2, context: REMOTE_WORDS }],
+  current: { document: REMOTE_WORDS, blocks: [{ id: "block-1", token: REMOTE_WORDS }] },
+  mismatches: [{ scope: "block", block_id: "block-1", expected: REMOTE_WORDS }],
+};
 const serviceRefusal = await dispatchRefusal(() =>
-  Response.json({ error: REMOTE_WORDS, code: REMOTE_WORDS }, { status: 403 })
+  Response.json({ error: REMOTE_WORDS, code: REMOTE_WORDS, ...refusalData }, { status: 403 })
 );
 const gatewayRefusal = await dispatchRefusal(
   () =>
@@ -169,6 +177,14 @@ class DispatchGatewayErrorTwin extends DispatchServiceErrorTwin {
   readonly advice = "asking again will not change the answer";
   readonly transient = false;
   readonly mayHaveReachedDispatch = false;
+}
+
+/** `DispatchServiceError`'s twin with its data: the candidates, current tokens and mismatches as
+ *  they came. */
+class DispatchRefusalTwin extends DispatchServiceErrorTwin {
+  readonly candidates = refusalData.candidates;
+  readonly current = refusalData.current;
+  readonly mismatches = refusalData.mismatches;
 }
 
 const holders: Holder[] = [
@@ -208,7 +224,7 @@ const holders: Holder[] = [
     name: "envoy-client.DispatchServiceError",
     kind: "error",
     boxed: serviceRefusal,
-    same: new DispatchServiceErrorTwin(),
+    same: new DispatchRefusalTwin(),
   },
   {
     name: "envoy-client.DispatchGatewayError",

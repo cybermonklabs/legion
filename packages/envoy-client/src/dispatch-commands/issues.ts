@@ -10,6 +10,7 @@ import type {
   IssueRouteStatus,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import { RemoteText } from "@legion/contracts/remote-text";
 import { actorText } from "../actor-text";
 import {
   type DispatchClient,
@@ -17,6 +18,7 @@ import {
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
+  type Held,
 } from "../dispatch-http";
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
@@ -93,22 +95,24 @@ interface DuplicateCandidateShape {
   readonly href?: unknown;
 }
 
-function isDuplicateCandidate(value: unknown): value is DuplicateCandidate {
+/** Whether `value` is a near copy's candidate as the refusal holds it: each of its words a box. */
+function isDuplicateCandidate(value: unknown): value is Held<DuplicateCandidate> {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as DuplicateCandidateShape;
   return (
-    typeof candidate.key === "string" &&
-    typeof candidate.title === "string" &&
-    typeof candidate.status === "string" &&
-    typeof candidate.snippet === "string" &&
+    candidate.key instanceof RemoteText &&
+    candidate.title instanceof RemoteText &&
+    candidate.status instanceof RemoteText &&
+    candidate.snippet instanceof RemoteText &&
     typeof candidate.shared_terms === "number" &&
-    typeof candidate.href === "string"
+    candidate.href instanceof RemoteText
   );
 }
 
-function duplicateCandidates(error: DispatchServiceError): DuplicateCandidate[] {
-  if (error.candidates === undefined || !error.candidates.every(isDuplicateCandidate)) throw error;
-  return error.candidates;
+function duplicateCandidates(error: DispatchServiceError): readonly Held<DuplicateCandidate>[] {
+  const candidates: readonly unknown[] | undefined = error.candidates;
+  if (candidates === undefined || !candidates.every(isDuplicateCandidate)) throw error;
+  return candidates;
 }
 /** A Dispatch server from before the repository fields that takes a write naming `repo` answers
  *  without the field: it did not save the repository, and that must not pass as a success. The
@@ -227,7 +231,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       text: [
         `Not created: "${title}" is a near copy of an open issue.`,
         ...candidates.map((candidate) => {
-          const href = linkFor(candidate.href, linkBase);
+          // Each word is Dispatch's, so each prints as the rule reads it (`Held`).
+          const href = linkFor(String(candidate.href), linkBase);
           return `${candidate.key} [${candidate.status}] ${candidate.title} → ${href}`;
         }),
         "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",

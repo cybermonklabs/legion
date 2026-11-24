@@ -124,6 +124,34 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/** `T` with every string in it, at any depth, held as a {@link RemoteText}: data another party
+ *  wrote, which prints only as the rule reads it and is read through the box. */
+export type Held<T> = T extends string
+  ? RemoteText
+  : T extends readonly (infer E)[]
+    ? readonly Held<E>[]
+    : T extends object
+      ? { readonly [K in keyof T]: Held<T[K]> }
+      : T;
+
+/**
+ * `value`, a refusal's data as Dispatch's JSON parsed, with each string in it held as a
+ * {@link RemoteText} carrying `carried`, the tokens the request carried. A member is kept under a
+ * name only where a print of that name shows it whole (`sendBack`), so a name Dispatch wrote prints
+ * no more of its words than the rule does. Numbers, booleans and null are closed values.
+ */
+function heldData(value: unknown, carried: readonly string[]): unknown {
+  if (typeof value === "string") return new RemoteText(value, carried);
+  if (Array.isArray(value)) return value.map((item) => heldData(item, carried));
+  if (typeof value !== "object" || value === null) return value;
+  const kept: Record<string, unknown> = {};
+  for (const [name, item] of Object.entries(value)) {
+    const shown = new RemoteText(name, carried).sendBack();
+    if (shown !== undefined) kept[shown] = heldData(item, carried);
+  }
+  return kept;
+}
+
 /**
  * A refusal Dispatch decided: its status, its `code` and its words as the message. The code is
  * Dispatch's word, held as a {@link RemoteText} (with the credentials the request carried, where
@@ -131,7 +159,8 @@ export interface ArtifactFileVersion {
  * through the box (`code.equals`). The message is the rule's reading of Dispatch's words
  * (`#payloadOf`), or the client's own sentence for a refusal it makes itself, whose code it names
  * as a string. `candidates`, `current` and `mismatches` are the refusal's data, which a caller reads
- * to act on it.
+ * to act on it, each string in them held the same way (`Held`), since an error printed whole prints
+ * them and the `dispatch issue` command lists a near copy's candidates.
  */
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
@@ -147,9 +176,9 @@ export class DispatchServiceError extends Error {
     code: RemoteText | string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly candidates?: Held<NonNullable<DispatchServiceErrorShape["candidates"]>>,
+    readonly current?: Held<NonNullable<DispatchServiceErrorShape["current"]>>,
+    readonly mismatches?: Held<NonNullable<DispatchServiceErrorShape["mismatches"]>>
   ) {
     super(message);
     this.code = code instanceof RemoteText ? code : new RemoteText(code);
@@ -2677,9 +2706,11 @@ export class DispatchClient {
           ),
           response.status,
           redactRemoteText(error.error, carried),
-          error.candidates,
-          error.current,
-          error.mismatches
+          // `asErrorShape` types Dispatch's JSON as its shape; `heldData` keeps that shape, each
+          // string a box, so the shape's held type is what it answers.
+          heldData(error.candidates, carried) as DispatchServiceError["candidates"],
+          heldData(error.current, carried) as DispatchServiceError["current"],
+          heldData(error.mismatches, carried) as DispatchServiceError["mismatches"]
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

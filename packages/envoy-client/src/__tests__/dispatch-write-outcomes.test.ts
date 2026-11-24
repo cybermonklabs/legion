@@ -34,7 +34,7 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
-import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import type { RequestCredential } from "../bearer";
 import {
   DispatchClient,
@@ -1131,14 +1131,14 @@ test("after a gateway page, the callers' stored refusals keep what their callers
     kind("502 page"),
     kind("409 handler POSSIBLE_DUPLICATE fresh exact echo for the issue candidate list"),
   ]);
-  expect((duplicate.error as DispatchServiceError).candidates).toEqual(duplicates);
+  expect((duplicate.error as DispatchServiceError).candidates).toEqual(remoteTexts(duplicates));
   const ambiguous = await drive([
     kind("502 page"),
     kind("409 handler TARGET_AMBIGUOUS fresh exact echo for docEdit candidates"),
   ]);
-  expect((ambiguous.error as DispatchServiceError).candidates).toEqual([
-    { from: 1, to: 2, context: "same" },
-  ]);
+  expect((ambiguous.error as DispatchServiceError).candidates).toEqual(
+    remoteTexts([{ from: 1, to: 2, context: "same" }])
+  );
   const reply = await drive([
     kind("502 page"),
     kind("400 handler CAP_EXCEEDED fresh exact echo for the typed-input fallback reply"),
