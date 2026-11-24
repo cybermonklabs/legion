@@ -100,20 +100,7 @@ func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
-	key := r.PathValue("key")
-	viewer := refs.VisibilityArg(who)
-	var hidden bool
-	err := s.deps.Store.Pool.QueryRow(r.Context(), `select not `+access.ProjectClause("project_key", "$2")+
-		` from issues where key = $1`, key, viewer).Scan(&hidden)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.writeHandlerError(w, err)
-		return
-	}
-	s.writeSubscribers(w, r, who, issueSubscriberBase(key), hidden)
+	s.writeSubscribers(w, r, issueSubscriberBase(r.PathValue("key")))
 }
 
 // otherIssueBase is the subject root of an issue no key names ("-" is no key's spelling): a topic
@@ -197,20 +184,6 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 		}
 		result = append(result, entry)
 	}
-	// A reader that sees every object passes SessionClause on every id, so the read would cut
-	// nothing (R9).
-	if !seesEveryObject(who) {
-		ids := make([]string, len(result))
-		for index, entry := range result {
-			ids[index] = entry.SessionID
-		}
-		seen, err := s.seenSessions(r.Context(), refs.VisibilityArg(who), ids)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
-	}
 	sort.SliceStable(result, func(left, right int) bool {
 		if result[left].LastSeen != result[right].LastSeen {
 			return result[left].LastSeen > result[right].LastSeen
@@ -274,6 +247,9 @@ func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
 	if _, _, err := issueStatus(r.Context(), who, key, pooledOwnerRead(s.deps.Store.Pool)); err != nil {
 		s.writeHandlerError(w, err)

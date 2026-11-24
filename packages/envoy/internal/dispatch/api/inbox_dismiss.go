@@ -571,7 +571,6 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)

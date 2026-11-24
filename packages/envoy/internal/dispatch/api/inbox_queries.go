@@ -28,9 +28,9 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Act
 	rows, err := q.Query(ctx, `
 		select payload->>'id', payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = any($1::text[]) and `+eventReadableSQL("events", "$2")+`
+		where type = 'ask.edited' and payload->>'id' = any($1::text[])
 		order by payload->>'id', id
-	`, askIDs, refs.VisibilityArg(who))
+	`, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask edits: %w", err)
 	}

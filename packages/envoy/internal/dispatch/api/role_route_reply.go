@@ -48,7 +48,6 @@ func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, q
 	if err != nil {
 		return roleHolderReply{}, fmt.Errorf("read the route and the attempt that the reply to %s answers: %w", id, err)
 	}
-	seen, err := seenReferences(ctx, s.deps.Store.Pool, who, named)
 	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
 }
 

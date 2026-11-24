@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type agentResponse struct {
@@ -162,8 +161,7 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
 // pick (dispatch://INFRA-392).
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
-	reader, ok := s.readerOf(w, r)
-	if !ok {
+	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	if s.deps.Envoy == nil {
@@ -208,7 +206,6 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		return sessions[left].SessionID < sessions[right].SessionID
 	})
-	viewer := refs.VisibilityArg(reader)
 	sessionIDs := make([]string, len(sessions))
 	for index, session := range sessions {
 		sessionIDs[index] = session.SessionID

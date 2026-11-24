@@ -164,7 +164,6 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	var err error
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
-		hidden, hiddenErr := s.roleHolderHidden(ctx, route.ID, target.SessionID)
 	} else {
 		// A session route was held to its author's reader when it was written, so a resolve with
 		// no reader in ctx - the delivery sweep's resume of a message attempt, a mention send

@@ -228,7 +228,6 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 		if err != nil {
 			return err
 		}
-		ctx = withReader(ctx, author)
 		_, held, err := s.deliverResolvedCommentMention(ctx, comment, created,
 			ResolvedMention{Target: owed.target, Delivery: owed.delivery}, comment.Author,
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())

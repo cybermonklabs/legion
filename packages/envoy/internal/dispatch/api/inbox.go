@@ -91,6 +91,9 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	project := strings.TrimSpace(r.URL.Query().Get("project"))
 	assigneeMode, assigneeLogin, err := s.inboxAssigneeFilter(r.Context(), r.URL.Query().Get("assignee"), caller)
 	if err != nil {
@@ -162,14 +165,14 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		askPointers[index] = &asks[index].Ask
 		askIDs[index] = asks[index].ID
 	}
-	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, caller, askPointers); err != nil {
+	if err := loadAskDetails(r.Context(), s.deps.Store.Pool, who, askPointers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	threads, err := s.loadAskThreads(r.Context(), caller, askIDs, reader)
+	threads, err := s.loadAskThreads(r.Context(), who, askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

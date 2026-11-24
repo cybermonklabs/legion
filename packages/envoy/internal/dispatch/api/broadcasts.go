@@ -635,7 +635,6 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	who, ok := s.readerOf(w, r)
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select b.id::text, b.author, b.body, b.delivery, b.created_at,
 		       count(distinct m.id),

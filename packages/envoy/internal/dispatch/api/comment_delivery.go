@@ -80,7 +80,7 @@ func (s *server) resolveMentionTarget(
 		lookup, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sessionID, title, resolveError, hidden := s.resolveDeliveryTarget(lookup, route, delivery)
+	sessionID, title, resolveError, _ := s.resolveDeliveryTarget(lookup, route, delivery)
 	if sessionID == "" && resolveError != "" && ctx.Err() == nil &&
 		errors.Is(lookup.Err(), context.DeadlineExceeded) {
 		item.unanswered = true
@@ -1242,7 +1242,9 @@ type commentReplyPlan struct {
 // every row lock: the thread climb, the block the reply names with the index its comment owes,
 // the reply's own index and references, and what it is in the node and tuple store, for an id
 // and a created_at reserved here. Nothing it reads is read again below, and nothing it plans is
-// written here. who is the session replying, which a block it may not see is refused to.
+// written here. actor is the session replying, which the reply's node records as its author, and
+// reader that writer as a read binds it (readerOf): a block reader may not see is refused
+// (planReplyBlock).
 //
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
 // document its `#id`s resolve against, named by the fields that row will hold (planPendingItem,
@@ -1251,7 +1253,7 @@ type commentReplyPlan struct {
 // read that gives a stored reply its block would find no row yet, and addressing a document's
 // comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock *string,
+	ctx context.Context, tx pgx.Tx, actor, reader model.Actor, comment model.Comment, body string, replyToBlock *string,
 ) (commentReplyPlan, error) {
 	var plan commentReplyPlan
 	var err error
@@ -1261,7 +1263,7 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	if replyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
+		repair, block, err := s.planReplyBlock(ctx, tx, reader, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1278,10 +1280,10 @@ func (s *server) planCommentReply(
 	}
 	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
 	// comment it answers belongs to.
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID); err != nil {
+	if plan.stored, err = commentStored(ctx, tx, plan.id, actor, plan.createdAt, nil, comment.ArtifactID); err != nil {
 		return plan, err
 	}
-	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
+	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, reader, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.createdAt, true)
 	return plan, err
@@ -1323,6 +1325,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The writer's reader, resolved before the transaction holds a connection
 	// (lockedCommentForDelivery), and read by the role read below.
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
@@ -1373,7 +1378,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// route moves; every statement it plans is written with the reply's own writes.
 	var plan commentReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock); err != nil {
+		if plan, err = s.planCommentReply(r.Context(), tx, actor, who, comment, *input.Body, input.ReplyToBlock); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1458,7 +1463,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
+		if err := hydrateCommentReplyBlocks(r.Context(), tx, who, &reply); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

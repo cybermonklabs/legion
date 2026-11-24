@@ -391,7 +391,7 @@ func nameAgentSessions(ctx context.Context, tx pgx.Tx, who model.Actor, rows []m
 	if len(sessions) == 0 {
 		return nil
 	}
-	titles, err := delivery.ResolveSessionTitles(ctx, tx, sessions, readableEvents(who))
+	titles, err := delivery.ResolveSessionTitles(ctx, tx, sessions)
 	if err != nil {
 		return fmt.Errorf("name my agent threads' sessions: %w", err)
 	}

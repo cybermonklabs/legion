@@ -71,8 +71,11 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reader, ok := s.readerAs(w, r, actor)
+	if !ok {
+		return
+	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -277,7 +280,7 @@ func (s *server) createStoredMessage(
 	input createMessageInput,
 	delivery string,
 	connectedOnly bool,
-	actor model.Actor,
+	actor, reader model.Actor,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -303,7 +306,7 @@ func (s *server) createStoredMessage(
 	var block *namedBlock
 	var parentRepair refs.ItemRepair
 	if input.InReplyToBlock != nil {
-		if parentRepair, block, err = s.planReplyBlock(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if parentRepair, block, err = s.planReplyBlock(ctx, tx, reader, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -454,14 +457,6 @@ func (s *server) createStoredMessage(
 	}
 	s.publish(ctx, event)
 	s.storeDisplayTrees(ctx, message.ID, input.Body)
-	if message.Target != nil && hiddenTarget != "" {
-		deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, reader, []string{message.ID})
-		if err != nil {
-			return model.Message{}, nil, err
-		}
-		message.Deliveries = deliveries[message.ID]
-		return message, advice, nil
-	}
 	if message.Target != nil {
 		// The send keeps the request's values (its transaction tracking) and drops its
 		// cancellation: a connection cut after the commit - a closed tab, a front door's pod
@@ -653,7 +648,6 @@ func loadMessageReplyParent(
 	var parent messageReplyParent
 	var parentBody string
 	var err error
-	viewer := refs.VisibilityArg(who)
 	if issueKey != nil {
 		err = tx.QueryRow(ctx, `
 			select body, target, in_reply_to::text from messages where id = $1 and issue_key = $2
@@ -720,7 +714,7 @@ func (t messageReplyThread) payload(
 // reply naming a block previews that block's text, as its write did, read from the message's
 // ReplyBlock, which the caller hydrates.
 func loadMessageReplyThread(ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message) (messageReplyThread, error) {
-	parent, err := loadMessageReplyParent(ctx, tx, who, message.IssueKey, message.Target, message.InReplyTo)
+	parent, err := loadMessageReplyParent(ctx, tx, message.IssueKey, message.Target, message.InReplyTo)
 	if err != nil {
 		return messageReplyThread{}, err
 	}
@@ -1032,6 +1026,9 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	sessionID := strings.TrimSpace(r.PathValue("session_id"))
 	if sessionID == "" {
 		writeError(w, "MESSAGE_INPUT", http.StatusBadRequest, "session id is required")
@@ -1115,7 +1112,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), actor, roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
