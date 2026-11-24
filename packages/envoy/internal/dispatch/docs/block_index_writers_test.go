@@ -187,7 +187,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // A document of more blocks than a write indexes in its own request writes no block row at all,
 // as it does today, and the block-index reconciliation then writes all three for it - proven by
 // killing the tick's transaction and finding none of them. The tick takes the document's owner
-// lock and then its owed row before it writes either, in that order. The item block pass writes
+// row and then its owed row before it writes either, in that order. The item block pass writes
 // no row of the store. The rebuild writes refs and marks work owed and writes no row of
 // document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {

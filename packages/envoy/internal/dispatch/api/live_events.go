@@ -310,12 +310,12 @@ func (s *server) resolveEventReplay(ctx context.Context, since *int64, published
 	return s.replayThrough(ctx, everyReader, resume, published, true, behind)
 }
 
-// replayThrough is the bounded replay of (from, published]: every event there that reader may read
-// (eventReadableSQL), each encoded once, when the events there are at most maxLiveReplay and the
-// encodings replayed total at most maxLiveReplayBytes, and complete says so in the events_start.
-// Past either bound nothing is replayed and the subscription starts at published, not complete, so
-// its page refreshes what it shows. behind is how many events stand there, counted up to
-// maxLiveReplay+1, or below zero when the caller has not counted them, and it counts them itself.
+// replayThrough is the bounded replay of (from, published]: every event there, each encoded once,
+// when they are at most maxLiveReplay of them and their encodings total at most maxLiveReplayBytes,
+// and complete says so in the events_start. Past either bound nothing is replayed and the
+// subscription starts at published, not complete, so its page refreshes what it shows. behind is
+// how many events stand there, counted up to maxLiveReplay+1, or below zero when the caller has not
+// counted them, and it counts them itself.
 func (s *server) replayThrough(ctx context.Context, reader model.Actor, from, published int64, complete bool, behind int) (eventReplay, error) {
 	if behind < 0 {
 		if err := s.deps.Store.Pool.QueryRow(ctx, `

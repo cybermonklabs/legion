@@ -149,8 +149,7 @@ func (s *server) recordHandoff(ctx context.Context, who model.Actor, issueKey, p
 }
 
 // listHandoffs is every handoff of one issue without its body, newest first: GET
-// /api/v1/issues/{key}/handoffs. A closed issue's handoffs read as an open one's, and an issue of
-// a project the caller does not see holds none, as a key no issue carries holds none.
+// /api/v1/issues/{key}/handoffs. A closed issue's handoffs read as an open one's.
 func (s *server) listHandoffs(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

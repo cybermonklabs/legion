@@ -770,9 +770,8 @@ func (t messageReplyThread) payload(
 }
 
 // loadMessageReplyThread derives that for a stored message, for a caller that did not derive
-// it while writing the message, with the parent read as who reads it (loadMessageReplyParent). A
-// reply naming a block previews that block's text, as its write did, read from the message's
-// ReplyBlock, which the caller hydrates.
+// it while writing the message. A reply naming a block previews that block's text, as its write
+// did, read from the message's ReplyBlock, which the caller hydrates.
 func loadMessageReplyThread(ctx context.Context, tx pgx.Tx, who model.Actor, message model.Message) (messageReplyThread, error) {
 	parent, err := loadMessageReplyParent(ctx, tx, message.IssueKey, message.Target, message.InReplyTo)
 	if err != nil {
@@ -1029,12 +1028,11 @@ func leaveOutHiddenMessageSessions(ctx context.Context, q queryer, who model.Act
 	return nil
 }
 
-// listIssueRootMessagesQuery is every root message of one issue, oldest first, when the viewer
-// bound at $2 sees the issue's project. It is named rather than written into its handler so that
-// the plan test and the equality test read the statement the route runs, not a copy of it:
-// messages_issue_roots (20261101182433) is keyed on exactly this predicate and this order, and a
-// test that held a copy would keep passing after an edit that took the statement off the index.
-// The project's test reads the issue once, by the key the statement is keyed on.
+// listIssueRootMessagesQuery is every root message of one issue, oldest first. It is named
+// rather than written into its handler so that the plan test and the equality test read the
+// statement the route runs, not a copy of it: messages_issue_roots (20261101182433) is keyed on
+// exactly this predicate and this order, and a test that held a copy would keep passing after
+// an edit that took the statement off the index.
 var listIssueRootMessagesQuery = `
 		select ` + messageColumns + `
 		from messages

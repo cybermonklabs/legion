@@ -353,24 +353,6 @@ func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor,
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
 // runs and unowned P0 list, which the Pipeline page's lead times do not read.
-//
-// The rows are the reader's (GH-1, check c-delivery-by-issue). A pull request is shown when the
-// reader sees its issue (access.ProjectClause, read beside each issue's facts by
-// deliveryIssueFacts); one that names no issue, or a key no issue row holds, which reads as no
-// issue, is shown to an open viewer alone, and only when its repository is not hidden from that
-// viewer (repositoriesHidden). A run is shown with only the pull requests shown: to an
-// open viewer unless it shipped pull requests and none of them is shown, and to any other viewer
-// only when it shipped one that is shown, so a run that shipped none, a failed run among them, is
-// shown to an open viewer alone, and only when the deploy repository is not hidden from that
-// viewer, as a pull request that names no issue is (cutTo, runShown). Which
-// pull requests a run shipped is known only over every one it could have shipped, so the pull
-// requests are read whole, the window's and those still waiting at `from` (a run inside the window
-// can first ship one merged before it), and the rule is applied after that and before anything is
-// counted: every count, facet, measure and title is derived from what is left. A session group is
-// answered only when every session it holds passes access.SessionClause (groupsShown), so the
-// Parent agents are computed from the groups shown. The unfetchable count and the unowned P0 list
-// take the same rules in their own statements. A reader that sees every object (seesEveryObject)
-// is shown everything, and nothing is read for the rule (R9).
 func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}

@@ -18,8 +18,6 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
-// loadInboxAskEdits reads each listed ask's rewordings from its ask.edited events, oldest first,
-// of the events who may read (eventReadableSQL).
 func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {

@@ -1113,14 +1113,12 @@ func leaveOutHiddenSummaryRouteHolders(ctx context.Context, q queryer, who model
 	return leaveOutHiddenRouteHolders(ctx, q, who, routes)
 }
 
-// issueRowStatement reads one issue with its progress, $1 its key and $2 the reader's viewer,
-// whose project clause leaves out an issue of a project the viewer does not see; scanIssueRow
-// decodes it. It is the issue read's first queued statement (getIssue), whose callback records a
-// missing issue for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch
-// found. The text is built once, at start, rather than on every read: its component and
-// repository terms are package-level values of their own, so the concatenation is work a request
-// would repeat for a statement that never differs, and pgx caches a prepared plan per statement
-// text.
+// issueRowStatement reads one issue with its progress, $1 its key; scanIssueRow decodes it. It
+// is the issue read's first queued statement (getIssue), whose callback records a missing issue
+// for the read to answer as this row's pgx.ErrNoRows whatever the rest of the batch found. The
+// text is built once, at start, rather than on every read: its component and repository terms
+// are package-level values of their own, so the concatenation is work a request would repeat
+// for a statement that never differs, and pgx caches a prepared plan per statement text.
 var issueRowStatement = `
 		with recursive subjects as (select $1::text as key),
 		` + issueAdvancesTerms + `,
@@ -1232,12 +1230,10 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model
 	return issue, progress, nil
 }
 
-// issueChildrenStatement reads the issue's direct children, $1 its key and $2 the reader's viewer,
-// each with a rollup over its whole subtree (the child itself included, every status): done/total
-// counts and the newest updated_at. A child is of its parent's project, so the project clause
-// holds every child of an issue the viewer does not see out. The recursive walk uses `union` with
-// parentDepthCap, so it terminates even if a raced reparent ever commits a cycle.
-// scanIssueChildren decodes its rows.
+// issueChildrenStatement reads the issue's direct children, $1 its key, each with a rollup over
+// its whole subtree (the child itself included, every status): done/total counts and the newest
+// updated_at. The recursive walk uses `union` with parentDepthCap, so it terminates even if a
+// raced reparent ever commits a cycle. scanIssueChildren decodes its rows.
 //
 // The walk reads each subtree issue's row already, so it carries that row's status and
 // updated_at and the rollup counts them where it stands. Joining the walk's keys back to issues
@@ -1254,9 +1250,8 @@ func (s *server) loadIssueWithProgress(ctx context.Context, q queryer, who model
 // the same way and the listing counts its whole page's in one grouped read instead
 // (issueSummaryJoins). Written as that grouped read, over the direct children the rollup
 // already names, the planner dropped the child keys from the condition and read issue_links by
-// kind alone. A blocker is another issue, of any project, so a child names one only where the
-// reader sees it, as a listing row does (issueSummaryJoins). The claim is two columns of the
-// child's own row, which this statement already reads, so it costs no join at all.
+// kind alone. The claim is two columns of the child's own row, which this statement already
+// reads, so it costs no join at all.
 var issueChildrenStatement = `
 		with recursive subtree as (
 			select key as root, key, 1 as depth, status, updated_at from issues where parent_key = $1

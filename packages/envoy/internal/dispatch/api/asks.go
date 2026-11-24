@@ -999,8 +999,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadAskEdits reads every rewording of an ask back from its ask.edited events,
-// oldest first, so a reader can see each version the question went through, of the events who may
-// read (eventReadableSQL).
+// oldest first, so a reader can see each version the question went through.
 func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, askID string) ([]model.AskEdit, error) {
 	rows, err := q.Query(ctx, `
 		select payload->'previous', payload->'edited_by', created_at
@@ -1036,11 +1035,10 @@ func (s *server) loadAskEdits(ctx context.Context, q queryer, who model.Actor, a
 }
 
 // answerEventsQuery selects the ask.answered events (aliased e) that record a person's own answer,
-// one row per answer, of the events the viewer bound at viewerParam may read (eventReadableSQL). A
-// document settlement can restore an answered block and write the same answer event under its
-// editor, so only an event whose actor is the user the answer names counts, and the repeats of
-// one answer (its ask and its `at`) collapse to the earliest event. columns is the select list;
-// filter narrows the events further. loadAskAnswers and listMyAnswers share it.
+// one row per answer. A document settlement can restore an answered block and write the same
+// answer event under its editor, so only an event whose actor is the user the answer names counts,
+// and the repeats of one answer (its ask and its `at`) collapse to the earliest event. columns is
+// the select list; filter narrows the events further. loadAskAnswers and listMyAnswers share it.
 func answerEventsQuery(columns, filter, viewerParam string) string {
 	return `select distinct on (e.payload->>'id', e.payload->'answer'->>'at') ` + columns + `
 		from events e
@@ -1050,9 +1048,9 @@ func answerEventsQuery(columns, filter, viewerParam string) string {
 }
 
 // loadAskAnswersByAsk reads every real answer to each listed ask back from its ask.answered
-// events (answerEventsQuery), oldest first, keyed by ask id, of the events who may read; an ask
-// nobody answered gets an empty slice. One query for the whole list: the ask read batches one
-// ask, an issue's ask list asked for a thread a page of them.
+// events (answerEventsQuery), oldest first, keyed by ask id; an ask nobody answered gets an
+// empty slice. One query for the whole list: the ask read batches one ask, an issue's ask list
+// asked for a thread a page of them.
 func (s *server) loadAskAnswersByAsk(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskAnswer, error) {
 	answers := make(map[string][]model.AskAnswer, len(askIDs))
 	for _, askID := range askIDs {
@@ -1241,10 +1239,7 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 // refresh - holds its owner's lock first, so two transitions of the same ask, and a reply against
 // a transition, run one after the other, and the ask read here holds still until this transaction
 // ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
-// server serves anything.) The writer's 200 answers the ask this read returns, so the documents
-// beside it are joined as who, the writer, sees them (askRowFromSeenBy): a document of a project
-// the writer does not see is none. The ask.* event payload built from it is joined again for each
-// of its readers (attachAskDocumentArtifacts), so what this read joins reaches no other reader.
+// server serves anything.)
 func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
@@ -1260,9 +1255,6 @@ func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, who model.
 	return ask, nil
 }
 
-// attachOpenedEventIDs stamps each ask with its identity event (events.OpenedEventIDs), read among
-// the events who may read (eventReadableSQL), the rule every read of an ask's events binds. A nil
-// who is a write reading the asks its event payloads carry, which reads every event.
 func (s *server) attachOpenedEventIDs(
 	ctx context.Context,
 	q queryer,

@@ -853,9 +853,6 @@ func unknownCheck(value string) error {
 // (docs/read_cache.go), so the one case it would answer differently is the one it would answer
 // slowest in. The redo reads the words, with every lock given back
 // (recordResultWithFreshWords).
-//
-// The block is read as who reads its document (documentVisible): a block of a document who does
-// not see is a block the index does not hold.
 func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check checkBlockRef, named string) (indexedCheck, error) {
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
@@ -1029,8 +1026,7 @@ func (s *server) checkBlocksIn(ctx context.Context, who model.Actor, artifactID 
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by. The index is read
-// as who reads it.
+// does not hold yet still answers a reference every check can be addressed by.
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, who, artifact.ID, trees)
 	if err != nil {
