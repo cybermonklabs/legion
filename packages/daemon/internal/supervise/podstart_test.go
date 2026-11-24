@@ -48,10 +48,20 @@ type podRole struct {
 // Kubernetes daemon's do (Deps.PodStarts): every test of this file runs against it, and the
 // package's own harness builds none. phaseWorker is the role the workflow answers as working the
 // issue's current phase (Deps.PhaseRole), "" for a harness that answers none.
+//
+// The gate posts each grant once the harness's clock stands still (fakeClock.whenStill): a grant
+// the settle or the bound makes inside the test's move of the clock reaches its machine after that
+// move, so what the grant's decision arms for the moment it ran (the pause gate's stop, armed at
+// once) is not fired by that move; a test reads the decision before it moves the clock again.
+// Posted at once on a goroutine of its own, as the daemon posts it, the grant raced the move that
+// made it: the move could fire that stop too, before the test read it posted
+// (TestAPodStartsItsRolesOneLoadAtATime's grant during a pause, daemon-go job 138207719993).
 func podHarness(t *testing.T, phaseWorker claim.Role) *harness {
 	t.Helper()
 	h := newBareHarness(t)
-	h.deps.PodStarts = NewPodStarts(h.clock)
+	gate := NewPodStarts(h.clock)
+	gate.post = h.clock.whenStill
+	h.deps.PodStarts = gate
 	if phaseWorker != "" {
 		h.deps.PhaseRole = func(context.Context, string) (claim.Role, error) { return phaseWorker, nil }
 	}
@@ -737,6 +747,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("a start granted while the project is paused starts nothing, and the pause stops its claim", aGrantWhileTheProjectIsPaused)
 	t.Run("a start granted during a pause that ends before the pause's stop goes through the gate again as a fresh try",
 		aGrantWhoseLaunchThePauseLetsOut)
+	t.Run("a grant the clock's own move makes reaches its machine after the move, so the pause's stop it posts waits for the next move",
+		aGrantMadeInsideAMoveOfTheClock)
 }
 
 // The starts waiting in one pod go in the spec's order (dispatch://INFRA-5297/spec R3), whatever

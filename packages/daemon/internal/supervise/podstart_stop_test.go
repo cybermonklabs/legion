@@ -527,3 +527,49 @@ func aGrantWhoseLaunchThePauseLetsOut(t *testing.T) {
 		t.Fatalf("wake lines of the second = %d, want the one its resume wrote at the wake gate", len(lines))
 	}
 }
+
+// aGrantMadeInsideAMoveOfTheClock: the grant the first role's settle makes inside the test's move
+// of the clock reaches the second's machine after that move (podHarness, fakeClock.whenStill), so
+// the pause gate's stop that the grant's decision arms for that moment is still posted once the
+// move ends, whichever of the move and the grant a scheduler runs first. The case makes the move
+// wait, after the settle and at the settle's moment, until the grant's decision has posted that
+// stop or the grant waits for the clock: a grant posted at once on a goroutine of its own posted
+// the stop inside the move, which then fired it before the test read it posted, and
+// grantedDuringAPause timed out on it (daemon-go job 138207719993).
+func aGrantMadeInsideAMoveOfTheClock(t *testing.T) {
+	h := podHarness(t, "")
+	flag, stops := &pauseFlag{}, &stopTransaction{store: h.store}
+	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
+	first := h.podRole(claim.RoleArchitect, StateSuspended)
+	second := h.podRole(claim.RoleImplementer, StateSuspended)
+	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.wantStarts(first.token, 1)
+	h.parks(second, RequestResume{Claim: second.token}, 0)
+	flag.set(7)
+	stopPosted := func() bool {
+		second.m.mu.Lock()
+		defer second.m.mu.Unlock()
+		_, posted := second.m.timers[TimerPause]
+		return posted
+	}
+
+	h.registered(first)
+	// Armed after the registration armed its settle, for the same moment, so the move runs it right
+	// after the settle's grant and then looks for what else is due at that moment.
+	h.clock.AfterFunc(podLoadSettle, func() {
+		testwait.Eventually(t, "the second's grant to post the pause's stop, or to wait for the clock to stand still", func() bool {
+			return stopPosted() || h.clock.waitingPosts() > 0
+		})
+	})
+	h.clock.Advance(podLoadSettle)
+
+	testwait.Eventually(t, "the second's grant, after the move, to post its stop for the pause or to make it", func() bool {
+		return stopPosted() || len(stops.made()) > 0
+	})
+	second.m.Wait()
+	if made := stops.made(); len(made) != 0 || !stopPosted() {
+		t.Fatalf("the pause's stops of the second made %+v, and its stop posted %v, once the move that granted its start ended; want none made and the stop posted: the move that made the grant fired the stop the grant posted",
+			stopsOf(made), stopPosted())
+	}
+	h.wantStarts(second.token, 0)
+}

@@ -44,6 +44,11 @@ type fakeClock struct {
 	armed  int
 	// slept is every wait a machine asked to Sleep, in order.
 	slept []time.Duration
+	// advancing is how many Advance calls are moving the clock now, and stood is signalled each
+	// time one ends; posted is how many functions wait for the clock to stand still (whenStill).
+	advancing int
+	stood     *sync.Cond
+	posted    int
 }
 
 // Sleep records d and returns at once, with ctx's error when it has ended: a machine's wait costs
@@ -95,6 +100,7 @@ func (t *fakeTimer) Stop() bool {
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	until := c.now.Add(d)
+	c.advancing++
 	c.mu.Unlock()
 	for {
 		c.mu.Lock()
@@ -109,6 +115,8 @@ func (c *fakeClock) Advance(d time.Duration) {
 		}
 		if next == nil {
 			c.now = until
+			c.advancing--
+			c.stoodCond().Broadcast()
 			c.mu.Unlock()
 			return
 		}
@@ -117,6 +125,42 @@ func (c *fakeClock) Advance(d time.Duration) {
 		c.mu.Unlock()
 		next.f()
 	}
+}
+
+// whenStill runs f on a goroutine of its own once no Advance is moving the clock: the pod gate's
+// post of a grant in podHarness (PodStarts.post). A grant the clock's own move makes, the settle's
+// or the bound's, then reaches its machine after that move, never inside it, whatever order a
+// scheduler gives the two, so a timer the grant's decision arms for that moment is not fired by
+// the move that made the grant. It drains nothing before a later Advance begins: a test reads the
+// grant's decision before it moves the clock again, as every test of the gate does.
+func (c *fakeClock) whenStill(f func()) {
+	c.mu.Lock()
+	c.posted++
+	c.mu.Unlock()
+	go func() {
+		c.mu.Lock()
+		for c.advancing > 0 {
+			c.stoodCond().Wait()
+		}
+		c.posted--
+		c.mu.Unlock()
+		f()
+	}()
+}
+
+// stoodCond is the condition an Advance's end signals, made on first use. Called with mu held.
+func (c *fakeClock) stoodCond() *sync.Cond {
+	if c.stood == nil {
+		c.stood = sync.NewCond(&c.mu)
+	}
+	return c.stood
+}
+
+// waitingPosts is how many functions wait for the clock to stand still (whenStill).
+func (c *fakeClock) waitingPosts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.posted
 }
 
 // dropAll is every armed timer dying with the process that armed it.
