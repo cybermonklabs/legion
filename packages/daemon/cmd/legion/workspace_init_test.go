@@ -1099,10 +1099,11 @@ func killProcessesRunning(t *testing.T, path string) []string {
 
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
 // reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
-// wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// --cache-url with its user name and its query: each line keeps the cache's host and path, and
-// neither the user name nor the query reaches the init log. A cache that is never ready is a cause
-// outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
+// wait ends in, each time with the failure of the ask (workspace's askCache), which names the
+// health route joined onto --cache-url's path, through oauth2call.Unanswered: each line keeps the
+// cache's host and path, and neither --cache-url's user name nor its query reaches the init log. A
+// cache that is never ready is a cause outside the issue's volume, so `fetch` exits
+// workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v := newIssueVolume(t)
 	// A port nothing listens on, so every ask of the cache fails at its dial.
@@ -1114,7 +1115,7 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 
 	code, stdout, stderr := runWorkspaceInitHere(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
 	shown := "http://" + cache + "/widgets"
-	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
+	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "/healthz\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
 	if want := "the repository cache " + shown + " was not ready within "; code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
