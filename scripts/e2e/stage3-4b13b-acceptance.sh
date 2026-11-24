@@ -1209,6 +1209,7 @@ await_merger_merge "$repo" "${pr_of[$root1]}"
 # this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
 # base.
 # The message is gh's answer, so it is kept in the evidence file alone, which every line names.
+# shellcheck disable=SC2154 # await_merger_merge sets it; this file sources its libs as source=/dev/null
 merge_message=$(gh_to_files "merge-message-of-$root1" api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
 merge_message_is="the pull request's title and number alone"
