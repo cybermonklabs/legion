@@ -588,6 +588,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// The CI read and the comparison share one reader, so the repository and its default branch
 	// are read once for both.
 	reader := newComparisonReader(s, at)
+	// A pull request the issue links whose head Dispatch does not hold is read before any head is,
+	// so the CI read and every comparison below read the head it stores (readLinkedHeads). A read
+	// that named a commit asks GitHub nothing, as learn asks nothing then.
+	if at == noCommitNamed {
+		s.readLinkedHeads(r.Context(), issueKey)
+	}
 	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return

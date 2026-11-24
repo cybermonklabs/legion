@@ -608,6 +608,11 @@ type server struct {
 	// which bounds the reads of every process together. The policy is delivery's; the server holds
 	// the one cache the process shares.
 	commitPulls delivery.CommitPullReads
+	// linkedHeads is the same memory for the linked pull requests the results read reads itself
+	// (server.readLinkedHeads): a pull request the issue links whose head Dispatch does not hold is
+	// read at most once per delivery.CommitPullReadStaleAfter in this process, keyed by its owed name
+	// and `pull/<number>` in the place of a commit, however often the results are read.
+	linkedHeads delivery.CommitPullReads
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of

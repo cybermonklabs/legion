@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -114,4 +115,42 @@ func (c *comparisonReader) readThroughRepository(ctx context.Context, result mod
 	}
 	repo, _ := c.repositoryOf(ctx, result.CheckIssueKey)
 	return *repo, true
+}
+
+// readLinkedHeads reads from GitHub each pull request the external links of issueKey name whose
+// head Dispatch does not hold, and stores it (delivery.Attributor.LinkedHeadsUnread and
+// ReadLinkedHead), before the results read reads any head (deriveCIResults, learn). It is the read
+// of a link by hand that no result commit can reach: a pull request no event of which Dispatch
+// took, linked to an issue whose only `before_merge` check is one CI proves, takes no result from
+// any role (409 CHECK_PROVED_BY_CI), so no result write's read-through and no read-through of a
+// result commit (readThroughHead) asks GitHub about it, and the check read no head until the
+// reconcile's next pass read the owed link (INFRA-5094: no_head with the pull request open, linked
+// and green). It reads whatever checks the issue holds, and for a link written before links owed a
+// read as for one written since.
+//
+// One linked pull request is read at most once per delivery.CommitPullReadStaleAfter in this
+// process however often the results are read (server.linkedHeads), at most
+// delivery.LinkedHeadReadsPerRead of them in one read, and a read that fails is claimed with the
+// rest: the read leaves the bases as the stored rows say, which the reconcile repairs, so a GitHub
+// call that did not land costs the results read nothing but the call.
+func (s *server) readLinkedHeads(ctx context.Context, issueKey string) {
+	if s.deps.GitHub == nil || s.deps.Attributor == nil {
+		return
+	}
+	pool := s.deps.Store.Pool
+	unread, err := s.deps.Attributor.LinkedHeadsUnread(ctx, pool, issueKey)
+	if err != nil {
+		slog.Warn("dispatch: read the linked pull requests whose head is not held", "issue", issueKey, "error", err)
+		return
+	}
+	now := time.Now()
+	for _, link := range unread {
+		if !s.linkedHeads.Claim(link.Repo, "pull/"+strconv.Itoa(link.Number), now) {
+			continue
+		}
+		if err := s.deps.Attributor.ReadLinkedHead(ctx, pool, s.deps.GitHub, link, now); err != nil {
+			slog.Info("dispatch: read a linked pull request's head for an issue's results; the reconcile reads it again",
+				"issue", issueKey, "repo", link.Repo, "number", link.Number, "error", err)
+		}
+	}
 }
