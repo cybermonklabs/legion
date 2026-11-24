@@ -1913,8 +1913,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// that owns its issue, or for a catch-up, which names none, the architect of its own issue and
 	// no other (noticeRecipient), so a catch-up is judged against that architect's claim and that
 	// issue's generation: a child's catch-up is superseded by the child's architect's later
-	// launch, never by its tree root's. The log lines keep the words and the key `architect` they
-	// always had, which the operator's checks read.
+	// launch, never by its tree root's. The log lines keep the words they always had, whose prefix
+	// the operator's check reads, and name the recipient under the key `recipient`.
 	recipient, err := noticeRecipient(tree.project, tree.issues, issue, payload, r.holdsItsRole)
 	if err != nil {
 		return fmt.Errorf("the recipient of the notice of %s: %w", row.Issue, err)
@@ -1954,7 +1954,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// is judged the same way.
 	if payload.StoppedBy == recipient {
 		r.log.Info("outbox notice finished without publishing: its architect stopped the task itself",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "recipient", recipient)
 		return nil
 	}
 	notice, key := payload.Published(row.ID)
@@ -1963,7 +1963,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",
-			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", recipient, "state", held.State, "stopping", held.Stopping)
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "recipient", recipient, "state", held.State, "stopping", held.Stopping)
 		return nil
 	}
 	// A notice whose recipient's pod was released is that recipient's still (holdsRole), and this

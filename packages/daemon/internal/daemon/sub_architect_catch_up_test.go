@@ -79,7 +79,7 @@ func TestASubArchitectsCatchUpGoesToItAlone(t *testing.T) {
 				published = append(published, line)
 			}
 		}
-		want := []string{"kind=catch-up", "issue=LEGION-2", "architect=" + string(mustClaimToken(t, "LEGION-2", claim.RoleArchitect)), "generation=1", "launch=1", "issues=2"}
+		want := []string{"kind=catch-up", "issue=LEGION-2", "recipient=" + string(mustClaimToken(t, "LEGION-2", claim.RoleArchitect)), "generation=1", "launch=1", "issues=2"}
 		if len(published) != 1 || !containsAll(published[0], want) {
 			t.Fatalf("published lines %q in log:\n%s\nwant one naming %v", published, logged.String(), want)
 		}

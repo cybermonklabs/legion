@@ -214,22 +214,23 @@ func TestTheBaseOfAStartedTaskIsTheBaseItsStartFixed(t *testing.T) {
 	}
 }
 
-// The base of a part is its task's branch where a task of the top level is based on the default
-// branch. f names a sub-owner and no step, and needs nothing; each other task is a part of f.
-// f1 (`implementer` and `reviewer`) and f3 (`reviewer` alone) need nothing, f2 (`implementer`)
-// needs f1, f4 (`reviewer` alone) and f5 (`implementer`) need f1 and f2, and f6 (`implementer`)
-// needs nothing and its block says merges. f is based on the default branch: it is the task of
-// the top level that merges. f1 and f3 are based on f's branch, which holds the joined work of
-// f's needs and which the parts join into; so is f4, none of whose steps implements, whose pull
-// request shows the joined work of its needs against that branch. f2 is based on its one need's
-// branch, f1's, and f5 on its join branch, as a task of the top level would be. f6 merges by
-// itself, so it is based on the default branch. BaseOf answers what PlannedBase answers, and the
-// branches each part starts from are its needs' alone (StartsFrom).
+// Each part starts from its task's branch, which holds the joined work of its task's needs,
+// whatever else it needs, and is based where that branch makes its pull request show its own work
+// alone. f names a sub-owner and no step, and needs nothing; g is a task of the top level; each
+// other task is a part of f. f1 (`implementer` and `reviewer`) and f3 (`reviewer` alone) need
+// nothing, f2 (`implementer`) needs f1, f4 (`reviewer` alone) and f5 (`implementer`) need f1 and
+// f2, f6 (`implementer`) needs nothing and its block says merges, and f7 (`implementer`) needs g,
+// a task outside f. Every part starts from f's branch first (StartsFrom), named by f's id, then
+// from the branches of its own needs. f, g and f6 are based on the default branch: f and f6 merge,
+// and g needs nothing at the top level. f1 is based on f's branch, its one start, and so are f3
+// and f4, none of whose steps implements, whose pull requests show the joined work of their needs
+// against that branch. f2, f5 and f7, which implement and start from more than one branch, are
+// based on their join branches. BaseOf answers what PlannedBase answers.
 //
-// The fault it catches is a part based on the default branch: its pull request shows the work of
-// its task's needs as its own, and its branch starts without it (its control: PlannedBase
-// answering the default branch for a part with no needs or with no step of the type
-// implementation, as a task of the top level, which fails f1, f3 and f4).
+// The fault it catches is a part that starts without its task's joined work: a part that merges
+// and needs nothing started at the default branch, and a part that needs a task outside its task
+// started at that need's branch (its control: StartsFrom that lists a part's own needs alone,
+// which fails every part's row).
 func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 	issue := Issue{Key: planIssue, DefaultBranch: "main"}
 	stored := basePlan(
@@ -239,29 +240,37 @@ func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 		baseTask{"f3", nil, "legion/LEGION-208.f3", []string{"reviewer"}},
 		baseTask{"f4", []string{"f1", "f2"}, "legion/LEGION-208.f4", []string{"reviewer"}},
 		baseTask{"f5", []string{"f1", "f2"}, "legion/LEGION-208.f5", []string{"implementer"}},
-		baseTask{"f6", nil, "legion/LEGION-208.f6", []string{"implementer"}})
+		baseTask{"f6", nil, "legion/LEGION-208.f6", []string{"implementer"}},
+		baseTask{"f7", []string{"g"}, "legion/LEGION-208.f7", []string{"implementer"}},
+		baseTask{"g", nil, "legion/LEGION-208.g", []string{"implementer"}})
 	for i, row := range stored.Tasks {
 		switch row.Task {
 		case "f":
 			stored.Tasks[i].OwnerRole = "architect"
+		case "g":
 		case "f6":
 			stored.Tasks[i].PartOf, stored.Tasks[i].Merges = "f", true
 		default:
 			stored.Tasks[i].PartOf = "f"
 		}
 	}
+	ofF := StartBranch{Branch: "legion/LEGION-208.f", Needs: []string{"f"}, OfTask: true}
+	f1 := StartBranch{Branch: "legion/LEGION-208.f1", Needs: []string{"f1"}}
+	f2 := StartBranch{Branch: "legion/LEGION-208.f2", Needs: []string{"f2"}}
 	for _, tc := range []struct {
 		task, base string
 		join       bool
 		starts     []StartBranch
 	}{
 		{"f", "main", false, nil},
-		{"f1", "legion/LEGION-208.f", false, nil},
-		{"f2", "legion/LEGION-208.f1", false, []StartBranch{{Branch: "legion/LEGION-208.f1", Needs: []string{"f1"}}}},
-		{"f3", "legion/LEGION-208.f", false, nil},
-		{"f4", "legion/LEGION-208.f", false, []StartBranch{{Branch: "legion/LEGION-208.f1", Needs: []string{"f1"}}, {Branch: "legion/LEGION-208.f2", Needs: []string{"f2"}}}},
-		{"f5", "legion/LEGION-208.f5.join", true, []StartBranch{{Branch: "legion/LEGION-208.f1", Needs: []string{"f1"}}, {Branch: "legion/LEGION-208.f2", Needs: []string{"f2"}}}},
-		{"f6", "main", false, nil},
+		{"f1", "legion/LEGION-208.f", false, []StartBranch{ofF}},
+		{"f2", "legion/LEGION-208.f2.join", true, []StartBranch{ofF, f1}},
+		{"f3", "legion/LEGION-208.f", false, []StartBranch{ofF}},
+		{"f4", "legion/LEGION-208.f", false, []StartBranch{ofF, f1, f2}},
+		{"f5", "legion/LEGION-208.f5.join", true, []StartBranch{ofF, f1, f2}},
+		{"f6", "main", false, []StartBranch{ofF}},
+		{"f7", "legion/LEGION-208.f7.join", true, []StartBranch{ofF, {Branch: "legion/LEGION-208.g", Needs: []string{"g"}}}},
+		{"g", "main", false, nil},
 	} {
 		planned, plannedJoin, err := stored.PlannedBase(issue, tc.task)
 		if err != nil || planned != tc.base || plannedJoin != tc.join {
@@ -271,7 +280,7 @@ func TestTheBaseOfATaskThatIsAPart(t *testing.T) {
 			t.Errorf("BaseOf(%s) = %s, %t, %v, want %s, %t", tc.task, base, join, err, tc.base, tc.join)
 		}
 		if starts, err := stored.StartsFrom(issue, tc.task); err != nil || !reflect.DeepEqual(starts, tc.starts) {
-			t.Errorf("StartsFrom(%s) = %v, %v, want %v", tc.task, starts, err, tc.starts)
+			t.Errorf("StartsFrom(%s) = %+v, %v, want %+v", tc.task, starts, err, tc.starts)
 		}
 	}
 

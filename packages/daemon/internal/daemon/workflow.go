@@ -2545,7 +2545,7 @@ func (w *workflowRuntime) releaseReadied(ctx context.Context) {
 		err := w.outbox.releaseWaiting(release, recipients...)
 		cancel()
 		if err != nil && ctx.Err() == nil {
-			w.log.Error("release the notices waiting for ready architects", "architects", recipients, "error", err)
+			w.log.Error("release the notices waiting for ready architects", "recipients", recipients, "error", err)
 		}
 	}
 }

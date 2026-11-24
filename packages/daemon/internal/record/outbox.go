@@ -3,6 +3,7 @@ package record
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -366,9 +367,10 @@ type Notice struct {
 	// sub-owner. So it names a task's sub-owner's claim alone (SubOwnerOf), which the validation
 	// holds (validateOutboxPayload). Empty, the notice goes to the architect that owns its issue,
 	// as every notice that names no claim does (the daemon's noticeRecipient). A controller notice
-	// names none: it goes to the project's controller alone, so a copy of a notice for the
-	// controller (ControllerNotice of a Notice) leaves To empty. NoticeGoesTo is the claims
-	// a notice reaches either way.
+	// names none: it goes to the project's controller alone, so its encoding drops To
+	// (ControllerNotice.MarshalJSON), and a copy of a notice for the controller (ControllerNotice
+	// of a Notice), which keeps To in memory, is stored with none. NoticeGoesTo is the claims a
+	// notice reaches either way.
 	To claim.Token `json:"to,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
@@ -933,10 +935,19 @@ func (n Notice) Published(id int64) (Notice, string) {
 
 // ControllerNotice is a Notice for the project's controller topic (notify.ControllerTopic) alone,
 // in an outbox row of its own, so its publish retries apart from the architect's notice row. It is
-// published as the Notice it is.
+// published as the Notice it is, with no claim it goes to (MarshalJSON).
 type ControllerNotice Notice
 
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
+
+// MarshalJSON encodes the notice as the Notice it is without To: a controller notice goes to the
+// project's controller alone, so its row holds no claim it goes to however it was made, a copy of a
+// notice to a task's sub-owner (ControllerNotice of that Notice, as the workflow's
+// noticeWithController makes it) among them.
+func (n ControllerNotice) MarshalJSON() ([]byte, error) {
+	n.To = ""
+	return json.Marshal(Notice(n))
+}
 
 // The controller notices no architect is told of. A triage notice's root is unrecorded, so no
 // architect owns it; a slot-free notice names the issue whose slot admission released while no
@@ -2135,6 +2146,10 @@ func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (Outbox
 	return OutboxRow{Kind: payload.OutboxKind(), Issue: issue, Payload: encoded, NextAt: nextAt}, nil
 }
 
+// errUnknownOutboxKind is the decoder's answer for a row of a kind it has no case of
+// (decodeOutboxJSON), which errors.Is reads.
+var errUnknownOutboxKind = errors.New("unknown kind")
+
 // DecodeOutboxPayload strictly decodes a row's typed payload.
 func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 	payload, err := decodeOutboxJSON(row)
@@ -2342,7 +2357,7 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	default:
-		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
+		return nil, fmt.Errorf("decode outbox row %d: %w %q", row.ID, errUnknownOutboxKind, row.Kind)
 	}
 	if row.Kind == OutboxKindDispatchMessage {
 		var fields map[string]json.RawMessage
@@ -2519,9 +2534,6 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if err := validateNoticeStopper(value.Kind, value.StoppedBy); err != nil {
 			return err
-		}
-		if value.To != "" {
-			return fmt.Errorf("a %s controller notice names %s as the claim it goes to; a controller notice goes to the project's controller alone and names no claim", value.Kind, value.To)
 		}
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")

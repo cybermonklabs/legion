@@ -38,13 +38,15 @@ type taskBranchRig struct {
 // plannedTask is a task of the stored plan: its id, the ids it needs and the role of each of its
 // steps, typed as Legion's own roles type them (stepplan.BuiltinRoles); one implementer step where
 // it names none. partOf is the task it is a part of, "" for a task of the top level; owner is the
-// role of its sub-owner, and a task that names one has no step.
+// role of its sub-owner, and a task that names one has no step; merges is whether its block says
+// merges.
 type plannedTask struct {
 	id     string
 	needs  []string
 	roles  []string
 	partOf string
 	owner  string
+	merges bool
 }
 
 // newTaskBranchRig stores taskBranchIssue and its plan of tasks, starts each task in the order of
@@ -73,7 +75,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 	roles := stepplan.BuiltinRoles()
 	for _, task := range tasks {
 		rows = append(rows, record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: task.id, PlanVersion: 1, BlockText: "Task " + task.id + ".",
-			Needs: task.needs, PartOf: task.partOf, OwnerRole: task.owner, State: record.TaskWaiting})
+			Needs: task.needs, PartOf: task.partOf, OwnerRole: task.owner, Merges: task.merges, State: record.TaskWaiting})
 		named := task.roles
 		if len(named) == 0 && task.owner == "" {
 			named = []string{"implementer"}
@@ -182,37 +184,47 @@ func TestATaskWithNoNeedsStartsAtTheDefaultBranch(t *testing.T) {
 	}
 }
 
-// A part that needs no task starts at the head of its task's branch, which holds the joined work
-// of its task's needs: f names a sub-owner, its branch holds one commit over main, the work its
-// join brought, and its part f1 needs nothing. f1's branch starts at that commit, so f1's work
-// starts from it. A task of the top level that needs nothing, t, still starts at the default
-// branch's head.
+// Each part starts from a commit that holds its task's joined work, whatever else it needs: f
+// names a sub-owner, and its branch holds one commit over main, the work its join brought. Its
+// part f1 needs nothing, and its branch starts at that commit. Its part m merges and needs nothing,
+// and its branch starts at that commit too, though its pull request is based on the default
+// branch. Its part x needs g, a task of the top level whose branch holds a commit of its own, and
+// its branch starts from the join of f's head and g's: it holds both. A task of the top level that
+// needs nothing, t, still starts at the default branch's head.
 //
-// The fault it catches is a part that starts without the work of its task's needs, whose pull
-// request then shows that work as its own (its control: the executor's own rule for a task with no
-// needs, the default branch, which starts f1 at main).
+// The fault it catches is a part that starts without its task's joined work, whose pull request
+// then shows that work as its own (its control: StartsFrom that lists a part's own needs alone,
+// which starts m at main and x at g's head).
 func TestAPartStartsFromItsTasksBranch(t *testing.T) {
 	t.Parallel()
-	rig := newTaskBranchRig(t, plannedTask{id: "f", owner: "architect"}, plannedTask{id: "f1", partOf: "f"}, plannedTask{id: "t"})
+	rig := newTaskBranchRig(t, plannedTask{id: "f", owner: "architect"}, plannedTask{id: "f1", partOf: "f"}, plannedTask{id: "g"},
+		plannedTask{id: "m", partOf: "f", merges: true}, plannedTask{id: "t"}, plannedTask{id: "x", partOf: "f", needs: []string{"g"}})
 	main := rig.github.Head(t, "main")
 	joined := rig.github.Commit(t, rig.branch(t, "f"), map[string]string{"a.txt": "a\n"}, "LEGION-208: join the work of task a")
+	rig.run(t, "g")
+	ofG := rig.github.Commit(t, rig.branch(t, "g"), map[string]string{"g.txt": "g\n"}, "the work of task g")
 
-	rig.run(t, "f1")
-	head := rig.github.Head(t, rig.branch(t, "f1"))
-	if head == "" {
-		t.Fatalf("the part f1 has no branch %s after its row", rig.branch(t, "f1"))
+	for _, id := range []string{"f1", "m"} {
+		rig.run(t, id)
+		if head := rig.github.Head(t, rig.branch(t, id)); head != joined {
+			t.Errorf("the part %s's branch stands at %q, want its task f's head %s (main is %s): a part that needs nothing starts at its task's joined work",
+				id, head, joined, main)
+		}
 	}
-	if !rig.ancestor(t, joined, head) {
-		t.Fatalf("the part f1's branch stands at %s, which does not hold its task f's head %s (main is %s): the part starts without the work of its task's needs",
-			head, joined, main)
+
+	rig.run(t, "x")
+	head := rig.github.Head(t, rig.branch(t, "x"))
+	if head == "" || !rig.ancestor(t, joined, head) || !rig.ancestor(t, ofG, head) {
+		t.Errorf("the part x's branch stands at %q, want a commit that holds its task f's head %s and its need g's head %s (main is %s)",
+			head, joined, ofG, main)
 	}
-	if head != joined {
-		t.Fatalf("the part f1's branch stands at %s, want its task f's head %s: a part with no needs joins nothing more", head, joined)
+	if conflicts := rig.task(t, "x").JoinConflicts; len(conflicts) != 0 {
+		t.Errorf("the part x's join conflicts = %v, want none", conflicts)
 	}
 
 	rig.run(t, "t")
 	if head := rig.github.Head(t, rig.branch(t, "t")); head != main {
-		t.Fatalf("task t of the top level stands at %q, want main's head %s", head, main)
+		t.Errorf("task t of the top level stands at %q, want main's head %s", head, main)
 	}
 }
 

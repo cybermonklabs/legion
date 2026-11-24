@@ -38,13 +38,14 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 
 // taskBranch makes the GitHub branch of the row's task (record.PlanTask.BranchOf) start from the
 // joined work of the tasks it needs, the work its first step starts on. That work is on the
-// branches the task starts from (record.StoredPlan.StartsFrom): the branch of each need whose work
-// did not merge, in the order of its needs, then the default branch the issue's record names once
-// where the work of any need merged, so the branch of a merged need, which GitHub can have deleted
-// at its merge, is never read. A task that starts from none starts at the head of its base
-// (record.StoredPlan.BaseOf): the default branch for a task of the top level, and for a part, its
-// task's branch, which holds the joined work of that task's needs. One that starts from some
-// starts at the head of the first. A task whose pull request is based on its join branch
+// branches the task starts from (record.StoredPlan.StartsFrom): for a part, the branch of the task
+// it is a part of first, which holds that task's joined work, so each part starts from it whatever
+// else it needs; then the branch of each need whose work did not merge, in the order of its needs,
+// then the default branch the issue's record names once where the work of any need merged, so the
+// branch of a merged need, which GitHub can have deleted at its merge, is never read. A task that
+// starts from none, a task of the top level that needs none, starts at the head of its base
+// (record.StoredPlan.BaseOf), the default branch. One that starts from some starts at the head of
+// the first. A task whose pull request is based on its join branch
 // (record.StoredPlan.BaseOf: a task that starts from several branches and does not merge)
 // joins them there rather than on its branch, which then starts at the join branch's head, so its
 // pull request shows its own work alone. Each branch it starts from is then merged into the branch
@@ -261,8 +262,9 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 // branch: two facts, since the first step repairs each on another branch, and a repair on branch
 // of a need's conflict would show that need's work in the task's pull request, which is based on
 // onto. GitHub's 404 for a branch of starts, to the read of the first one's head or to a merge of
-// one, is a *needBranchMissing naming that branch and the needs whose work it holds; a 404 for
-// from, a part's task's branch, is an error the row tries again on its backoff.
+// one, is a *needBranchMissing naming that branch and the needs whose work it holds, or the task
+// it is the branch of (record.StartBranch.OfTask); a 404 for from, read only where starts names
+// none, is an error the row tries again on its backoff.
 func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, onto, from string, starts []record.StartBranch, needs []string) (conflicts []string, unmerged bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, branchRowTimeout)
 	defer cancel()
@@ -271,7 +273,7 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 		return nil, false, err
 	}
 	missing := func(start record.StartBranch, err error) error {
-		return &needBranchMissing{branch: start.Branch, needs: start.Needs, merged: start.Branch == issue.DefaultBranch, err: err}
+		return &needBranchMissing{branch: start.Branch, needs: start.Needs, merged: start.Branch == issue.DefaultBranch, ofTask: start.OfTask, err: err}
 	}
 	base := from
 	if len(starts) > 0 {
@@ -323,11 +325,13 @@ func idsNamed(noun string, ids []string) string {
 
 // needBranchMissing is a join that cannot end: GitHub has no branch, branch, that holds the work of
 // needs, a need's own branch, or the default branch, which holds the work of each need that merged
-// (merged), so the row waits for that branch on its backoff (joinCannotEnd).
+// (merged), or, for a part, the branch of the task it is a part of, needs' one id (ofTask), so the
+// row waits for that branch on its backoff (joinCannotEnd).
 type needBranchMissing struct {
 	branch string
 	needs  []string
 	merged bool
+	ofTask bool
 	err    error
 }
 
@@ -336,10 +340,14 @@ func (e *needBranchMissing) Error() string {
 }
 
 // holds is what the missing branch holds, as the words that name it go on: ` of <whose> need <id>`
-// for a need's own branch, and `, which holds the work of <whose> need <id>` for the default branch,
-// with `needs` and each id for several.
+// for a need's own branch, `, which holds the work of <whose> need <id>` for the default branch,
+// with `needs` and each id for several, and `, the branch of task <id>, whose part waits for it`
+// for a part's task's branch.
 func (e *needBranchMissing) holds(whose string) string {
-	if e.merged {
+	switch {
+	case e.ofTask:
+		return fmt.Sprintf(", the branch of task %s, whose part waits for it", strings.Join(e.needs, ", "))
+	case e.merged:
 		return fmt.Sprintf(", which holds the work of %s %s", whose, idsNamed("need", e.needs))
 	}
 	return fmt.Sprintf(" of %s %s", whose, idsNamed("need", e.needs))

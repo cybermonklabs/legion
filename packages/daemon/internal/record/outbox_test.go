@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -305,14 +306,19 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 // a row of that kind into. A row of a kind with none fails to decode at every attempt, and the
 // rows queued after it on its issue's lane wait behind it. The kinds are read from the lanes
 // themselves (OutboxLanes, LaneKinds), so a kind a later change adds to a lane is held too. The
-// fault it catches is a kind in a lane and in the store's check before its payload and its decoder
-// (its control: parts_join back in the lifecycle lane, which it names).
+// decoder says a kind is unknown by its sentinel (errUnknownOutboxKind), which the test reads
+// first of a kind that is none, so the test cannot pass because the decoder stopped saying it.
+// The fault it catches is a kind in a lane and in the store's check before its payload and its
+// decoder (its control: parts_join back in the lifecycle lane, which it names).
 func TestEveryKindOfALaneHasACaseInTheDecoder(t *testing.T) {
+	if _, err := decodeOutboxJSON(OutboxRow{Kind: "nope", Payload: json.RawMessage(`{}`)}); !errors.Is(err, errUnknownOutboxKind) {
+		t.Fatalf("decode a row of the kind nope = %v, want the decoder's unknown kind (errUnknownOutboxKind)", err)
+	}
 	kinds := 0
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
 			kinds++
-			if _, err := decodeOutboxJSON(OutboxRow{Kind: kind, Payload: json.RawMessage(`{}`)}); err != nil && strings.Contains(err.Error(), "unknown kind") {
+			if _, err := decodeOutboxJSON(OutboxRow{Kind: kind, Payload: json.RawMessage(`{}`)}); errors.Is(err, errUnknownOutboxKind) {
 				t.Errorf("%s runs on the %s lane, and DecodeOutboxPayload has no case of it, so a row of it fails at every attempt: %v", kind, lane, err)
 			}
 		}
@@ -633,33 +639,38 @@ func TestTheClaimsANoticeGoesTo(t *testing.T) {
 		if got := NoticeGoesTo(named); got != want {
 			t.Errorf("NoticeGoesTo(%q) = %t, want %t", named, got, want)
 		}
-		if _, subOwner := SubOwnerOf(named); subOwner && !NoticeGoesTo(named) {
-			t.Errorf("a notice can name %s, which NoticeGoesTo refuses", named)
-		}
 	}
 }
 
-// A controller notice goes to the project's controller topic and to no other claim, so it names no
-// claim it goes to (Notice.To): one that names a sub-owner's claim, the one claim a notice to an
-// architect may name, is refused, naming that claim, as a notice that names a claim outside
-// NoticeGoesTo is. The same notice naming none is taken, and so is a held notice's copy for the
-// controller that names none.
+// A controller notice goes to the project's controller topic and to no other claim, so its row
+// names no claim it goes to (Notice.To), however it was made: a controller's copy of a notice that
+// names a task's sub-owner (ControllerNotice of that Notice, as the workflow's noticeWithController
+// makes it) is taken, and its row holds no claim, so it decodes with none. The notice itself keeps
+// the claim it names.
 //
-// The fault it catches is a controller's copy of a notice to a sub-owner (the workflow's
-// noticeWithController copies a notice whole) that carries a claim nothing routes it to (its
-// control: the validation of the base, which takes it).
-func TestAControllerNoticeNamesNoClaim(t *testing.T) {
+// The fault it catches is a controller's copy of a notice to a sub-owner that the outbox refuses,
+// so the fact that holds a task and tells both fails (its control: the validation of the base,
+// which refuses the copy for the claim it names).
+func TestAControllerNoticeIsStoredWithNoClaim(t *testing.T) {
 	subOwner, err := claim.AgentToken("legion", "LEGION-208", SubOwnerAgent("f"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"}
-	if err := validateOutboxPayload("LEGION-208", held); err != nil {
-		t.Fatalf("a held notice for the controller that names no claim = %v, want it taken", err)
+	notice := Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated", To: subOwner}
+	row, err := NewOutboxRow("LEGION-208", ControllerNotice(notice), time.Now())
+	if err != nil {
+		t.Fatalf("queue the controller's copy of a held notice that names %s = %v, want it taken, holding no claim", subOwner, err)
 	}
-	held.To = subOwner
-	if err := validateOutboxPayload("LEGION-208", held); err == nil || !strings.Contains(err.Error(), string(subOwner)) || !strings.Contains(err.Error(), "controller") {
-		t.Fatalf("a held notice for the controller that names %s = %v, want it refused, naming that claim and the controller", subOwner, err)
+	if strings.Contains(string(row.Payload), `"to":`) {
+		t.Fatalf("the controller's copy is stored as %s, want no claim it goes to", row.Payload)
+	}
+	decoded, err := DecodeOutboxPayload(row)
+	if copied, ok := decoded.(ControllerNotice); err != nil || !ok || copied.To != "" || copied.Kind != "held" || copied.Reason != "escalated" {
+		t.Fatalf("the controller's copy decodes as %#v, %v; want the held notice with no claim it goes to", decoded, err)
+	}
+	told, err := NewOutboxRow("LEGION-208", notice, time.Now())
+	if err != nil || !strings.Contains(string(told.Payload), `"to":"`+string(subOwner)+`"`) {
+		t.Fatalf("queue the held notice itself = %s, %v; want it to name %s", told.Payload, err, subOwner)
 	}
 }
 

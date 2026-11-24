@@ -711,7 +711,7 @@ func (r *subArchitectLive) loggedPublish(kind, issue string, architect claim.Tok
 	testwait.Eventually(r.t, fmt.Sprintf("the daemon's line for the %s of %s published to %s", kind, issue, architect), func() bool {
 		matched := r.logged.matching(func(kept loggedRecord) bool {
 			return kept.Message == "outbox notice published" && fmt.Sprint(kept.Attrs["kind"]) == kind &&
-				fmt.Sprint(kept.Attrs["issue"]) == issue && fmt.Sprint(kept.Attrs["architect"]) == string(architect)
+				fmt.Sprint(kept.Attrs["issue"]) == issue && fmt.Sprint(kept.Attrs["recipient"]) == string(architect)
 		})
 		if len(matched) == 0 {
 			return false
@@ -720,7 +720,7 @@ func (r *subArchitectLive) loggedPublish(kind, issue string, architect claim.Tok
 		return true
 	})
 	fields := []string{}
-	for _, name := range []string{"row", "kind", "issue", "architect", "generation", "launch", "issues"} {
+	for _, name := range []string{"row", "kind", "issue", "recipient", "generation", "launch", "issues"} {
 		if value, ok := line.Attrs[name]; ok {
 			fields = append(fields, fmt.Sprintf("%s=%v", name, value))
 		}
