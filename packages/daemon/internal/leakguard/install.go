@@ -149,8 +149,7 @@ func isManifestFile(name string) bool {
 // tarball written to w, and answers how many files it wrote and whether the directory was there at
 // all. Each manifest file is hashed into sums, by its name, as its bytes stream into the packed
 // tarball. GitHub's tarball of a repository holds every member under one `<owner>-<repo>-<sha>/`
-// directory, so the members this reads are `<that>/leak-check/…` (memberPath). A member's name is
-// decided on as it came and printed only as oauth2call.StreamedWords reads it, with answer's record.
+// directory, so the members this reads are `<that>/leak-check/…` (memberPath).
 func pack(r io.Reader, answer *http.Response, w io.Writer, sums map[string][sha256.Size]byte) (files int, found bool, err error) {
 	zipped, err := gzip.NewReader(r)
 	if err != nil {

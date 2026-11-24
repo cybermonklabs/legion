@@ -719,8 +719,6 @@ func impersonationClient(ctx context.Context, signer Signer, endpoints googleEnd
 	if err != nil {
 		return nil, fmt.Errorf("exchange the writer token: %w", err)
 	}
-	// oauth2.Transport follows no redirect itself: the client it is the transport of refuses each
-	// one. Its Base sends over http.DefaultTransport when endpoints.iam is nil, which is a pod's case.
 	signed := &oauth2.Transport{
 		Source: oauth2call.TokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh)),
 		Base:   oauth2call.RefusalClient(&http.Client{Transport: endpoints.iam}).Transport,
