@@ -83,6 +83,9 @@ type harness struct {
 	// reviewer is the review App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
 	reviewer string
+	// verdict is the verdict App's id this test's listener was built with, "" for none:
+	// startListener gives it to the webhook handler, as cmd/listener does.
+	verdict string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
@@ -232,7 +235,7 @@ func (h *harness) startListener() {
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.verdict, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a

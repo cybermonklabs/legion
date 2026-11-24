@@ -73,7 +73,7 @@ func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervis
 		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,
 		RefreshGate:    supervise.NewRefreshGate(0),
-		WakePace:       supervise.WakePace{Reserve: r.limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst},
+		WakePace:       wakePaceOf(r.limiter),
 	}
 	t.Cleanup(r.sup.stop)
 	unfinished, err := r.sup.restore(context.Background(), r.claims)

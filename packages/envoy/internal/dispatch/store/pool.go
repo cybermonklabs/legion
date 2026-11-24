@@ -708,8 +708,9 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
 // copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
+// pg_stat_activity, or keep the shared pool's name when it is empty. The copy keeps the shared
+// pool's tracer, so its connections give back a large statement's arguments on release too
+// (argumentReleaser). Its caller holds mu and has checked the pool is not closed for it.
 func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
 	if *field != nil {
 		return *field, nil

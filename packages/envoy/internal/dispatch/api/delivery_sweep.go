@@ -45,10 +45,10 @@ import (
 // comment no longer holds its mention, and one whose document is no longer a project's, which the
 // comment's owner check refuses for good (ownerStatus). A closed issue is not one of them: a
 // message and a comment on a closed issue are delivered like any other (lockIssue,
-// lockedCommentForDelivery), so an attempt stranded on an issue that closed under it is sent, not
-// settled. A settle fails the attempt with its cause and appends the receipt its row owes, in a
-// transaction of its own that takes the owner's lock first and judges the cause again under it, so
-// a comment that holds its mention again keeps its attempt owed. A document-gone attempt has no
+// lockedCommentAllowingClosed), so an attempt stranded on an issue that closed under it is sent,
+// not settled. A settle fails the attempt with its cause and appends the receipt its row owes, in
+// a transaction of its own that takes the owner's lock first and judges the cause again under it,
+// so a comment that holds its mention again keeps its attempt owed. A document-gone attempt has no
 // owner left to take that lock or that receipt, so its settle fails and the pass logs it. A pass
 // settles every such attempt before it sends anything, and its reads of what to send leave every
 // one of them out, settled or not, so however many accumulate - a deploy can strand a delivery in

@@ -456,12 +456,15 @@ export function microsecondsOf(time: string): number | null {
  * comment whose body starts with `CLAIM_RUN_START`, and the first such reply, by the time Dispatch
  * recorded it, is the claim run: a run reads only when `APPROVAL_EVAL_CLAIM_RUN` names that reply's
  * id. A second claim run starts with a later reply, so it is refused, and the refusal names the
- * first, whose read spent the final test. Dispatch's API has no route that deletes a comment; a
- * reply edited after it was written is refused whole, since an edit can change which start came
- * first. A run that resumes the claim run names the same reply, so the code cannot tell a resume
- * from a second run made under that id: the start reply is the record of which run read the
- * final test. A thread Dispatch does not serve is refused too, and so are two starts at the
- * earliest time Dispatch recorded: no order of theirs is on record.
+ * first, whose read spent the final test. A reply its author deleted keeps its place and loses its
+ * words, so it may have been a start: it counts as one where it stands in the order, and when it
+ * is the first, every run is refused, since the run it may have started is the claim run and its
+ * start, the record of that run, is gone. A reply edited after it was written is refused whole,
+ * since an edit can change which start came first. A run that resumes the claim run names the
+ * same reply, so the code cannot tell a resume from a second run made under that id: the start
+ * reply is the record of which run read the final test. A thread Dispatch does not serve is
+ * refused too, and so are two starts at the earliest time Dispatch recorded: no order of theirs
+ * is on record.
  *
  * The claim run's build asks it (`build-corpus.ts`) and records the reply in `snapshot.json`;
  * every later command of the run reads only that build's corpus, and only while
@@ -502,14 +505,15 @@ export async function claimRunOf(
         "registration: claim.ts registers the read anew",
     };
   }
+  const deleted = (reply: CommentReply) => typeof reply.deleted_at === "string";
   const starts = replies
-    .filter((reply) => reply.body.trimStart().startsWith(CLAIM_RUN_START))
+    .filter((reply) => deleted(reply) || reply.body.trimStart().startsWith(CLAIM_RUN_START))
     .map((reply) => ({ reply, at: microsecondsOf(reply.created_at) }));
   const untimed = starts.find((start) => start.at === null);
   if (untimed !== undefined) {
     return {
       kind: "refused",
-      reason: `start reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
+      reason: `${deleted(untimed.reply) ? "deleted" : "start"} reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
     };
   }
   starts.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
@@ -523,28 +527,42 @@ export async function claimRunOf(
     };
   }
   if (next !== undefined && next.at === first.at) {
+    const both = deleted(first.reply) || deleted(next.reply) ? "replies" : "start replies";
     return {
       kind: "refused",
       reason:
-        `start replies ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
+        `${both} ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
         `time, ${first.reply.created_at}, so no start can be shown first: claim.ts registers the ` +
         "read anew",
+    };
+  }
+  if (deleted(first.reply)) {
+    return {
+      kind: "refused",
+      reason:
+        `reply ${first.reply.id} to ${reference}, written at ${first.reply.created_at}, before ` +
+        `any start reply that is not deleted, was deleted at ${first.reply.deleted_at}: its words ` +
+        "are gone, so it may have started the claim run, whose read spent the final test, and no " +
+        "run reads the reserve under this registration: claim.ts registers the read anew",
     };
   }
   const id = named?.trim() ?? "";
   if (id === first.reply.id) return { kind: "claim", id };
   const second = starts.find((start) => start.reply.id === id);
+  let why = `${CLAIM_RUN_VARIABLE} names ${id}, which is no start reply to it`;
+  if (id === "") why = `${CLAIM_RUN_VARIABLE} is not set`;
+  else if (second !== undefined && deleted(second.reply)) {
+    why = `${CLAIM_RUN_VARIABLE} names ${id}, a later reply deleted at ${second.reply.deleted_at}`;
+  } else if (second !== undefined) {
+    why = `${CLAIM_RUN_VARIABLE} names ${id}, a later start, at ${second.reply.created_at}`;
+  }
   return {
     kind: "refused",
     reason:
       `the claim run under ${reference} is reply ${first.reply.id}, started at ` +
       `${first.reply.created_at}, and its read spent the final test: a second claim run makes it ` +
       'development data (dispatch://INFRA-3189, "Data sets"). ' +
-      (id === ""
-        ? `${CLAIM_RUN_VARIABLE} is not set`
-        : second === undefined
-          ? `${CLAIM_RUN_VARIABLE} names ${id}, which is no start reply to it`
-          : `${CLAIM_RUN_VARIABLE} names ${id}, a later start, at ${second.reply.created_at}`),
+      why,
   };
 }
 
