@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -662,7 +663,7 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 
 // A refused plan's answer has a bound in bytes, whatever the plan holds. It names the first
 // plan.MostReasons reasons of each kind of cause and counts the rest of the kind in one more; a
-// task id is at most plan.MostTaskIDBytes, since a longer one is refused by one reason of its own;
+// task id is at most steprecord.TaskIDMax, since a longer one is refused by one reason of its own;
 // each other word of the plan a reason quotes is cut to plan.MostQuotedBytes and marked; and a
 // reason lists at most plan.MostReasons task ids. Three versions below are one `plan_task` block
 // whose one attribute holds 1 MiB of words, the most a Dispatch document holds as its server
@@ -686,8 +687,8 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 	// plan.MostReasons pairs of task ids, `<id> needs <id>, ` (a cycle's chain), which is longer
 	// than a word cut to plan.MostQuotedBytes with its mark. perLongKind is plan.MostReasons such
 	// reasons and a count, each written twice with its task id and its JSON.
-	const longReason = 300 + plan.MostReasons*(2*plan.MostTaskIDBytes+len(" needs , "))
-	const perLongKind = (plan.MostReasons + 1) * (2*longReason + plan.MostTaskIDBytes + 50)
+	const longReason = 300 + plan.MostReasons*(2*steprecord.TaskIDMax+len(" needs , "))
+	const perLongKind = (plan.MostReasons + 1) * (2*longReason + steprecord.TaskIDMax + 50)
 	const mib = 1 << 20
 	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
 	digits := func(i int, alphabet string, n int) string {
@@ -782,8 +783,10 @@ func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
 // check of the default steps, config/stage3.go): Supported's reasons, then Validate's, each check
 // bounding its own kinds. A plan with causes of both checks, past the bound in each, is answered
 // with exactly append(plan.Supported(p), plan.Validate(p, d)...) of the plan FromBlocks reads from
-// the same blocks, so a route that joins them any other way, through one collector of its own or
-// in another order, fails here. The control is the route with the two checks in the other order.
+// the same blocks, so a route that joins them in another order fails here. The two checks share no
+// kind of cause, so a join that collects both and bounds each kind gives this same list and passes:
+// that there is no second copy of the join is a property of the code, which review holds. The
+// control is the route with the two checks in the other order.
 func TestRegisterPlanJoinsItsChecksAsEveryCallerDoes(t *testing.T) {
 	steps := strings.TrimSuffix(strings.Repeat("tester:k ", 25), " ")
 	needs := make([]string, 25)
@@ -811,6 +814,89 @@ func TestRegisterPlanJoinsItsChecksAsEveryCallerDoes(t *testing.T) {
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("a refused registration recorded %#v, want nothing", got)
+	}
+}
+
+// plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
+// redact package's tests write theirs: a user name with no password, which a secret scanner takes
+// for no credential, and which redact.URLCredentials removes as it removes a password or a token.
+// plantedURL carries it, and redactedURL is what the URL rule leaves of plantedURL, still past
+// plan.MostQuotedBytes, so a reason quotes it cut.
+var (
+	plantedUser = strings.Repeat("planted-reader-", 20)
+	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
+	redactedURL = "https://h.example/" + strings.Repeat("p", 200)
+)
+
+// credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds
+// none.
+func credentialIn(text string) string {
+	for at := 0; at+6 <= len(plantedUser); at++ {
+		if part := plantedUser[at : at+6]; strings.Contains(text, part) {
+			return part
+		}
+	}
+	return ""
+}
+
+// register_plan's answer to a plan whose words carry a URL with a credential holds no byte of the
+// credential, in its `error` and in each of its `reasons`, however long the word: the plan
+// package reads each word it quotes whole through the URL rule before it cuts it, so the route's
+// own redaction of `error` has nothing left to find, and `reasons`, which the route writes as they
+// came, holds what the rule left. A need, a step whose role is the URL, a step whose key is the
+// URL, a task block's id, a role block's id and one id on two blocks each carry plantedURL. Each
+// answer quotes redactedURL cut and marked, in a reason of the task named and in the sentence, and
+// holds no run of six bytes of plantedUser. The fault is a cut made before the rule, which ends
+// inside the userinfo, before its "@", so the route's redaction of `error` finds no userinfo and
+// `reasons` are never redacted; the control is the plan package's quoted cutting first, under
+// which each answer keeps 120 bytes of plantedUser in both.
+func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:plan.MostQuotedBytes], len(word))
+	}
+	quote := cut(redactedURL)
+	roleBlock := dispatch.DocumentBlock{ID: plantedURL, Type: plan.RoleBlockType, Attributes: map[string]string{}}
+	for _, tc := range []struct {
+		name   string
+		blocks []dispatch.DocumentBlock
+		task   string // the task of the reason that quotes the word
+		quote  string
+	}{
+		{"a need", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), plantedURL)}, "a", quote},
+		{"a step whose role is the URL", []dispatch.DocumentBlock{taskBlock("a", plantedURL)}, "", quote},
+		{"a step whose key is the URL", []dispatch.DocumentBlock{taskBlock("a", "implementer reviewer:"+plantedURL)}, "", cut("reviewer:" + redactedURL)},
+		{"a task block's id", []dispatch.DocumentBlock{taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+		{"a role block's id", []dispatch.DocumentBlock{roleBlock, taskBlock("a", "implementer reviewer")}, "", quote},
+		{"one id on two blocks", []dispatch.DocumentBlock{roleBlock, taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			if answer.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body %.2000s", answer.Code, answer.Body)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || !strings.Contains(refusal.Error, tc.quote) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+				return reason.Task == tc.task && strings.Contains(reason.Reason, tc.quote)
+			}) {
+				t.Fatalf("refusal %.3000v, want PLAN_REFUSED quoting %.300q in its sentence and in a reason of task %q", refusal, tc.quote, tc.task)
+			}
+			if part := credentialIn(refusal.Error); part != "" {
+				t.Errorf("`error` %.2000q holds %q of the URL's credential", refusal.Error, part)
+			}
+			for _, reason := range refusal.Reasons {
+				if part := credentialIn(reason.Reason); part != "" {
+					t.Errorf("the reason %.2000q holds %q of the URL's credential", reason.Reason, part)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
 	}
 }
 
