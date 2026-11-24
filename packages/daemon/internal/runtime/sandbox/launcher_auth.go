@@ -27,9 +27,9 @@ type launcherCredential struct {
 
 // launcherCredentials are the launcher Secrets the runtime holds, by name and then by the UID of
 // the Sandbox each was read or bound for, so a Sandbox's entry is never another's of the same
-// name; the reads of them, one at a time per Secret of a Sandbox (launcherCredential); and the
-// bindings of a pod's at a hello, one at a time per role and token of the pod's hellos
-// (bindAtHello).
+// name; the reads of them, one flight per Secret of a Sandbox (launcherCredential); and the
+// bindings of a pod's at a hello, one flight per pod, role and token, serialized by the pod's
+// launch turn (bindAtHello).
 type launcherCredentials struct {
 	mu      sync.Mutex
 	secrets map[string]map[types.UID]launcherCredential
@@ -260,13 +260,18 @@ func (r *Runtime) launcherCredential(ctx context.Context, s *sandbox, role claim
 	if credential, held := r.launcherAuth.lookup(name, s.UID); held {
 		return credential, nil
 	}
-	key := name + "/" + string(s.UID)
+	key := credentialKey(name, s.UID)
 	read, err := r.launcherAuth.reads.do(ctx, r.now, key, key, func() (any, error) { return r.readLauncherCredential(s, name) })
 	if err != nil {
 		return launcherCredential{}, fmt.Errorf("launcher Secret %s: %w", name, err)
 	}
 	return read.(launcherCredential), nil
 }
+
+// credentialKey is what the read of the launcher Secret name of the Sandbox with uid is held under
+// (heldOffCalls): the name alone would have a deleted Sandbox's failed read hold off its same-name
+// successor's.
+func credentialKey(name string, uid types.UID) string { return name + "/" + string(uid) }
 
 // readLauncherCredential reads the launcher Secret name of s and stores its credential, or logs
 // that the read failed. It runs for the runtime's lifetime rather than any one hello's, so its wait
@@ -317,13 +322,14 @@ func bindable(s *sandbox, pod *corev1.Pod) bool {
 // before it: its launchers hold each role's current token and name a pod no Secret binds. A pod
 // that is not bindable is declined without a request (errNotBindable).
 //
-// The binding is a heldOffCalls call held under the pod, one per role and token of the pod's
-// hellos: a launcher's hellos join the binding its first began, and each binding checks its own
+// The binding is a heldOffCalls call, one flight per pod, role and token, serialized by the pod's
+// launch turn: a launcher's hellos join the flight its first began, and each flight checks its own
 // hello's token against the role's Secret before it writes anything (bindCurrentPod), so no hello
-// joins a binding another token's check began. The first binding writes every Secret of the pod
-// not yet bound to it; one that overlaps it finds the pod's launch turn held and is declined, and
-// its launcher's next hello, a second later, finds the pod bound. A binding that failed holds the
-// pod off for credentialRetry, whatever role or token says hello next.
+// joins a flight another role's or token's check began. Flights of one pod run one at a time under
+// its launch turn: the first writes every Secret of the pod not yet bound to it, one that overlaps
+// it finds the turn held and is declined, and that launcher's next hello, a second later, finds
+// the pod bound. A binding that failed holds the pod off for credentialRetry, whatever role or
+// token says hello next.
 func (r *Runtime) bindAtHello(ctx context.Context, s *sandbox, pod *corev1.Pod, role claim.Role, hash [sha256.Size]byte) error {
 	if !bindable(s, pod) {
 		return errNotBindable
@@ -365,21 +371,21 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 	defer release()
 	ctx, cancel := context.WithTimeout(r.lifetime, r.helloBindBound)
 	defer cancel()
+	failed := func(err error) error {
+		r.log.Warn("sandbox runtime: binding the role launchers of a pod made outside a launch failed; its launchers' hellos are refused until a binding lands",
+			"sandbox", name, "pod", podUID, "bindAgainAfter", credentialRetry, "err", err)
+		return err
+	}
 	v, err := r.view(name)
 	if err != nil {
-		return err
+		return failed(fmt.Errorf("read sandbox %s and its pod from the stores: %w", name, err))
 	}
 	if v.sandbox == nil || v.sandbox.UID != sandboxUID || v.pod == nil || v.pod.UID != podUID || !bindable(v.sandbox, v.pod) {
 		return errNotBindable
 	}
 	kind, err := podKindOf(v.sandbox.Labels)
 	if err != nil {
-		return err
-	}
-	failed := func(err error) error {
-		r.log.Warn("sandbox runtime: binding the role launchers of a pod made outside a launch failed; its launchers' hellos are refused until a binding lands",
-			"sandbox", name, "pod", podUID, "bindAgainAfter", credentialRetry, "err", err)
-		return err
+		return failed(fmt.Errorf("sandbox %s's pod: %w", name, err))
 	}
 	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(name, role), metav1.GetOptions{})
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,10 +15,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // secretRequests are the requests of g's runtime on Secrets, reads included, in order.
@@ -28,6 +32,18 @@ func secretRequests(g *rig) []action {
 		}
 	}
 	return secrets
+}
+
+// wantBound fails the test unless the launcher Secret of each of roles in the Sandbox name binds
+// the pod with uid pod.
+func wantBound(t *testing.T, g *rig, name, pod string, roles ...claim.Role) {
+	t.Helper()
+	for _, role := range roles {
+		secret := roleSecretName(name, role)
+		if bound := g.secret(secret).Annotations[launcherPodUIDAnnotation]; bound != pod {
+			t.Fatalf("%s binds pod %q, want %q", secret, bound, pod)
+		}
+	}
 }
 
 // A pod the Agent Sandbox controller recreated outside a launch projects the role Secrets the
@@ -53,13 +69,10 @@ func TestAPodTheControllerRecreatedIsBoundAtItsLaunchersHello(t *testing.T) {
 	}
 	tester := redial(t, g, spec.Claim, 0, false)
 
+	wantBound(t, g, name, recreated, claim.Roles...)
 	var want []string
 	for _, role := range claim.Roles {
-		secret := roleSecretName(name, role)
-		want = append(want, secret)
-		if bound := g.secret(secret).Annotations[launcherPodUIDAnnotation]; bound != recreated {
-			t.Errorf("%s binds pod %q, want the recreated pod %q", secret, bound, recreated)
-		}
+		want = append(want, roleSecretName(name, role))
 	}
 	if updated := secretUpdates(g.writes()); !slices.Equal(slices.Sorted(slices.Values(updated)), slices.Sorted(slices.Values(want))) {
 		t.Fatalf("the hellos updated %v, want each role Secret of the pod once: %v", updated, want)
@@ -123,14 +136,9 @@ func TestAHelloBindsNoPodButTheSandboxsCurrentLiveOne(t *testing.T) {
 				t.Fatalf("the hello from %s was accepted (reason %q)", stranger, reason)
 			}
 			if requests := secretRequests(g); len(requests) > 0 {
-				t.Errorf("the refused hello sent %v", requests)
+				t.Fatalf("the refused hello sent %v", requests)
 			}
-			for _, role := range claim.Roles {
-				secret := roleSecretName(name, role)
-				if bound := g.secret(secret).Annotations[launcherPodUIDAnnotation]; bound != first.Sandbox.PodUID {
-					t.Errorf("%s binds pod %q, want the launch's binding of %q left as it was", secret, bound, first.Sandbox.PodUID)
-				}
-			}
+			wantBound(t, g, name, first.Sandbox.PodUID, claim.Roles...)
 		})
 	}
 }
@@ -161,11 +169,7 @@ func TestABindingAtAHelloChecksTheTokenItsSecretHoldsNow(t *testing.T) {
 	if updated := secretUpdates(g.writes()); len(updated) > 0 {
 		t.Fatalf("the refused hello updated %v, want no Secret written", updated)
 	}
-	for _, role := range claim.Roles {
-		if bound := g.secret(roleSecretName(name, role)).Annotations[launcherPodUIDAnnotation]; bound != first.Sandbox.PodUID {
-			t.Errorf("%s binds pod %q, want the launch's binding of %q left as it was", roleSecretName(name, role), bound, first.Sandbox.PodUID)
-		}
-	}
+	wantBound(t, g, name, first.Sandbox.PodUID, claim.Roles...)
 
 	g.clearActions()
 	if handler, _, reason := accept(stale); handler != nil {
@@ -177,9 +181,7 @@ func TestABindingAtAHelloChecksTheTokenItsSecretHoldsNow(t *testing.T) {
 	if handler, _, reason := accept(rigLauncherHello(g, name, recreated, claim.RoleTester)); handler == nil {
 		t.Fatalf("the hello with the token the Secret holds was refused: %s", reason)
 	}
-	if bound := g.secret(secret).Annotations[launcherPodUIDAnnotation]; bound != recreated {
-		t.Fatalf("%s binds pod %q, want the recreated pod %q", secret, bound, recreated)
-	}
+	wantBound(t, g, name, recreated, claim.RoleTester)
 }
 
 // A launch, a suspension or a release that holds a pod's launch turn decides the pod itself, so a
@@ -196,11 +198,9 @@ func TestAHelloBindsNoPodWhoseLaunchTurnIsHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.clearActions()
-	accept := g.r.LauncherResolver()
 
-	refused := helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleTester))
 	select {
-	case reason := <-refused:
+	case reason := <-helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleTester)):
 		if reason == "" {
 			t.Fatal("the hello was accepted while its pod's launch turn was held")
 		}
@@ -208,36 +208,81 @@ func TestAHelloBindsNoPodWhoseLaunchTurnIsHeld(t *testing.T) {
 		t.Fatal("the hello waited for its pod's held launch turn")
 	}
 	if requests := secretRequests(g); len(requests) > 0 {
-		t.Errorf("the hello refused under the held turn sent %v", requests)
+		t.Fatalf("the hello refused under the held turn sent %v", requests)
 	}
 
 	release()
-	if handler, _, reason := accept(rigLauncherHello(g, name, recreated, claim.RoleTester)); handler == nil {
+	if handler, _, reason := g.r.LauncherResolver()(rigLauncherHello(g, name, recreated, claim.RoleTester)); handler == nil {
 		t.Fatalf("the hello after the turn was given back was refused: %s", reason)
 	}
-	if bound := g.secret(roleSecretName(name, claim.RoleTester)).Annotations[launcherPodUIDAnnotation]; bound != recreated {
-		t.Fatalf("the tester's Secret binds pod %q, want the recreated pod %q", bound, recreated)
+	wantBound(t, g, name, recreated, claim.RoleTester)
+}
+
+// A binding at a hello that cannot read its pod from the stores, whose feeds the API server
+// refuses, fails as a failed request does: it is logged, as docs/kubernetes.md says every binding
+// that fails is, and it is not declined, so it holds the pod off (heldOffCalls).
+func TestABindingAtAHelloThatCannotReadItsPodIsLogged(t *testing.T) {
+	logs := &lockedLog{}
+	g := newRig(t, nil, withBreakableFeeds(), withOptions(func(o *Options) { o.Log = slogTo(logs) }))
+	first := g.spawn(workerSpec(t))
+	name := first.Sandbox.Name
+	recreated := g.recreatePod(name, first.Sandbox.PodUID)
+	sandboxUID := g.sandbox(name).UID
+	hash := sha256.Sum256(g.secret(roleSecretName(name, claim.RoleTester)).Data[LauncherTokenFile])
+	g.refuseFeeds(apierrors.NewServiceUnavailable("the API server refuses the informers' lists and watches"))
+	testwait.Eventually(t, "the stores to refuse to answer", func() bool {
+		_, err := g.r.view(name)
+		return err != nil
+	})
+
+	err := g.r.bindCurrentPod(name, sandboxUID, types.UID(recreated), claim.RoleTester, hash)
+	if err == nil || errors.Is(err, errDeclined) {
+		t.Fatalf("the binding over stores that cannot answer = %v, want it failed", err)
+	}
+	if logged := logs.String(); !strings.Contains(logged, "sandbox runtime: binding the role launchers of a pod made outside a launch failed") {
+		t.Fatalf("the binding failed with %v and logged no failure", err)
 	}
 }
 
-// blockingLimiter is a client-side rate limiter that lets every request go until it is blocked,
-// and then holds each request until the request's context ends or the limiter is released, as a
-// limiter whose queue outlasts any caller's deadline does. waiting is told of the first request it
-// holds.
+// blockingLimiter is a client-side rate limiter that lets every request go until it is blocked.
+// Then it holds each request until the test has read what the request is held for (pass), and
+// after that until the request's context ends or the limiter is released, as a limiter whose queue
+// outlasts any caller's deadline does. waiting is told of the first request it holds.
 type blockingLimiter struct {
 	blocked  atomic.Bool
 	waiting  chan struct{}
+	checked  chan struct{}
 	released chan struct{}
+	passing  sync.Once
+	letting  sync.Once
 }
 
-func newBlockingLimiter() *blockingLimiter {
-	return &blockingLimiter{waiting: make(chan struct{}, 1), released: make(chan struct{})}
+// newBlockingLimiter is a blockingLimiter that t releases at its end, so no request it holds
+// outlives the test.
+func newBlockingLimiter(t *testing.T) *blockingLimiter {
+	l := &blockingLimiter{waiting: make(chan struct{}, 1), checked: make(chan struct{}), released: make(chan struct{})}
+	t.Cleanup(l.release)
+	return l
 }
+
+// awaitHeld waits until the limiter holds a request, failing the test after guard.
+func (l *blockingLimiter) awaitHeld(t *testing.T, guard time.Duration) {
+	t.Helper()
+	select {
+	case <-l.waiting:
+	case <-time.After(guard):
+		t.Fatal("no request reached the limiter to be held")
+	}
+}
+
+// pass lets each request it holds go on to wait for its context or the limiter's release.
+func (l *blockingLimiter) pass() { l.passing.Do(func() { close(l.checked) }) }
 
 // release lets every request it holds go, and every later one.
 func (l *blockingLimiter) release() {
 	l.blocked.Store(false)
-	close(l.released)
+	l.pass()
+	l.letting.Do(func() { close(l.released) })
 }
 
 func (l *blockingLimiter) Wait(ctx context.Context) error {
@@ -248,6 +293,7 @@ func (l *blockingLimiter) Wait(ctx context.Context) error {
 	case l.waiting <- struct{}{}:
 	default:
 	}
+	<-l.checked
 	select {
 	case <-l.released:
 		return nil
@@ -275,73 +321,81 @@ func helloAsync(g *rig, hello shimwire.LauncherHello) <-chan string {
 	return refused
 }
 
-// A binding at a hello checks the token of the hello that began it, so a hello of another role or
-// with another token never joins it: it begins a binding of its own, which finds the pod's launch
-// turn held by the one in flight and is refused at once rather than waiting on a binding that
-// checked another token. That launcher's next hello finds the pod the first binding bound. The
-// first binding is held in flight on the client's rate limiter.
+// A binding at a hello is one flight per pod, role and token: it checks the token of the hello
+// that began it, so a hello of another role, or of the same role with another token, never joins
+// it. That hello begins a binding of its own, which finds the pod's launch turn held by the one in
+// flight and is declined at once rather than waiting on a binding that checked another token. The
+// first binding is held in flight on the client's rate limiter, and the second is begun on the pod
+// the stores hold, as a hello that passed the resolver's own checks begins it. Once the first
+// binding goes on, its hello is accepted and every role's Secret binds the pod.
 func TestAHelloNeverJoinsABindingAnotherTokenBegan(t *testing.T) {
-	const guard = 10 * time.Second
-	limiter := newBlockingLimiter()
-	g := newRig(t, nil, withClientLimiter(limiter))
-	first := g.spawn(workerSpec(t))
-	name := first.Sandbox.Name
-	recreated := g.recreatePod(name, first.Sandbox.PodUID)
-	limiter.blocked.Store(true)
+	for label, second := range map[string]func(g *rig, name string) (claim.Role, [sha256.Size]byte){
+		"a hello of another role": func(g *rig, name string) (claim.Role, [sha256.Size]byte) {
+			return claim.RoleArchitect, sha256.Sum256(g.secret(roleSecretName(name, claim.RoleArchitect)).Data[LauncherTokenFile])
+		},
+		"a hello of the same role with another token": func(*rig, string) (claim.Role, [sha256.Size]byte) {
+			return claim.RoleTester, sha256.Sum256([]byte("another-launcher-token"))
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			const guard = 10 * time.Second
+			limiter := newBlockingLimiter(t)
+			g := newRig(t, nil, withClientLimiter(limiter))
+			first := g.spawn(workerSpec(t))
+			name := first.Sandbox.Name
+			recreated := g.recreatePod(name, first.Sandbox.PodUID)
+			limiter.blocked.Store(true)
 
-	tester := helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleTester))
-	select {
-	case <-limiter.waiting:
-	case <-time.After(guard):
-		t.Fatal("the tester's binding sent no request the limiter held")
-	}
-	select {
-	case reason := <-helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleArchitect)):
-		if reason == "" {
-			t.Fatal("the architect's hello was accepted while the tester's binding was in flight")
-		}
-	case <-time.After(guard):
-		t.Fatal("the architect's hello waited on the binding the tester's hello began, which checked the tester's token alone")
-	}
+			tester := helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleTester))
+			limiter.awaitHeld(t, guard)
+			v, err := g.r.view(name)
+			if err != nil || v.pod == nil || string(v.pod.UID) != recreated {
+				t.Fatalf("the stores hold pod %v (%v), want the recreated pod %s", v.pod, err, recreated)
+			}
+			role, hash := second(g, name)
+			joining, cancel := context.WithTimeout(g.ctx, guard)
+			defer cancel()
+			if err := g.r.bindAtHello(joining, v.sandbox, v.pod, role, hash); !errors.Is(err, errTurnHeld) {
+				t.Fatalf("the %s binding with another token answered %v, want it declined at once for the turn the tester's binding holds", role, err)
+			}
 
-	limiter.release()
-	select {
-	case reason := <-tester:
-		if reason != "" {
-			t.Fatalf("the tester's hello was refused once its binding went on: %s", reason)
-		}
-	case <-time.After(guard):
-		t.Fatal("the tester's hello was not answered once its binding went on")
-	}
-	if handler, _, reason := g.r.LauncherResolver()(rigLauncherHello(g, name, recreated, claim.RoleArchitect)); handler == nil {
-		t.Fatalf("the architect's next hello was refused after the tester's binding bound the pod: %s", reason)
+			limiter.release()
+			select {
+			case reason := <-tester:
+				if reason != "" {
+					t.Fatalf("the tester's hello was refused once its binding went on: %s", reason)
+				}
+			case <-time.After(guard):
+				t.Fatal("the tester's hello was not answered once its binding went on")
+			}
+			wantBound(t, g, name, recreated, claim.Roles...)
+		})
 	}
 }
 
 // A binding at a hello holds its pod's launch turn no longer than its deadline (helloBindBound):
 // its requests waiting on a client rate limiter that would hold them past it are cancelled there,
 // the turn is given back, and the hello is refused, so a launch waiting for the turn waits at most
-// that long. The rig's bound is a fraction of the hang guard here; the deployment's is apiTimeout.
+// that long. The limiter holds the binding's first request until the test has seen the turn held,
+// whatever the deadline, and then lets it go on to its deadline. The rig's bound is a fraction of
+// the hang guard here; the deployment's is apiTimeout.
 func TestABindingAtAHelloGivesItsPodsTurnBackAtItsDeadline(t *testing.T) {
-	limiter := newBlockingLimiter()
+	const bound, guard = 200 * time.Millisecond, 10 * time.Second
+	limiter := newBlockingLimiter(t)
 	g := newRig(t, nil, withClientLimiter(limiter))
 	first := g.spawn(workerSpec(t))
 	name := first.Sandbox.Name
 	recreated := g.recreatePod(name, first.Sandbox.PodUID)
-	const bound, guard = 200 * time.Millisecond, 10 * time.Second
 	g.r.helloBindBound = bound
 	limiter.blocked.Store(true)
 
 	refused := helloAsync(g, rigLauncherHello(g, name, recreated, claim.RoleTester))
-	select {
-	case <-limiter.waiting:
-	case <-time.After(guard):
-		t.Fatal("the hello's binding sent no request the limiter held")
-	}
+	limiter.awaitHeld(t, guard)
 	if release, free := g.r.tryLockPod(name); free {
 		release()
 		t.Fatal("the pod's launch turn was free while its binding's request waited, so this test proves nothing")
 	}
+	limiter.pass()
 
 	taking, cancel := context.WithTimeout(g.ctx, guard)
 	defer cancel()
@@ -402,10 +456,5 @@ func TestABindingAtAHelloThatFailedWaitsOutTheRetryInterval(t *testing.T) {
 	if handler, _, reason := accept(rigLauncherHello(g, name, recreated, claim.RoleTester)); handler == nil {
 		t.Fatalf("the tester's hello after the retry interval was refused: %s", reason)
 	}
-	for _, role := range claim.Roles {
-		secret := roleSecretName(name, role)
-		if bound := g.secret(secret).Annotations[launcherPodUIDAnnotation]; bound != recreated {
-			t.Errorf("%s binds pod %q, want the recreated pod %q", secret, bound, recreated)
-		}
-	}
+	wantBound(t, g, name, recreated, claim.Roles...)
 }

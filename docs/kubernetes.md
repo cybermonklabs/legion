@@ -8673,8 +8673,8 @@ The first such hello binds each role's Secret of the pod to that pod, and the la
 The daemon logs `sandbox runtime: bound the role launchers of a pod made outside a launch to that pod`.
 It writes each Secret once for the pod, however many of its launchers say hello, and the roles' next launches keep the pod.
 Before it writes anything, it reads the hello's role Secret again and checks the hello's token against the token that Secret holds now, not against the copy the daemon keeps.
-Each role and token gets its own binding, and a hello never waits on a binding that another token started.
-While a launch, a suspension, a release or another binding holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
+Each pod, role and token gets one binding flight of its own, and a hello never waits on a flight that another role or token started; the flights of one pod run one at a time, serialized by the pod's launch turn.
+While a launch, a suspension, a release or another binding flight holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
 A binding holds the turn for at most 30 s: at that deadline its requests are cancelled and the turn is given back, and each Secret it bound by then stays bound.
 A binding that fails is logged (`sandbox runtime: binding the role launchers of a pod made outside a launch failed; …`) and is not tried again for that pod for 10 s.
 The daemon reads each Secret by name because its RBAC grants `get` and never `list` on Secrets (next section).

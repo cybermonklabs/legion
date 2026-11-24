@@ -475,7 +475,7 @@ func TestALauncherSecretsHoldOffAndCredentialAreItsSandboxsAlone(t *testing.T) {
 			return launcherCredential{}, nil
 		}
 	}
-	old, later := name+"/uid-old", name+"/uid-new"
+	old, later := credentialKey(name, "uid-old"), credentialKey(name, "uid-new")
 	if _, err := c.reads.do(context.Background(), now, old, old, read(true)); err == nil {
 		t.Fatal("the failing read answered no error")
 	}
