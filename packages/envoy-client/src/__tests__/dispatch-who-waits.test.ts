@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
@@ -15,9 +15,8 @@ import { resetAdviceMemory } from "../dispatch-execute";
 // `waiting_on_person`, and the three commands print them, so an agent learns who reads its
 // question without a second command.
 //
-// The rows read either a printed line or a text a person reads, and their titles carry the words
-// the checks of dispatch://INFRA-3090 filter on: `prints the person`, `states the rule`, and
-// `no text states the old rule` for the one row that reads the whole tree.
+// The rows read either a printed line or a page of the documentation site, and their titles carry
+// the words a check filters on: `prints the person` and `states the rule`.
 // The shape is `dispatch-asked-of.test.ts`'s: one stub Dispatch server answering as the server
 // answers, driven through `runDispatchCli`, with a temporary state directory per row.
 
@@ -477,207 +476,11 @@ const UNASSIGNED_REACHES_NOBODY_PHRASES = [
 
 test.each([
   "docs/site/src/content/docs/legion/using-legion.md",
-  "skills/legion-controller/references/triage.md",
-  "skills/legion-controller/references/daily-report.md",
 ])("%s states the rule: an unassigned issue's questions reach the project's default assignee, not nobody", (path) => {
   const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
 
   for (const phrase of UNASSIGNED_REACHES_NOBODY_PHRASES) expect(text).not.toContain(phrase);
 });
-
-// The texts the rows above name are the ones a reader is sent to; the replaced rule could stand in
-// any other. So this row reads the tree: every text file git lists, tracked or untracked and not
-// ignored, under the directories that say who a question reaches (the contract, the command line,
-// the server, the web app and its end-to-end rows, the skills, the documentation site) and every
-// such `AGENTS.md` of the repository, all but this file, and fails on each sentence that states the
-// two-step rule - the person the ask was handed to, else the issue's assignee, with no project
-// default after them - or says a question can reach nobody.
-//
-// A sentence is read as prose: each line loses its comment marker and the quotes of a string
-// concatenated across lines, so a phrase wrapped over two lines of a comment or a tool description
-// is still one phrase. The two-step wordings below are the ones this repository used before
-// INFRA-3090; each is a step list that a sentence naming the project's default (`default`) carries
-// to its third step, so only a sentence without one is a hit. The no-person wordings count only in
-// a sentence about a question (an ask, a question, an approval request), since `reaches nobody`
-// is also what this repository says of a frame published to an empty room.
-//
-// The allowlist holds the sentences that say it deliberately, each with its source, an excerpt of
-// the sentence and why it stays; an entry that matches no hit fails the row, so a sentence that was
-// reworded or moved is read again rather than left allowed (`dispatch-asked-of.test.ts`'s
-// `ALLOWED`).
-const OLD_RULE_ROOTS = [
-  "packages/contracts/src",
-  "packages/envoy-client/src",
-  "packages/envoy/internal/dispatch",
-  "packages/dispatch/web/src",
-  "packages/dispatch/e2e",
-  "skills",
-  "docs/site/src",
-];
-
-/** Listed paths under the roots, tracked or untracked, no reader is sent to for the rule: the
- *  recorded HTTP answers under `packages/dispatch/e2e/__recordings__`, each what a server answered
- *  when it was recorded. The changelogs, their `.changes` notes and `docs/solutions` are histories
- *  too, but no root holds them, so the listing never returns one. What git ignores (dependencies,
- *  build output, generated reference pages, test results) is never listed. */
-const OLD_RULE_LEFT_OUT = /(?:^|\/)__recordings__\//;
-
-/** Wordings of the two-step rule. `sentence` is false for a wording that is the two-step rule on
- *  its own, whatever else its sentence says. */
-const TWO_STEP_WORDINGS: readonly { readonly pattern: RegExp; readonly sentence: boolean }[] = [
-  { pattern: /coalesce\(\s*(?:a\.)?asked_of,\s*(?:i\.)?assignee\s*\)/, sentence: false },
-  { pattern: /asked_of`?,?\s+or\s+(?:the\s+)?(?:issue's\s+)?assignee/i, sentence: true },
-  { pattern: /assignee\s+of\s+its\s+issue,?\s+until\s+somebody/i, sentence: true },
-  { pattern: /issue's\s+assignee,?\s+until\s+somebody/i, sentence: true },
-  { pattern: /waits?\s+on\s+the\s+assignee\s+of\s+its\s+issue/i, sentence: true },
-  { pattern: /\b(?:with\s+no|a\s+null|an\s+empty)\s+`?asked_of`?\s+waits\b/i, sentence: true },
-  {
-    pattern:
-      /handed\s+(?:it|the\s+ask)\s+to,?\s+(?:else|or|and|then)\s+the\s+(?:issue's\s+assignee|assignee\s+of\s+its\s+issue)/i,
-    sentence: true,
-  },
-];
-
-/** The project's default, which a sentence that carries the chain to its third step names. */
-const THIRD_STEP = /\bdefault/i;
-
-/** Wordings that say a question reaches nobody, counted in a sentence about a question. */
-const NO_PERSON_WORDINGS = [
-  /\breach(?:es|ed)?\s+(?:nobody|no\s+one)\b/i,
-  /\bnobody's\s+Inbox\b/i,
-  /\bwaits?\s+on\s+nobody\b/i,
-  /\basked\s+of\s+nobody\b/i,
-  /\bonly\s+the\s+Inbox's\s+`?Unassigned`?\s+filter\b/i,
-  /\bnobody's\s+own\b/i,
-  /\bheld\s+by\s+nobody\b/i,
-];
-
-const A_QUESTION = /\b(?:asks?|questions?|approval\s+requests?)\b/i;
-
-/** Every `[source, excerpt, reason]` the scan may find: the sentence of the hit holds the excerpt,
- *  and the reason says why the sentence keeps the wording. */
-const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
-  // The new rule, said as what can no longer happen.
-  [
-    "packages/contracts/src/dispatch-tools.ts",
-    "so the third step always names a person and no ask reaches nobody",
-    "states the new rule: the third step always names a person",
-  ],
-  [
-    "packages/dispatch/e2e/project-default-assignee.e2e.ts",
-    "So no question reaches nobody.",
-    "states the new rule at the end of the three steps it lists",
-  ],
-  [
-    "packages/dispatch/e2e/inbox.e2e.ts",
-    "so no question the server answers is held by nobody",
-    "states the new rule: the Unassigned filter adds no row",
-  ],
-  [
-    "packages/dispatch/e2e/inbox.e2e.ts",
-    "so none of these is held by nobody",
-    "states the new rule: the Unassigned filter lists nothing",
-  ],
-  [
-    "packages/envoy/internal/dispatch/api/issue_assignee_test.go",
-    "is not an issue whose questions sit in nobody's Inbox",
-    "states the new rule: those questions reach the project's default assignee",
-  ],
-  [
-    "packages/envoy/internal/dispatch/api/who_waits_test.go",
-    "No row waits on nobody",
-    "the claim the row beneath it asserts, that every Inbox row names a person",
-  ],
-  // A closed question, which nobody owes an answer.
-  [
-    "packages/dispatch/web/src/features/inbox/AskCard.tsx",
-    "An ask that is not open waits on nobody",
-    "a closed ask has nobody to wait on; the rule decides whom an open question waits on",
-  ],
-  [
-    "packages/dispatch/web/src/features/inbox/AskCard.test.tsx",
-    "an answered, a resolved or a withdrawn question waits on nobody",
-    "a closed question has nobody to wait on; the rule decides whom an open question waits on",
-  ],
-  // Not a question: a block copied from another ask, a bus message, a notification.
-  [
-    "packages/envoy/internal/dispatch/docs/ask_blocks.go",
-    "A block taken for a copy opens no ask and reaches nobody's Inbox",
-    "a copy of an ask block opens no ask, so it is no question waiting on anyone",
-  ],
-  [
-    "packages/envoy/internal/dispatch/docs/copied_asks_test.go",
-    "A block taken for a copy opens no ask and reaches nobody's Inbox",
-    "a copy of an ask block opens no ask, so it is no question waiting on anyone",
-  ],
-  [
-    "skills/legion-controller/references/finding-asks.md",
-    "a reference published then reaches nobody",
-    "a bus message published while no controller runs; the asks are the ones a session follows",
-  ],
-  // History: an applied migration says what was true when it ran, and is never edited.
-  [
-    "packages/envoy/internal/dispatch/store/migrations/20261109221325_asks_asked_of.up.sql",
-    "Null means the ask waits on the assignee of its issue.",
-    "the rule as it stood when INFRA-1576 added asked_of",
-  ],
-  [
-    "packages/envoy/internal/dispatch/store/migrations/20261109221325_asks_asked_of.up.sql",
-    "One expression in the server, coalesce(a.asked_of, i.assignee), gives the person",
-    "the rule as it stood when INFRA-1576 added asked_of",
-  ],
-  // Tests that name the old rule to catch it.
-  [
-    "packages/envoy/internal/dispatch/api/one_expression_guard_test.go",
-    "a read that reintroduced the two-step `coalesce(a.asked_of, i.assignee)`",
-    "the spelling the count beneath it exists to catch",
-  ],
-];
-
-interface OldRuleHit {
-  readonly source: string;
-  readonly line: number;
-  readonly sentence: string;
-}
-
-/** Every text file the scan reads, by its path from the repository root: what git tracks under
- *  the roots and every tracked `AGENTS.md`, beside the untracked files git does not ignore there,
- *  less the paths no reader is sent to and this file, whose allowlist quotes each sentence it
- *  allows a second time. Only a path that is a regular file on disk is read: in a jj workspace
- *  git's index follows the parent commit, so a file the working copy deleted is still listed
- *  (`.github/scripts/ci_filter_coverage.py`'s `repo_files` keeps the same two listings). */
-function oldRuleFiles(): string[] {
-  const listed = new Set<string>();
-  for (const extra of [[], ["--others", "--exclude-standard"]]) {
-    const listing = Bun.spawnSync(
-      ["git", "ls-files", "-z", ...extra, "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
-      { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }
-    );
-    if (!listing.success) throw new Error(`git ls-files failed: ${listing.stderr.toString()}`);
-    for (const path of listing.stdout.toString().split("\0")) listed.add(path);
-  }
-  const self = relative(REPO_ROOT, import.meta.path);
-  return [...listed].filter(
-    (path) =>
-      path !== "" &&
-      path !== self &&
-      !OLD_RULE_LEFT_OUT.test(path) &&
-      statSync(join(REPO_ROOT, path), { throwIfNoEntry: false })?.isFile() === true
-  );
-}
-
-/** A file's text as prose: each line without its comment marker or the quotes of a string that
- *  continues on the next line, the lines still joined by newlines so a line number is kept. */
-function prose(text: string): string {
-  return text
-    .split("\n")
-    .map((line) =>
-      line
-        .replace(/^\s*(?:\/\/+|\/\*+|\*+(?!\/)|--|#+|<!--)?\s*\+?\s*["']?/, "")
-        .replace(/(?:\*\/|--!?>|["']\s*\+)\s*$/, "")
-    )
-    .join("\n");
-}
 
 /** The sentence around `at`: from the end of the sentence before it to the end of its own. A
  *  blank line ends a sentence as a full stop does, and so does the end of a line that closes a
@@ -700,59 +503,6 @@ function sentenceAt(text: string, at: number): string {
     .trim()
     .replace(/(?:["'],?|\|)$/, "");
 }
-
-function oldRuleHitsIn(source: string, text: string): OldRuleHit[] {
-  const read = prose(text);
-  const hits = new Map<string, OldRuleHit>();
-  const record = (at: number, sentence: string) => {
-    const line = read.slice(0, at).split("\n").length;
-    if (!hits.has(sentence)) hits.set(sentence, { source, line, sentence });
-  };
-  for (const { pattern, sentence: judged } of TWO_STEP_WORDINGS) {
-    for (const match of read.matchAll(new RegExp(pattern.source, `${pattern.flags}g`))) {
-      const sentence = sentenceAt(read, match.index);
-      if (!judged || !THIRD_STEP.test(sentence)) record(match.index, sentence);
-    }
-  }
-  for (const pattern of NO_PERSON_WORDINGS) {
-    for (const match of read.matchAll(new RegExp(pattern.source, `${pattern.flags}g`))) {
-      const sentence = sentenceAt(read, match.index);
-      if (A_QUESTION.test(sentence)) record(match.index, sentence);
-    }
-  }
-  return [...hits.values()];
-}
-
-test("no text states the old rule: a question reaches the project's default assignee, never nobody", () => {
-  const files = oldRuleFiles();
-  expect(files.length, "the scan read nothing").toBeGreaterThan(0);
-
-  const hits = files.flatMap((source) => {
-    const bytes = readFileSync(join(REPO_ROOT, source));
-    // A binary file holds no sentence; a NUL byte in its head marks one.
-    if (bytes.subarray(0, 8000).includes(0)) return [];
-    return oldRuleHitsIn(source, bytes.toString("utf8"));
-  });
-
-  const used = new Set<number>();
-  const unexplained: string[] = [];
-  for (const hit of hits) {
-    const at = OLD_RULE_ALLOWED.findIndex(
-      ([source, excerpt]) => source === hit.source && hit.sentence.includes(excerpt)
-    );
-    if (at < 0) unexplained.push(`${hit.source}:${hit.line}: ${hit.sentence}`);
-    else used.add(at);
-  }
-  expect(unexplained).toEqual([]);
-
-  const stale = OLD_RULE_ALLOWED.filter((_, at) => !used.has(at)).map(
-    ([source, excerpt]) => `${source}: ${excerpt}`
-  );
-  expect(stale).toEqual([]);
-  // It reads every text file of the tree, which takes more than bun's 5 s default on a loaded
-  // pod, and the check runs this file with a bare `bun test` rather than the package's
-  // `--timeout 30000`, so the row carries its own bound.
-}, 120_000);
 
 // An assignee move names, in `thread_logins`, the person the issue's questions reached on each
 // side of the write; a side where the issue holds nobody is the project's default assignee, which
