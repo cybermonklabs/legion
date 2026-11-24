@@ -180,7 +180,7 @@ search asserted-words -e "$re_assert" --and -e "$re_prose" -- "${pathspecs[@]}"
 # Keep an asserted-words row where the code of its package writes texts agents read, or where its
 # file has a row of another family; one row a line, its families joined.
 awk -F'\t' -v packages="$agent_text_packages" '
-  NR == FNR { source[$0] = 1; next }
+  FILENAME == ARGV[1] { source[$0] = 1; next }
   $3 == "asserted-words" && !($1 ~ packages) && !($1 in source) { next }
   {
     key = $1 "\t" $2

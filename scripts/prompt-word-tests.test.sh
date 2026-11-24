@@ -10,7 +10,9 @@
 #   - a Bun test that reads a skill, and one that pins words of a tool's description;
 #   - a Go test that pins words of a daemon task text;
 #   - a shell harness under scripts/e2e that greps a role prompt;
+#   - a Bun test outside the packages that write agents' texts, which reads a role prompt by path;
 #   - a copy of a test of structured values, which reads no text an agent is given.
+# Where a case names a family, the row must carry it, so each family has a case only it serves.
 # The other cases build a miniature repository: a tree whose only test is that copy finds nothing,
 # and a tree it cannot read, or one that holds no test file, is UNKNOWN, never clean.
 #
@@ -58,12 +60,14 @@ listed() {
   fi
 }
 
-# row_at <out dir> <file> <text>: true when rows.tsv holds a row of the file at the first line that
-# holds the text.
+# row_at <out dir> <file> <text> [family]: true when rows.tsv holds a row of the file at the first
+# line that holds the text, and, given a family, when that row's families name it.
 row_at() {
   local line
   line=$(awk -v t="$3" 'index($0, t) { print FNR; exit }' "$tree/$2")
-  if [ -n "$line" ] && [ -f "$1/rows.tsv" ] && awk -F'\t' -v f="$2" -v l="$line" '$1 == f && $2 == l { found = 1 } END { exit !found }' "$1/rows.tsv"; then
+  if [ -n "$line" ] && [ -f "$1/rows.tsv" ] &&
+    awk -F'\t' -v f="$2" -v l="$line" -v family="${4:-}" \
+      '$1 == f && $2 == l && (family == "" || index("," $3 ",", "," family ",") > 0) { found = 1 } END { exit !found }' "$1/rows.tsv"; then
     echo true
   else
     echo false
@@ -161,6 +165,17 @@ plant "$harness" '#!/usr/bin/env bash
 set -euo pipefail
 grep -qF "planted words of the reviewer prompt" packages/daemon/internal/prompts/go/reviewer.md'
 
+# A Bun test outside the packages whose code writes agents' texts, which reads a role prompt by its
+# path and asserts on another line: the path alone names what it reads.
+path_test=packages/dispatch/web/src/__tests__/zz-planted-prompt.test.ts
+plant "$path_test" 'import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+
+test("the planted prompt is read", () => {
+  const text = readFileSync("../../../../daemon/internal/prompts/go/tester.md", "utf8");
+  expect(text.length).toBeGreaterThan(0);
+});'
+
 values_test=packages/daemon/internal/workflow/zz_planted_values_test.go
 mkdir -p "$(dirname "$tree/$values_test")"
 cp "$repo_root/$values_source" "$tree/$values_test"
@@ -171,14 +186,18 @@ run_search --repo "$tree" --out "$work/all"
 check "finds rows, so exits 1" "$(is "$status" 1)"
 check "counts the files it searched" "$(contains "$out" '^prompt-word-tests: [0-9][0-9]* row(s) in [0-9][0-9]* file(s), of [1-9][0-9]* test file(s) searched')"
 check "lists the Go test that pins words of the composed tester prompt" "$(listed "$work/all" "$word_test")"
-check "names the line of its words" "$(row_at "$work/all" "$word_test" 'planted words of the tester prompt')"
+check "names the line of its words" "$(row_at "$work/all" "$word_test" 'planted words of the tester prompt' asserted-words)"
+check "names the test of the prompts package" "$(row_at "$work/all" "$word_test" 'func TestZZPlantedTesterPromptWords' prompt-package)"
+check "names the line that composes the prompt" "$(row_at "$work/all" "$word_test" 'composer.Compose(' composed-prompt)"
 check "prints the row as file:line" "$(contains "$out" "^$word_test:[0-9][0-9]*: ")"
-check "lists the e2e-tagged Go test that reads a skill" "$(row_at "$work/all" "$e2e_test" 'skills/legion-worker/SKILL.md')"
-check "lists the Bun test that reads a skill" "$(row_at "$work/all" "$bun_test" 'skills/legion-architect/SKILL.md')"
-check "lists the Bun test that pins a tool description" "$(row_at "$work/all" "$tool_test" 'planted words of a tool description')"
-check "lists the Go test that pins words of a daemon task text" "$(row_at "$work/all" "$task_test" 'planted words of a wake task')"
-check "names the task text it reads" "$(row_at "$work/all" "$task_test" 'WakeTask(')"
+check "lists the e2e-tagged Go test that reads a skill" "$(row_at "$work/all" "$e2e_test" 'skills/legion-worker/SKILL.md' skill-file)"
+check "lists the Bun test that reads a skill" "$(row_at "$work/all" "$bun_test" 'skills/legion-architect/SKILL.md' skill-file)"
+check "lists the Bun test that pins a tool description" "$(row_at "$work/all" "$tool_test" 'planted words of a tool description' asserted-words)"
+check "names the tool specs it reads" "$(row_at "$work/all" "$tool_test" 'dispatchToolSpecs[0]' tool-description)"
+check "lists the Go test that pins words of a daemon task text" "$(row_at "$work/all" "$task_test" 'planted words of a wake task' asserted-words)"
+check "names the task text it reads" "$(row_at "$work/all" "$task_test" 'WakeTask(' task-text)"
 check "lists the harness that greps a role prompt" "$(row_at "$work/all" "$harness" 'go/reviewer.md')"
+check "lists a test that reads a role prompt by its path" "$(row_at "$work/all" "$path_test" 'prompts/go/tester.md' prompt-file)"
 check "names the test each row is in" \
   "$(if awk -F'\t' -v f="$word_test" '$1 == f && $4 == "TestZZPlantedTesterPromptWords" { found = 1 } END { exit !found }' "$work/all/rows.tsv"; then echo true; else echo false; fi)"
 check "stays quiet on the copy of a test of structured values" "$(is "$(listed "$work/all" "$values_test")" false)"
