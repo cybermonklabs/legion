@@ -644,7 +644,14 @@ func recordsHandler(services map[string]*proxyrulestest.Service, model *proxyrul
 		w.Header().Set("Content-Type", "application/json")
 		encoder := json.NewEncoder(w)
 		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(append([]string{}, aws.Refusals()...))
+		// Refusals answers a copy of its own, and nil where the stand-in refused nothing. The
+		// empty slice is what makes that read as [] rather than null, which is the difference
+		// between "this run was refused nothing" and a route a check cannot read.
+		refusals := aws.Refusals()
+		if refusals == nil {
+			refusals = []string{}
+		}
+		_ = encoder.Encode(refusals)
 	})
 	mux.HandleFunc("POST "+modelAnswerPath, answerRoute(modelAnswerOf, model.Answers,
 		func(answer proxyrulestest.ModelAnswer) map[string]string {

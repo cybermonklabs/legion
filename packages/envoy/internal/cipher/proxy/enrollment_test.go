@@ -321,7 +321,8 @@ func TestARequestOfTheConnectionsOwnGrantReadsNoOtherGrant(t *testing.T) {
 // the second grant on the first grant's connection is held to the second grant, whose value it
 // carries: once that grant ends, the watcher cuts the call. The named revert:
 // proxy-carry-reads-connection-grant-only, the watcher reading the connection's own grant alone,
-// which leaves the stream running on the ended grant's value.
+// which holds no name of the call and so cuts it at once, while the grant it is handled for
+// still lives.
 func TestACallCarriedForAnotherGrantOfTheEnrollmentEndsWithThatGrant(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules(), Watch: watchFast})
 	r.addGrant(peerPlaceholder, peerGrantID, testEnrollID, peerName, peerValue)

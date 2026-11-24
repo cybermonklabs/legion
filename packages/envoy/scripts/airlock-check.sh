@@ -1403,8 +1403,9 @@ EOF
 	# The form's own percent-encoding: a JWT holds none of the characters a form escapes but
 	# the "=" of its padding, and the comparison is against the stack's own token.
 	K6_AZ_ASSERTION="${K6_AZ_ASSERTION//%3D/=}"
-	# The access token az held after each run, and how many of the five open with the
-	# placeholder prefix: a run whose file is missing or holds no token counts as none.
+	# The access token az held after each run, and how many of the five hold the placeholder
+	# prefix anywhere in them (contains): a run whose file is missing or holds no token counts as
+	# none.
 	K6_AZ_ACCESS_SHAPES="" K6_AZ_ACCESS_PLACEHOLDERS=0
 	local token
 	for run in 1 2 3 4 5; do
