@@ -1,12 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // deliveryLiveEncoded is one computed body, encoded once: the body as the GET route writes it, and
@@ -108,19 +112,9 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 		if err != nil {
 			return deliveryLiveEncoded{}, err
 		}
-		var entries map[string]json.RawMessage
-		if err := json.Unmarshal(value, &entries); err != nil {
+		values, revs, err := deliveryLiveMapEntries(value, excluded)
+		if err != nil {
 			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
-		}
-		values := make(map[string]deliveryLiveValue, len(entries))
-		revs := make(map[string]string, len(entries))
-		for key, entry := range entries {
-			rev, err := deliveryLiveRevisionWithout(entry, excluded)
-			if err != nil {
-				return deliveryLiveEncoded{}, fmt.Errorf("delivery live: %s.%s[%q]: %w", kind, name, key, err)
-			}
-			values[key] = deliveryLiveValue{raw: entry, rev: rev}
-			revs[key] = rev
 		}
 		encoded.maps[name] = values
 		encoded.revs.Maps[name] = revs
@@ -207,18 +201,152 @@ func deliveryLiveRevisionWithout(value json.RawMessage, excluded []string) (stri
 	if len(excluded) == 0 {
 		return deliveryLiveRevision(value), nil
 	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(value, &object); err != nil {
-		return "", err
-	}
-	for _, name := range excluded {
-		delete(object, name)
-	}
-	kept, err := json.Marshal(object)
+	kept, err := deliveryLiveWithout(jsontext.NewDecoder(bytes.NewReader(value)), value, excluded)
 	if err != nil {
 		return "", err
 	}
 	return deliveryLiveRevision(kept), nil
+}
+
+// deliveryLiveMapEntries is a map field's entries, each with its revision
+// (deliveryLiveRevisionWithout's), read in one pass of the field's tokens: no Go map of the field
+// or of an entry is built and nothing beneath an entry's top level is decoded, since a Legion
+// board's recompute reads every stored row it serves (about 4,500 at INFRA's size, where decoding
+// each entry into a map and encoding it again took most of the recompute). Each entry's bytes are
+// value's own. A null field holds no entry, as a nil Go map encodes.
+func deliveryLiveMapEntries(value json.RawMessage, excluded []string) (map[string]deliveryLiveValue, map[string]string, error) {
+	values := map[string]deliveryLiveValue{}
+	revs := map[string]string{}
+	outer := jsontext.NewDecoder(bytes.NewReader(value))
+	switch open, err := outer.ReadToken(); {
+	case err != nil:
+		return nil, nil, err
+	case open.Kind() == 'n':
+		return values, revs, nil
+	case open.Kind() != '{':
+		return nil, nil, fmt.Errorf("want an object, not %v", open.Kind())
+	}
+	inner := jsontext.NewDecoder(bytes.NewReader(nil))
+	for outer.PeekKind() != '}' {
+		name, err := outer.ReadToken()
+		if err != nil {
+			return nil, nil, err
+		}
+		key := name.String()
+		read, err := outer.ReadValue()
+		if err != nil {
+			return nil, nil, err
+		}
+		end := int(outer.InputOffset())
+		entry := json.RawMessage(value[end-len(read) : end])
+		rev := deliveryLiveRevision(entry)
+		if len(excluded) > 0 {
+			inner.Reset(bytes.NewReader(entry))
+			kept, err := deliveryLiveWithout(inner, entry, excluded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("[%q]: %w", key, err)
+			}
+			rev = deliveryLiveRevision(kept)
+		}
+		values[key] = deliveryLiveValue{raw: entry, rev: rev}
+		revs[key] = rev
+	}
+	if _, err := outer.ReadToken(); err != nil {
+		return nil, nil, err
+	}
+	return values, revs, nil
+}
+
+// deliveryLiveWithout is value, a JSON object dec reads from its start, without the members
+// excluded names, its other members in name order: the bytes json.Marshal writes of the object
+// decoded into a map[string]json.RawMessage with those keys deleted, which is what a revision is
+// taken over. It reads the object's top-level members only and keeps each one's bytes as value
+// holds them, which are the bytes json.Marshal writes of them where value is json.Marshal's own
+// output, as every body a view computes is (encodeDeliveryBody). An object it cannot show is in
+// that form - whitespace, a character json.Marshal escapes for HTML, a name it would quote another
+// way, a name given twice - takes the decode and the encode itself (deliveryLiveWithoutByMap), so
+// the bytes are the rule's whatever the input.
+func deliveryLiveWithout(dec *jsontext.Decoder, value []byte, excluded []string) ([]byte, error) {
+	if open, err := dec.ReadToken(); err != nil {
+		return nil, err
+	} else if open.Kind() != '{' {
+		return nil, fmt.Errorf("want an object, not %v", open.Kind())
+	}
+	type member struct {
+		name  string
+		value []byte
+	}
+	members := make([]member, 0, 16)
+	canonical := true
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return nil, err
+		}
+		key := name.String()
+		if slices.Contains(excluded, key) {
+			if err := dec.SkipValue(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		read, err := dec.ReadValue()
+		if err != nil {
+			return nil, err
+		}
+		end := int(dec.InputOffset())
+		raw := value[end-len(read) : end]
+		canonical = canonical && deliveryLivePlainName(key) && !bytes.ContainsAny(raw, " \t\r\n<>&\\") &&
+			!bytes.Contains(raw, []byte("\u2028")) && !bytes.Contains(raw, []byte("\u2029")) && utf8.Valid(raw)
+		members = append(members, member{name: key, value: raw})
+	}
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(members, func(a, b member) int { return strings.Compare(a.name, b.name) })
+	for index := 1; canonical && index < len(members); index++ {
+		canonical = members[index].name != members[index-1].name
+	}
+	if !canonical {
+		return deliveryLiveWithoutByMap(value, excluded)
+	}
+	kept := make([]byte, 0, len(value)+2)
+	kept = append(kept, '{')
+	for index, one := range members {
+		if index > 0 {
+			kept = append(kept, ',')
+		}
+		kept = append(kept, '"')
+		kept = append(kept, one.name...)
+		kept = append(kept, '"', ':')
+		kept = append(kept, one.value...)
+	}
+	return append(kept, '}'), nil
+}
+
+// deliveryLivePlainName is whether json.Marshal writes name as its bytes between two quotes:
+// printable ASCII with no quote, backslash or character it escapes for HTML.
+func deliveryLivePlainName(name string) bool {
+	for index := range len(name) {
+		switch c := name[index]; {
+		case c < 0x20 || c >= 0x7f, c == '"', c == '\\', c == '<', c == '>', c == '&':
+			return false
+		}
+	}
+	return true
+}
+
+// deliveryLiveWithoutByMap is deliveryLiveWithout's rule done as it states it: value decoded into a
+// map of its members, the excluded ones deleted, and encoded again.
+func deliveryLiveWithoutByMap(value []byte, excluded []string) ([]byte, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil {
+		return nil, err
+	}
+	for _, name := range excluded {
+		delete(object, name)
+	}
+	return json.Marshal(object)
 }
 
 // snapshot is the snapshot frame of e for one subscription: the body, the change position it
