@@ -350,11 +350,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// it is told what it lost: a caller one contract below assignmentPlanContract, which states
 	// that contract in its header as every plugin from shapedAnswersContract on does, is served at
 	// the recorded contract at or below it (recordedContractAtOrBelow), OwnerPlanContract, so it
-	// stands below that row and the one row above it, the intake's give-ups, and the log holds
-	// those two rows' lines and nothing else. This subtest does not catch a strip applied beside
-	// the loop, because it reads both its expectation and its answer from stateNarrowings; the
-	// subtests below, which name their lines as literals, are what catch that.
-	t.Run("the plan narrowing and the one above it write their own lines", func(t *testing.T) {
+	// stands below that row and the two rows above it, the intake's give-ups and the claim views'
+	// cause times, and the log holds those three rows' lines and nothing else. This subtest does
+	// not catch a strip applied beside the loop, because it reads both its expectation and its
+	// answer from stateNarrowings; the subtests below, which name their lines as literals, are
+	// what catch that.
+	t.Run("the plan narrowing and the two above it write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		below := assignmentPlanContract - 1
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
@@ -366,8 +367,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 2 {
-			t.Fatalf("a caller at %d expects the lines %v, want the plan row's and the give-ups' row's alone", below, want)
+		if len(want) != 3 {
+			t.Fatalf("a caller at %d expects the lines %v, want the plan row's, the give-ups' row's and the cause times' row's alone", below, want)
 		}
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
