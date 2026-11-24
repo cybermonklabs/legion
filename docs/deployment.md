@@ -783,8 +783,8 @@ provider_keys:
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a pane
-  of a unit drawn into it names, and `instructions`, one markdown file the daemon reads at boot
-  and appends to that pane's prompt.
+  of a unit drawn into it names, `instructions`, one markdown file the daemon reads at boot and
+  appends to that pane's prompt, and `plan`, how the issues drawn into it are done (below).
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   **The order a pane's `PI_CONFIG_FILES` names them in** is the operator's files
@@ -796,8 +796,8 @@ provider_keys:
   The system prompt ends with each such arm's `instructions` in that same order, after the
   deployment's own.
   The draw is made once, when the unit is opened — a tree's when its lifecycle row is first
-  created, an issue's when the daemon first records that issue — and is recorded with the arm, the
-  mode in force and the instant.
+  created, an issue's when the daemon first records that issue — and is recorded with the arm, its
+  `plan` where it names one, the mode in force and the instant.
   The launch follows the record, not the mode: a unit drawn into an arm keeps that arm's files
   while the project's file still names the arm, whatever the mode is now, and taking the files
   away is taking the arm out of the file.
@@ -815,6 +815,19 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
+- **An arm's `plan`** says how the issues drawn into it are done: `owner`, whose issues take the
+  plan their owner gives with `register_plan`, or `default`, whose issues run the project's
+  `default_steps` and take no plan from their owner: once the daemon records such an issue, its
+  owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, and a plan its owner
+  gave before is passed over at its first step and told in a `plan-not-taken` notice.
+  The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
+  whatever the file says later.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
+  most one experiment of a project sets it.
+  The loader refuses a `plan` that is neither `owner` nor `default` (`owner-alone`, which this
+  release does not carry out, among them), an arm that names no `plan` beside one that does, an
+  experiment that sets `plan` at `unit: tree`, and a second experiment of one project that sets
+  `plan`; `legion config check` makes each of these refusals.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

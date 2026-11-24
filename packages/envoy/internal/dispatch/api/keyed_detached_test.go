@@ -20,19 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// keyedPost posts body to the rig's route on server as alice under key, giving up after timeout as
-// a client does. It answers the status and body, or the client's own failure.
-func keyedPost(server *httptest.Server, path, body, key string, timeout time.Duration) (int, string, http.Header, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	return keyedPostContext(ctx, server, path, body, key)
-}
-
-// keyedPostContext is keyedPost carrying ctx in place of a timeout: the request, the answer's
-// head and its body all end when ctx does, so a call begun after ctx's deadline ends at once. A
-// test that waits at the shared bound passes testwait.Context(t): a duration taken from that
-// deadline is negative once the deadline has passed, and a client whose Timeout is not positive
-// has none.
+// keyedPostContext posts body to the rig's route on server as alice under key, under ctx: the
+// request, the answer's head and its body all end when ctx does. It answers the status and body,
+// or the client's own failure.
 func keyedPostContext(ctx context.Context, server *httptest.Server, path, body, key string) (int, string, http.Header, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, strings.NewReader(body))
 	if err != nil {
@@ -50,7 +40,8 @@ func keyedPostContext(ctx context.Context, server *httptest.Server, path, body, 
 	return response.StatusCode, string(answer), response.Header, err
 }
 
-// keyedReply is what keyedPost answered: the status, body and headers, or the client's failure.
+// keyedReply is what keyedPostContext answered: the status, body and headers, or the client's
+// failure.
 type keyedReply struct {
 	status int
 	body   string
@@ -61,9 +52,7 @@ type keyedReply struct {
 // keyedPostAnswered is keyedPostContext under the test's own context, which carries no deadline and
 // ends only when the test does, its answer taken with testwait.Receive: its one bound is the test
 // binary's deadline less testwait's margin, so a server a loaded machine slows still answers, and
-// one that never answers fails the test by name, with what. It does not go through keyedPost,
-// whose timeout is a context's deadline: a timeout of 0 there is a request already past its
-// deadline, not one with no bound.
+// one that never answers fails the test by name, with what.
 func keyedPostAnswered(t *testing.T, what string, server *httptest.Server, path, body, key string) keyedReply {
 	t.Helper()
 	ctx := t.Context()

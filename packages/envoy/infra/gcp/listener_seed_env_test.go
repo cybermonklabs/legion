@@ -124,6 +124,12 @@ func TestListenerSeedEnvFailsWhenTheFetchFails(t *testing.T) {
 
 // A start timeout sends TERM while fetch-secret holds the raw seed. The handler must delete it:
 // dash does not run an EXIT trap for that signal.
+//
+// The row sends TERM once fetch-secret has marked its start, a fact it waits for with the test's
+// deadline as the only bound. The script ends only on that TERM, so its shell has the same bound
+// (gcp.ShellCommandUntilTheTestDeadline). A fixed 1 s wait for the mark failed at a box load of
+// about 2,400, where starting the script and then fetch-secret took longer (INFRA-3904). A script
+// that ends before the mark never started the fetch, and fails the row at once.
 func TestListenerSeedEnvRemovesTheRawSeedWhenTerminatedDuringFetch(t *testing.T) {
 	t.Parallel()
 	var golden gcp.CloudConfig
@@ -139,17 +145,30 @@ while :; do sleep 1; done
 `), 0o700))
 	dir := t.TempDir()
 
-	cmd := gcp.ShellCommand(t, script, filepath.Join(dir, "listener.env"), fetchSecret)
+	cmd := gcp.ShellCommandUntilTheTestDeadline(t, script, filepath.Join(dir, "listener.env"), fetchSecret)
 	cmd.Env = []string{"FETCH_STARTED=" + started, "PATH=" + os.Getenv("PATH")}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(started)
-		return err == nil
-	}, time.Second, 10*time.Millisecond)
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	deadline := gcp.UntilTheTestDeadline(t)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		select {
+		case err := <-exited:
+			t.Fatalf("the seed script ended (%v) before fetch-secret marked its start", err)
+		case <-deadline.Done():
+			t.Fatalf("fetch-secret had not marked its start by the test's deadline: %v", deadline.Err())
+		case <-poll.C:
+		}
+	}
 	require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM))
-	require.Error(t, cmd.Wait())
+	require.Error(t, <-exited)
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)

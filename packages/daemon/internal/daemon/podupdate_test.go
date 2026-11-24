@@ -883,10 +883,7 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 	rig.signal(claim.RoleArchitect, "e4f5a6b")
 	rig.tick()
 
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once the degraded architect answered, want once", len(calls))
-	}
+	calls := rig.awaitReplacement(1, "once the degraded architect answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of the kept pod %s", calls[0].Pod, podUpdatePod)
 	}
