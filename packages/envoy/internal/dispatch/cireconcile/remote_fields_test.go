@@ -374,7 +374,8 @@ func TestARunningSuitesIdPrintsInDecimalDigits(t *testing.T) {
 // record (has-record), the write of its check runs (runs), of a check suite (suite), and of a
 // commit status, whose context GitHub wrote as words that quote a credential's URL too (status),
 // its commit statuses unread, in the line and in the note the pass's attempt keeps for GET
-// /healthz (statuses-unread), and an answer too large to read (too-large). Captures
+// /healthz (statuses-unread), an answer too large to read (too-large), and, before any of them,
+// the line that says the head is read over REST (over-rest). Captures
 // cireconcile.head-lines/<case>.
 func TestAHeadsLinesNameItsShaOnlyWhereItIsOne(t *testing.T) {
 	head := pullHead{owner: "acme", repo: "web", number: "7", sha: redacttest.Words}
@@ -423,6 +424,13 @@ func TestAHeadsLinesNameItsShaOnlyWhereItIsOne(t *testing.T) {
 		r, logs := logged(nil)
 		r.headFailed(t.Context(), &githubapp.ResponseTooLargeError{Limit: 1 << 20}, head, &counts{})
 		redacttest.RequireNone(t, "cireconcile.head-lines/too-large", lineOf(t, logs, "ci reconcile skipped a head whose answer from GitHub was too large"))
+	})
+	t.Run("over-rest", func(t *testing.T) {
+		client := remoteStandIn(t, failCommitReads(t))
+		r, logs := logged(client)
+		w := &walk{r: r, writer: &fieldWriter{}, repository: reconciled{owner: "acme", repo: "web"}, c: &counts{}}
+		w.visitHeadOverREST(t.Context(), tokenHead(t, client, redacttest.Words), "the query did not answer it whole")
+		redacttest.RequireNone(t, "cireconcile.head-lines/over-rest", lineOf(t, logs, "ci reconcile reads a head over REST"))
 	})
 }
 
