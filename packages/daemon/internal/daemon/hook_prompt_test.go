@@ -507,8 +507,8 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the attempts while the wake waits published %d times, want none: the pod has not started, and a kept copy's hour runs from its publish", attempts)
 	}
 
-	// The wake's turn, the one timer armed for the pacing's wait: the resume launches.
-	if fired := p.clock.fire(parkedTurn); fired != 1 {
+	// The wake's turn, the one timer armed for the moment the pacing gave: the resume launches.
+	if fired := p.clock.fireAt(p.turn); fired != 1 {
 		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
 	}
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {

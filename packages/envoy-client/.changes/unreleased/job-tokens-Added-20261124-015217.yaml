@@ -7,7 +7,9 @@ body: |-
   the request once, with no retry, no redirect followed and no `Idempotency-Key`. It exits 0 on a
   2xx answer, 1 on any other answer, naming the status and Dispatch's code, and 2 on a usage error.
   With no host plugin, as in a GitHub Actions job, it reads Dispatch from the environment alone
-  (`DISPATCH_URL` and a credential) and reads no envoy.json. In a session whose AskGate reviews
+  (`DISPATCH_URL` and a credential, the token files `DISPATCH_BROKER_TOKEN_FILE` and
+  `DISPATCH_BROKER_DPOP_KEY_FILE` among them, as every `dispatch` command takes them) and reads no
+  envoy.json. In a session whose AskGate reviews
   Dispatch writes, it sends only `GET` and names the `dispatch` command that makes the write; the
   session's ledger records that refusal with AskGate's mark, so AskGate's report counts it.
 

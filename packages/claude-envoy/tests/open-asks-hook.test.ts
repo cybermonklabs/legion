@@ -1657,7 +1657,7 @@ const DEVICE_LOGIN_LOCK_SOURCE = "packages/cipher-client/src/device-login-lock.t
 /** The device-login route's waits, the one route the hook's exit leaves to run
  *  (`endOnceWritten`): its trade holds the login's lock and may yet save a rotated refresh token.
  *  So its waits run to their bounds: the trade's attempt, the refresh's two requests
- *  (device-login.ts:114's BROKER_REQUEST_MS, at :257), the lock's heartbeat
+ *  (device-login.ts:131's BROKER_REQUEST_MS, at :274), the lock's heartbeat
  *  (device-login-lock.ts:63) and the retry's jittered first wait. */
 const DEVICE_LOGIN_ROUTE: readonly CensusEntry[] = [
   DISPATCH_READ,
@@ -1715,7 +1715,7 @@ async function leftAfterTheTrade(census: Census, login: string): Promise<void> {
 }
 
 /** Every route by which the open-asks hook gets a Dispatch credential with no bearer token set:
- *  the secrets broker's trade (`dispatch-config.ts:336-352`) for each machine identity
+ *  the secrets broker's trade (`dispatch-config.ts:551-567`) for each machine identity
  *  (`@legion/cipher-client/environment`: kubernetes, metadata, pool, device-login) and for a
  *  person signed in on the machine. The bearer routes are the rows above: the variable (the read
  *  and success rows) and the `!` command (the token-command row); a token file or a written token
@@ -1807,7 +1807,7 @@ const BROKER_ROUTES: readonly {
         ms: TRADE_ATTEMPT_MS,
         cut: true,
       },
-      // pool-identity.ts:40's POOL_TIMEOUT_MS, at :191.
+      // pool-identity.ts:39's POOL_TIMEOUT_MS, at :191.
       {
         file: "packages/cipher-client/src/pool-identity.ts",
         kind: "AbortSignal.timeout",
@@ -2018,7 +2018,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: 'fetchImpl(input, { ...init, redirect: "manual" })',
     count: 1,
     bound:
-      "the fetch behind the client's #fetch, whose every request is made at :2181 or :2508 with a " +
+      "the fetch behind the client's #fetch, whose every request is made at :2324 or :2651 with a " +
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
@@ -2035,7 +2035,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "execFileAsync(file, args, { cwd, signal })",
     count: 1,
     bound:
-      "its signal is tryExec's controller (:77), which a setTimeout(limitMs) aborts (:79): a timer " +
+      "its signal is tryExec's controller (:78), which a setTimeout(limitMs) aborts (:80): a timer " +
       "the census sees, REMOTE_LOOKUP_MS at its callers",
   },
   {
@@ -2043,33 +2043,34 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "for await (const status of statuses)",
     count: 2,
     bound:
-      "two loops over a NATS connection's statuses: the one at :632 runs in a `void` task no " +
-      "caller awaits; the one at :718 is awaited (:742) only in a race with `late`, which " +
-      "AbortSignal.timeout(reconnectMs) (:714) rejects. The open-asks hook opens no NATS connection",
+      "two loops over a NATS connection's statuses: the one at :625 runs in a `void` task no " +
+      "caller awaits; the one at :711 is awaited (:735) only in a race with `late`, which " +
+      "AbortSignal.timeout(reconnectMs) (:707) rejects. The open-asks hook opens no NATS connection",
   },
   {
-    file: "packages/cipher-client/src/token-client.ts",
+    file: "packages/cipher-client/src/broker-request.ts",
     text: "proved.fetch(url, requestInit(options, signal, headers))",
     count: 1,
     bound:
-      "requestInit merges openid-client's own signal and `signal` into the request's (:321); its " +
-      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:257) and the trade's " +
-      "AbortSignal.any([closed, AbortSignal.timeout(this.#attemptMs)]) (:627)",
+      "requestInit merges openid-client's own signal and `signal` into the request's (:103); its " +
+      "callers pass AbortSignal.timeout(BROKER_REQUEST_MS) (device-login.ts:274) and the trade's " +
+      "AbortSignal.any([closed, attempt]) (token-client.ts:557), attempt being " +
+      "AbortSignal.timeout(this.#attemptMs) (token-client.ts:554)",
   },
   {
     file: "packages/cipher-client/src/device-login.ts",
     text: "fetchImpl(url, requestInit(options, deadline, options.headers))",
     count: 1,
     bound:
-      "requestInit (token-client.ts:321) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :257",
+      "requestInit (broker-request.ts:103) merges `deadline`, AbortSignal.timeout(BROKER_REQUEST_MS) at :274",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
     text: "send(url, requestInit(init, signal, init.headers))",
     count: 1,
     bound:
-      "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :119), " +
-      "which requestInit merges with the caller's (token-client.ts:321)",
+      "openid-client calls it with the signal of its own `timeout` (ISSUER_TIMEOUT_SECONDS, :135), " +
+      "which requestInit merges with the caller's (broker-request.ts:103)",
   },
   {
     file: "packages/claude-envoy/hooks/session-hook.ts",
@@ -2077,7 +2078,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch handed to the open-asks read's DispatchClient (:319), whose every request is made at dispatch-http.ts:2181 or :2508 under a signal this scan traces to AbortSignal.timeout",
+      "the fetch handed to the open-asks read's DispatchClient (:379), whose every request is made at dispatch-http.ts:2324 or :2651 under a signal this scan traces to AbortSignal.timeout",
   },
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
@@ -2085,7 +2086,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "DispatchClient's default fetchImpl (:963), called only at :992 for the requests of :2181 and :2508",
+      "DispatchClient's default fetchImpl (:1000), called only at :1029 for the requests of :2324 and :2651",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",
@@ -2093,7 +2094,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the answers mode's DispatchClient (:578), whose requests are made at dispatch-http.ts:2181 and :2508 under the client's own deadline; the open-asks mode does not reach it",
+      "the answers mode's DispatchClient (:601), whose requests are made at dispatch-http.ts:2324 and :2651 under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-commands/context.ts",
@@ -2115,7 +2116,9 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "fetch",
     kind: "fetch handed on as a value",
     count: 1,
-    bound: "the broker client's default fetch (:435), called at :350 under the trade's signal",
+    bound:
+      "the broker client's default fetch (:358), handed to each trade's request (:804) and called at " +
+      "broker-request.ts:140 under the trade's signal",
   },
   {
     file: "packages/cipher-client/src/device-login.ts",
@@ -2123,7 +2126,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 3,
     bound:
-      "a device login's default fetch (:377, :449, :680), handed to brokerConfiguration, whose requests are made at :259 under AbortSignal.timeout(BROKER_REQUEST_MS)",
+      "a device login's default fetch (:396, :468, :718), handed to brokerConfiguration, whose requests are made at :276 under AbortSignal.timeout(BROKER_REQUEST_MS)",
   },
   {
     file: "packages/cipher-client/src/person-identity.ts",
@@ -2131,7 +2134,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "a person sign-in's default fetch (:102), called only at :112 under openid-client's timeout",
+      "a person sign-in's default fetch (:118), called only at :128 under openid-client's timeout",
   },
   {
     file: "packages/cipher-client/src/pool-identity.ts",

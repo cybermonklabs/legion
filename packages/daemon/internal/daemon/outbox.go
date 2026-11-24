@@ -42,9 +42,10 @@ const (
 	// id cannot collide with a minted one. What a delivery is for is its phase, not its id: the
 	// id is rotated by a prompt retry.
 	outboxDeliveryPrefix = "outbox:"
-	// outboxLease is how long a claim holds a row, and the sweep's interval (outbox_lanes.go): a
-	// running row renews its lease every third of it, so a lease lapses only on a run that ended
-	// without its finish or retry recorded, and the sweep finds the lapsed row within one more.
+	// outboxLease is how long a claim holds a row, and the sweep's default interval
+	// (sweepInterval, outbox_lanes.go): a running row renews its lease every third of it, so a
+	// lease lapses only on a run that ended without its finish or retry recorded, and a sweep at
+	// most this far apart finds the lapsed row within one more.
 	outboxLease = 30 * time.Second
 	// outboxSettleTimeout bounds a row's finish or retry once the daemon's stop has cancelled the
 	// lane's context: the row's effect ran, and a settle that waits for the stop's context would
@@ -138,9 +139,14 @@ type outbox struct {
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
 	// builds the outbox by hand and only drains it (RunOnce) leaves clock nil, which is the wall
 	// clock (timers).
-	now       func() time.Time
-	clock     supervise.Clock
-	provision func(context.Context, workspace.Request) (workspace.Workspace, error)
+	now   func() time.Time
+	clock supervise.Clock
+	// sweepEvery is how often Run sweeps the lanes (sweepInterval): zero is outboxLease, the
+	// daemon's. A whole-daemon test that changes a row behind the daemon — a lease it lets lapse, a
+	// backoff it makes due — sets it short through overrides.outboxSweep (attach), so the row runs
+	// at the next sweep rather than up to outboxLease of the wall clock later.
+	sweepEvery time.Duration
+	provision  func(context.Context, workspace.Request) (workspace.Workspace, error)
 	// remove removes a workspace from the daemon's host, handed its repository's store lock, which
 	// it holds for every step on the shared clone and lets go before it deletes the workspace's
 	// files (workspace.Remove).

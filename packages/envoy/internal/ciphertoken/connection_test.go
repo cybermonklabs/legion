@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -201,13 +204,10 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 // broker's answer: for every answer, a live one and each one Verify refuses, it answers what such a
 // verifier's Verify answers for a request presenting a token the broker answers that way with a
 // sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
-// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
+// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne), a token narrowed to reading
+// among them: each answer of the narrowed answers' golden file is a row, refused by both
+// (TestANarrowedAnswerIsACallerOnlyToAVerifierThatServesReadOnly).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
-	// The table holds more rows than the address bucket's burst, and each row's token is one
-	// introspection, so the bucket is wide enough for every row: a refusal here is the rule's.
-	rig := newRig(t, func(o *ciphertoken.Options) {
-		o.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 64}
-	})
 	caller := newSigner(t)
 	inactive := liveToken(caller.jkt, time.Hour)
 	inactive.Active = false
@@ -265,11 +265,12 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	namedForJob := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME")
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
-	for _, row := range []struct {
+	type row struct {
 		name     string
 		answer   ciphertoken.Introspection
 		admitted bool
-	}{
+	}
+	rows := []row{
 		{"live", liveToken(caller.jkt, time.Hour), true},
 		{"service", serviceToken(caller.jkt, time.Hour), true},
 		{"machine login", machineLoginToken(caller.jkt, time.Hour), false},
@@ -300,7 +301,17 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"a job's named token holding an unknown scope word", scoped(namedForJob, "write"), false},
 		{"a person's named token holding the scope person", scoped(liveToken(caller.jkt, time.Hour), "person"), true},
 		{"a public token whose list is not sorted", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "OTHER", "ACME"), false},
-	} {
+	}
+	narrowed := ciphertokentest.NarrowedAnswers(t, caller.jkt, "ses_narrowed", time.Now().Add(time.Hour).Unix())
+	for _, kind := range slices.Sorted(maps.Keys(narrowed)) {
+		rows = append(rows, row{"narrowed from a " + kind, narrowed[kind], false})
+	}
+	// Every row presents a token of its own, and the bucket admits each of them: what is under test
+	// is the answer, not the address.
+	rig := newRig(t, func(options *ciphertoken.Options) {
+		options.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: len(rows)}
+	})
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			token := "token-" + row.name
 			rig.broker.Says(token, row.answer)

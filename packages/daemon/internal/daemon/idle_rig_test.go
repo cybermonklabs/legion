@@ -64,6 +64,12 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigOutboxSweep is how often the rig's daemon sweeps its outbox lanes (overrides.outboxSweep,
+// outboxLease in production). A row the rig makes due or frees behind the daemon, such as a
+// teardown or a start whose slot opened, runs at the next sweep, and at outboxLease that is up to
+// 30 s of the wall clock per such row.
+const idleRigOutboxSweep = time.Second
+
 // idleWakeRig is the acceptance rig of INFRA-945's A3: the Go daemon on a real Postgres, a real
 // nats-server, a real Envoy listener and the Sandbox runtime over a fake Kubernetes API whose
 // controller stand-in starts a real `legion launcher` for every pod it reports Ready, each
@@ -432,7 +438,7 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick,
+			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
@@ -1070,8 +1076,7 @@ func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
 // gives up, so a failure names what it waited for rather than arriving as the binary's panic. It
-// is the second testwait.Eventually leaves (internal/testwait), widened for the launchers' log
-// and the daemon's, which this rig prints on its way out.
+// leaves time for the launchers' log and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
@@ -1120,7 +1125,7 @@ const idleRigPoll = idleRigTick
 
 // idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
 // pace, and fails naming what it waited for. The bound is within from now, or the test binary's
-// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
+// own deadline less the margin above when that is sooner, which is the clamp testwait.Bounded
 // makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
 // `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
 // wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it

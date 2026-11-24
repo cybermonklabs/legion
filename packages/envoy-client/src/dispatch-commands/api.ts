@@ -1,11 +1,12 @@
 // packages/envoy-client/src/dispatch-commands/api.ts
 //
 // `dispatch api <METHOD> <path> [--body-file <file>|-]`: sends one request of Dispatch's HTTP API
-// with the credential every `dispatch` command presents (a set bearer, else a token traded at the
-// secrets broker, with a new DPoP proof for the request), and prints the answer's body. It is for a
-// script and a job: a broker token is bound to a key, so no script can send it as a bearer, and a
-// GitHub Actions run, which no host plugin runs, needs only DISPATCH_URL and the broker's
-// variables. It is no Dispatch tool of `@legion/contracts`' specs, since no agent tool needs it.
+// with the credential every `dispatch` command presents (a set bearer, the token files' broker
+// token, else a token traded at the secrets broker, with a new DPoP proof for the request), and
+// prints the answer's body. It is for a script and a job: a broker token is bound to a key, so no
+// script can send it as a bearer, and a GitHub Actions run, which no host plugin runs, needs only
+// DISPATCH_URL and the broker's variables. It is no Dispatch tool of `@legion/contracts`' specs,
+// since no agent tool needs it.
 //
 // It takes only `/api/v1` and the paths under `/api/v1/` of the Dispatch it is set for, spelled as
 // the URL parser reads them, so the credential goes to no other host and no other route. It sends
@@ -22,6 +23,7 @@ import {
   type ActiveDispatchConfig,
   type DispatchEnvironment,
   dispatchSettings,
+  tokenFilesSet,
 } from "../dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS, dispatchRefusal } from "../dispatch-http";
 import { sessionDirectory } from "../dispatch-session-directory";
@@ -57,7 +59,7 @@ const API_HELP = [
   "",
   "The answer's body goes to standard output; every line of the command's own goes to standard error. It exits 0 on a 2xx answer; 1 on any other answer, naming its status and Dispatch's code, on no answer, on a credential that could not be presented, and on a write this session's AskGate refuses; and 2 on a usage error, which sends nothing. It sends the request once: it follows no redirect and sends no Idempotency-Key.",
   "",
-  "Under an agent's host it acts as that host's session, as every dispatch command does. With no host, as in a GitHub Actions job, it reads the environment alone: DISPATCH_URL, and DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, or the secrets broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, whose trade names DISPATCH_SESSION_ID, else AGENT_SECRETS_SESSION.",
+  "Under an agent's host it acts as that host's session, as every dispatch command does. With no host, as in a GitHub Actions job, it reads the environment alone: DISPATCH_URL, and DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, a broker token traded elsewhere in DISPATCH_BROKER_TOKEN_FILE and DISPATCH_BROKER_DPOP_KEY_FILE, or the secrets broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY, whose trade names DISPATCH_SESSION_ID, else AGENT_SECRETS_SESSION.",
   "",
   "In a session whose AskGate reviews Dispatch writes it sends only GET: make a write with the dispatch command that makes it, which AskGate reviews.",
   "",
@@ -71,7 +73,7 @@ const NO_ROW = "the dispatch command that makes it (dispatch --help lists them)"
 /** What the command refuses with, where it has no host, when the environment names no Dispatch
  *  or no credential for it. */
 const NO_DISPATCH =
-  "no Dispatch is set; set DISPATCH_URL, and a credential (DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, or the broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY)";
+  "no Dispatch is set; set DISPATCH_URL, and a credential (DISPATCH_TOKEN, DISPATCH_TOKEN_FILE, DISPATCH_BROKER_TOKEN_FILE and DISPATCH_BROKER_DPOP_KEY_FILE, or the broker's AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_IDENTITY)";
 
 /** The configuration a command with no host reads: no envoy.json at all, so no file under HOME
  *  speaks for a job that no session runs, and Dispatch is read from the environment alone. */
@@ -103,6 +105,7 @@ export interface WriteRoute {
 export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
   { method: "PATCH", pattern: "/api/v1/issues/{key}", commands: ["issue-update"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/status-change", commands: ["issue-update"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/claim", commands: ["claim"] },
   { method: "DELETE", pattern: "/api/v1/issues/{key}/claim", commands: ["claim"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/asks", commands: ["ask"] },
@@ -332,11 +335,16 @@ export async function apiCommand(
 
   let config: ActiveDispatchConfig;
   if (hosted === undefined) {
-    const resolution = dispatchSettings(env, NO_FILE, { session: env.DISPATCH_SESSION_ID });
+    const resolution = dispatchSettings(env, NO_FILE, {
+      session: env.DISPATCH_SESSION_ID,
+      tokenFiles: true,
+    });
     if (!resolution.enabled) {
       // The off texts of an unset Dispatch or credential name an envoy.json, which a command with
-      // no host does not read; any other says what was wrong with what is set.
-      return env.DISPATCH_URL === undefined || namesNoCredential(env)
+      // no host does not read; any other says what was wrong with what is set, the token files'
+      // refusal among them, which names DISPATCH_URL where it is unset beside them.
+      return tokenFilesSet(env) === undefined &&
+        (env.DISPATCH_URL === undefined || namesNoCredential(env))
         ? refuse(NO_DISPATCH, USAGE)
         : refuse(`dispatch config: ${resolution.error ?? resolution.notice}`, USAGE);
     }

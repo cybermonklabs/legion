@@ -63,17 +63,21 @@ var (
 	// or its project scope and its OAuth scope together are no shape this verifier serves
 	// (shapeOf): a project-scope word this package does not know, the project scope none in any
 	// shape but a read-only token's, the project scope public beside a person, without a
-	// service or beside any OAuth scope, the scope read beside the project scope named or
-	// person, or a read-only token presented to a verifier built without
-	// Options.ServesReadOnly; or its list of projects is one no exchange mints: a named list of
-	// two or more, a named list of none that names no person, a list of one or more beside a
-	// service under the scope person, or a list that is not at most oauthwire.MaxProjects
-	// project keys, sorted, each once. A machine login's own access token is exactly that —
-	// the credential a dev box holds to ask the broker for other credentials, DPoP-bound and
-	// perfectly live, for which no exchange ever decided a session, a person or a project
-	// scope — and so is any other token the broker issued for something other than acting as a
-	// session. Whoever mounts this check acts as the session a token names, so a token that names
-	// none is refused here rather than admitted for a request body to name one in its place.
+	// service or beside any OAuth scope, the project scope named beside no person and any OAuth
+	// scope, the scope read beside the project scope named or person, a narrowed project scope
+	// (read-named, read-person, read-none) whose scope is anything but read, or read person on a
+	// read-person token that names its person, a cut (as_of) on a token that is not narrowed to
+	// reading or a cut that is not an RFC 3339 time, or a read-only token presented to a verifier
+	// built without Options.ServesReadOnly; or its list of projects is one no exchange mints: a
+	// named list of two or more, a named list of none that names no person and no account, a list
+	// of one or more beside a service under any scope but the two a job's token carries (named and
+	// public), or a list that is not at most oauthwire.MaxProjects project keys, sorted, each once.
+	// A machine login's own access token is exactly that — the credential a dev box holds to ask
+	// the broker for other credentials, DPoP-bound and perfectly live, for which no exchange ever
+	// decided a session, a person or a project scope — and so is any other token the broker issued
+	// for something other than acting as a session. Whoever mounts this check acts as the session a
+	// token names, so a token that names none is refused here rather than admitted for a request
+	// body to name one in its place.
 	//
 	// A token that names a service and no person is a session's credential in four shapes
 	// only: a machine's under the scope person, naming no project; a read entry's read-only
@@ -91,11 +95,11 @@ var (
 	// A read-only token is refused here by every verifier but one whose service asked for it,
 	// exactly as a build that predates the token refuses it: a service that did not ask reads no
 	// Caller.ReadOnly, so admitting the token there would open every route that service serves
-	// to a token minted only to read. The scope read beside named, person or public, and none
-	// in any other shape, are refused by every verifier, the switch or not. The broker mints
-	// none of them, and a token that holds read is one its broker meant to read only, so
-	// reading it by its project scope alone would let it write: a read-scoped token fails
-	// closed.
+	// to a token minted only to read. The scope read beside named, person or public, none in any
+	// other shape, and a narrowed word beside any scope but its own, are refused by every
+	// verifier, the switch or not. The broker mints none of them, and a token that holds read is
+	// one its broker meant to read only, so reading it by its project scope alone would let it
+	// write: a read-scoped token fails closed.
 	ErrNotASession = errors.New("brokertoken: the access token is not a session's credential")
 )
 
@@ -198,22 +202,33 @@ type Caller struct {
 	// projects a ProjectScopePerson token's trade asked for, each one its person could see then,
 	// nil for none, and none for a token that names a service; and a ProjectScopePublic token's
 	// private projects, its job entry's whole list of 0 to oauthwire.MaxProjects, beside which it
-	// reaches every public project, which no list names. A read-only caller (ReadOnly) names
-	// none, since it writes none. Sorted, each once.
+	// reaches every public project, which no list names. A read-only caller (ReadOnly) names what
+	// its base word names: a token narrowed to reading names the projects the same trade would
+	// have named without read, and a ProjectScopeNone token names none. Sorted, each once.
 	Projects []string
-	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
-	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
-	// to its person" from every other answer, and a job's public list, which every public
-	// project joins, from a named token's one project; an absent or misspelt scope must not
-	// read as ProjectScopePerson. It is ProjectScopeNone exactly when ReadOnly is set, and
-	// ProjectScopePublic only beside a Service and no Person.
+	// ProjectScope is the broker's own `project_scope` claim read as its base word
+	// (oauthwire.BaseProjectScope), and not down to a flag: a reader deciding what a token may do
+	// has to tell "the broker scoped this to its person" from every other answer, and a job's
+	// public list, which every public project joins, from a named token's one project; an absent
+	// or misspelt scope must not read as ProjectScopePerson. A narrowed word is carried as the
+	// word it narrows, with ReadOnly beside it, so a reader of the projects reads one rule for
+	// both. It is ProjectScopeNone only when ReadOnly is set, but a read-only caller may carry any
+	// of the three words. ProjectScopePublic only comes beside a Service and no Person.
 	ProjectScope string
-	// ReadOnly is true exactly when the verifier accepted a read-only token: the project scope
-	// ProjectScopeNone beside the one scope ScopeRead, a service, and no person and no project
-	// (shapeOf). Only a verifier built with Options.ServesReadOnly answers such a Caller, and
-	// the service that set the switch is the one that decides which of its routes the caller
+	// ReadOnly is true exactly when the verifier accepted a read-only token (shapeOf): the read
+	// entry's token, which is the project scope ProjectScopeNone beside the one scope ScopeRead, a
+	// service, and no person and no project; or a token narrowed to reading, which is a narrowed
+	// project scope (oauthwire.ProjectScopeReadNamed, ProjectScopeReadPerson or
+	// ProjectScopeReadNone) beside the scope read, or read person for a read-person token that
+	// names its person. Only a verifier built with Options.ServesReadOnly answers such a Caller,
+	// and the service that set the switch is the one that decides which of its routes the caller
 	// may call; it writes none of them.
 	ReadOnly bool
+	// Cut is the past time a read-only token reads at, which its trade asked for (the answer's
+	// as_of, oauthwire.FormAsOf), in UTC; it is the zero time for a token that names no cut. Only a
+	// token narrowed to reading carries one: an answer that names a cut in any other shape, the
+	// read entry's none included, or a cut that is not an RFC 3339 time, is ErrNotASession.
+	Cut time.Time
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
@@ -251,11 +266,11 @@ type Options struct {
 	// and moves forward from there rather than naming an arbitrary instant.
 	Now func() time.Time
 	// ServesReadOnly is this service serving a read-only token on the routes it chooses: the
-	// project scope ProjectScopeNone beside the one scope ScopeRead, a service, and no person and
-	// no project (shapeOf). A verifier built with it accepts that token and marks its Caller
-	// ReadOnly, and the service holds every route it does not choose closed to such a caller.
-	// Only Dispatch sets it, whose read list names those routes (cmd/dispatch,
-	// brokerTokenVerifier).
+	// read entry's token and a token narrowed to reading (Caller.ReadOnly, shapeOf). A verifier
+	// built with it accepts such a token and marks its Caller ReadOnly, with the token's cut
+	// (Caller.Cut), and the service holds every route it does not choose closed to such a caller.
+	// Only Dispatch sets it, and Dispatch decides which of its routes such a caller may call
+	// (cmd/dispatch, brokerTokenVerifier).
 	//
 	// Without it a read-only token is ErrNotASession, as on a build before the switch existed:
 	// a service that leaves it unset, the Envoy listener among them, reads no Caller.ReadOnly,
@@ -481,23 +496,33 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// naming no person, no project and any other service, a fleet's name or a string that only
 	// opens like an account among them, is no token the broker mints. A job's named token names
 	// no person, exactly one project and its job entry's identity, which may be an account, a
-	// workflow or a Google account. A named answer naming two or more projects, which a reader
-	// holding a write to one project would take as no limit at all, is the same case. A
-	// service's token under the scope person names no project, since the exchange refuses a
-	// machine's trade naming one; under named and public a service's token may name its entry's
-	// list. A list no exchange mints (oauthwire.ValidProjects: more than oauthwire.MaxProjects, a
-	// key that is none, or keys not sorted and named once) is refused under every scope for the
-	// same reason.
+	// workflow or a Google account, and holds no OAuth scope; it is the one named shape that names
+	// a project and no person, and a token narrowed from a named one is not it, since the
+	// exchange narrows no job's token. A named answer naming two or more projects, which a reader
+	// holding a write to one project would take as no limit at all, is the same case. A token
+	// narrowed from a named one is held to the same rules, since its projects mean what a named
+	// token's do (oauthwire.BaseProjectScope). A service's token under the scope person names no
+	// project, since the exchange refuses a machine's trade naming one; under named and public a
+	// service's token may name its entry's list. A list no exchange mints (oauthwire.ValidProjects:
+	// more than oauthwire.MaxProjects, a key that is none, or keys not sorted and named once) is
+	// refused under every scope for the same reason. So is a cut that is not an RFC 3339 time
+	// (cutOf); shapeOf has already refused a cut on a token that is not narrowed to reading.
 	shape := shapeOf(answer)
+	named := oauthwire.BaseProjectScope(answer.ProjectScope) == ProjectScopeNamed
+	// jobShape is a job's token's project scope, unnarrowed: the only scopes under which a
+	// service and no person may name projects. shapeOf has already refused every scope word and
+	// every cut beside either, so a narrowed word never comes here as one.
+	jobShape := answer.ProjectScope == ProjectScopeNamed || answer.ProjectScope == ProjectScopePublic
+	cut, cutErr := cutOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
-		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) > 1) ||
-		(answer.ProjectScope == ProjectScopeNamed && answer.Person == "" && len(answer.Projects) == 0 && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
-		(answer.ProjectScope == ProjectScopePerson && answer.Person == "" && len(answer.Projects) > 0) ||
-		oauthwire.ValidProjects(answer.Projects) != nil {
+		(named && len(answer.Projects) > 1) ||
+		(named && answer.Person == "" && len(answer.Projects) == 0 && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
+		(answer.Person == "" && len(answer.Projects) > 0 && !jobShape) ||
+		oauthwire.ValidProjects(answer.Projects) != nil || cutErr != nil {
 		return Caller{}, ErrNotASession
 	}
-	return callerOf(answer, shape), nil
+	return callerOf(answer, shape, cut), nil
 }
 
 // tokenShape is what an answer's project scope and its OAuth scope together make of a token
@@ -507,67 +532,105 @@ type tokenShape int
 const (
 	// shapeNotASession is an answer no verifier reads as a session's token, whatever its
 	// switch: a project scope that is absent or a word this package does not know, the project
-	// scope none in any shape but shapeReadOnly's, the project scope public beside a person,
-	// without a service or beside any OAuth scope, the project scope named beside no person and
-	// any OAuth scope, or the scope read beside the project scope named or person.
+	// scope none in any shape but shapeReadOnly's or beside a cut, the project scope public beside
+	// a person, without a service or beside any OAuth scope or a cut, the project scope named
+	// beside no person and any OAuth scope, the scope read or a cut beside the project scope named
+	// or person, or a narrowed project scope in any shape but shapeReadOnly's.
 	shapeNotASession tokenShape = iota
-	// shapeOrdinary is the project scope named beside a person with no scope read beside it,
-	// named beside no person and no OAuth scope, the project scope person with no scope read
-	// beside it, or the project scope public beside a service, no person and no OAuth scope:
-	// every token the broker minted before read entries existed, every job's token, and every
-	// token it mints from any other entry now.
+	// shapeOrdinary is the project scope named beside a person with no scope read and no cut
+	// beside it, named beside no person with no OAuth scope and no cut, the project scope person
+	// with no scope read and no cut beside it, or the project scope public beside a service, no
+	// person, no OAuth scope and no cut: every token the broker minted before read entries
+	// existed, every job's token, and every token it mints from any other entry, and for any
+	// trade that does not ask for read, now.
 	shapeOrdinary
-	// shapeReadOnly is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS): the
-	// project scope none, the scope exactly the one word read, a service, and no person and no
-	// projects. A verifier accepts it only under Options.ServesReadOnly.
+	// shapeReadOnly is a token that only reads, which a verifier accepts only under
+	// Options.ServesReadOnly. It is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS):
+	// the project scope none, the scope exactly the one word read, a service, no person, no
+	// projects and no cut. It is also a token narrowed to reading because its trade asked for
+	// read: a narrowed project scope (read-named, read-person, read-none) beside the scope read,
+	// or read person for a read-person token that names its person, with a cut or none.
 	shapeReadOnly
 )
 
 // shapeOf is the one rule that says what a read-only token is and what a job's token is, and so
-// what every other answer is beside them. The read-only shape is exact: the project scope
-// ProjectScopeNone, a Scope that is the one word ScopeRead, a service, and no person and no
-// projects. An answer carrying none in any other shape is no session's token. A token that names
-// no person and is no read-only token — a job's, or an account entry's naming no person — holds
-// no OAuth scope at all, since the broker grants neither one. A job's public shape is
-// ProjectScopePublic beside a service, no person and no scope word; public beside a person, which
-// no entry that names a person mints, with no service, or beside any scope word is no session's
-// token. The named shape of both is ProjectScopeNamed beside no person and no scope word; named
-// beside no person and any scope word, person and approve included, is no session's token, while
-// named beside a person keeps the scope its entry grants. An answer whose Scope holds the word
-// read beside the project scope named or person is no session's token either, since no broker
-// mints either and read beside a project scope that writes would let a token meant to read
-// write. The list beside each shape is sessionCaller's to hold.
+// what every other answer is beside them. The read-only shapes are exact. The read entry's token
+// is the project scope ProjectScopeNone, a Scope that is the one word ScopeRead, a service, no
+// person, no projects and no cut, and oauthwire.ProjectScopeReadNone is held to the same but may
+// carry a cut. A token of oauthwire.ProjectScopeReadNamed or oauthwire.ProjectScopeReadPerson
+// holds the one word ScopeRead, and a read-person token that names its person may hold ScopeRead
+// and oauthwire.ScopePerson; sessionCaller holds its projects to its base word's rules. An answer
+// carrying none or a narrowed word in any other shape is no session's token, and so is one whose
+// Scope holds the word read, or that names a cut, beside the project scope named or person, and
+// one that names a cut beside none: no broker mints any of them, since a cut needs a trade that
+// asks for read, which mints a narrowed word, and read beside a project scope that writes would
+// let a token meant to read write.
 //
-// Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
-// no slice built of them, because this runs on every request a verifier decides, an answer
-// served from the cache included.
+// A token that names no person and is no read-only token — a job's, or an account entry's naming
+// no person — holds no OAuth scope at all, since the broker grants neither one, and no cut, since
+// the exchange narrows neither. A job's public shape is ProjectScopePublic beside a service, no
+// person and no scope word; public beside a person, which no entry that names a person mints,
+// with no service, or beside any scope word is no session's token. The named shape of both is
+// ProjectScopeNamed beside no person and no scope word; named beside no person and any scope
+// word, person and approve included, is no session's token, while named beside a person keeps
+// the scope its entry grants.
+//
+// Scope is read as RFC 7662 spells it, words separated by spaces, and as the set of words RFC 6749
+// (section 3.3) makes it: the order of its words means nothing, so read person and person read
+// are one scope. A word named twice is no set the broker grants, and no read-only shape. It is
+// read one word at a time and with no slice built of them, because this runs on every request a
+// verifier decides, an answer served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	words, read := 0, false
+	// reads and persons count the two words a narrowed token's scope is made of, other is any
+	// word besides them, and words counts every word.
+	reads, persons, words, other := 0, 0, 0, false
 	for word := range strings.FieldsSeq(answer.Scope) {
 		words++
-		if word == ScopeRead {
-			read = true
+		switch word {
+		case ScopeRead:
+			reads++
+		case oauthwire.ScopePerson:
+			persons++
+		default:
+			other = true
 		}
 	}
+	read := reads > 0
+	readAlone := reads == 1 && persons == 0 && !other
+	readPerson := reads == 1 && persons == 1 && !other
 	switch answer.ProjectScope {
 	case ProjectScopeNamed:
 		// A named token that names no person is a job's or an account entry's naming no person,
 		// and the broker grants neither one an OAuth scope.
-		if read || (answer.Person == "" && words > 0) {
+		if read || answer.AsOf != "" || (answer.Person == "" && words > 0) {
 			return shapeNotASession
 		}
 		return shapeOrdinary
 	case ProjectScopePerson:
-		if read {
+		if read || answer.AsOf != "" {
 			return shapeNotASession
 		}
 		return shapeOrdinary
 	case ProjectScopePublic:
-		if words == 0 && answer.Person == "" && answer.Service != "" {
+		if words == 0 && answer.AsOf == "" && answer.Person == "" && answer.Service != "" {
 			return shapeOrdinary
 		}
 	case ProjectScopeNone:
-		if read && words == 1 && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
+		// The read entry's token: a trade that asks for no scope keeps the word none, and the
+		// broker refuses a cut on a trade that does not ask for read, so none never carries one.
+		if readAlone && answer.AsOf == "" && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
+			return shapeReadOnly
+		}
+	case oauthwire.ProjectScopeReadNone:
+		if readAlone && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
+			return shapeReadOnly
+		}
+	case oauthwire.ProjectScopeReadNamed:
+		if readAlone {
+			return shapeReadOnly
+		}
+	case oauthwire.ProjectScopeReadPerson:
+		if readAlone || (readPerson && answer.Person != "") {
 			return shapeReadOnly
 		}
 	}

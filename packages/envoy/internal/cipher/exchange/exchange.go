@@ -423,6 +423,13 @@ type Claims struct {
 	Actor string
 }
 
+// Job answers whether c is a job entry's token: one that names a service and no person and
+// carries projects under ProjectScopeNamed, or any token under ProjectScopePublic. An account
+// entry's token naming no person names no project, so it is no job's.
+func (c Claims) Job() bool {
+	return c.Scope == ProjectScopePublic || (c.Scope == ProjectScopeNamed && c.Person == "" && len(c.Projects) > 0)
+}
+
 // Reservation is a session name an entry fixes and the principal it belongs to. The broker holds
 // each one for its entry's principal before it makes any exchange, so a name an entry fixes is
 // refused to every other caller by the same rule that refuses any held name, whether or not the
@@ -464,7 +471,7 @@ type AccountEntry struct {
 // token they are minted holds the OAuth scope oauthwire.ScopeRead and the project scope
 // ProjectScopeNone, names Service and Session, and names no person and no project. Every field is
 // required. A resource server accepts such a token only where it asks to, and Dispatch serves it
-// on the routes its read list names and nowhere else.
+// on every GET route it classes as a read and nowhere else.
 //
 // It is a list of its own, BROKER_EXCHANGE_READ_ACCOUNTS, rather than a kind of AccountEntry, so
 // that a broker of a build that predates it reads none of its entries and mints such an account

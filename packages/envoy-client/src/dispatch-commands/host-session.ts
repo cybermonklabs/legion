@@ -93,9 +93,10 @@ export type HostedDispatch = { readonly warnings: readonly string[] } & (
 /**
  * Dispatch from `file`, the envoy.json `hostSession` found, read now under `options.session`, the
  * session the command acts as: a broker trade writes under it, so the token the command presents
- * names it rather than naming none or another of this machine's. A file whose location could not
- * be worked out, and a Dispatch that is off, are the usage error the command refuses with. Each
- * caller prints the lines to its own stream.
+ * names it rather than naming none or another of this machine's. The command is the one caller
+ * that takes the token files (`tokenFilesTarget`, dispatch-config.ts). A file whose location could
+ * not be worked out, and a Dispatch that is off, are the usage error the command refuses with.
+ * Each caller prints the lines to its own stream.
  */
 export function hostedDispatch(
   file: SessionConfigFile,
@@ -103,7 +104,10 @@ export function hostedDispatch(
   options: { readonly cwd: string; readonly session: string }
 ): HostedDispatch {
   if (file.path === null) return { problem: `dispatch: ${file.error}`, warnings: [] };
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, options);
+  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+    ...options,
+    tokenFiles: true,
+  });
   const lines = warnings.map((warning) => `dispatch: ${warning}`);
   if (!resolution.enabled) {
     return {
