@@ -28,6 +28,12 @@
 --                      is 'delivery_run', a row the delivery timeline writes for one production
 --                      run (run_id, run_attempt; one row per run), or 'route', a row a deploy job
 --                      posts. recorded_by is the actor that wrote it, as check_results.actor is.
+--   delivery_runs.run_attempt
+--                      GitHub's actual attempt, null for existing rows until a later GitHub read
+--                      supplies it. Intake and reconcile preserve unknown rather than invent one.
+--   deploys.run_completed_at
+--                      the source run completion this writer already observed. It advances when a
+--                      same-build rerun leaves deployed_at unchanged, preventing a later replay.
 --   check_results.check_subject, check_results.check_program
 --                      the check block's `subject` and `program` attributes as the record route
 --                      read them when it stored the result, '' where the check named none. They
@@ -45,7 +51,7 @@
 -- rewrites no row; each ALTER holds ACCESS EXCLUSIVE on its table for that write. Each create index
 -- on an existing table holds SHARE on it while it reads it, inside the runner's one transaction:
 -- pull_request_heads holds a row per pull request Dispatch has seen an event for, and check_results
--- a row per recorded result. The two tables are new. The release before this one neither reads nor
+-- a row per recorded result. commit_holds and deploys are new. The release before this one neither reads nor
 -- writes any of it, and names its columns in each insert (upsertHeadRow, insertCheckResult), so the
 -- defaults serve every row it writes while it still serves (cmd/dispatch/README.md, "Database
 -- migrations"). The census answers 0.
@@ -62,9 +68,11 @@
 -- drop table commit_holds;
 -- drop index pull_request_heads_merged_head_ref;
 -- alter table pull_request_heads drop column merged_at, drop column merge_commit_sha;
+-- alter table delivery_runs drop column run_attempt;
 -- delete from schema_migrations where version = 20261124124112;
 alter table pull_request_heads add column merge_commit_sha text not null default '';
 alter table pull_request_heads add column merged_at timestamptz;
+alter table delivery_runs add column run_attempt integer;
 create index pull_request_heads_merged_head_ref on pull_request_heads (lower(repo), head_ref)
   where state = 'merged';
 
@@ -86,6 +94,8 @@ create table deploys (
     source text not null check (source in ('delivery_run', 'route')),
     run_id bigint,
     run_attempt integer,
+    -- Last source completion observed, which moves even when the same build's deployed_at does not.
+    run_completed_at timestamptz,
     url text not null default '',
     recorded_at timestamptz not null default now(),
     recorded_by jsonb not null

@@ -10,4 +10,5 @@ drop table deploys;
 drop table commit_holds;
 drop index pull_request_heads_merged_head_ref;
 alter table pull_request_heads drop column merged_at, drop column merge_commit_sha;
+alter table delivery_runs drop column run_attempt;
 delete from schema_migrations where version = 20261124124112;

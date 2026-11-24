@@ -51,6 +51,9 @@ func standingCommit(result model.CheckResult) string {
 // branch answers no: there is nothing for a pass to stand at, and that is a fact about the work
 // rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	if compared.live {
+		return liveResultStands(check, compared)
+	}
 	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
 		return newestResultStands(check, compared)
 	}
@@ -293,4 +296,49 @@ func newestResultStands(check model.CheckBlock, compared comparison) model.Check
 		}
 	}
 	return model.CheckPassStands{Answer: model.PassStandsNo, Reason: "no_result"}
+}
+
+// liveResultStands reads only the current deploy's interval. Unlike a code check, a live
+// check's newest verdict decides even when both verdicts were recorded at that build.
+func liveResultStands(check model.CheckBlock, compared comparison) model.CheckPassStands {
+	answer := model.CheckPassStands{Answer: model.PassStandsUnknown, Deploy: compared.deploy}
+	switch compared.reason {
+	case model.ReasonRepositoryUnreadable, model.ReasonReadFailed:
+		answer.Reason = "read_failed"
+		return answer
+	case model.ReasonNotMerged, model.ReasonNoPullRequestOrBranch:
+		answer.Answer, answer.Reason = model.PassStandsNo, "no_result"
+		return answer
+	}
+	if compared.deployReason != "" {
+		answer.Reason = compared.deployReason
+		return answer
+	}
+	if compared.deployHolds.Answer == model.CommitUnknown {
+		answer.Reason = "read_failed"
+		return answer
+	}
+	if compared.deployHolds.Answer != model.CommitAtBasis {
+		answer.Reason = "deploy_not_merged"
+		return answer
+	}
+	for _, result := range check.Results {
+		if standingCommit(result) != model.CommitAtBasis {
+			continue
+		}
+		answer.Results, answer.Commit = []string{result.ID}, result.CommitSHA
+		if result.Verdict == "fail" {
+			answer.Answer, answer.Reason = model.PassStandsNo, "fail"
+			return answer
+		}
+		answer.Answer = model.PassStandsYes
+		for _, pass := range check.Results {
+			if pass.Verdict == "pass" && standingCommit(pass) == model.CommitAtBasis && !slices.Contains(answer.Roles, pass.Role) {
+				answer.Roles = append(answer.Roles, pass.Role)
+			}
+		}
+		return answer
+	}
+	answer.Reason = "no_result_from_deploy"
+	return answer
 }

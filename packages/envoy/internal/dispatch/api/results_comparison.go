@@ -127,7 +127,8 @@ type comparisonReader struct {
 	// fills is the read's memo of the merged pull request rows it refreshed (fillMergeTimes,
 	// refreshMerge), the one listCheckResults made before deriveCIResults, so the reader refreshes
 	// no row twice.
-	fills *mergeTimeFills
+	fills   *mergeTimeFills
+	deploys map[string]currentDeploysAnswer
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -158,14 +159,19 @@ const noCommitNamed = ""
 // the head's repository and commit, which the subject of that repository at that commit carries
 // (subjectState).
 type comparison struct {
-	bases     []model.CheckBasis
-	merges    []mergeAnswer
-	linked    []model.CheckBasis
-	reason    string
-	unread    string
-	subjects  []headSubject
-	unordered bool
-	ci        map[ciHeadKey]*model.CheckCI
+	bases        []model.CheckBasis
+	merges       []mergeAnswer
+	linked       []model.CheckBasis
+	reason       string
+	unread       string
+	subjects     []headSubject
+	unordered    bool
+	ci           map[ciHeadKey]*model.CheckCI
+	live         bool
+	program      string
+	deploy       *model.CheckDeploy
+	deployHolds  model.ResultCommitStands
+	deployReason string
 }
 
 // served is what the check names as its bases (model.CheckBlock.ComparedWith): the bases of the
@@ -269,6 +275,7 @@ func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) 
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands
 	}
+	markNotCounted(check, compared)
 	check.PassStands = passStandsOf(*check, compared)
 }
 
@@ -285,7 +292,7 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 	}
 	key := [2]string{check.IssueKey, check.When}
 	if memoized, held := c.bases[key]; held {
-		return memoized
+		return c.withLiveDeploy(ctx, check, memoized)
 	}
 	var compared comparison
 	if check.When == docs.CheckWhenBeforeMerge {
@@ -294,7 +301,7 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 		compared = c.branchBases(ctx, check)
 	}
 	c.bases[key] = compared
-	return compared
+	return c.withLiveDeploy(ctx, check, compared)
 }
 
 // branchBases names the own branches and the merged linked repositories' branches. Placement
