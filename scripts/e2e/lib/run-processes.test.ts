@@ -541,6 +541,70 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
 );
 
 test.skipIf(skip)(
+  "a walk an exit trap runs reads its reader's own status: after a failed run's exit it names the run's process, and after a clean end a reader a signal ended still makes it exit 2",
+  async () => {
+    // A run's exit handler is a trap, and there bash's bare `exit` in a process substitution exits
+    // with the status the trap was entered with, not its last command's. The walks hand their
+    // reader's status out of one that way, so after a run that failed (`exit 1`) every walk read as
+    // xargs exiting 1 and named nothing, and the sweep stopped nothing; after a clean end a grep or
+    // a find that a signal ended read as 0, a whole walk.
+    const work = join(dir, "trapped");
+    mkdirSync(work);
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(marked, "sleep");
+    // A walk of a busy machine always meets a batch of entries with no match, which xargs reports
+    // as 123, and only then does the walk hand a status out through its `exit`. The row's proc root
+    // fits one batch that matches, so a grep that prints what the real one prints and then answers
+    // as such a batch does stands in for the rest of the machine.
+    const busy = join(dir, "trapped-busy-bin");
+    mkdirSync(busy);
+    writeFileSync(join(busy, "grep"), `#!/bin/sh\n/usr/bin/grep "$@"\nexit 1\n`, { mode: 0o755 });
+    const killed = join(dir, "trapped-bin");
+    mkdirSync(killed);
+    writeFileSync(
+      join(killed, "find"),
+      `#!/bin/bash\n/usr/bin/find "$@" | head -c 2000\nkill -KILL $$\n`,
+      { mode: 0o755 }
+    );
+    writeFileSync(
+      join(killed, "grep"),
+      `#!/bin/bash\n/usr/bin/grep "$@" | head -c 0\nkill -KILL $$\n`,
+      { mode: 0o755 }
+    );
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const walks = `walks() {
+  st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?; echo "run_processes $st"
+  st=0; listening_holders ${listener.port} >"$work/lh.out" 2>"$work/lh.err" || st=$?; echo "listening_holders $st"
+}
+trap walks EXIT`;
+    try {
+      const failed = harness(work, `${walks}\nexit 1`, busy);
+      expect(failed).toEqual({
+        code: 1,
+        out: "run_processes 0\nlistening_holders 0\n",
+        err: "",
+      });
+      expect(pids(readFileSync(join(work, "rp.out"), "utf8"))).toEqual([String(marked)]);
+      expect(readFileSync(join(work, "lh.out"), "utf8")).toBe(`${process.pid}\n`);
+      const clean = harness(work, walks, killed);
+      expect(clean).toEqual({
+        code: 0,
+        out: "run_processes 2\nlistening_holders 2\n",
+        err: "",
+      });
+      expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
+        /^procs_naming: xargs exited 125 reading /m
+      );
+      expect(readFileSync(join(work, "lh.err"), "utf8")).toMatch(
+        /^listening_holders: find exited 137 reading \/\S+: /m
+      );
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
+
+test.skipIf(skip)(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");

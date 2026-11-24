@@ -518,9 +518,13 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  # `|| exit "$?"` hands xargs's status to the wait below, and keeps a caller's ERR trap (`set -E`)
+  # from firing inside the substitution for the batches every walk has with no match. The status is
+  # named because a run's exit handler runs this from a trap, and there bash's bare `exit` in a
+  # process substitution exits with the status the trap was entered with, not its last command's:
+  # every walk after a failed run read as xargs exiting 1 and named nothing, and one after a clean
+  # end read as 0 whatever xargs did.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit "$?")
   wait "$!" || status=$?
   case $status in
     0 | 123) ;;
