@@ -1663,10 +1663,9 @@ type Machine struct {
 	// boot's own stale-plugin pass, and one over a process whose death the claim's record charges
 	// is raised again by the boot's replay of that death (RecordedDeath), and otherwise by the
 	// runtime's next observation of the dead process. Each is paced again from an empty bucket,
-	// and no wake runs twice. A
-	// launch waiting for its issue pod's start is held here too, until the gate's grant fires
-	// TimerPodStart (askPod, wake.park, podStartDue), and a restart finds it as it finds a
-	// process-less wake.
+	// and no wake runs twice. A launch waiting for its issue pod's start is held here too, until
+	// the gate's grant fires TimerPodStart (askPod, wake.park, podStartDue), and a restart finds
+	// it as it finds a process-less wake.
 	wake *wake
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
 	// contract that relaunch is made for and the wake kind its launch waits under
