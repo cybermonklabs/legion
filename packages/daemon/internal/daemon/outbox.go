@@ -2649,7 +2649,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// lock, and the row finishes without acting, since the start of the step the issue stands
 		// in now makes the claim ready for that one.
 		if found {
-			if err := r.prepareClaimForStep(step, machine, row, issue, token, payload, agent); errors.Is(err, supervise.ErrStepLeft) {
+			if err := r.prepareClaimForStep(step, machine, row, issue, held, payload, agent); errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before its claim was made ready for it; finished without acting", "row", row.ID,
 					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token, "agent", agent)
 				return nil
