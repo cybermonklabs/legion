@@ -1016,9 +1016,11 @@ write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep t
 key_rule_on
 opened_at 2026-11-21T00:00:00Z
 commits "$new_sha" 2026-11-21T01:00:00Z "fix: keep the order"
-commit_file "$new_sha" added "../$marker" $'@@ -0,0 +1,1 @@\n+clean text'
+commit_file "$new_sha" modified "../$marker-notes.md" "$(printf '@@ -1,0 +2,1 @@\n+Tracked as %s.' "$planted_key")"
 key_run
 check "a path that is no relative path: prints no run of the marker" "$(prints_no_marker "$out")"
+check "and names the finding by the place the path has in the diff" \
+  "$(contains "$out" "commit:$new_short:file 1:2: $key_refused")"
 check "names it by its place and the file that keeps it" \
   "$(contains "$out" "^check-pr-text: file 1 of the diff of commit $new_short has a path that is no relative path; it is in ")"
 check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
