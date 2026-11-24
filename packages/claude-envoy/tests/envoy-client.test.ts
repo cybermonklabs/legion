@@ -712,7 +712,9 @@ test("envoy-send whose sender is rate limited sends its session as source_sessio
       { status: 429, headers: { "Retry-After": "15" } },
     ),
   )
-  const token = fixtureSecret("listener")
+  // Not `listener`: the client redacts each 8-character run of the bearer from the listener's
+  // words, and that prefix is a word of the sentence it prints.
+  const token = fixtureSecret("lsn")
   const sent = await runEnvoySend(["ses_receiver", "limited", "send"], {
     token,
     env: {
