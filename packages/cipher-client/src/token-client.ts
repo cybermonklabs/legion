@@ -30,6 +30,7 @@ import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secre
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import {
   allowInsecureRequests,
   Configuration,
@@ -808,7 +809,9 @@ export class BrokerTokenClient {
       form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
-    const endpoint = this.#brokerUrl + TOKEN_PATH;
+    // The token route joined onto the broker URL's path, its query kept. Appended to the URL's
+    // text, it sat inside a query and the trade asked the URL's own path.
+    const endpoint = joinUrl(this.#brokerUrl, TOKEN_PATH).href;
     const raw: { body: unknown } = { body: undefined };
     const config = callLibrary(
       () =>

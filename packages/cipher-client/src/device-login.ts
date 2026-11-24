@@ -41,6 +41,7 @@ import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import { joinUrl } from "@legion/contracts/url-join";
 import { CompactSign, calculateJwkThumbprint } from "jose";
 import {
   allowInsecureRequests,
@@ -232,29 +233,25 @@ export async function withDeviceLoginLock<T>(
 /**
  * The OAuth client of the broker's machine-login routes at `brokerUrl`, sending through
  * `fetchImpl`: with a proof of `proved`'s key on every request where it is given (the device code
- * poll and the refresh), and with none where it is not (the device authorization). Each request
- * waits {@link BROKER_REQUEST_MS} at most for its answer: one the broker never answers is one it
- * did not answer. The library is reached only through {@link callLibrary}, and each request goes
- * out through {@link refusalFetch}, so a refusal's words are the broker's, held with the record of
- * what the request carried, and print only as the rule reads them.
+ * poll and the refresh), and with none where it is not (the device authorization). Each route is
+ * joined onto the broker URL's path, its query kept (`joinUrl`). Each request waits
+ * {@link BROKER_REQUEST_MS} at most for its answer: one the broker never answers is one it did not
+ * answer. The library is reached only through {@link callLibrary}, and each request goes out
+ * through {@link refusalFetch}, so a refusal's words are the broker's, held with the record of what
+ * the request carried, and print only as the rule reads them.
  */
 function brokerConfiguration(
   brokerUrl: string,
   fetchImpl: typeof fetch,
   proved?: { readonly key: DpopKey; readonly nonce: DpopNonce }
 ): Configuration {
+  const metadata = {
+    issuer: brokerUrl,
+    token_endpoint: joinUrl(brokerUrl, TOKEN_PATH).href,
+    device_authorization_endpoint: joinUrl(brokerUrl, DEVICE_AUTHORIZATION_PATH).href,
+  };
   const config = callLibrary(
-    () =>
-      new Configuration(
-        {
-          issuer: brokerUrl,
-          token_endpoint: brokerUrl + TOKEN_PATH,
-          device_authorization_endpoint: brokerUrl + DEVICE_AUTHORIZATION_PATH,
-        },
-        MACHINE_LOGIN_CLIENT_ID,
-        {},
-        None()
-      )
+    () => new Configuration(metadata, MACHINE_LOGIN_CLIENT_ID, {}, None())
   );
   // An http broker is one on this machine's loopback, as a dev stack's is (`deviceLoginBroker`).
   if (new URL(brokerUrl).protocol === "http:") callLibrary(() => allowInsecureRequests(config));
@@ -292,7 +289,7 @@ function loginOf(
   answered: TokenEndpointResponse,
   now: number
 ): DeviceLogin {
-  const endpoint = broker + TOKEN_PATH;
+  const endpoint = joinUrl(broker, TOKEN_PATH).href;
   const credentialId =
     typeof answered["credential_id"] === "string" ? answered["credential_id"] : "";
   const expiresAt = new Date(
@@ -368,7 +365,7 @@ export async function startDeviceLogin(options: {
   readonly fetch?: typeof fetch | undefined;
 }): Promise<DeviceAuthorization> {
   const brokerUrl = deviceLoginBroker(options.brokerUrl);
-  const endpoint = brokerUrl + DEVICE_AUTHORIZATION_PATH;
+  const endpoint = joinUrl(brokerUrl, DEVICE_AUTHORIZATION_PATH).href;
   const person = options.person.trim();
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   // The public half as every proof of the login embeds it: `kty`, `crv`, `x` and `y` alone.
@@ -465,7 +462,7 @@ export async function finishDeviceLogin(
     key: loginDpopKey(started.key),
     nonce: { value: "" },
   });
-  const endpoint = started.brokerUrl + TOKEN_PATH;
+  const endpoint = joinUrl(started.brokerUrl, TOKEN_PATH).href;
   const expired = new Error(
     `the code ${started.userCode} expired before ${started.person} approved this machine; ask again with: ${DEVICE_LOGIN_COMMAND}`
   );
@@ -698,7 +695,7 @@ export async function refreshDeviceLogin(
     key: loginDpopKey(login.key),
     nonce: { value: "" },
   });
-  const endpoint = login.broker + TOKEN_PATH;
+  const endpoint = joinUrl(login.broker, TOKEN_PATH).href;
   let answered: TokenEndpointResponse | undefined;
   for (let sent = 0; answered === undefined; sent += 1) {
     if (!(await options.held())) throw lockLost();
