@@ -17,10 +17,10 @@ import (
 // The words each certificate failure below prints as (tlsErrorWords), written out here so the rows
 // also build in a tree from before those words, where they fail on the name x509 quotes.
 const (
-	wantHostnameWords  = "tls: failed to verify certificate: x509: certificate is not valid for the host asked (the names it is valid for are not printed: the answering party chose them)"
-	wantAuthorityWords = "tls: failed to verify certificate: x509: certificate signed by unknown authority"
-	wantInvalidWords   = "tls: failed to verify certificate: x509: certificate is not valid (x509's reason is not printed: it can quote the certificate, which the answering party chose)"
-	wantRecordWords    = "tls: a record the server sent is not TLS this client can read (most often: what listens at the address does not speak TLS)"
+	wantHostnameWords      = "tls: failed to verify certificate: x509: certificate is not valid for the host asked (the names it is valid for are not printed: the answering party chose them)"
+	wantAuthorityWords     = "tls: failed to verify certificate: x509: certificate signed by unknown authority"
+	wantNameNotPermitWords = "tls: failed to verify certificate: x509: a root or intermediate certificate is not authorized to sign for this name (the name is not printed: the answering party chose it)"
+	wantRecordWords        = "tls: a record the server sent is not TLS this client can read (most often: what listens at the address does not speak TLS)"
 )
 
 // certificateCase is a request whose TLS handshake failed on the certificate the answering party
@@ -43,48 +43,55 @@ type certificateCase struct {
 // (forged-issuer); and, built, an authority's constraint that excludes the name (constraint) and
 // a certificate failure under a *net.OpError (under-a-net-error), whose text quotes what it wraps.
 func certificateCases() []certificateCase {
-	handshake := func(fault redacttest.CertificateFault, trusted bool) func(t *testing.T) (string, *http.Request, error) {
-		return func(t *testing.T) (string, *http.Request, error) {
-			base, trusting := redacttest.CertificateServer(t, fault)
-			client := &http.Client{}
-			if trusted {
-				client = trusting
-			}
-			request, err := http.NewRequest(http.MethodGet, base+"/v1/enrollments/self", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response, err := client.Do(request)
-			if err == nil {
-				_ = response.Body.Close()
-				t.Fatal("the stand-in's certificate was accepted")
-			}
-			return base, request, err
-		}
-	}
-	built := func(failure error) func(t *testing.T) (string, *http.Request, error) {
-		return func(t *testing.T) (string, *http.Request, error) {
-			const base = "https://localhost:8443"
-			request, err := http.NewRequest(http.MethodGet, base+"/v1/enrollments/self", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return base, request, &url.Error{Op: "Get", URL: request.URL.String(), Err: failure}
-		}
-	}
 	named := &x509.Certificate{Subject: pkix.Name{CommonName: redacttest.CertificateName}, DNSNames: []string{redacttest.CertificateName}}
 	hostname := func(err error) bool { return errors.As(err, new(x509.HostnameError)) }
 	return []certificateCase{
-		{"wrong-host-untrusted", handshake(redacttest.WrongHost, false), wantHostnameWords, hostname},
-		{"wrong-host-trusted", handshake(redacttest.WrongHost, true), wantHostnameWords, hostname},
-		{"forged-issuer", handshake(redacttest.ForgedIssuer, false), wantAuthorityWords,
+		{"wrong-host-untrusted", handshakeFailure(redacttest.WrongHost, false), wantHostnameWords, hostname},
+		{"wrong-host-trusted", handshakeFailure(redacttest.WrongHost, true), wantHostnameWords, hostname},
+		{"forged-issuer", handshakeFailure(redacttest.ForgedIssuer, false), wantAuthorityWords,
 			func(err error) bool { return errors.As(err, new(x509.UnknownAuthorityError)) }},
-		{"constraint", built(&tls.CertificateVerificationError{Err: x509.CertificateInvalidError{
+		{"constraint", builtFailure(&tls.CertificateVerificationError{Err: x509.CertificateInvalidError{
 			Cert: named, Reason: x509.CANotAuthorizedForThisName, Detail: `DNS name "` + redacttest.CertificateName + `" is not permitted by any constraint`,
-		}}), wantInvalidWords, func(err error) bool { return errors.As(err, new(x509.CertificateInvalidError)) }},
-		{"under-a-net-error", built(&net.OpError{Op: "read", Net: "tcp", Err: &tls.CertificateVerificationError{
+		}}), wantNameNotPermitWords, func(err error) bool { return errors.As(err, new(x509.CertificateInvalidError)) }},
+		{"under-a-net-error", builtFailure(&net.OpError{Op: "read", Net: "tcp", Err: &tls.CertificateVerificationError{
 			Err: x509.HostnameError{Certificate: named, Host: "localhost"},
 		}}), wantHostnameWords, hostname},
+	}
+}
+
+// handshakeFailure is a request under /v1/ of a redacttest.CertificateServer with fault, made by a
+// client that trusts the stand-in's authority or by one that trusts nothing of it, and net/http's
+// error of it: the configured URL, the request and the error.
+func handshakeFailure(fault redacttest.CertificateFault, trusted bool) func(t *testing.T) (string, *http.Request, error) {
+	return func(t *testing.T) (string, *http.Request, error) {
+		base, trusting := redacttest.CertificateServer(t, fault)
+		client := &http.Client{}
+		if trusted {
+			client = trusting
+		}
+		request, err := http.NewRequest(http.MethodGet, base+"/v1/enrollments/self", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+			t.Fatal("the stand-in's certificate was accepted")
+		}
+		return base, request, err
+	}
+}
+
+// builtFailure is a request under /v1/ of https://localhost:8443 that failed on failure, built as
+// net/http builds its error: the configured URL, the request and the error.
+func builtFailure(failure error) func(t *testing.T) (string, *http.Request, error) {
+	return func(t *testing.T) (string, *http.Request, error) {
+		const base = "https://localhost:8443"
+		request, err := http.NewRequest(http.MethodGet, base+"/v1/enrollments/self", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base, request, &url.Error{Op: "Get", URL: request.URL.String(), Err: failure}
 	}
 }
 

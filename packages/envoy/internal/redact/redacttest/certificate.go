@@ -37,12 +37,19 @@ const (
 	// signed by an unknown authority (x509.UnknownAuthorityError) and names the candidate authority
 	// it tried.
 	ForgedIssuer
+	// NameNotPermitted is a certificate valid for CertificateName and for localhost, issued by an
+	// authority named CertificateName whose name constraint permits neither. x509 finds localhost
+	// among the names, builds the chain, then refuses the first name the authority does not
+	// permit, CertificateName, and quotes it (x509.CertificateInvalidError, reason
+	// CANotAuthorizedForThisName). Only a client that trusts the authority (trusting) gets that
+	// far; one that trusts nothing of the stand-in fails on an unknown authority.
+	NameNotPermitted
 )
 
 // CertificateServer is a TLS stand-in that answers every handshake with fault's certificates. It
 // answers base, its address as https://localhost:<port>, and trusting, a client whose roots hold
 // the stand-in's certificate named CertificateName. A client that trusts nothing of the stand-in
-// (http.Client's default roots) fails the handshake the same way.
+// (http.Client's default roots) fails the handshake the same way, but for NameNotPermitted.
 func CertificateServer(t testing.TB, fault CertificateFault) (base string, trusting *http.Client) {
 	t.Helper()
 	authorityKey := certificateKey(t)
@@ -57,9 +64,12 @@ func CertificateServer(t testing.TB, fault CertificateFault) (base string, trust
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 	}
+	if fault == NameNotPermitted {
+		authority.PermittedDNSDomains = []string{"permitted.example"}
+	}
 	authorityDER := signed(t, authority, authority, authorityKey, authorityKey)
 	answered := tls.Certificate{Certificate: [][]byte{authorityDER}, PrivateKey: authorityKey}
-	if fault == ForgedIssuer {
+	if fault != WrongHost {
 		leafKey := certificateKey(t)
 		leaf := &x509.Certificate{
 			SerialNumber: big.NewInt(2),
@@ -71,8 +81,14 @@ func CertificateServer(t testing.TB, fault CertificateFault) (base string, trust
 			KeyUsage:     x509.KeyUsageDigitalSignature,
 			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}
-		// The leaf names the authority as its issuer, and its own key signs it.
-		answered = tls.Certificate{Certificate: [][]byte{signed(t, leaf, authority, leafKey, leafKey), authorityDER}, PrivateKey: leafKey}
+		// A forged issuer's leaf names the authority as its issuer, and its own key signs it. The
+		// authority's own key signs a leaf that holds a name it does not permit, that name first.
+		signer := leafKey
+		if fault == NameNotPermitted {
+			leaf.DNSNames = []string{CertificateName, "localhost"}
+			signer = authorityKey
+		}
+		answered = tls.Certificate{Certificate: [][]byte{signed(t, leaf, authority, leafKey, signer), authorityDER}, PrivateKey: leafKey}
 	}
 	server := httptest.NewUnstartedServer(http.NotFoundHandler())
 	server.Config.ErrorLog = log.New(io.Discard, "", 0)
