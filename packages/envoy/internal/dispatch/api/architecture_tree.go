@@ -200,10 +200,13 @@ func loadTreeIssues(ctx context.Context, q queryer, seen any, project string) ([
 // attachTreeIssues joins every issue's effective set to the component containment closure
 // (transitive over components.parent, capped at parentDepthCap like the parent walks) and appends each
 // issue once to every component it counts for, in the issues' order. When an issue qualifies
-// several ways the strongest wins: direct (its own row names the component) over inherited (an
-// ancestor's row does) over contained (its set names a component this one contains; via is
-// that component). Retired ids match no component and count for nothing. Its walk starts from
-// the project's issues as the reader whose visibility argument is seen reads them.
+// several ways the strongest wins: direct (its own row names the component) over inherited (the
+// row of an ancestor in its own project does) over contained (its set names a component this one
+// contains; via is that component). Retired ids match no component and count for nothing. The
+// owner walk climbs only to parents of the project, as issueComponentsTerms does, so an issue
+// under an issue of another project takes no attachment from it: component ids belong to one
+// project's model. Its walk starts from the project's issues as the reader whose visibility
+// argument is seen reads them.
 func attachTreeIssues(ctx context.Context, q queryer, seen any, project string, issues []treeIssue, byID map[string]*model.ArchitectureTreeComponent) error {
 	rows, err := q.Query(ctx, `
 		with recursive chain as (

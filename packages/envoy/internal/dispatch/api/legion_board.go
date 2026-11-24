@@ -262,8 +262,7 @@ type legionBoardIssue struct {
 // with. The daemon reports issues by key, and a key may name an issue of another project — a
 // daemon that serves several projects reports all of theirs, a blocker may be of another project,
 // and a project's setting may name any daemon — so every issue who may not see is left out of the
-// board before anything reads the keys (leaveOutHiddenIssues), as an issue's own blocked_by leaves
-// it out (leaveOutHiddenIssueReferences).
+// board before anything reads the keys (leaveOutHiddenIssues).
 func (s *server) readLegionBoard(ctx context.Context, who model.Actor, project string) (*legionBoardPopulation, error) {
 	pool := s.deps.Store.Pool
 	viewer := refs.VisibilityArg(who)
@@ -357,9 +356,7 @@ func (p *legionBoardPopulation) leaveOutHiddenIssues(ctx context.Context, q quer
 // header's (readDaemonRead), and its legion_current, the cards' and the walk's (readCurrent) — in
 // one repeatable-read, read-only transaction, so the two answer one moment. RecordRead commits a
 // read's row and its observations together, and two reads at two moments would still let a commit
-// between them put the header of one read of the daemon over the cards of another. Each statement
-// binds the project's clause for the board's reader (viewer, refs.VisibilityArg), so it holds on
-// its own rather than on legionProject's earlier read of the project.
+// between them put the header of one read of the daemon over the cards of another.
 func (p *legionBoardPopulation) readSampled(ctx context.Context, pool *store.Pool, viewer any) error {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {

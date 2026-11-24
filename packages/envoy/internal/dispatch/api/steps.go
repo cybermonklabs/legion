@@ -141,12 +141,12 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	s.writeIssueStep(w, r, write, actor, key, true)
 }
 
-// writeIssueStep is the one write of a step record behind both routes, by actor to the issue key:
-// the issue is read and its writer judged (lockRecordedIssue), a write the rating route sends with
-// no rating is refused (rated), write (its ID, Issue and Project filled here from the path and the
-// issue row) is written, and the record is answered as the read lists it. The request's reader is
-// resolved once, before the transaction opens, and handed on in the request's context
-// (withReader), so the issue's read and the read of its runs bind the one viewer.
+// writeIssueStep is the one write of a step record behind both routes, by actor to the issue key,
+// each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
+// Issue and Project filled here from the path and the issue row) is written, and the record is
+// answered as the read lists it. The request's reader is resolved once, before the transaction
+// opens, and handed on in the request's context (withReader), so the issue's read and the read of
+// its runs bind the one viewer.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string, rated bool) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -226,10 +226,7 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 // its own rather than loadIssue's NOT_FOUND: the daemon must tell a Dispatch that holds no such
 // issue from one that does not serve the route, whose router answers NOT_FOUND. The path names the
 // issue by its key alone, so the issue is read so once before the lock is asked for, and a hidden
-// one is refused without waiting behind its project's writers, as a key no issue holds is. Then
-// the actor must be the writer of the records of that issue, the session of its project's Legion
-// daemon (legionDaemonSessionOf); any other writer is refused 403 STEP_WRITER, naming what record
-// and whose.
+// one is refused without waiting behind its project's writers, as a key no issue holds is.
 func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string, actor model.Actor, record string) (string, bool) {
 	who, ok := s.readerOf(w, r)
 	if !ok {

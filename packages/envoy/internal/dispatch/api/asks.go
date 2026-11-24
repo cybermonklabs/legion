@@ -1110,9 +1110,8 @@ func (s *server) loadAskAnswers(ctx context.Context, q queryer, who model.Actor,
 }
 
 // loadAsk reads one ask for a response, as who may read it (access.ItemOwnerClause): an ask of a
-// project who does not see is pgx.ErrNoRows, as an id no ask holds is, and a document beside it of
-// a project who does not see is none (askRowFromSeenBy). Unlike readAskForTransition, which feeds
-// the ask.* event payloads, it carries WaitingOn for an open ask.
+// project who does not see is pgx.ErrNoRows, as an id no ask holds is. Unlike
+// readAskForTransition, which feeds the ask.* event payloads, it carries WaitingOn for an open ask.
 func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
 		select `+askReadColumns+`
