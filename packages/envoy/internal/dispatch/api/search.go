@@ -1185,8 +1185,9 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 // A search at a cut does not broaden (D2): search_term_stats counts the present text only.
 
 // searchAsOfVersions is the members of a past-time statement's WITH list after q, for a search
-// that narrows by a status, an author or a time (filtered, searchParameters.filtered) or for one
-// that does not:
+// that reads each post kind's matches whole (filtered: one that narrows by a status, an author or
+// a time, or whose query has no word to rank by; searchParameters.ranksFirstAtACut) or for one
+// that ranks them first:
 //
 //   - text_versions, the keyword table at the cut. It is NOT MATERIALIZED, so that each read of
 //     it reaches the table's indexes. The arm of the issues the query names by key, the meaning
@@ -2162,7 +2163,7 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 	started := time.Now()
 	statement := searchQuery
 	if parameters.versions != nil {
-		statement = searchAsOfQuery(*parameters.versions, parameters.filtered())
+		statement = searchAsOfQuery(*parameters.versions, !parameters.ranksFirstAtACut())
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, statement, searchQueryArguments(parameters)...)
 	if err != nil {
@@ -2206,7 +2207,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	var statement string
 	if parameters.versions != nil {
-		statement = searchAsOfMeaningQuery(*parameters.versions, parameters.filtered())
+		statement = searchAsOfMeaningQuery(*parameters.versions, !parameters.ranksFirstAtACut())
 	} else {
 		// Each flag is read only where it can change the statement: a filtered search runs the
 		// joined one whatever the fill has reached, and a search naming no project runs the

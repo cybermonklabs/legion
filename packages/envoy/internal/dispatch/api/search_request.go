@@ -91,6 +91,16 @@ func (p searchParameters) filtered() bool {
 	return p.status != "" || p.author != "" || p.since != nil
 }
 
+// ranksFirstAtACut reports whether a search at a cut ranks each post kind on its rank before it
+// reads a post's row and its issue at the cut (searchAsOfBoundedPosts): only when no filter reads
+// a column at the cut (filtered), and only when the query has a word to rank by. A query of
+// excluded words alone ranks every match 0, so every row ties at the boundary and the bound only
+// adds its own reads: on a copy of production's event log, one such query at its newest event took
+// 56 s ranked first and 21 s read whole.
+func (p searchParameters) ranksFirstAtACut() bool {
+	return !p.filtered() && len(p.queryReading().words) > 0
+}
+
 // queryReading is this search's text read as words and operators, which the search route reads
 // once for the whole request (the search handler sets reading from the text it has just
 // validated) and every later reader of it takes from here: the snippet window's first term
