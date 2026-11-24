@@ -68,7 +68,8 @@ admission_power() {
         unknown "$step" "the webhook $id calls the Service $sns/$sname, whose answer is not one JSON object ($(first_line "$WORK/service.err")), so where it sends admission calls is not read"
         continue
       fi
-      # is_object passed, so jq fails here only on a Service whose .spec is not an object.
+      # is_object passed, so jq fails here on a Service whose .spec, .spec.type or .spec.selector is
+      # of a type it cannot read ({"spec": {"selector": true}}: "true has no length").
       if ! why="$(jq -r 'if .spec.type == "ExternalName" then "is of type ExternalName (\(.spec.externalName // "")), so admission calls leave the cluster"
         elif ((.spec.selector // {}) | length) == 0 then "has no selector, so its endpoints can point anywhere, inside the cluster or out"
         else "" end' "$WORK/service.json" 2>"$WORK/service.err")"; then

@@ -5,11 +5,13 @@
 # operator-token-minters.sh, whose header says what each step checks.
 # review KUBECONFIG PRINCIPALS RIGHTS: one SubjectAccessReview for each principal of the JSON array
 # PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS, all sent as one
-# List, so a cluster is asked in one kubectl call. A review's answer is matched to its question by
-# the subject and the attributes the API server echoes in its spec. Writes a record of principal,
-# right label, allowed|refused|error and the evaluation error per review to $WORK/review.rec;
-# returns 1 with REVIEW_ERROR when the API server refused the call, answered no List (is_list: an
-# empty body sent with exit 0 would leave no record at all), or did not answer every review.
+# List, so a cluster is asked in one kubectl call, which POSTs each review on its own. kubectl create
+# answers with one JSON document per review it made, never a List (review-answer.jq), read with -s.
+# A review's answer is matched to its question by the subject and the attributes the API server
+# echoes in its spec. Writes a record of principal, right label, allowed|refused|error and the
+# evaluation error per review to $WORK/review.rec; returns 1 with REVIEW_ERROR when the API server
+# refused the call, when a document of the answer is not a SubjectAccessReview with a status, or
+# when the answer does not hold each review asked once (an empty body sent with exit 0 holds none).
 # PRINCIPALS and RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's
 # principals and rights (3,183 and 508 on the operator's) are more than one argument may hold. Each
 # must be one JSON array (one_array), so an empty argument fails the reviews' build.
@@ -26,18 +28,28 @@ review() {
     REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review.err")"
     return 1
   fi
-  if ! is_list "$WORK/review.json" "$WORK/review.err" ||
-    ! jq -r --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
-      -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
+  if ! jq -r -s --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" -L "$LIB" \
+    -f "$LIB/review-answer.jq" "$WORK/review.json" >"$WORK/review.rec" 2>"$WORK/review.err"; then
     REVIEW_ERROR="the API server's answer to the reviews could not be read: $(first_line "$WORK/review.err")"
     return 1
   fi
-  local what answered asked
-  IFS="$US" read -r what answered asked <"$WORK/review.rec" || true
+  local what answered asked documents
+  IFS="$US" read -r what answered asked documents <"$WORK/review.rec" || true
   if [ "$what" = short ]; then
-    REVIEW_ERROR="the API server answered $answered of the $asked reviews asked"
+    REVIEW_ERROR="the API server answered $answered of the $asked reviews asked, in $documents documents"
     return 1
   fi
+}
+# witness_held: whether the API server allowed every one of the witness's reviews in
+# $WORK/review.rec (WITNESS_RECORD, the first principal of every review); returns 1 with
+# WITNESS_ERROR. review's answer holds each principal and right asked once, the witness's among them,
+# so none is missing here. An API server that does not say yes to the witness proves nothing by
+# saying no to anyone else, so judge_reviews and each follow_becomes round end on it.
+witness_held() {
+  WITNESS_ERROR=""
+  [ "$(awk -F"$US" '$1 == "witness" { print $3 }' "$WORK/review.rec" | sort -u)" = allowed ] && return 0
+  WITNESS_ERROR="the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
+  return 1
 }
 # principals_json FILE: the principals of FILE's records (principal, user, groups joined by
 # commas) as review's JSON array.
@@ -127,22 +139,18 @@ csr_chains() {
   done
   csr_reset
 }
-# judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must be there
-# and all allowed; every other allowed review is a finding on RESOURCE (the cluster), its right
-# followed by SUFFIX, granted where the API server's reason says, except a seed's, which only seeds
-# FOUND_SAS, and the certificate signing chain's parts, which csr_part gathers for csr_chains (the
-# caller runs it after live_named, whose named approvals join the chain). Returns 1 when the witness
-# was refused, or was not in the answer at all.
+# judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. Every allowed review but the
+# witness's is a finding on RESOURCE (the cluster), its right followed by SUFFIX, granted where the
+# API server's reason says, except a seed's, which only seeds FOUND_SAS, and the certificate signing
+# chain's parts, which csr_part gathers for csr_chains (the caller runs it after live_named, whose
+# named approvals join the chain). Returns 1 with an UNKNOWN when the witness's reviews are missing
+# or one was refused (witness_held).
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false witness_seen=false
+  local principal label verdict error reason
   FOUND_SAS=()
   csr_reset
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
-    if [ "$principal" = witness ]; then
-      witness_seen=true
-      [ "$verdict" = allowed ] || witness_refused=true
-      continue
-    fi
+    [ "$principal" != witness ] || continue
     case "$verdict" in
       allowed)
         ! csr_part "$principal" "$label" "$reason" || continue
@@ -152,14 +160,7 @@ judge_reviews() {
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
-  if [ "$witness_seen" = false ]; then
-    unknown "$1" "the API server's answer to the reviews held no review of the witness, the cluster-admin binding's group system:masters, so a refusal from this API server proves nothing"
-    return 1
-  fi
-  if [ "$witness_refused" = true ]; then
-    unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
-    return 1
-  fi
+  witness_held || { unknown "$1" "$WITNESS_ERROR"; return 1; }
 }
 # seed_named KIND NAMESPACE NAME DETAIL: a system namespace's ServiceAccount a live role allows a right
 # by name (DETAIL) is never a finding itself, but who can become it holds that right, so it seeds
@@ -190,7 +191,8 @@ seed_named() {
 # patch of one Deployment sets its serviceAccountName), read as live_named reads the others when it
 # read the cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one
 # found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no
-# finding.
+# finding. Each round's reviews must hold the witness's, all allowed (witness_held), as
+# judge_reviews' must: a round whose API server cannot say yes proves nothing by saying no.
 follow_becomes() {
   local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who why
   local what id detail kind ns name
@@ -224,6 +226,7 @@ follow_becomes() {
         error) unknown "$step" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
       esac
     done 4<"$WORK/review.rec"
+    witness_held || { unknown "$step" "$WITNESS_ERROR"; return 0; }
     # The same rights limited by name in a live role, which a review naming nothing never finds.
     [ "${ROLES_OK:-false}" = true ] || continue
     if ! named_grants "$rights" "$WORK/become-named.rec"; then
@@ -577,14 +580,14 @@ named_rights() {
 # printed nothing leaves, is none, so a step never reads it as no rights.
 is_rights() { printf '%s' "$1" | jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1; }
 # is_list FILE ERR: whether FILE holds one JSON object whose items is an array, as kubectl get -o json
-# writes a list and kubectl create -o json answers a List of reviews. jq reads an empty answer, which
-# a proxy that drops a response's body sends with exit 0, as no value: a program over it prints
-# nothing and exits 0, so a read that checks only jq's exit status takes it for an empty list. Every
-# list the check reads with kubectl -o json (the ServiceAccounts, the bindings, the roles, the
-# webhook configurations, the CRDs, the workload allowlists, the admission policies and their
-# bindings) and the answer to the reviews is held to this before any read of it; a webhook's
-# Service is held to is_object. On failure ERR says why (jq's own error for an answer that is not
-# JSON), for the caller's UNKNOWN.
+# writes a list. jq reads an empty answer, which a proxy that drops a response's body sends with exit
+# 0, as no value: a program over it prints nothing and exits 0, so a read that checks only jq's exit
+# status takes it for an empty list. Every list the check reads with kubectl get -o json (the
+# ServiceAccounts, the bindings, the roles, the webhook configurations, the CRDs, the workload
+# allowlists, the admission policies and their bindings) is held to this before any read of it; a
+# webhook's Service is held to is_object. kubectl create's answer to the reviews is one document per
+# review, never a List, and review-answer.jq holds it to that. On failure ERR says why (jq's own
+# error for an answer that is not JSON), for the caller's UNKNOWN.
 is_list() {
   jq -e -s 'length == 1 and (.[0] | type) == "object" and (.[0].items | type) == "array"' "$1" >/dev/null 2>"$2" && return 0
   shape_error "$1" "$2" "one object with a list of items"

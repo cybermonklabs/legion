@@ -13,7 +13,8 @@
 #        exits 0; a webhook that calls a URL, and a refused list of webhook configurations, read
 #        UNKNOWN; apps/deployer that may update configmaps in hooks (rv17), the injector's template,
 #        exits 1; and a backend Service of type ExternalName, or with no selector, reads UNKNOWN
-#        (P2-4); a webhook backed in dispatch whose selector names only legion, with a rule that can
+#        (P2-4); a backend Service whose `.spec` jq cannot read ({"spec": {"selector": true}}) reads
+#        UNKNOWN naming it; a webhook backed in dispatch whose selector names only legion, with a rule that can
 #        match a cluster-scoped object (clusterrolebindings, `*`, or secrets in groups "" and
 #        example.io where the cluster serves a cluster-scoped secrets.example.io), exits 1 naming the
 #        webhook, and with rules on namespaced objects alone exits 0; a cluster-scoped discovery that
@@ -36,8 +37,13 @@
 #        workload allowlists, the admission policies and their bindings, the roles, the bindings,
 #        the ServiceAccounts, a webhook's Service and the answer to the reviews), sent with exit 0
 #        but as no List (an error page, an empty body, `{}`), reads UNKNOWN naming it, exits 2, and
-#        the RBAC step does not pass, though legion/worker holds a right only that answer reveals,
-#        which the item names.
+#        its step does not pass, though a principal holds a right only that answer reveals, which
+#        the item names;
+#   (cy) the answer to the reviews, as kubectl create writes it, one document per review: two or
+#        more so answered are judged; an answer that repeats one review and leaves out another, or
+#        that holds a document without a status, reads UNKNOWN naming the count; and a follow round
+#        whose answer refuses every review, its witness among them, or holds no status, reads
+#        UNKNOWN for the witness rather than pass a seeded chain.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. A webhook whose rules
@@ -162,6 +168,14 @@ backend_row() {
       want_line "UNKNOWN live: RBAC on operator-cluster: the webhook MutatingWebhookConfiguration hook-config/pods.example.com calls the Service hooks/hook, which $want, whose holders this check cannot read" \
         "a webhook backend Service that $want"
       ;;
+    spec-unreadable)
+      hook_config "" "$service" >"$world/clusters/operator-cluster/webhooks.json"
+      # One JSON object, so is_object passes, whose .spec.selector jq cannot take the length of.
+      jq -n '{"hooks/hook": {spec: {selector: true}}}' >"$world/clusters/operator-cluster/services.json"
+      run
+      want_rbac_unknown "the webhook MutatingWebhookConfiguration hook-config/pods.example.com calls the Service hooks/hook, whose spec could not be read (jq: error" \
+        "a webhook backend Service whose spec jq cannot read"
+      ;;
     refused)
       : >"$world/clusters/operator-cluster/refuse-webhooks"
       run
@@ -178,8 +192,8 @@ backend_row() {
 }
 if row ce; then
   each backend_row backend jobs cronjobs replicationcontrollers exec attach ephemeralcontainers configmaps other-cluster excluded url \
-    external-name no-selector refused cluster-rule star-rule crd-rule namespaced-rule star-namespaced refused-cluster-discovery
-  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers, and rv17's configmaps) exits 1 naming the webhook, on the operator's cluster or another, and so does one whose rule can match a cluster-scoped object whatever its selector; an excluding selector exits 0; a URL webhook, an ExternalName or selector-less Service, a refused list and a cluster-scoped discovery that cannot be read whole read UNKNOWN"
+    external-name no-selector spec-unreadable refused cluster-rule star-rule crd-rule namespaced-rule star-namespaced refused-cluster-discovery
+  passed "(ce) a write to a matching webhook's backend (a Deployment's patch, N2's jobs, cronjobs, replicationcontrollers, pods/exec, pods/attach and pods/ephemeralcontainers, and rv17's configmaps) exits 1 naming the webhook, on the operator's cluster or another, and so does one whose rule can match a cluster-scoped object whatever its selector; an excluding selector exits 0; a URL webhook, an ExternalName or selector-less Service, one whose spec jq cannot read, a refused list and a cluster-scoped discovery that cannot be read whole read UNKNOWN"
 fi
 
 # --- (cf) A policy engine's cluster-scoped resources: Kyverno's ClusterPolicy mutates pods. ---
@@ -408,18 +422,25 @@ unread_list_row() {
       want="the API server's list of ServiceAccounts could not be read: $why"
       missed="the cluster's ServiceAccounts"
       ;;
-    reviews)
-      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
-      want="the API server's answer to the reviews could not be read: $why"
-      missed="legion/worker's create of pods in envoy-operator"
-      ;;
-    reviews-other)
-      add_cluster other-cluster us-east1
-      add_sa other-cluster ci runner
-      subject_grant other-cluster "$(sa_subject ci runner)" create "" namespaces "" "" ""
-      dir="$world/clusters/other-cluster" marker=reviews step="Workload Identity on $project/us-east1/other-cluster"
-      want="the API server's answer to the reviews could not be read: $why"
-      missed="ci/runner's create of namespaces on another cluster"
+    reviews | reviews-other)
+      # The answer to the reviews is not a list but one document per review (review-answer.jq), so
+      # each shape reads as that program says: an empty answer holds no review of the pairs asked,
+      # `{}` is one document that is no SubjectAccessReview, and an error page is no JSON at all.
+      case "$shape" in
+        garbage) want="the API server's answer to the reviews could not be read: " ;;
+        empty) want="the API server answered 0 of the " ;;
+        object) want="the API server's answer to the reviews could not be read: " ;;
+      esac
+      if [ "$1" = "${1#reviews-other}" ]; then
+        subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
+        missed="legion/worker's create of pods in envoy-operator"
+      else
+        add_cluster other-cluster us-east1
+        add_sa other-cluster ci runner
+        subject_grant other-cluster "$(sa_subject ci runner)" create "" namespaces "" "" ""
+        dir="$world/clusters/other-cluster" marker=reviews step="Workload Identity on $project/us-east1/other-cluster"
+        missed="ci/runner's create of namespaces on another cluster"
+      fi
       ;;
   esac
   : >"$dir/$shape-$marker"
@@ -433,4 +454,78 @@ if row cu; then
     bindings-garbage bindings-empty bindings-object serviceaccounts-garbage serviceaccounts-empty serviceaccounts-object \
     reviews-garbage reviews-empty reviews-object reviews-other-empty reviews-other-object
   passed "(cu) each answer read with kubectl -o json (every list, a webhook's Service, the answer to the reviews on the operator's cluster or another), sent with exit 0 as an error page, an empty body or {}, reads UNKNOWN naming it, exits 2, and its step does not pass"
+fi
+
+# --- (cy) The answer to the reviews, as kubectl create writes it: given a List, kubectl creates each
+# object on its own and prints one JSON document per object, never a List (kubectl 1.35.9's
+# create.go; measured at 1.36.4 against a mock API server: a List of 500 reviews made 500 POSTs and
+# printed 500 documents). review-answer.jq reads that answer, holds each document to a
+# SubjectAccessReview with an object status, and counts the principal-right pairs it answers against
+# the reviews asked. The items:
+#   judged: two reviews so answered are judged, and the grant in them is a finding;
+#   repeated: the answer repeats the first review in place of the last, keeping the count, so one
+#     pair is missing: UNKNOWN naming the pairs answered, the reviews asked and the documents;
+#   witness-copied: the witness's reviews are copies of another, which is the same fault;
+#   follow-refused and follow-nostatus: the step's own reviews are answered as they are, and each
+#     follow_becomes round after them refuses every review, the witness's among them, or holds no
+#     status; the round reads UNKNOWN for the witness rather than pass the seeded chain.
+# Run by hand, the control is the script and its parts as at dabc806da7, whose review held the
+# answer to is_list: judged reads "UNKNOWN live: RBAC on operator-cluster: the API server's answer
+# to the reviews could not be read: the answer is JSON, but not one object with a list of items",
+# exit 2, so no live step could ever judge a review; and with the fake's List of that head, which
+# that code reads, follow-refused and follow-nostatus exit 0 with "PASS live: RBAC on
+# operator-cluster … none allowed", where the chain is a finding. ---
+review_answer_row() {
+  local dir="$world/clusters/operator-cluster" chain
+  base_world
+  case "$1" in
+    judged | repeated | witness-copied)
+      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" envoy-operator ""
+      ;;
+    follow-refused | follow-nostatus)
+      # A seeded chain: kube-system/generic-garbage-collector may create the operator's token, and
+      # legion/worker may create pods in kube-system, so follow_becomes finds the chain in a round
+      # after the step's own reviews.
+      subject_grant operator-cluster "$(sa_subject kube-system generic-garbage-collector)" create "" serviceaccounts token envoy-operator envoy-operator
+      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" kube-system ""
+      ;;
+  esac
+  case "$1" in
+    repeated) : >"$dir/review-repeated" ;;
+    witness-copied) : >"$dir/review-witness-copied" ;;
+    follow-refused) : >"$dir/review-follow-refused" ;;
+    follow-nostatus) : >"$dir/review-follow-nostatus" ;;
+  esac
+  run
+  case "$1" in
+    judged)
+      want_status 1 "two or more reviews answered as separate documents"
+      want_line "FINDING system:serviceaccount:legion:worker: create pods in envoy-operator" \
+        "two or more reviews answered as separate documents"
+      ! has_prefix "UNKNOWN live: RBAC on operator-cluster: the API server's answer to the reviews" ||
+        fail "two or more reviews answered as separate documents: the answer could not be read"
+      ;;
+    repeated | witness-copied)
+      want_rbac_unknown "the API server answered " "an answer that repeats one review and leaves out another ($1)"
+      want_text " of the " "an answer that repeats one review and leaves out another ($1)"
+      want_text " reviews asked, in " "an answer that repeats one review and leaves out another ($1)"
+      ;;
+    follow-refused | follow-nostatus)
+      chain="create pods in kube-system, so it can become system:serviceaccount:kube-system:generic-garbage-collector"
+      if [ "$1" = follow-refused ]; then
+        want_rbac_unknown "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing" \
+          "a follow round answered $1, where the seeded chain would go unseen"
+      else
+        want_rbac_unknown "the API server's answer to the reviews could not be read: " \
+          "a follow round answered $1, where the seeded chain would go unseen"
+        want_text "is not a SubjectAccessReview with a status" "a follow round answered $1"
+      fi
+      ! has_prefix "FINDING system:serviceaccount:legion:worker: $chain" ||
+        fail "a follow round answered $1: the chain was still found, so the item plants nothing"
+      ;;
+  esac
+}
+if row cy; then
+  each review_answer_row judged repeated witness-copied follow-refused follow-nostatus
+  passed "(cy) reviews answered as one document each are judged; an answer that repeats one and leaves out another reads UNKNOWN naming the count; and a follow round whose answer is all refused or has no status reads UNKNOWN for its witness"
 fi
