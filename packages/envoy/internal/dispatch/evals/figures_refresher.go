@@ -661,7 +661,7 @@ func (r *refresh) refoldStaleBatch(ctx context.Context, cut staleCut, days int) 
 	}); err != nil {
 		return false, err
 	}
-	slog.Debug("dispatch: the eval day-row refresher folded a batch of a stale cut of the stored figures", "project", cut.project, "repo", cut.repo,
+	slog.Info("dispatch: the eval day-row refresher folded a batch of a stale cut of the stored figures", "project", cut.project, "repo", cut.repo,
 		"from", from, "next", next.Format(time.DateOnly), "done", done, "transaction_ms", time.Since(began).Milliseconds())
 	return done, nil
 }
