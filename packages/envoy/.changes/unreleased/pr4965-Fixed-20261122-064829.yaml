@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  The listener's Slack webhook route checks a delivery's signature before it parses the body, and
+  answers Slack's `url_verification` challenge only to a handshake whose signature checks, as
+  Slack's documentation says to: an unsigned or wrongly signed delivery is a `401` whatever its
+  body holds, where before a body that was not JSON was a `400` and an unsigned handshake got its
+  challenge back. The GitHub and Ghost Wispr routes already checked first.
+
+  The byte budget the GitHub route read its bodies against is now one budget for every webhook
+  route, so the Slack and Ghost Wispr routes can no longer each be made to hold 1 MiB per request
+  without bound. `ENVOY_WEBHOOK_BODY_BUDGET` sets it in bytes (64 MiB unset, the GitHub budget's
+  size), the start logs it, and any other value refuses the start naming the variable. A body is
+  still charged as its bytes arrive. A delivery that finds no room waits at most its route's room
+  wait (Slack 1 s, GitHub 5 s, Ghost Wispr 4 s) and is then answered `503` with `Retry-After: 1`,
+  the listener logs `webhook body refused`, and `envoy_webhook_body_refused_total{path}` counts
+  it. A Slack body over 1 MiB is now a `413`.
+time: 2026-11-22T06:48:29Z
+custom:
+    Issue: pr4965

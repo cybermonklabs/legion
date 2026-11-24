@@ -483,6 +483,7 @@ func TestARenamePassLineThatFailsLeavesTheOthersWritten(t *testing.T) {
 // A pass whose bound has already run out fails every line, and still counts the rows its lines
 // left, under a bound of its own: the count is the true count, never a 0 nothing counted.
 func TestARenamePassOutOfTimeStillCountsWhatItLeft(t *testing.T) {
+	t.Parallel()
 	store, pairs := openRenamedRepositoriesStore(t, `
 		insert into projects (key, name, default_assignee, default_repo) values ('INFRA', 'Infra', 'alice', 'sjawhar/legion');
 		insert into repo_projects (repo, project, created_by, renamed_to)
@@ -507,6 +508,7 @@ func TestARenamePassOutOfTimeStillCountsWhatItLeft(t *testing.T) {
 // A count of the rows left that fails is one more failure, and the pass says the rows left are
 // unknown: its summary reads left=unknown, never left=0.
 func TestARenamePassWhoseCountFailsSaysTheRowsLeftAreUnknown(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed+`drop table ci_reconcile_passes;`)
 
@@ -528,6 +530,7 @@ func TestARenamePassWhoseCountFailsSaysTheRowsLeftAreUnknown(t *testing.T) {
 // dispatch://INFRA-4411 drops repo_projects. The boot then reads no pairs, and the pass reads and
 // writes nothing: every field keeps the name it holds.
 func TestTheRenamePassWritesNothingOnceRepoProjectsIsDropped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed+`drop table repo_projects;`)
 	if len(pairs) != 0 {

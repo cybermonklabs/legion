@@ -254,8 +254,8 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
 				w.key, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.key, retro.Generation), w.key, retro.Generation)
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
-			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
-			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.key, *plan, workflow.DefaultSteps())
+			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, ownerStepsDefault):
+			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.key, *plan, ownerStepsDefault)
 		}
 		switch {
 		case w.rating == nil && len(got.Ratings) != 0:

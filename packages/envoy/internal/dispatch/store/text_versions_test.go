@@ -54,11 +54,9 @@ func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
 // comments, messages, asks and their events, as the release before the keyword table wrote them,
 // holds no row in either table once the table's migration has run over it.
 func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, searchTextVersionsVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", searchTextVersionsVersion-1, err)
-	}
+	store := openMigratedTestStore(t, searchTextVersionsVersion-1)
 	seedCoreWithADefaultAssignee(t, store)
 	if _, err := store.Pool.Exec(ctx, `
 		with issue as (insert into issues (key, project_key, number, title, created_by, rank)
@@ -163,6 +161,7 @@ func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 // an ask that shares the first comment's id, so an item is its kind and id together. Each time
 // probed is a version's start, the microsecond before it, or a time past every start.
 func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	base := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
@@ -253,6 +252,7 @@ func TestTheKeywordRelationGivesOneVersionPerItemAtEachTime(t *testing.T) {
 // plan as it would over a filled table rather than over an empty one, where reading every
 // comment's versions in the item index costs as little as any other plan.
 func TestTheKeywordRelationUsesItsIndexes(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `
@@ -297,6 +297,7 @@ func TestTheKeywordRelationUsesItsIndexes(t *testing.T) {
 // TextVersionsAt refuses a cut the fill has not reached with an error naming the reach, and
 // answers a cut at the reach with the relation at that cut.
 func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	// The refusal's words, at the times the contract spells them.

@@ -246,10 +246,8 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
 		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
-		"root-enrolled": {spec: rootSpec(t), agentSecrets: &AgentSecrets{
-			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
-		}},
-		"root-microvm": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"root-enrolled":      {spec: rootSpec(t), agentSecrets: rootEnrolled()},
+		"root-microvm":       {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
 		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
 		// owns a claim template, its kept volume (TestOnlyAMicroVMPodKeepsItsVolume).
 		"root-microvm-kept": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}},
@@ -1524,7 +1522,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
-		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
+		"the exchange identity off": rootEnrolled(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			opts := testOptions()
@@ -2187,7 +2185,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts.Sandbox = SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
-		"the exchange identity off": {URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour},
+		"the exchange identity off": rootEnrolled(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var r *Runtime

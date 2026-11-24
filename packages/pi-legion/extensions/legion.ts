@@ -46,7 +46,7 @@ import {
   sessionActivity,
   sessionActivityRequest,
 } from "@legion/pi-shared/session-activity";
-import { stallLimits } from "@legion/pi-shared/stall-limits";
+import { stallLimits, stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
   createStallWatchdog,
   type StallWatchdog,
@@ -427,8 +427,9 @@ export default function legionExtension(pi: PiApi): void {
    * hands it to this instance instead (`subagentCall`).
    */
   let stallWatch: StallWatchdog | undefined;
-  /** The 5-second sweep, on the interval each session arms below. It is never awaited: a step of
-   * the ladder can outlast the tick that armed it, and the detector takes one sweep at a time. */
+  /** The sweep, on the interval each session arms below, `stallSweepMs(limits)` apart: 5 s on
+   * production's step gap. It is never awaited: a step of the ladder can outlast the tick that
+   * armed it, and the detector takes one sweep at a time. */
   const stallSweep = (): void => {
     void stallWatch?.sweep();
   };
@@ -635,17 +636,20 @@ export default function legionExtension(pi: PiApi): void {
       logger.error(refusal);
       exitProcess(1);
     }
-    // Every Legion session watches its own tool calls; a subagent's instance returned above.
+    // Every Legion session watches its own tool calls; a subagent's instance returned above. The
+    // sweep has a managed interval of its own, a quarter of the ladder's step gap and never more
+    // than 5 s apart, which bounds how late a stuck call or a due step is found against a gap
+    // that is minutes long in production: the controller reports no activity, and a worker's
+    // activity period below is not the ladder's to set.
     armStallWatch(session);
+    context.setInterval(stallSweep, stallSweepMs(limits));
     // The controller registers through the controller session and gets the `legion` tool's
     // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
     // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no
-      // managed interval of its own, and the stall watch takes one here: its session runs tool
-      // calls that can stick like any other's.
-      context.setInterval(stallSweep, SESSION_ACTIVITY_PERIOD_MS);
+      // managed interval of its own beside the stall watch's sweep above.
     } else {
       // A resume whose role launcher found the workspace recreated since the session was last
       // written (src/workspace-recreated.ts) is told so in a message saved to the session ahead of
@@ -717,18 +721,15 @@ export default function legionExtension(pi: PiApi): void {
       // Between turns, the host's own managed interval is the only sight of this session's
       // background work; it sends nothing unless what it reads has changed. Every claimed
       // session reports, an architect's as much as a phase worker's: the daemon releases a pod
-      // only when each of its live roles has said it runs nothing. The stall watch's sweep rides
-      // the same 5 seconds, which bounds how late a stuck call is found against a ladder whose
-      // own steps are minutes apart.
+      // only when each of its live roles has said it runs nothing. The stall watch's sweep has
+      // its own interval, above.
       context.setInterval(() => {
         if (paneContext !== undefined) {
           void reportActivity(paneContext, { onlyWhenChanged: true });
         }
-        // None of the three is awaited: a measurement that runs for up to 10 s, or a step of the
-        // ladder that outlasts the tick, never delays the activity report the daemon reads to
-        // decide whether the pod may be released.
+        // Neither is awaited: a measurement that runs for up to 10 s never delays the activity
+        // report the daemon reads to decide whether the pod may be released.
         void capabilitySchedule?.tick();
-        stallSweep();
       }, SESSION_ACTIVITY_PERIOD_MS);
     }
     // The claim is registered, so this session is a Legion role's: a worker the daemon

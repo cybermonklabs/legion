@@ -1,5 +1,8 @@
 package prompts
 
+//ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
+//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+
 import (
 	"embed"
 	"io/fs"
@@ -58,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	body, err := roleParts.ReadFile("roles/" + name)
 	if err != nil {
 		t.Fatalf("read role prompt part %s: %v", name, err)
+	}
+	return string(body)
+}
+
+// goPart is one embedded daemon prompt part, by its path under go/.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile("go/" + name)
+	if err != nil {
+		t.Fatalf("read the daemon part go/%s: %v", name, err)
 	}
 	return string(body)
 }
@@ -333,6 +346,32 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A pull request in one of GitHub's stacks takes neither of the merger's calls (GitHub refuses
+// `gh pr merge` and `enqueuePullRequest` for it, measured on cybermonklabs/legion#4961 on
+// 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
+// ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
+// with the merge App's token). That merge would also land every open pull request below, which
+// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
+// design gate. So the merger waits while every pull request below lands through its own issue,
+// then takes the stack apart, after which its pull request merges as any other.
+func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh api repos/<o>/<r>/pulls/<n> --jq .stack",
+		"gh api 'repos/<o>/<r>/stacks?pull_request=<n>'",
+		"Where one below yours is open, merge nothing",
+		"gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack",
+		"yours is now a pull request like any other",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "merge-async") {
+		t.Errorf("roles/merger.md names merge-async, which refuses the App the merger acts as on a merge-queue base")
+	}
+}
+
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
@@ -351,7 +390,8 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
 		"You may ask the implementer, the tester or the reviewer what they know",
 		"Run again what the merge can reach",
-		"ask both, on their role topics, to record their results at the new head",
+		"so ask each of them, on their role topics, to record their results at the new head",
+		"Where it has none, no approval holds the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
 		"re-run it, or wait for the base's fix",
@@ -605,7 +645,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
+		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for

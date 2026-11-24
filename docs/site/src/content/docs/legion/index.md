@@ -10,16 +10,25 @@ Legion is a team of coding agents that works the issues you hand it. You write a
 [Dispatch](/legion/dispatch/), label it `legion` and set it to `todo`. When a slot is free, the Legion
 daemon admits it and starts an **architect**, an agent that owns the issue from start to finish. The
 architect turns your issue into a spec and asks you the questions only you can answer. Once you
-approve the spec, the daemon runs **phase workers** one after another: a planner, an implementer
-that writes the change and opens a pull request, a tester, a reviewer and a merger. Each agent is an
-[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session in a Kubernetes pod of its own.
+approve the spec, the daemon runs **phase workers** one after another, the steps the architect's
+plan for the issue picks, or the project's default steps where it gave none or where an experiment
+drew the issue into a group that runs them. Unless your project sets others, the default steps are
+a planner, an implementer, a tester, a reviewer and the architect's own acceptance. The implementer
+writes the change and opens a pull request, and a merger follows every plan. Each agent is an
+[Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) session, or a Claude Code one for a phase
+worker your deployment puts there, and under Kubernetes every agent of an issue runs in that
+issue's one pod.
 
-When the change is tested, reviewed and approved, the merger merges the pull request itself, at
-the head it read, under the repository's own branch protection. The architect
-accepts the reviewed change before that, and the merge closes the issue. The implementer then
-drives the merged change in production, once your deploy carries it, and records what it saw on
+When the plan's steps have passed (in the default steps, the change is tested, reviewed and
+approved), the merger merges the pull request itself, at the head it read, under the repository's
+own branch protection. The architect accepts the change before that, where its plan has that step,
+and the merge closes the issue. The role your project's `production_check` names, the tester by
+default, then drives the merged change in production, once your deploy carries it, and records what it saw on
 the pull request. Every step leaves a record you can read: the spec, the questions and each
 phase's handoff in Dispatch, and the code and the reviews on GitHub.
+
+The diagram follows the default steps: a plan can leave steps out and name the rest in another
+order, with the implementer before each step that reads its pull request.
 
 ```mermaid
 flowchart LR
@@ -27,7 +36,7 @@ flowchart LR
   admission --> architect["Architect<br/>writes the spec"]
   architect --> gate{"You approve<br/>the spec"}
   gate --> planner
-  subgraph pods["Phase workers, one Kubernetes pod each"]
+  subgraph pods["Phase workers, all in the issue's one Kubernetes pod"]
     planner --> implementer
     implementer --> tester
     tester --> reviewer

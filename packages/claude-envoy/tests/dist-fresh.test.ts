@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import ts from "typescript"
 import { assertPinnedBun, BUNDLE_ENTRYPOINTS, buildBundles } from "../scripts/build"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const packageRoot = resolve(import.meta.dir, "..")
 /** The Dispatch token the bundle is handed. */
@@ -95,6 +96,7 @@ test("the fresh bundle starts without node_modules and, with no envoy.json, says
       env: {
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
+        ...NO_TRANSPILER_CACHE,
         CLAUDE_CODE_SESSION_ID: "test",
         CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
       },
@@ -122,6 +124,7 @@ test("with Envoy off the bundle still writes the session title the dispatch comm
       env: {
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
+        ...NO_TRANSPILER_CACHE,
         CLAUDE_CODE_SESSION_ID: "ses-off",
         CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
         DISPATCH_STATE_DIR: join(scratch, "dispatch-state"),
@@ -153,6 +156,7 @@ test("the bundle stamps nothing with Dispatch off, or under the QA override ENVO
         env: {
           PATH: process.env["PATH"] ?? "",
           HOME: scratch,
+          ...NO_TRANSPILER_CACHE,
           CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
           DISPATCH_STATE_DIR: join(scratch, "dispatch-state"),
           ENVOY_SESSION_TITLE: "named",
@@ -187,6 +191,7 @@ test("with Envoy off and no session id the bundle still serves the Envoy-off ser
       env: {
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
+        ...NO_TRANSPILER_CACHE,
         DISPATCH_URL: "http://127.0.0.1:9",
         DISPATCH_TOKEN,
       },
@@ -313,7 +318,7 @@ test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_
     expect((await stat(join(packageRoot, "bin", "dispatch"))).mode & 0o111).toBe(0o111)
     const run = Bun.spawn([shim, "--help"], {
       cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch },
+      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ...NO_TRANSPILER_CACHE },
       stdout: "pipe",
       stderr: "pipe",
     })

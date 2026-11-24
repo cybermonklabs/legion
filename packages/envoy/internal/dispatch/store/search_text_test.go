@@ -1,5 +1,7 @@
 package store
 
+//ci:reads packages/envoy/**/*.md TestSearchTextKeepsEveryLexeme walks packages/envoy (infra included, node_modules and out passed over) and opens each .md file, and no other
+
 import (
 	"context"
 	"errors"
@@ -35,11 +37,9 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 // statement timeout cancelled every shape below on the generated columns 0010 declared. Through
 // search_text each takes under a second (0.85 s for 1 MiB of `a_`).
 func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	artifactID := seedSearchDocument(t, ctx, store)
 	for number, shape := range []string{"a_", "1_", "a-b_", "1.2_", "a_1_"} {
 		body := strings.Repeat(shape, (1<<20)/len(shape))
@@ -77,11 +77,9 @@ func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
 // identifiers, paths and URLs; of 3,336 documents (the repository's and production's), none
 // changed its vector when the function was chosen.
 func TestSearchTextKeepsEveryLexeme(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	same := func(name, body string) {
 		t.Helper()
 		var equal bool
