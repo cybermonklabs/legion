@@ -259,13 +259,16 @@ describe("negative pr-in-x prints no word of gh's", () => {
   }, 30_000);
 
   // after's listing is read twice over: gh's own words on a failed read, and jq's on a listing it
-  // cannot read, which quote the listing ("Cannot iterate over string (...)").
-  for (const [name, arm, kept] of [
-    ["gh's own words on a failed listing", fails(pulls), ".raw.gh-stderr"],
+  // cannot read, which quote the listing ("Cannot iterate over string (...)"). The run ends as it
+  // did before either was kept: raw_fetch's fail (1) for the read, jq's own status (5, a runtime
+  // error) for the count.
+  for (const [name, arm, kept, status] of [
+    ["gh's own words on a failed listing", fails(pulls), ".raw.gh-stderr", 1],
     [
       "jq's words on a listing that is no list",
       answers(pulls, JSON.stringify(MARKER)),
       ".raw.jq-stderr",
+      5,
     ],
   ] as const) {
     test(`${name} are kept in a file it names`, async () => {
@@ -278,7 +281,7 @@ describe("negative pr-in-x prints no word of gh's", () => {
       const runId = before.stdout.match(/^RUN_ID: (\S+)$/m)?.[1] ?? "";
       expect(runId).not.toBe("");
       const after = await before.again(["negative", "pr-in-x", "after", runId, "LEGION-2"], [arm]);
-      expect(after.status).not.toBe(0);
+      expect(after.status).toBe(status);
       expectKept(
         after.stdout + after.stderr,
         join(before.evidence, `negative-pr-in-x-after-LEGION-2-${runId}-pulls${kept}`)

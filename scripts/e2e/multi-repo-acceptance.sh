@@ -852,14 +852,19 @@ negative_pr_in_x() {
   b_highest=$(jq -r '.highest_pr' <<<"$baseline")
   b_record_repo=$(jq -r '.record.repo // "none"' <<<"$baseline")
 
-  local prs_file found_number
+  local prs_file found_number counted=0
   prs_file="$MULTIREPO_EVIDENCE_DIR/negative-pr-in-x-after-$child-$run_id-pulls.raw"
   gh_fetch "$prs_file" "GET repos/$LEGION_E2E_REPO_X/pulls" api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100"
   # jq quotes a value it cannot read ("Cannot iterate over string (...)"), and the listing is
-  # GitHub's answer, so jq's own words are kept beside it, never printed.
+  # GitHub's answer, so jq's own words are kept beside it, never printed. The run still ends with
+  # jq's own status, as it did when errexit ended it there.
   found_number=$(jq --arg ref "legion/$child" --argjson since "$b_highest" \
     '[.[] | select(.head.ref == $ref and .state == "closed" and .number > $since)] | length' "$prs_file" 2>"$prs_file.jq-stderr") ||
-    fail "negative pr-in-x: jq could not count the closed pull requests in GitHub's listing of X, kept in $prs_file; jq's own words are in $prs_file.jq-stderr"
+    counted=$?
+  if [ "$counted" != 0 ]; then
+    echo "$self: negative pr-in-x: jq could not count the closed pull requests in GitHub's listing of X, kept in $prs_file; jq's own words are in $prs_file.jq-stderr" >&2
+    exit "$counted"
+  fi
 
   local state_file now_repo now_pr_repo ok=1
   state_file=$(state_raw negative-pr-in-x-after)
