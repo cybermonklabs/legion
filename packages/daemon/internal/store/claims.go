@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"strings"
 	"time"
@@ -530,7 +531,8 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
-		instant(c.LastDeathAt), instant(c.LastStartFailureAt), c.LastDeathDigest, c.LastStartFailureDigest,
+		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
+		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -988,20 +990,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
-	// A cause's time is read only while the digest stored with it is the digest of the cause the
-	// row holds (20261124073512_claim_cause_times, supervise.CauseDigest). A daemon of the release
-	// before it rewrites each cause, and drops a start failure at its agent's ready, naming neither
-	// the time nor the digest, so a time can stand beside a cause it does not date: such a cause is
-	// read with no time. One that release wrote again with the same text matches the digest and is
-	// read with the older time, which no read can tell from its own. A start failure's time before
-	// last_ready is read as none as well: this release drops the start failure, with its time, at
-	// every ready (supervise's ready), so a start failure beside a time before last_ready is one
-	// that release wrote after that ready, with the older failure's text. A death's time has no
-	// such test, since no ready clears a death (the migration's header says what a rollback leaves).
-	c.LastDeathAt, c.LastDeathDigest = causeTime(c.LastDeathCause, deathAt, deathDigest)
-	c.LastStartFailureAt, c.LastStartFailureDigest = causeTime(c.LastStartFailure, startFailureAt, failureDigest)
+	// A cause's time is read only beside a cause whose digest is the one stored with the time
+	// (causeTime), and a start failure's time before last_ready is read as none, since this
+	// release drops the start failure with its time at every ready; the migration's header
+	// (20261124073512_claim_cause_times) says what the two rules leave after a rollback.
+	c.LastDeathAt = causeTime(c.LastDeathCause, deathAt, deathDigest)
+	c.LastStartFailureAt = causeTime(c.LastStartFailure, startFailureAt, failureDigest)
 	if c.LastStartFailureAt.Before(c.LastReady) {
-		c.LastStartFailureAt, c.LastStartFailureDigest = time.Time{}, nil
+		c.LastStartFailureAt = time.Time{}
 	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
@@ -1102,12 +1098,25 @@ func orZero(t *time.Time) time.Time {
 	return *t
 }
 
-// causeTime is the time a row holds for cause, with the digest stored beside it, or the zero time
-// and no digest where the cause is empty, the row holds no time, or the digest stored with the
-// time is of another text (supervise.Claim.LastDeathDigest).
-func causeTime(cause string, at *time.Time, digest []byte) (time.Time, []byte) {
-	if cause == "" || at == nil || !bytes.Equal(digest, supervise.CauseDigest(cause)) {
-		return time.Time{}, nil
+// causeTime is the time a row holds for cause, or the zero time where the cause is empty, the row
+// holds no time, or the digest stored with the time is of another text than the cause's.
+func causeTime(cause string, at *time.Time, digest []byte) time.Time {
+	if cause == "" || at == nil || !bytes.Equal(digest, causeDigest(cause, *at)) {
+		return time.Time{}
 	}
-	return *at, digest
+	return *at
+}
+
+// causeDigest is the digest upsertClaim writes beside a cause's time, in the same statement: nil
+// where the time is zero, else the 64-bit FNV-1a of the cause's text as the row stores it, in 8
+// bytes. It tells the read whether the time is still the cause's, after a daemon of an earlier
+// release rewrote the cause and not the time (causeTime), and it protects nothing: the text it is
+// taken of stands in plain beside it in the same row.
+func causeDigest(cause string, at time.Time) []byte {
+	if at.IsZero() {
+		return nil
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cause))
+	return h.Sum(nil)
 }

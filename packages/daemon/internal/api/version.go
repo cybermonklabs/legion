@@ -3518,14 +3518,13 @@ package api
 // /legion/v1/issues/{key}/record` gains two keys: `lastDeathAt` beside `lastDeathCause` and
 // `lastStartFailureAt` beside `lastStartFailure`, the time the daemon recorded that cause, in RFC
 // 3339. Each is absent when its cause is absent, and beside a cause an earlier release recorded,
-// which wrote no time (`api.ClaimView`). The claim keeps both in the store's `claims` table
-// (`20261124073512_claim_cause_times`), so a daemon restart keeps them, and each is set and
-// cleared only together with its cause, so a cause recorded again with the same text carries its
-// new time (the rule `supervise.Claim.LastDeathAt` states). The store keeps each time with a
-// digest of the cause it dates, which no key serves, and reads the time back only beside that
-// cause, so a cause of other text that an earlier release wrote after a rollback is served with
-// no time (`supervise.Claim.LastDeathDigest`; the migration's header says what a rollback
-// leaves). The records of 243
+// which wrote no time, except after a rollback (the migration's header; `api.ClaimView`). The
+// claim keeps both in the store's `claims` table (`20261124073512_claim_cause_times`), so a
+// daemon restart keeps them, and each is set and cleared only together with its cause, so a
+// cause recorded again with the same text carries its new time (the rule
+// `supervise.Claim.LastDeathAt` states). The store writes each time with a digest of the cause it
+// dates, which no key serves, and reads the time back only beside that cause (the claim store's
+// causeTime). The records of 243
 // hold the two keys on every claim view, and no record below 243 does: a caller whose contract
 // (the one it states, else its pod's lowest) is below 243 is served every claim view without
 // them (the band of shaping.go's stateNarrowings, `withoutCauseTimes`). The operator's claim view

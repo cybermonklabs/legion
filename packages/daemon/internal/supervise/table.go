@@ -2686,9 +2686,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
 	// again later, as the reason it is not running now (dispatch://INFRA-5463).
-	// The start failure's time and digest go with it (Claim.LastStartFailureAt).
+	// The start failure's time goes with it (Claim.LastStartFailureAt).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
-	m.claim.LastStartFailure, m.claim.LastStartFailureAt, m.claim.LastStartFailureDigest = "", time.Time{}, nil
+	m.claim.LastStartFailure, m.claim.LastStartFailureAt = "", time.Time{}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

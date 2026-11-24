@@ -4,16 +4,16 @@
 -- claims.last_death_at is supervise.Claim.LastDeathAt and claims.last_start_failure_at is
 -- supervise.Claim.LastStartFailureAt: the time, by the daemon's clock, at which it recorded the
 -- cause in claims.last_death_cause and in claims.last_start_failure, null where that cause is
--- empty. claims.last_death_digest and claims.last_start_failure_digest are
--- supervise.Claim.LastDeathDigest and supervise.Claim.LastStartFailureDigest: the 64-bit FNV-1a of
--- the cause text the time dates, as the row stores it, in 8 bytes (supervise.CauseDigest), null
--- where the time is. It tells whether the time is still the cause's and protects nothing. Each
--- time and its digest are set and cleared only together with their cause, in the one
--- statement that writes it (supervise.Claim.LastDeathAt states the rule), so a cause recorded
--- again with the same text is given its new time. A claim keeps its death's cause through every
--- later ready, and a reader of the state took a cause of days before for the current one, since
--- nothing in the row dated it; the claim view and the operator's claim view serve both times
--- beside their causes (lastDeathAt and lastStartFailureAt). No surface serves a digest.
+-- empty. claims.last_death_digest and claims.last_start_failure_digest are the 64-bit FNV-1a of
+-- the cause text each time dates, as the row stores it, in 8 bytes, null where the time is: the
+-- claim store's upsertClaim computes each from the claim's cause and time in the statement that
+-- writes them (causeDigest). It tells whether the time is still the cause's and protects nothing.
+-- Each time is set and cleared only together with its cause (supervise.Claim.LastDeathAt states
+-- the rule), so a cause recorded again with the same text is given its new time. A claim keeps
+-- its death's cause through every later ready, and a reader of the state took a cause of days
+-- before for the current one, since nothing in the row dated it; the claim view and the
+-- operator's claim view serve both times beside their causes (lastDeathAt and
+-- lastStartFailureAt). No surface serves a digest.
 --
 -- It back-fills nothing. Every row written before it reads null for all four: a cause that row
 -- holds was recorded at a time no release wrote down, and a time made up here would be read as

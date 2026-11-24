@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -516,14 +517,14 @@ func TestClaimCauseTimesSurviveAReload(t *testing.T) {
 
 	want(put("that holds no cause"), "that holds no cause", time.Time{}, time.Time{})
 
-	recordDeath(&c, "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3))
-	recordStartFailure(&c, "init container workspace-init failed: exit 1", at(9))
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "init container workspace-init failed: exit 1", at(9)
 	want(put("with both causes"), "with both causes", at(3), at(9))
 
 	c.LastDeathAt = at(21)
 	want(put("whose death was recorded again with the same text"), "whose death was recorded again with the same text", at(21), at(9))
 
-	c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest = "", time.Time{}, nil
+	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
 	want(put("whose start failure was dropped"), "whose start failure was dropped", at(21), time.Time{})
 
 	if _, err := store.Pool().Exec(ctx, `update claims set last_start_failure_at = $1 where token = $2`, at(30), string(c.Token)); err != nil {
@@ -545,8 +546,8 @@ func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
 	c.State = supervise.StateLaunching
-	recordDeath(&c, "gone: pod legion-legion-209 ended: OOMKilled", at(2))
-	recordStartFailure(&c, "the launcher refused the start: the pod was not ready", at(5))
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 ended: OOMKilled", at(2)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
 	c.LastReady = at(10)
 	if err := store.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put the rolled-back claim: %v", err)
@@ -578,8 +579,8 @@ func TestACauseAnEarlierReleaseWroteIsReadWithNoTime(t *testing.T) {
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
 	c.State = supervise.StateLaunching
-	recordDeath(&c, "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3))
-	recordStartFailure(&c, "the launcher refused the start: the pod was not ready", at(5))
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
 	if got := putAndRead(t, store, c); !got.LastDeathAt.Equal(at(3)) || !got.LastStartFailureAt.Equal(at(5)) {
 		t.Fatalf("the claim read back its death at %v and its start failure at %v, want %v and %v",
 			got.LastDeathAt, got.LastStartFailureAt, at(3), at(5))
@@ -626,14 +627,35 @@ func putAndRead(t *testing.T, store *Store, c supervise.Claim) supervise.Claim {
 	return onlyClaim(t, store)
 }
 
-// recordDeath and recordStartFailure set a claim's cause as the daemon's writers do: its text, its
-// time and the digest of its text together (supervise.Claim.LastDeathDigest).
-func recordDeath(c *supervise.Claim, cause string, at time.Time) {
-	c.LastDeathCause, c.LastDeathAt, c.LastDeathDigest = cause, at, supervise.CauseDigest(cause)
-}
-
-func recordStartFailure(c *supervise.Claim, cause string, at time.Time) {
-	c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest = cause, at, supervise.CauseDigest(cause)
+// The digest the store writes beside a cause's time is the 64-bit FNV-1a of the cause's UTF-8
+// bytes, in 8 big-endian bytes, and none where there is no time (causeDigest). The read serves a
+// time only while those 8 bytes match the cause the row holds, so a digest that changed between
+// releases would drop every stored time at the next read. The answers are written out, not
+// computed by causeDigest: the first three are the FNV reference's published 64-bit FNV-1a
+// values, and the last, a cause of two lines with text outside ASCII, was computed by a separate
+// implementation of the algorithm.
+func TestTheCauseDigestIsTheFNV1a64OfTheCausesBytes(t *testing.T) {
+	const twoLines = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled\n" +
+		"init container workspace-init: «HEAD.lock» — prise, réessai ✓\n"
+	if len(twoLines) != 129 {
+		t.Fatalf("the two-line cause is %d bytes, want 129: the text the answer below was computed for changed", len(twoLines))
+	}
+	for _, tc := range []struct {
+		cause string
+		want  []byte
+	}{
+		{"", []byte{0xcb, 0xf2, 0x9c, 0xe4, 0x84, 0x22, 0x23, 0x25}},
+		{"a", []byte{0xaf, 0x63, 0xdc, 0x4c, 0x86, 0x01, 0xec, 0x8c}},
+		{"foobar", []byte{0x85, 0x94, 0x41, 0x71, 0xf7, 0x39, 0x67, 0xe8}},
+		{twoLines, []byte{0x43, 0x5e, 0x4c, 0xc1, 0xfb, 0x38, 0x8a, 0x5d}},
+	} {
+		if got := causeDigest(tc.cause, at(1)); !bytes.Equal(got, tc.want) {
+			t.Errorf("causeDigest(%q) = %x, want %x, the 64-bit FNV-1a of its bytes", tc.cause, got, tc.want)
+		}
+	}
+	if got := causeDigest(twoLines, time.Time{}); got != nil {
+		t.Errorf("causeDigest of a cause with no time = %x, want none: a row with no time holds no digest", got)
+	}
 }
 
 // What the daemon charged for the death of the process a claim records round-trips: a restart

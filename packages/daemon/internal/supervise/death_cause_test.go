@@ -6,7 +6,6 @@ package supervise
 // could have asked.
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +15,9 @@ import (
 )
 
 // The claim keeps the runtime's own account of the death it last suffered, the agent's first
-// prompt after the restart names that account and what the death took with it, and the claim's
-// last ready time dates the death.
+// prompt after the restart names that account and what the death took with it, and the claim
+// records the ready of the agent that came up after it: LastDeathAt dates the death, and a
+// LastDeathAt before LastReady is a death the running agent survived.
 func TestADeadWorkerIsRestartedInItsSessionAndToldWhyItDied(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -228,7 +228,6 @@ func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
 			if !got.LastStartFailureAt.Equal(startFailure) {
 				t.Errorf("%s %s records its start failure %q at %s, want %s", name, what, got.LastStartFailure, got.LastStartFailureAt, startFailure)
 			}
-			wantCauseDigests(t, name+" "+what, got)
 		}
 	}
 
@@ -263,16 +262,15 @@ func TestAClaimCauseTimeIsRecordedAgainForTheSameText(t *testing.T) {
 }
 
 // The boot's clear of a start failure an earlier release kept past its agent's ready drops the
-// failure's time and digest with it, and leaves a claim whose agent has not been ready since as it
-// stands, time and all (DropStaleStartFailure, #5349).
+// failure's time with it, and leaves a claim whose agent has not been ready since as it stands,
+// time and all (DropStaleStartFailure, #5349).
 func TestTheBootsClearOfAStaleStartFailureTakesItsTime(t *testing.T) {
 	for _, tc := range []struct {
 		state   ClaimState
 		dropped bool
 	}{{StateReady, true}, {StateWorking, true}, {StateIdle, true}, {StateLaunching, false}, {StateSuspended, false}} {
 		c := Claim{State: tc.state, LastStartFailure: "the launcher refused the start", LastStartFailureAt: epoch,
-			LastStartFailureDigest: CauseDigest("the launcher refused the start"),
-			LastDeathCause:         "gone: OOMKilled", LastDeathAt: epoch, LastDeathDigest: CauseDigest("gone: OOMKilled")}
+			LastDeathCause: "gone: OOMKilled", LastDeathAt: epoch}
 		if got := DropStaleStartFailure(&c); got != tc.dropped {
 			t.Errorf("DropStaleStartFailure of a %s claim = %v, want %v", tc.state, got, tc.dropped)
 		}
@@ -284,31 +282,6 @@ func TestTheBootsClearOfAStaleStartFailureTakesItsTime(t *testing.T) {
 		}
 		if !c.LastDeathAt.Equal(epoch) {
 			t.Errorf("a %s claim's death time is %v after the boot, want it kept at %v", tc.state, c.LastDeathAt, epoch)
-		}
-		wantCauseDigests(t, "a "+string(tc.state)+" claim after the boot", c)
-	}
-}
-
-// wantCauseDigests fails where a claim's cause time stands without the digest of the cause it
-// dates, or a digest stands with no time. The store reads a time back only beside that digest
-// (Claim.LastDeathDigest), so a writer that set the time and not the digest loses the time at the
-// daemon's next read of the store.
-func wantCauseDigests(t *testing.T, what string, c Claim) {
-	t.Helper()
-	for _, cause := range []struct {
-		kind, text string
-		at         time.Time
-		digest     []byte
-	}{
-		{"death", c.LastDeathCause, c.LastDeathAt, c.LastDeathDigest},
-		{"start failure", c.LastStartFailure, c.LastStartFailureAt, c.LastStartFailureDigest},
-	} {
-		var want []byte
-		if !cause.at.IsZero() {
-			want = CauseDigest(cause.text)
-		}
-		if !bytes.Equal(cause.digest, want) {
-			t.Errorf("%s holds its %s %q at %v with the digest %x, want %x", what, cause.kind, cause.text, cause.at, cause.digest, want)
 		}
 	}
 }

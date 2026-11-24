@@ -437,7 +437,6 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 		t.Errorf("the claim records its last death as %q at %v after the refused take-back, want the cause and time it held before, %q at %v",
 			c.LastDeathCause, c.LastDeathAt, cause, at)
 	}
-	wantCauseDigests(t, "the claim after the refused take-back", h.claim())
 
 	h.store.fail("PutDelivery", nil)
 	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
@@ -455,8 +454,6 @@ func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *test
 	if stored := h.store.load(testToken); stored.LastDeathCause != gone || !stored.LastDeathAt.Equal(h.clock.Now()) {
 		t.Errorf("the stored claim records its last death as %q at %v, want %q at %v", stored.LastDeathCause, stored.LastDeathAt, gone, h.clock.Now())
 	}
-	wantCauseDigests(t, "the suspended claim", h.claim())
-	wantCauseDigests(t, "the stored suspended claim", h.store.load(testToken))
 }
 
 // A claim whose process is running keeps the answers it has today, which is what the landing
