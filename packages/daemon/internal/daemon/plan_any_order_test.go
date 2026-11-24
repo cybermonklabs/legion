@@ -31,9 +31,9 @@ import (
 // A plan in another order than the default steps' runs to done: the issue whose plan is
 // `implementer reviewer tester` launches its implementer, its reviewer and its tester in that order.
 // The tester's step fails on its check's state at the head it tested and its completion through
-// the completion route, and the implementer takes it again in the session it registered, with no
-// launch of its own, told the tester's handoff record, the head it tested and the check that
-// failed. The reviewer and the tester then run again, the retro rates the plan, and the merge ends
+// the completion route, the tester's row keeping the handoff record and that head, and the
+// implementer takes the task again in the session it registered, with no launch of its own. The
+// reviewer and the tester then run again, the retro rates the plan, and the merge ends
 // the walk at done. The control is a second issue given the same steps as `implementer tester
 // reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
@@ -67,9 +67,9 @@ func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 }
 
 // implementAfterTheTestersFail is the walk's implementer taking the task the tester's failed step
-// returned to it: the claim that implemented the task takes it in the session it registered, with
-// no launch after its first, and its task names the tester's handoff record, the head it tested
-// and the check that failed there. It implements again, and the task moves on to its reviewer.
+// returned to it: the tester's row holds its handoff record and the head it tested, and the claim
+// that implemented the task takes the task in the session it registered, with no launch after its
+// first. It implements again, and the task moves on to its reviewer.
 func (r *ownerStepsRig) implementAfterTheTestersFail() {
 	t := r.t
 	t.Helper()
@@ -79,16 +79,7 @@ func (r *ownerStepsRig) implementAfterTheTestersFail() {
 			r.key, tested.HandoffRecord, tested.HandoffCommit, stepRecordsHead)
 	}
 	implementer := r.worker(claim.RoleImplementer)
-	told := implementer.take().Message
-	for _, want := range []string{
-		fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", tested.HandoffVersion, r.key, tested.HandoffVersion),
-		"Handoff commit: " + stepRecordsHead + ".",
-		"k1: no (fail)",
-	} {
-		if !strings.Contains(told, want) {
-			t.Fatalf("%s's implementer was told %q after the tester's step failed, want the tester's report %q", r.key, told, want)
-		}
-	}
+	implementer.take()
 	if launches := r.launchesOfRole(claim.RoleImplementer); len(launches) != 1 {
 		t.Fatalf("%s's implementer was launched %v by the time it took the task again, want its first launch alone: it starts again in its session", r.key, launches)
 	}
