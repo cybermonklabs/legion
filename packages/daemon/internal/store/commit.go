@@ -160,8 +160,21 @@ func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error
 }
 
 // errAcquireBound is a bounded transaction (BoundAfterAcquire) that waited its whole acquire bound
-// in the pool's queue and was handed no connection.
-var errAcquireBound = errors.New("store: the pool handed out no connection within the wait for one")
+// in the pool's queue and was handed no connection. It answers QueueWait, which supervise reads
+// (its cutByBound) to tell a write the pool never began, which it leaves owed at once, from a
+// write the database answered past its write bound, which it makes once more: supervise cannot
+// import this package.
+var errAcquireBound error = acquireBoundError{}
+
+// acquireBoundError is errAcquireBound's type.
+type acquireBoundError struct{}
+
+func (acquireBoundError) Error() string {
+	return "store: the pool handed out no connection within the wait for one"
+}
+
+// QueueWait reports that the bound which ended the call was its wait in the pool's queue.
+func (acquireBoundError) QueueWait() bool { return true }
 
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,

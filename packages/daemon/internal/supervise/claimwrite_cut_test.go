@@ -17,7 +17,21 @@ type cutStore struct {
 	*countingStore
 	mu   sync.Mutex
 	cuts int
+	// queued makes each cut answer as the store's pool queue ends a write it never began
+	// (store's errAcquireBound, which answers QueueWait), rather than as a write the database
+	// answered past its bound.
+	queued bool
 }
+
+// queueWaitCut is a cut of the wait in the store's pool queue, as the store answers it: the
+// deadline, under an error that answers QueueWait.
+type queueWaitCut struct{}
+
+func (queueWaitCut) Error() string {
+	return "the pool handed out no connection within the wait for one"
+}
+
+func (queueWaitCut) QueueWait() bool { return true }
 
 // cutNext makes the next n PutClaim calls answer as writes the bound cut short.
 func (s *cutStore) cutNext(n int) {
@@ -35,6 +49,9 @@ func (s *cutStore) PutClaim(ctx context.Context, c Claim) error {
 	s.mu.Unlock()
 	if cut {
 		s.record("PutClaim")
+		if s.queued {
+			return fmt.Errorf("put claim %s: %w (30s): %w", c.Token, queueWaitCut{}, context.DeadlineExceeded)
+		}
 		return fmt.Errorf("put claim %s: %w", c.Token, context.DeadlineExceeded)
 	}
 	return s.countingStore.PutClaim(ctx, c)
@@ -120,6 +137,24 @@ func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.
 		}
 		if asked := cut.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
 			t.Fatalf("the decision asked for %v, want the one claim write: the daemon is going", asked)
+		}
+	})
+
+	t.Run("a cut of the wait in the pool's queue is not made again", func(t *testing.T) {
+		h, cut := newCutHarness(t)
+		h.reach(StateReady)
+		attempted := cut.mark()
+		cut.queued = true
+		cut.cutNext(1)
+
+		if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("the turn start whose write the queue's bound cut = %v, want the cut", err)
+		}
+		if asked := cut.writes()[attempted:]; !slices.Equal(asked, []string{"PutClaim"}) {
+			t.Fatalf("the decision asked for %v, want the one claim write: a write the pool never began is owed at once", asked)
+		}
+		if h.m.owedWrite == nil {
+			t.Fatal("the write the queue's bound cut left no write owed")
 		}
 	})
 }

@@ -119,8 +119,15 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		defer cancel()
 		queued := c
 		queued.State = supervise.StateIdle
-		if err := one.PutClaim(bounded, queued); !errors.Is(err, errAcquireBound) || !errors.Is(err, context.DeadlineExceeded) {
+		err := one.PutClaim(bounded, queued)
+		if !errors.Is(err, errAcquireBound) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a write that waited its whole 300ms for the pool's one connection = %v, want the acquire bound's error naming the deadline", err)
+		}
+		// supervise reads this to leave a write the queue never began owed at once, rather than make
+		// it again in the decision as it does a write the database answered late (its cutByBound).
+		var waited interface{ QueueWait() bool }
+		if !errors.As(err, &waited) || !waited.QueueWait() {
+			t.Fatalf("the acquire bound's error %v does not answer QueueWait", err)
 		}
 		if err := <-ended; err != nil {
 			t.Fatalf("the transaction that held the connection: %v", err)
