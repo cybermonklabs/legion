@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
@@ -82,11 +83,13 @@ type ControllerCredentialResponse struct {
 	// Installed is the owner accounts the review App is installed on, lowercased and sorted,
 	// as the one read of GitHub that opened this bundle's build answered them
 	// (appauth.ControllerCredential), so the directories and the installations of one answer
-	// are one moment's. `legion controller start` tells its controller which owners its App
-	// is installed on from it, which Owners cannot say: a bundle also holds a directory for
-	// an owner a configured rename moved a repository away from, where the App may not be
-	// installed, and holds none for an installed owner whose lease GitHub refused. Never
-	// null.
+	// are one moment's. Each is written as a message may print it (githubrest.ShownLogin): a
+	// name the read answered that is no login GitHub allows, which no directory is named for, is
+	// githubrest.NotALogin in its place, so the count and the order stay the read's.
+	// `legion controller start` tells its controller which owners its App is installed on from
+	// it, which Owners cannot say: a bundle also holds a directory for an owner a configured
+	// rename moved a repository away from, where the App may not be installed, and holds none
+	// for an installed owner whose lease GitHub refused. Never null.
 	Installed []string `json:"installed"`
 }
 
@@ -263,9 +266,15 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
-	installed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
-	if installed == nil {
-		installed = []string{}
+	// Each owner the read answered is served and logged as a message may print it
+	// (githubrest.ShownLogin), in the read's order: discovery takes any login GitHub lists, one
+	// that echoes the App's JWT the read carried among them, and such a name is said only as
+	// githubrest.NotALogin, so the controller and the operator still see an entry is there. The
+	// route decides on none of them.
+	listed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
+	installed := make([]string, 0, len(listed))
+	for _, owner := range listed {
+		installed = append(installed, githubrest.ShownLogin(owner))
 	}
 	answer := ControllerCredentialResponse{
 		Owners:    make(map[string]ControllerOwnerCredential, len(bundle.Dirs)),
