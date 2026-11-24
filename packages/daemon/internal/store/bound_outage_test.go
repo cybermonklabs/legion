@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"errors"
-	"net/url"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -76,7 +76,7 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		outage.Silence()
 		pool := poolOn(t, outage.DSN)
 		const acquire = 20 * time.Second
-		took, err := boundedSelect(ctx, pool, acquire, 500*time.Millisecond)
+		_, took, err := bounded(ctx, pool, acquire, 500*time.Millisecond)
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction on a server that answers no connection = %v, want the dial's failure at the write bound, not the acquire bound's", err)
 		}
@@ -89,11 +89,11 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		t.Parallel()
 		outage := testdb.Outage(t, testDSN(t))
 		pool := poolOn(t, outage.DSN)
-		if _, err := boundedSelect(ctx, pool, 3*time.Second, 500*time.Millisecond); err != nil {
+		if _, _, err := bounded(ctx, pool, 3*time.Second, 500*time.Millisecond); err != nil {
 			t.Fatalf("a transaction before the server went silent: %v", err)
 		}
 		outage.Silence()
-		took, err := boundedSelect(ctx, pool, 3*time.Second, 500*time.Millisecond)
+		_, took, err := bounded(ctx, pool, 3*time.Second, 500*time.Millisecond)
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction whose BEGIN the server never answers = %v, want the write bound's failure, not the acquire bound's", err)
 		}
@@ -106,12 +106,12 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		t.Parallel()
 		outage := testdb.Outage(t, testDSN(t))
 		pool := poolOn(t, outage.DSN)
-		if _, err := boundedSelect(ctx, pool, 3*time.Second, 500*time.Millisecond); err != nil {
+		if _, _, err := bounded(ctx, pool, 3*time.Second, 500*time.Millisecond); err != nil {
 			t.Fatalf("a transaction before the server went silent: %v", err)
 		}
 		time.Sleep(pingAfterIdle + 200*time.Millisecond)
 		outage.Silence()
-		took, err := boundedSelect(ctx, pool, 3*time.Second, 500*time.Millisecond)
+		_, took, err := bounded(ctx, pool, 3*time.Second, 500*time.Millisecond)
 		if err == nil || errors.Is(err, errAcquireBound) {
 			t.Fatalf("a transaction on an idle connection of a silent server = %v, want the write bound's failure, not the acquire bound's", err)
 		}
@@ -120,76 +120,81 @@ func TestABoundedTransactionOnADatabaseThatStopsAnsweringEndsAtItsWriteBound(t *
 		}
 	})
 
-	t.Run("a server that closed the pool's connection while it sat idle", func(t *testing.T) {
-		t.Parallel()
-		// One connection, so the bounded transaction is handed the one the server closed, and its
-		// second try is a fresh dial.
-		pool := poolOn(t, withMaxConns(t, testDSN(t), 1))
-		first := backendOf(t, pool)
-		// A pgx pool and not pgx.Connect: the test DSN carries pool_max_conns (testdb.PoolBounded),
-		// which a plain connection sends the server as a setting it refuses.
-		closer, err := pgxpool.New(ctx, testDSN(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer closer.Close()
-		var terminated bool
-		if err := closer.QueryRow(ctx, "select pg_terminate_backend($1, 5000)", first).Scan(&terminated); err != nil || !terminated {
-			t.Fatalf("terminate the pool's connection (backend %d) = %t (%v), want it ended", first, terminated, err)
-		}
-		// Past the ping threshold, so an unbounded acquire would ping the connection and replace it.
-		time.Sleep(pingAfterIdle + 500*time.Millisecond)
-		var second int
-		took, err := boundedRead(ctx, pool, 3*time.Second, 2*time.Second, &second)
-		if err != nil {
-			t.Fatalf("a bounded transaction handed the connection the server closed = %v after %s, want it begun on another connection", err, took)
-		}
-		if second == first {
-			t.Fatalf("the transaction ran on backend %d, the one the server ended", second)
-		}
-	})
+	for _, closed := range []struct {
+		name  string
+		conns int
+	}{
+		// One connection: the transaction is handed the one the server closed, and its second try
+		// is a fresh dial.
+		{"a server that closed the pool's one connection while it sat idle", 1},
+		// Every connection of a pool of three, as a restart closes them all: the transaction is
+		// handed each closed one in turn and its fourth try, the pool's size and one more, is a
+		// fresh dial.
+		{"a server that closed every connection of a pool of three while they sat idle", 3},
+	} {
+		t.Run(closed.name, func(t *testing.T) {
+			t.Parallel()
+			pool := storeWith(t, map[string]string{"pool_max_conns": strconv.Itoa(closed.conns)}).Pool()
+			ended := idleBackends(t, pool, closed.conns)
+			// A pgx pool and not pgx.Connect: the test DSN carries pool_max_conns
+			// (testdb.PoolBounded), which a plain connection sends the server as a setting it
+			// refuses.
+			closer, err := pgxpool.New(ctx, testDSN(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closer.Close()
+			for _, backend := range ended {
+				var terminated bool
+				if err := closer.QueryRow(ctx, "select pg_terminate_backend($1, 5000)", backend).Scan(&terminated); err != nil || !terminated {
+					t.Fatalf("terminate the pool's connection (backend %d) = %t (%v), want it ended", backend, terminated, err)
+				}
+			}
+			// Past the ping threshold, so an unbounded acquire would ping each connection and
+			// replace it.
+			time.Sleep(pingAfterIdle + 500*time.Millisecond)
+			backend, took, err := bounded(ctx, pool, 3*time.Second, 2*time.Second)
+			if err != nil {
+				t.Fatalf("a bounded transaction handed the pool's %d closed connections = %v after %s, want it begun on another connection", len(ended), err, took)
+			}
+			if slices.Contains(ended, backend) {
+				t.Fatalf("the transaction ran on backend %d, one of the %v the server ended", backend, ended)
+			}
+		})
+	}
 }
 
-// boundedSelect runs one transaction on pool under BoundAfterAcquire(acquire, write) and says how
-// long it took.
-func boundedSelect(ctx context.Context, pool *Pool, acquire, write time.Duration) (time.Duration, error) {
-	var backend int
-	return boundedRead(ctx, pool, acquire, write, &backend)
-}
-
-// boundedRead is boundedSelect that also reads the backend the transaction ran on into backend.
-func boundedRead(ctx context.Context, pool *Pool, acquire, write time.Duration, backend *int) (time.Duration, error) {
-	bounded, cancel := BoundAfterAcquire(ForConcurrentWorker(ctx), acquire, write)
+// bounded runs one transaction on pool under BoundAfterAcquire(acquire, write), and answers the
+// backend it ran on and how long it took.
+func bounded(ctx context.Context, pool *Pool, acquire, write time.Duration) (backend int, took time.Duration, err error) {
+	boundedCtx, cancel := BoundAfterAcquire(ForConcurrentWorker(ctx), acquire, write)
 	defer cancel()
 	started := time.Now()
-	err := Transact(bounded, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, "select pg_backend_pid()").Scan(backend)
+	err = Transact(boundedCtx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, "select pg_backend_pid()").Scan(&backend)
 	})
-	return time.Since(started), err
+	return backend, time.Since(started), err
 }
 
-// backendOf is the backend of pool's one connection, read through a bounded transaction, which
-// leaves the connection idle in the pool.
-func backendOf(t *testing.T, pool *Pool) int {
+// idleBackends opens n connections of pool at once and gives them back, so the pool holds n idle
+// connections, and answers their backends.
+func idleBackends(t *testing.T, pool *Pool, n int) []int {
 	t.Helper()
-	var backend int
-	if _, err := boundedRead(context.Background(), pool, 3*time.Second, 2*time.Second, &backend); err != nil {
-		t.Fatalf("read the pool's backend: %v", err)
+	ctx := context.Background()
+	backends := make([]int, 0, n)
+	for range n {
+		conn, err := pool.pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("open a connection of the pool: %v", err)
+		}
+		defer conn.Release()
+		var backend int
+		if err := conn.QueryRow(ctx, "select pg_backend_pid()").Scan(&backend); err != nil {
+			t.Fatalf("read a connection's backend: %v", err)
+		}
+		backends = append(backends, backend)
 	}
-	return backend
-}
-
-// withMaxConns is dsn with pool_max_conns set to n.
-func withMaxConns(t *testing.T, dsn string, n int) string {
-	t.Helper()
-	u, err := url.Parse(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := u.Query()
-	q.Set("pool_max_conns", strconv.Itoa(n))
-	u.RawQuery = q.Encode()
-	return u.String()
+	return backends
 }
 
 // poolOn is a pool on dsn as the daemon builds its own (PoolConfig), closed at the test's end.

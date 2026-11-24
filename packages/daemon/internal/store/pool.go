@@ -374,14 +374,16 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 // as pgxpool's do.
 //
 // A BEGIN that failed began nothing, so it is tried on another connection when the connection it
-// failed on is closed, or when nothing of it reached the server (pgconn.SafeToRetry), while the
-// write bound lasts, at most the pool's size and one more times. pgx closes a connection whose
-// read met the server's FATAL or an end of stream, so a connection the server closed while it sat
-// in the pool (a restart, pg_terminate_backend, idle_session_timeout) is replaced, as pgxpool's
-// ping replaces it before it hands it out. A bounded acquire is not pinged (PoolConfig's
-// ShouldPing), so for a bounded transaction this retry is that replacement, and the BEGIN, under
-// the write bound, is the check. A retry waits in the queue until the earlier of the acquire bound
-// and the write bound, so it extends neither.
+// failed on is closed, while the write bound lasts, at most the pool's size and one more times.
+// pgx closes the connection on every BEGIN error but a non-fatal PgError (pgx v5.13.0
+// tx.go:128-135), so a connection the server closed while it sat in the pool (a restart,
+// pg_terminate_backend, idle_session_timeout: a FATAL, an end of stream or a reset on the BEGIN's
+// read) is replaced, as pgxpool's ping replaces it before it hands it out, and a BEGIN the server
+// refused on an open connection is answered as it is. A bounded acquire is not pinged
+// (PoolConfig's ShouldPing), so for a bounded transaction this retry is that replacement, and the
+// BEGIN, under the write bound, is the check. A retry waits in the queue until the earlier of the
+// acquire bound and the write deadline, so it extends neither; a retry the queue ends names the
+// BEGIN that failed before it.
 //
 // The transaction it gives is always the store's own (storeTx), so every statement of it passes
 // the argument rule. Its release gives the connection back and then clears the caller's hold mark,
@@ -401,7 +403,7 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 		conn, err := p.pool.Acquire(waiting)
 		if err != nil {
 			if failed != nil {
-				err = errors.Join(err, failed)
+				return nil, fmt.Errorf("store: no other connection was handed out within the wait after a BEGIN failed on a closed one: %w", errors.Join(err, failed))
 			}
 			return nil, bound.notBegun(ctx, acquiring, err)
 		}
@@ -410,11 +412,6 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 			var stopWriting context.CancelFunc
 			writing, stopWriting = bound.writingFrom(ctx, handedOut)
 			defer stopWriting()
-			if deadline, ok := writing.Deadline(); ok {
-				var stopWaiting context.CancelFunc
-				waiting, stopWaiting = context.WithDeadline(acquiring, deadline)
-				defer stopWaiting()
-			}
 		}
 		tx, err := conn.BeginTx(writing, options)
 		if err == nil {
@@ -423,10 +420,15 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 		}
 		closed := conn.Conn().IsClosed()
 		// pgxpool destroys a connection given back closed, and pools again one that a non-fatal
-		// error left open (pgx tx.go).
+		// error left open.
 		conn.Release()
-		if (!closed && !pgconn.SafeToRetry(err)) || writing.Err() != nil {
+		if !closed || writing.Err() != nil {
 			return nil, err
+		}
+		if failed == nil && bound != nil {
+			var stopWaiting context.CancelFunc
+			waiting, stopWaiting = context.WithDeadline(acquiring, handedOut.Add(bound.write))
+			defer stopWaiting()
 		}
 		failed = err
 	}

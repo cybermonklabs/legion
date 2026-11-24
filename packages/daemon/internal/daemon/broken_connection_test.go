@@ -89,7 +89,7 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 	// the row, its connection is ended under it, and the row is behind what memory holds.
 	sh.send(shimwire.AgentStart{})
 	testwait.Eventually(t, "the turn start's claim write to wait on the claim's row", func() bool {
-		return lockWaiters(t, pool, application) == 1
+		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
 	})
 	if ended := terminateDaemonBackends(t, pool, application); ended != 1 {
 		t.Fatalf("ended %d backends of %s, want the daemon's one connection", ended, application)
@@ -164,18 +164,6 @@ func terminateDaemonBackends(t *testing.T, pool *store.Pool, application string)
 		}
 	}
 	return count
-}
-
-// lockWaiters is how many backends whose application name is application wait on a lock now, read
-// on the test's own connection.
-func lockWaiters(t *testing.T, pool *store.Pool, application string) int {
-	t.Helper()
-	var waiting int
-	if err := pool.QueryRow(context.Background(),
-		"select count(*) from pg_stat_activity where application_name = $1 and wait_event_type = 'Lock'", application).Scan(&waiting); err != nil {
-		t.Fatalf("read the lock waits of %s: %v", application, err)
-	}
-	return waiting
 }
 
 // storedClaimState is token's state as the database holds it, read on the test's own connection:

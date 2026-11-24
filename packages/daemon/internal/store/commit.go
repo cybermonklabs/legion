@@ -85,13 +85,15 @@ type afterAcquire struct{ acquire, write time.Duration }
 // Only the queue is acquire's. A connection the pool dials for the transaction is dialled under
 // write as well (PoolConfig's BeforeConnect); a pooled one is not pinged, its BEGIN is the check,
 // and a BEGIN that meets a connection the server closed is tried again on another (Pool.BeginTx).
-// So a database that stops answering holds a bounded transaction for up to about twice write,
-// never for acquire: twice in the one case of a dial that succeeds just short of write followed by
+// So a database that stops answering holds a bounded transaction that holds a connection for up to
+// about twice write: twice in the one case of a dial that succeeds just short of write followed by
 // a BEGIN the database never answers, which runs its own write from the hand-out, and once write
-// in every other. That is the bound a claim write's machine is held by in an outage
-// (supervise.Deps.BoundWrite). A deadline counted from before the wait was the queue's bound as
-// well as the write's: a wave of transactions on a pool of a few connections cut the last of them
-// for the writes ahead of it, however quickly each would have run.
+// in every other. A transaction queued behind others waits in the queue first, up to acquire, as
+// the connections ahead of it come back each within its holder's own bound. The hard bound of a
+// bounded call is ctx's own deadline: acquire, write and CommitSettleBound together (37 s for a
+// claim write, supervise.Deps.BoundWrite). A deadline counted from before the wait was the queue's
+// bound as well as the write's: a wave of transactions on a pool of a few connections cut the last
+// of them for the writes ahead of it, however quickly each would have run.
 func BoundAfterAcquire(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc) {
 	bounded, cancel := context.WithTimeout(ctx, acquire+write+CommitSettleBound)
 	return context.WithValue(bounded, afterAcquireKey{}, &afterAcquire{acquire: acquire, write: write}), cancel

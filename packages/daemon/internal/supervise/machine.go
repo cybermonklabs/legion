@@ -1266,9 +1266,11 @@ func (d Deps) check() error {
 // answers in single-digit milliseconds. Five seconds is therefore hundreds of times a healthy
 // write — so no write that was going to land is ever cut short by it — and still a small fraction
 // of any outage worth the name. A database that stops answering holds the machine's lock for up to
-// about twice this per bounded call, the bound store.BoundAfterAcquire states. The write it cuts
-// short is not lost: a bare context deadline is a write the server never answered, which writeOwed
-// owes, so the claim write is marked and made again at the claim's next decision (owes, repair).
+// about twice this per bounded call that holds a connection, and for at most defaultClaimAcquire,
+// this and the commit's settle together (37 s) for one that queues first, the bounds
+// store.BoundAfterAcquire states. The write it cuts short is not lost: a bare context deadline is
+// a write the server never answered, which writeOwed owes, so the claim write is marked and made
+// again at the claim's next decision (owes, repair).
 //
 // It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
