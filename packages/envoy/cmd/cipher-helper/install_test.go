@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // installRig is a temp XDG config dir, a fake systemctl on PATH that appends its argv to a log
@@ -25,11 +26,11 @@ import (
 // --property=Job the unit's queued job from the calls log's .job file and nothing without one;
 // neither logs anything), and the helper socket path install checks for a running helper. Its
 // restart gives the unit a new main process, unless the calls log's .same-process marker exists;
-// with .fail-restart it exits 1, and with .slow-restart it sleeps 20 s, changing no process and
-// leaving job 7 queued for the unit, as systemd keeps the job of a client killed while it waits,
-// unless .no-queued-job exists. Its environment names a socket and a runtime directory of its
-// own, and runAs refuses to run install against any socket outside the rig's directory
-// (foreignSocket).
+// with .fail-restart it exits 1, and with .slow-restart it sleeps a day, past any test binary's
+// deadline, changing no process and leaving job 7 queued for the unit, as systemd keeps the job
+// of a client killed while it waits, unless .no-queued-job exists. Its environment names a socket
+// and a runtime directory of its own, and runAs refuses to run install against any socket outside
+// the rig's directory (foreignSocket).
 type installRig struct {
 	t      testing.TB
 	dir    string
@@ -68,7 +69,7 @@ func newInstallRig(t *testing.T) *installRig {
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
+		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 86400; fi\n" +
 		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
 	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -661,7 +662,10 @@ func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 // TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: a restart still running at its timeout
 // (helper.InstallRestartTimeout) is one install stops waiting for; with no job left queued for
 // the unit and its main process unchanged, install sends undrain and returns an error naming the
-// timeout, well before the restart would have returned.
+// timeout. The stand-in restart sleeps a day, past the test binary's deadline, so install
+// returning at all says it stopped at its timeout and not at the restart's end; the wait for it
+// is bounded only by that deadline, and install is not timed, since its systemctl reads run
+// processes a loaded machine can be slow to start.
 func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	r := newInstallRig(t)
 	shortenRestartTimeout(t)
@@ -671,11 +675,12 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 		}
 	}
 	ops := r.fakeHelper(t, nil)
-	started := time.Now()
-	err := r.run("--url", "https://secrets.example")
-	if took := time.Since(started); took > 10*time.Second {
-		t.Fatalf("install waited %s for a restart its timeout is 200ms", took)
+	if err := r.foreignSocket(); err != nil {
+		t.Fatal(err)
 	}
+	done := make(chan error, 1)
+	go func() { done <- install([]string{"--url", "https://secrets.example"}, env(r.env), r.exe, &r.stdout) }()
+	err := testwait.Receive(t, "install to return at its 200ms restart timeout, with the stand-in restart sleeping a day", done)
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
 		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
 	}
