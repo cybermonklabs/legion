@@ -1,29 +1,25 @@
 package record
 
 import (
-	"maps"
-	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// Every step of a merge forward has its place in the one order of a merge forward's messages to
-// one agent (mergeForwardOrder), once, so a step added later is placed before any sender addresses
-// it; and each cover names a step of the same event that comes after it, so the message one claim
-// keeps is the one that asks the more of it. The list of steps is mergeForwardRoles', which the
-// validation of a row reads.
-func TestEveryMergeForwardStepHasItsPlaceInTheOrderOfOneAgentsMessages(t *testing.T) {
+// Each cover of a merge forward (mergeForwardCovered) joins two steps of a merge forward and goes
+// one way, so of two messages of one event whose recipients one claim holds, one is the covering
+// message, whichever of them its sender addresses first, and the claim gets that one alone
+// (workflow's addressMergeForward). A cover named both ways would leave the message the claim keeps
+// to the order the sender addressed the two in. The fault it holds off was planted once, the cover
+// map naming the hold as covering the ask too, and the test failed on it.
+func TestEachMergeForwardCoverGoesOneWay(t *testing.T) {
 	t.Parallel()
-	steps := slices.Sorted(maps.Keys(mergeForwardRoles))
-	placed := slices.Sorted(slices.Values(mergeForwardOrder))
-	if !slices.Equal(steps, placed) {
-		t.Fatalf("the order of one agent's merge-forward messages places %v, want each step of %v once", mergeForwardOrder, steps)
-	}
 	for step, covered := range mergeForwardCovered {
-		if MergeForwardOrder(step) < 0 || MergeForwardOrder(covered) <= MergeForwardOrder(step) {
-			t.Fatalf("%s covers %s, want a step placed after it (%v)", step, covered, mergeForwardOrder)
+		_, known := mergeForwardRoles[step]
+		_, coveredKnown := mergeForwardRoles[covered]
+		if !known || !coveredKnown || step == covered {
+			t.Fatalf("%q covers %q, want two steps of a merge forward (%v)", step, covered, mergeForwardRoles)
 		}
 		if !MergeForwardCovers(step, covered) || MergeForwardCovers(covered, step) {
 			t.Fatalf("MergeForwardCovers(%s, %s) is not the one way the cover goes", step, covered)

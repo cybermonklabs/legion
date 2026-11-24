@@ -97,7 +97,9 @@ func hookCount(hook Hook, counts map[string]int) int {
 // the task does. The claim is the one the start of that step names, whether or not the step has
 // run, and whether a role has a session is not read here: a claim no session holds is ended
 // undelivered by the outbox with a log line, as any role message is. Every other role a hook names,
-// a role of the deployment, names the claim of the worker on its role's step (workerClaim).
+// a role of the deployment or the merger, names the claim of the worker on its role's step
+// (roleRowWorker): the claim its phases row names, and the owner's own claim where that row runs a
+// step the owner works, whatever claim the row names there.
 //
 // The counts map is the task's own (recordPass) and is handed to each row as it stands: the outbox
 // row encodes it at once (record.NewOutboxRow), and nothing writes to it after the move that
@@ -110,8 +112,10 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 		pull = fmt.Sprintf("%s#%d", pr.Repo, pr.Number)
 	}
 	prompted := make([]string, 0, len(hook.Roles))
-	// walk is issue's walk, read once for the first role whose agent a step's work names.
-	var walk *Walk
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
 	for _, role := range hook.Roles {
 		if slices.Contains(prompted, string(role)) {
 			continue
@@ -132,14 +136,7 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 			// settlement's message name the implementer. A task with no step of that work has no
 			// such agent, since no worker of it does that work to take back, and so the firing
 			// prompts nobody for that role there, as those senders tell nobody.
-			if walk == nil {
-				w, err := e.walk(ctx, tx, issue)
-				if err != nil {
-					return err
-				}
-				walk = &w
-			}
-			agent, named, err := e.workAgent(ctx, tx, issue, *walk, to, role)
+			agent, named, err := e.workAgent(ctx, tx, issue, w, to, role)
 			if err != nil {
 				return err
 			}
@@ -147,11 +144,8 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 				continue
 			}
 			worker = agent.claim
-		} else {
-			var err error
-			if worker, err = e.workerClaim(ctx, tx, issue, role); err != nil {
-				return err
-			}
+		} else if worker, err = e.roleRowWorker(ctx, tx, issue, w, role); err != nil {
+			return err
 		}
 		prompted = append(prompted, string(role))
 		if err := e.enqueue(ctx, tx, issue.Key, record.HookPrompt{Hook: hook.Name, Role: role, Claim: worker, From: from, To: to,
@@ -169,4 +163,29 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 	return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: fmt.Sprintf(
 		"Legion hook %s fired at %d moves back: %s to %s. Prompted: %s.",
 		hook.Name, count, from, to, reached)})
+}
+
+// roleRowWorker is the claim of the worker on role's step in issue's task on w, issue's walk, for a
+// role a hook names that is none of Legion's roles of a step (fireHook): a role the deployment
+// defines, or the merger. It is the claim role's phases row names (record.WorkerClaim), and the
+// owner's own claim (record.OwnerClaim) where that row runs a step of w's task the owner works
+// (Walk.OwnerAt), a step of the key owner. There the row names the claim the step's start wrote,
+// which can be the architect above (ownerAgent), an architect that does not do the step, while the
+// owner does it, since its owner-step and its report are the owner's, and every message to the
+// worker of an owner's step reaches the owner (record.Issue.StepWorker). The merger's row runs the
+// merge, place 0, which is never the owner's.
+func (e *Engine) roleRowWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	if row := record.PhaseRowOf(rows, role); row.StepTask != "" && row.StepTask == w.Task && row.StepPlace > 0 &&
+		w.OwnerAt(record.TaskPlace{Kind: record.PlaceStep, Position: row.StepPlace}) {
+		return record.OwnerClaim(issue)
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	return record.WorkerClaim(project, issue.Key, role, rows)
 }

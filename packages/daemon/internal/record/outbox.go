@@ -1952,32 +1952,21 @@ type MergeForwardMessage struct {
 	Covers      MergeForwardStep `json:"covers,omitempty"`
 }
 
-// mergeForwardOrder is the one order of a merge forward's messages to one agent. The messages of
-// one event go to two recipients each: the ask and the hold (workflow's mergeForward and its ask
-// again), and the review and the landed (workflow's mergeForwardLanded). Where one claim holds both
-// recipients of an event, it is sent the earlier message of the two alone, and that message carries
-// what the later one asked (MergeForwardMessage.Covers), so the agent gets each thing it is asked
-// for, once: the ask asks the agent to do the merge whose hold would tell it to stop writing for
-// the merge, and says that its step waits and goes on at the head the merge leaves; the review asks
-// it to read the merge, as the landed does, and to approve the new head or request changes, and
-// says that its step goes on at the new head. Every step of a merge forward has its place here
-// (mergeForwardRoles names them all, and a test holds the two lists to one set), so a step added
-// later is placed before anything addresses it: either it covers the step after it in the same
-// event, or no claim holds two of its event's recipients.
-var mergeForwardOrder = []MergeForwardStep{MergeForwardAsk, MergeForwardHold, MergeForwardReview, MergeForwardLanded}
-
-// mergeForwardCovered is the step of one event each step covers where one claim holds both
-// recipients (mergeForwardOrder): the ask covers the hold, and the review covers the landed.
+// mergeForwardCovered is the step of one event of a merge forward each step covers, where one
+// claim holds the recipients of both. The messages of one event go to two recipients each: the ask
+// and the hold (workflow's mergeForward), and the review and the landed (workflow's
+// mergeForwardLanded). Where one claim holds both recipients of an event, it is sent the covering
+// message of the two alone, whichever of them its sender addresses first, and that message
+// carries what the covered one asked (MergeForwardMessage.Covers), so the agent gets each thing it
+// is asked for, once: the ask covers the hold, since it asks the agent to do the merge the hold
+// would tell it to stop writing for, and says that its step waits and goes on at the head the merge
+// leaves; the review covers the landed, since it asks the agent to read the merge, as the landed
+// does, and to approve the new head or request changes, and says that its step goes on at the new
+// head. Each cover goes one way. A pair of messages it names no cover for is sent whole.
 var mergeForwardCovered = map[MergeForwardStep]MergeForwardStep{MergeForwardAsk: MergeForwardHold, MergeForwardReview: MergeForwardLanded}
 
-// MergeForwardOrder is step's place in the one order of a merge forward's messages to one agent
-// (mergeForwardOrder), from 0, and -1 for a word that is no step.
-func MergeForwardOrder(step MergeForwardStep) int {
-	return slices.Index(mergeForwardOrder, step)
-}
-
 // MergeForwardCovers says whether a message of step stands in for one of covered where one claim
-// holds the recipients of both (mergeForwardOrder).
+// holds the recipients of both (mergeForwardCovered).
 func MergeForwardCovers(step, covered MergeForwardStep) bool {
 	other, ok := mergeForwardCovered[step]
 	return ok && other == covered
@@ -2045,7 +2034,7 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // implementation at or before the issue's place, else the task's last such step: the owner where
 // that step's key is owner, and the implementer for a run with no plan rows.
 //
-// A message that covers another (Covers, mergeForwardOrder) also says what that one asked: the
+// A message that covers another (Covers, mergeForwardCovered) also says what that one asked: the
 // ask that covers the hold says that the agent also works the step the issue stands in, so it
 // writes nothing else in the workspace until the merge is pushed and then goes on with that step
 // at the head the merge leaves; the review that covers the landed says that the agent also works
@@ -2682,7 +2671,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
 		if value.Covers != "" && !MergeForwardCovers(value.Step, value.Covers) {
-			return fmt.Errorf("a merge-forward ask covers only a hold, and a review only a landed (mergeForwardOrder); a %s covers %q", value.Step, value.Covers)
+			return fmt.Errorf("a merge-forward ask covers only a hold, and a review only a landed (mergeForwardCovered); a %s covers %q", value.Step, value.Covers)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id

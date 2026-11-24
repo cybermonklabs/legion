@@ -48,8 +48,11 @@ func TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded(t *testing.T) {
 			move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			assertWalksAt(t, pool, engine, root.Key, tc.at, stepPlace(2))
 			owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
-			// reached says whether a message reached the claim the case's worker works under.
-			reached := func(message record.MergeForwardMessage) bool { return (message.Claim == owner) == tc.owner }
+			// worker is the claim the case's worker works under: the owner's, or the fresh reviewer's own.
+			worker := claim.Token(treeRoleToken(t, root.Key, tc.worker))
+			if tc.owner {
+				worker = owner
+			}
 
 			onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 				stored, err := engine.store.PullRequest(ctx, tx, issue.Key)
@@ -59,15 +62,16 @@ func TestTheOwnerAtItsOwnStepIsHeldAndToldTheMergeLanded(t *testing.T) {
 				return engine.mergeForward(ctx, tx, issue, stored, record.ConflictCheckNotGreen)
 			})
 			asked := mergeForwardMessages(t, pool)
-			if got, want := toldWho(asked), []string{"implementer ask", string(tc.worker) + " hold"}; !reflect.DeepEqual(got, want) || !reached(asked[1]) {
-				t.Fatalf("the merge forward queued %+v, want %v, the hold under the owner's claim: %t", asked, want, tc.owner)
+			if got, want := sentOf(asked), []sent{{step: record.MergeForwardAsk, role: claim.RoleImplementer, claim: claim.Token(treeRoleToken(t, root.Key, claim.RoleImplementer))},
+				{step: record.MergeForwardHold, role: tc.worker, claim: worker}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the merge forward queued %+v, want %+v, the hold under the owner's claim: %t", got, want, tc.owner)
 			}
 
 			applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main",
 				HeadSHA: "head-forward", Before: pr.HeadSHA, Sender: "legion-implementer[bot]"})
 			landed := mergeForwardMessages(t, pool)[len(asked):]
-			if got, want := toldWho(landed), []string{string(tc.worker) + " landed"}; !reflect.DeepEqual(got, want) || !reached(landed[0]) {
-				t.Fatalf("the landing queued %+v, want %v under the owner's claim: %t", landed, want, tc.owner)
+			if got, want := sentOf(landed), []sent{{step: record.MergeForwardLanded, role: tc.worker, claim: worker}}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the landing queued %+v, want %+v, under the owner's claim: %t", got, want, tc.owner)
 			}
 		})
 	}

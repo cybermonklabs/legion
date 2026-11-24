@@ -24,11 +24,11 @@ var errMergeForwardWaits = wait.New("the merge-forward message waits for its own
 // and push, the hold that tells the worker of the step the issue stands at to stop writing the
 // workspace while it does, and, once the merge lands, the landed to that worker and the review to
 // the reviewer of an issue past its review whose task has a reviewer step (payload.Message,
-// composed from the pull request as this attempt reads it). The workflow addresses them by the one
-// order of a merge forward's messages to one agent (its addressMergeForward): one claim gets one
-// message of each event, the ask covering the hold and the review covering the landed
-// (payload.Covers), and the landed is not sent to the claim the ask reached
-// (record.MergeForward.Agent), which pushed the merge. It stops nothing it reaches.
+// composed from the pull request as this attempt reads it). The workflow gives each claim one
+// message of each event (its addressMergeForward), the ask covering the hold and the review
+// covering the landed (record.MergeForwardCovers, payload.Covers), and the landed is not sent to the
+// claim the ask reached (record.MergeForward.Agent), which pushed the merge. It stops nothing it
+// reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and

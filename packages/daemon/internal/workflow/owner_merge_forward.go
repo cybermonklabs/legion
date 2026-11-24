@@ -118,13 +118,17 @@ func (e *Engine) clearGeneration(ctx context.Context, tx pgx.Tx, issue record.Is
 // is asked once for each head (mergeForward), and the slot's next refresh or launch comes after the
 // owner was told to merge. The ask told again is that write: its delivery has the runtime write the
 // owner's slot for the implement App and tells the owner only once the slot's gh files hold it (the
-// daemon's ownerSlotActs). It is the ask the record holds, built by the one builder both writers use
-// (tellAsk, record.MergeForward.Ask): to the claim it reached, as the role it was made as, covering
-// the hold where the owner works the step the task stands at. An ask of the owner at that head
-// still queued does both already (record.Store.MergeForwardAskPending), so none is queued behind
-// it; mergeForward relies on that, since it queues its ask before it writes the record that opens
-// the merge forward. A tree that lingers has every role suspended and is asked nothing, as
-// mergeForward asks it nothing.
+// daemon's ownerSlotActs). It is the ask the record holds, built by the one builder mergeForward's
+// ask uses too (record.MergeForward.Ask): to the claim it reached, as the role it was made as, and
+// queued alone, its hold sent with the first ask. It covers the hold as the first ask did where the
+// owner is the worker of the step the task stands at (mergeForwardHold): there the hold's worker is
+// named by the owner's own claim (record.Issue.StepWorker), and everywhere else by its role's phases
+// row, which names another agent, so the claim test the first ask's addressing made
+// (addressMergeForward) is made here on the hold's recipient alone, with nothing addressed. An ask
+// of the owner at that head still queued does both already (record.Store.MergeForwardAskPending),
+// so none is queued behind it; mergeForward relies on that, since it queues its ask before it
+// writes the record that opens the merge forward. A tree that lingers has every role suspended and
+// is asked nothing, as mergeForward asks it nothing.
 func (e *Engine) askOwnerAgain(ctx context.Context, tx pgx.Tx, issue record.Issue, pr record.PullRequest) error {
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
@@ -133,9 +137,17 @@ func (e *Engine) askOwnerAgain(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if pending, err := e.store.MergeForwardAskPending(ctx, tx, issue.Key, asked.Agent, asked.Head); err != nil || pending {
 		return err
 	}
+	hold, held, err := mergeForwardHold(issue, *asked)
+	if err != nil {
+		return err
+	}
+	var covers record.MergeForwardStep
+	if held && hold.claim == asked.Agent {
+		covers = record.MergeForwardHold
+	}
 	e.logOnCommit(ctx, "workflow: a merge forward asked of the owner opens again, and the owner is asked again", "issue", issue.Key,
 		"tree", issue.Tree, "owner", asked.Agent, "head", asked.Head, "base", asked.Base)
-	return e.tellAsk(ctx, tx, issue, *asked, pr.Number, true, false)
+	return e.enqueue(ctx, tx, issue.Key, asked.Ask(pr.Number, covers))
 }
 
 // mergeForwardWriteBack queues the supervise slot_credential that writes the slot of issue's owner

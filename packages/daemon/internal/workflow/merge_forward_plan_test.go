@@ -43,17 +43,10 @@ func plannedConflictIssue(t *testing.T, at phase.Phase, steps ...string) *pgxpoo
 	return pool
 }
 
-// toldWho is each merge-forward message as the role it goes to and its step, in the order written.
-func toldWho(messages []record.MergeForwardMessage) []string {
-	told := make([]string, len(messages))
-	for i, message := range messages {
-		told[i] = string(message.Role) + " " + string(message.Step)
-	}
-	return told
-}
-
 func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	review := sent{step: record.MergeForwardReview, role: claim.RoleReviewer, claim: seededClaim(t, claim.RoleReviewer)}
+	merger := sent{step: record.MergeForwardLanded, role: claim.RoleMerger, claim: seededClaim(t, claim.RoleMerger)}
 	for _, tc := range []struct {
 		name   string
 		steps  []string
@@ -69,15 +62,15 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
 
-				// The review comes before the landed (record.MergeForwardOrder): the one order of a
-				// merge forward's messages to one agent.
+				// The review comes before the landed: mergeForwardLanded addresses the review first,
+				// and addressMergeForward keeps the order it is given.
 				got := mergeForwardMessages(t, pool)[asked:]
-				want := []string{"merger landed"}
+				want := []sent{merger}
 				if tc.review {
-					want = []string{"reviewer review", "merger landed"}
+					want = []sent{review, merger}
 				}
-				if !reflect.DeepEqual(toldWho(got), want) {
-					t.Fatalf("the landing queued %v, want %v", toldWho(got), want)
+				if !reflect.DeepEqual(sentOf(got), want) {
+					t.Fatalf("the landing queued %+v, want %+v", sentOf(got), want)
 				}
 				// The text is composed as the outbox composes it at delivery: from the pull request
 				// as the record holds it (the daemon's mergeForwardMessage).
@@ -98,12 +91,12 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				confirmsConflict(t, pool, requiresCI)
 				asked := len(mergeForwardMessages(t, pool))
 				landsMergeForward(t, pool)
-				want := []string{}
+				want := []sent{}
 				if tc.review {
-					want = append(want, "reviewer review")
+					want = append(want, review)
 				}
-				if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, want) {
-					t.Fatalf("the landing in retro queued %v, want %v", got, want)
+				if got := sentOf(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, want) {
+					t.Fatalf("the landing in retro queued %+v, want %+v", got, want)
 				}
 
 				applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
