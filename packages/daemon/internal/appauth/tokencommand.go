@@ -596,7 +596,7 @@ func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token
 	if err != nil {
 		return "", err
 	}
-	slug, ok := strings.CutSuffix(login, "[bot]")
+	slug, ok := slugOfBotLogin(login)
 	if !ok || slug == "" {
 		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), githubrest.ShownLogin(login))
 	}
@@ -643,7 +643,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 // login, without "[bot]", and the id where it is a number (shownAppID). A failure names the read
 // by that slug (send).
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
-	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
+	shown, _ := slugOfBotLogin(githubrest.ShownLogin(botLogin(slug)))
 	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
 	reading := "read " + what
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)

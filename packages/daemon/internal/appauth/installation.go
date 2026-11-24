@@ -90,7 +90,7 @@ func (m *Manager) AppLogin(ctx context.Context, role AppRole) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read the %s App's login: %w", role, err)
 	}
-	return slug + "[bot]", nil
+	return botLogin(slug), nil
 }
 
 // InstalledOn reads GET /repos/{owner}/{repo}/installation under role's App JWT: GitHub answers

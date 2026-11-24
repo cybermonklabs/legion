@@ -986,7 +986,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 	if err != nil {
 		return GitIdentity{}, err
 	}
-	return m.botIdentity(ctx, slug+"[bot]", installationToken)
+	return m.botIdentity(ctx, botLogin(slug), installationToken)
 }
 
 // botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
