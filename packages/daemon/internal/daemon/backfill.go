@@ -89,7 +89,7 @@ func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 // name it moved to reach it before that pass as after it.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) (left bool, err error) {
 	var unfilled []record.Issue
-	pulls := map[string]record.PullRequest{}
+	var pulls map[string]record.PullRequest
 	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if unfilled, err = records.UnfilledIssues(ctx, tx, project); err != nil {
