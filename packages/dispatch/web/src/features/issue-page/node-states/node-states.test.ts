@@ -79,6 +79,7 @@ import { drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
   answerNode,
+  askRead,
   coverageRead,
   issueDetails,
   decision as specDecision,
@@ -88,7 +89,7 @@ import {
   specViewAnswer,
   statement,
 } from "../spec-filter/spec-fixtures";
-import { pathTo } from "../tree-fold";
+import { outOfCounts, pathTo } from "../tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { statesOfRead } from "../tree-read/tree-nodes";
 import { type TreeAnswer, type TreeAnswerNode, viewKey } from "../tree-read/tree-read";
@@ -2276,6 +2277,59 @@ test("a words match lifted under a parent the outline holds under an overtaken n
   } finally {
     view.unmount();
   }
+});
+
+// A question written as an `:::ask` block of the spec is two nodes in the tree read, the block and
+// the ask indexed from it, and one row in the outline: the row carries the block's read id and the
+// ask as its `source`. A view that draws nothing of the question names that parent by the ask's
+// read id alone, so the statement under it takes its closing and its parent line's mark from the
+// outline's row of the question, as it would from a row that carries the ask's read id. A live
+// question closes and marks nothing.
+test("a view's row under an overtaken question drawn from a block and its ask is closed", () => {
+  const ASK = "ask-1";
+  const chain = (state: "live" | "overtaken") => {
+    const outline = buildIssueTree({
+      asks: [
+        {
+          ...askRead(ASK, ""),
+          answer: null,
+          block_artifact: { id: "artifact-spec", primary: true, slug: "spec" },
+          block_id: "q1",
+          state: "open",
+        },
+      ],
+      issue: ISSUE,
+      tree: readAnswer([
+        ISSUE_NODE,
+        readBlock("q1", "ask", "spec", 0, { state }),
+        readNode(ASK, "ask"),
+        readBlock("r1", "requirement", "spec", 1, { parent: ASK }),
+      ]),
+    });
+    const verification = readAnswer([
+      readBlock("r1", "requirement", "spec", 1, { parent: askLine(ASK), role: "context" }),
+    ]);
+    const view = presetView({ ...outline, views: { verification } }, "verification", "").root;
+    return { outline, row: readNodeOf(view, blockReadId("spec", "r1")) };
+  };
+
+  const overtaken = chain("overtaken");
+  expect(readNodeOf(overtaken.outline, blockReadId("spec", "q1"))?.source).toEqual({
+    id: ASK,
+    kind: "ask",
+  });
+  expect(readNodeOf(overtaken.outline, blockReadId("spec", "r1"))?.closed).toBe(true);
+  expect(overtaken.row?.parentLine).toMatchObject({ id: ASK, life: "overtaken", readId: ASK });
+  expect(overtaken.row?.closed).toBe(true);
+  expect(overtaken.row?.closedBy).toBe("spec#b-q1");
+  expect(overtaken.row?.gaps).toEqual([]);
+  expect(overtaken.row === undefined ? false : outOfCounts(overtaken.row)).toBe(true);
+
+  const live = chain("live");
+  expect(live.row?.parentLine).toMatchObject({ id: ASK, readId: ASK });
+  expect(markKeys(live.row)).toEqual([]);
+  expect(live.row?.parentLine?.life).toBeUndefined();
+  expect(live.row === undefined ? true : outOfCounts(live.row)).toBe(false);
 });
 
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */
