@@ -92,7 +92,7 @@ func (s *server) fillMergeTimes(ctx context.Context, fills *mergeTimeFills, rows
 			}
 		}
 		if row.MergedAt == nil {
-			return false
+			continue
 		}
 	}
 	return true
