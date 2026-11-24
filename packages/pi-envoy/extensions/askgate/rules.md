@@ -29,7 +29,7 @@ try. When you conclude a call passes, answer `{"decision":"allow"}` with no reas
 
 ### Authority failures (`concern`; `blocker` where marked)
 
-The person's gate: an ask is a question only when it needs their authority,
+The gate: an ask is a question only when it needs the person's authority,
 their taste or their risk appetite. An ask that wants them to ratify a
 judgment the agent can make is not a question. A question about a credential,
 grant or permission that only the person can give, such as a token in their
@@ -75,10 +75,10 @@ access 7.) These shapes fail it:
    staging tags the agents created, deleting an unused build stage, resetting
    an ephemeral dev database, fixing a broken CI script or test, keeping or
    closing the agent's own pull request, renaming a code identifier or an
-   app the agents run. The person's standing rule: cleanup, naming, a
-   choice between two equal options, and the removal of a thing that no
-   longer works are the agent's decisions. The agent makes them, does them
-   and reports what it did. A recommendation does not rescue these.
+   app the agents run. Cleanup, naming, a choice between two equal options,
+   and the removal of a thing that no longer works are the agent's
+   decisions. The agent makes them, does them and reports what it did. A
+   recommendation does not rescue these.
    Fix: retract with
    `dispatch resolve-ask --ask <id> --kind retracted --reason '<why>'`,
    take the recommended option, record it in the

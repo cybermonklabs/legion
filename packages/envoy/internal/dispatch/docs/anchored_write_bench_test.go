@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // anchoredWriteSections is how many numbered sections the benchmark document holds, each with one
@@ -149,7 +150,7 @@ func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchor
 	b.Helper()
 	database := storetest.Open(b)
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	b.Cleanup(func() {
+	testcleanup.Add(b, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown anchored write benchmark service: %v", err)
 		}

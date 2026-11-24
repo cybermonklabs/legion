@@ -49,6 +49,7 @@ var formattingWords = strings.Fields("one two three alpha beta gamma")
 // exactly the formatting the room committed, under writes of both kinds: the room's own local
 // transactions, which it never cleans up after, and its browsers' updates, which it does.
 func TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly(t *testing.T) {
+	t.Parallel()
 	// The storm below runs four seeds by 160 steps, and two by 60 under the race detector or
 	// -short, where each round costs several times as much. The read sits in the test rather
 	// than in the helper it passes the sizes to, since that is what makes this test the one
