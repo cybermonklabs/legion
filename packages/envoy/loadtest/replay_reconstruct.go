@@ -416,16 +416,13 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 			if err != nil || !ok {
 				return err
 			}
-			var listing []listedArtifact
-			// The key is the event's, so an issue key (eventInShape). The listing is Dispatch's,
-			// or the words of whatever answers in its place: none of it is named (decodeCached),
-			// since its decoder's error can quote a time it could not read, and one that names an
-			// artifact by an id out of Dispatch's shape is refused, as the fetch's listings are.
-			if err := decodeCached("the listing", body, &listing); err != nil {
-				return fmt.Errorf("%s artifacts: %w", k, err)
-			}
-			if !listingInShape(listing) {
-				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
+			// The key is the event's, so an issue key (eventInShape). The listing is read as the
+			// fetch's own are (readListing): none of it is named, since its decoder's error can
+			// quote a time it could not read, and one that names an artifact by an id out of
+			// Dispatch's shape is refused.
+			listing, err := readListing(k, body)
+			if err != nil {
+				return err
 			}
 			for _, la := range listing {
 				if la.Primary {

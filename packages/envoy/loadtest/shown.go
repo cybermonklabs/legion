@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -72,110 +74,122 @@ func isDispatchID(s string) bool { return dispatchIDPattern.MatchString(s) }
 // and the seed, the plan, the run and the checks, which read them from the bundle, name them as they
 // are, as replay-fetch names a cache or bundle file after them.
 
-// anchorIDs is the document an anchor names.
-type anchorIDs struct {
-	ArtifactID string `json:"artifact_id"`
+// dispatchID and issueKey are an object id and an issue key of Dispatch's shape, as a decoder
+// takes one: a member of this type decodes from a JSON string in that shape, from a JSON null and
+// from the empty string, which name nothing, and from nothing else. A decoder that reads a member
+// of Dispatch's into one of these refuses an answer out of shape where it decodes it, with no
+// reader of that member left to remember the check.
+type (
+	dispatchID string
+	issueKey   string
+)
+
+// The refusals of a member out of shape. Each is fixed words: whatever answers in Dispatch's
+// place writes what it likes in a member, its reader's own bearer among it, so no part of the
+// member is named.
+var (
+	errNotADispatchID = errors.New("json: a string that is not an object id in Dispatch's shape")
+	errNotAnIssueKey  = errors.New("json: a string that is not an issue key in Dispatch's shape")
+)
+
+func (id *dispatchID) UnmarshalJSON(data []byte) error {
+	s, err := shapedMember(data, isDispatchID, errNotADispatchID)
+	*id = dispatchID(s)
+	return err
 }
 
-// eventInShape says whether ev names every issue in an issue key's shape (isIssueKey) and every
-// document, comment and ask by an id in Dispatch's shape (isDispatchID), as the load test reads
+func (k *issueKey) UnmarshalJSON(data []byte) error {
+	s, err := shapedMember(data, isIssueKey, errNotAnIssueKey)
+	*k = issueKey(s)
+	return err
+}
+
+// shapedMember is the string data holds, where inShape takes it; "" for a JSON null and for the
+// empty string, which name nothing, as every reader of one of these members reads them; and
+// notInShape for any other string. A JSON value that is no string is encoding/json's own type
+// error for a string, which names no value.
+func shapedMember(data []byte, inShape func(string) bool, notInShape error) (string, error) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return "", err
+	}
+	if s != "" && !inShape(s) {
+		return "", notInShape
+	}
+	return s, nil
+}
+
+// anchorIDs is the document an anchor names.
+type anchorIDs struct {
+	ArtifactID dispatchID `json:"artifact_id"`
+}
+
+// eventInShape says whether ev names every issue in an issue key's shape (issueKey) and every
+// document, comment and ask by an id in Dispatch's shape (dispatchID), as the load test reads
 // them: the envelope's issue key and document, and the payload's members that the decoders of
 // replay_reconstruct.go (wireIssue, wireComment, wireAsk, windowAnchor, createdSpecs) and
 // replay_plan.go (rpIssueCreated, rpComment, rpAsk, rpArtifactCreated, rpVersion) read: an issue
 // event's key, parent, blockers and primary document; a comment's or an ask's own id, document,
 // thread, ask, anchor's document, block's document, approval's document and nested ask; a created
-// artifact's id; a version's document. A member that is absent, null or empty names nothing. An
-// event whose payload does not decode into those members' types is not in shape: no decoder of the
-// load test reads it either.
+// artifact's id; a version's document. Each is read into its shape's own type, so the shape is
+// the decode and no member of one of these payloads is checked a second time. A member that is
+// absent, null or empty names nothing. An event whose payload does not decode into those members'
+// types is not in shape: no decoder of the load test reads it either.
 func eventInShape(ev replayEvent) bool {
 	if (ev.IssueKey != nil && !isIssueKey(*ev.IssueKey)) || (ev.ArtifactID != nil && !isDispatchID(*ev.ArtifactID)) {
 		return false
 	}
-	var keys, ids []string
 	decode := func(v any) bool { return len(ev.Payload) == 0 || json.Unmarshal(ev.Payload, v) == nil }
 	switch {
 	case strings.HasPrefix(ev.Type, evPrefixIssue):
 		var p struct {
-			Key               string   `json:"key"`
-			Parent            *string  `json:"parent"`
-			BlockedBy         []string `json:"blocked_by"`
-			PrimaryArtifactID *string  `json:"primary_artifact_id"`
+			Key               issueKey    `json:"key"`
+			Parent            *issueKey   `json:"parent"`
+			BlockedBy         []issueKey  `json:"blocked_by"`
+			PrimaryArtifactID *dispatchID `json:"primary_artifact_id"`
 		}
-		if !decode(&p) {
-			return false
-		}
-		keys = append(append(keys, p.Key, orEmpty(p.Parent)), p.BlockedBy...)
-		ids = append(ids, orEmpty(p.PrimaryArtifactID))
+		return decode(&p)
 	case commentStates[ev.Type], strings.HasPrefix(ev.Type, evPrefixAsk):
 		var p struct {
-			ID            string     `json:"id"`
-			ArtifactID    *string    `json:"artifact_id"`
-			ReplyTo       *string    `json:"reply_to"`
-			ThreadRootID  *string    `json:"thread_root_id"`
-			AskID         *string    `json:"ask_id"`
-			Anchor        *anchorIDs `json:"anchor"`
+			ID            dispatchID  `json:"id"`
+			ArtifactID    *dispatchID `json:"artifact_id"`
+			ReplyTo       *dispatchID `json:"reply_to"`
+			ThreadRootID  *dispatchID `json:"thread_root_id"`
+			AskID         *dispatchID `json:"ask_id"`
+			Anchor        *anchorIDs  `json:"anchor"`
 			BlockArtifact *struct {
-				ID string `json:"id"`
+				ID dispatchID `json:"id"`
 			} `json:"block_artifact"`
 			Approval *anchorIDs `json:"approval"`
 			Ask      *struct {
-				ID     string     `json:"id"`
+				ID     dispatchID `json:"id"`
 				Anchor *anchorIDs `json:"anchor"`
 			} `json:"ask"`
 		}
-		if !decode(&p) {
-			return false
-		}
-		ids = append(ids, p.ID, orEmpty(p.ArtifactID), orEmpty(p.ReplyTo), orEmpty(p.ThreadRootID), orEmpty(p.AskID))
-		for _, a := range []*anchorIDs{p.Anchor, p.Approval} {
-			if a != nil {
-				ids = append(ids, a.ArtifactID)
-			}
-		}
-		if p.BlockArtifact != nil {
-			ids = append(ids, p.BlockArtifact.ID)
-		}
-		if p.Ask != nil {
-			ids = append(ids, p.Ask.ID)
-			if p.Ask.Anchor != nil {
-				ids = append(ids, p.Ask.Anchor.ArtifactID)
-			}
-		}
+		return decode(&p)
 	case ev.Type == evArtifactCreated:
 		var p struct {
 			Artifact struct {
-				ID string `json:"id"`
+				ID dispatchID `json:"id"`
 			} `json:"artifact"`
 		}
-		if !decode(&p) {
-			return false
-		}
-		ids = append(ids, p.Artifact.ID)
+		return decode(&p)
 	case ev.Type == evArtifactVersion:
 		var p struct {
-			ArtifactID string `json:"artifact_id"`
+			ArtifactID dispatchID `json:"artifact_id"`
 		}
-		if !decode(&p) {
-			return false
-		}
-		ids = append(ids, p.ArtifactID)
+		return decode(&p)
 	}
-	return !slices.ContainsFunc(keys, func(k string) bool { return k != "" && !isIssueKey(k) }) &&
-		!slices.ContainsFunc(ids, func(id string) bool { return id != "" && !isDispatchID(id) })
+	return true
 }
 
 // listingInShape says whether an artifact listing names every artifact by an id in Dispatch's shape
 // (isDispatchID).
 func listingInShape(listing []listedArtifact) bool {
 	return !slices.ContainsFunc(listing, func(la listedArtifact) bool { return !isDispatchID(la.ID) })
-}
-
-// orEmpty is *s, and "" for nil.
-func orEmpty(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // replayEventTypes are the event types this package names (the ev constants of replay_bundle.go).

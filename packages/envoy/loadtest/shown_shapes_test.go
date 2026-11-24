@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // shapeProject is the project whose keys these rows read, and shapeKey one of its issue keys with
@@ -63,4 +66,43 @@ func TestAnIssueKeyIsTheProjectsKeyAndABoundedNumber(t *testing.T) {
 			t.Errorf("isIssueKey does not name %s", key)
 		}
 	})
+}
+
+// TestAnIDOrKeyOutOfDispatchsShapeDoesNotDecode: a member of Dispatch's answer the load test
+// keeps as an id or a key is decoded into its shape's own type (dispatchID, issueKey), so an
+// answer out of shape is refused where it decodes and no reader of the member is left to check
+// it; the refusal quotes no part of the member, which whatever answers in Dispatch's place
+// writes its reader's own bearer into. The controls: a member in shape, a JSON null and an empty
+// string decode, and each names what it named.
+func TestAnIDOrKeyOutOfDispatchsShapeDoesNotDecode(t *testing.T) {
+	const id = "0f8fad5b-d9cb-469f-a165-70867728950e"
+	hostile := memberBearer + "-" + redacttest.Code
+	shaped := func(body string) (dispatchID, issueKey, error) {
+		var m struct {
+			ID  dispatchID `json:"id"`
+			Key issueKey   `json:"key"`
+		}
+		err := json.Unmarshal([]byte(body), &m)
+		return m.ID, m.Key, err
+	}
+	gotID, gotKey, err := shaped(`{"id":` + strconv.Quote(id) + `,"key":` + strconv.Quote(shapeKey("7")) + `}`)
+	if err != nil || string(gotID) != id || string(gotKey) != shapeKey("7") {
+		t.Errorf("a member in shape decodes to %q, %q, %v; want it as it came", gotID, gotKey, err)
+	}
+	if gotID, gotKey, err := shaped(`{"id":null,"key":""}`); err != nil || gotID != "" || gotKey != "" {
+		t.Errorf("a null and an empty member decode to %q, %q, %v; want them naming nothing", gotID, gotKey, err)
+	}
+	for member, body := range map[string]string{
+		"id":  `{"id":` + strconv.Quote(hostile) + `}`,
+		"key": `{"key":` + strconv.Quote(hostile) + `}`,
+	} {
+		_, _, err := shaped(body)
+		if err == nil {
+			t.Errorf("a %s out of Dispatch's shape decodes", member)
+			continue
+		}
+		if strings.Contains(err.Error(), memberBearer) || strings.Contains(err.Error(), redacttest.Password) {
+			t.Errorf("the refusal of a %s out of shape reads %q, which holds a credential of it", member, err)
+		}
+	}
 }
