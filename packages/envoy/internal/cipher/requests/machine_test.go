@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -530,7 +531,7 @@ func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T
 	m.Judge = func(p PendingRequest) { judged = append(judged, p) }
 	created := time.Now()
 	waiting := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "")
-	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.Tags[secretstore.CreateLabel] = "0123456789abcdef0123456789abcdef"
 	waiting.CreatedAt = &created
 	fixtureStore(m).Put(waiting)
 
@@ -981,10 +982,10 @@ func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
 	}
 }
 
-// gatedReader is a secrets.Reader that announces each Read on entered and answers from the Store
+// gatedReader is a secretstore.Reader that announces each Read on entered and answers from the Store
 // it wraps only once gate is closed.
 type gatedReader struct {
-	secrets.Reader
+	secretstore.Reader
 	entered chan struct{}
 	gate    chan struct{}
 }

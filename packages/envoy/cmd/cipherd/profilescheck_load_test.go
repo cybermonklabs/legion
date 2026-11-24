@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // faultKinds is the kinds part of each file the fault rows below write: github takes a stored
@@ -251,7 +252,7 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 func TestProfilesCheckReadsASourceWaitingForItsValueAsServed(t *testing.T) {
 	file := policytest.KindsFileOf(faultKinds, `{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`)
 	created := time.Now()
-	waiting := stored("TOKEN", map[string]string{secrets.CreateLabel: "0123456789abcdef0123456789abcdef"})
+	waiting := stored("TOKEN", map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"})
 	waiting.Value, waiting.CreatedAt = "", &created
 	for _, c := range []struct {
 		name   string

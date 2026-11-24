@@ -64,7 +64,7 @@ type LocalSecret struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// CreatedAt, when set, is when the secret was created, which ListSecrets and DescribeSecret
 	// answer as its CreatedDate. Unset, they answer none, which the policy reads as a secret whose
-	// age it cannot tell (secrets.Listing.Created).
+	// age it cannot tell (secretstore.Listing.Created).
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 }
 

@@ -67,6 +67,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/reread"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/wake"
 	"github.com/sjawhar/envoy/internal/cipher/wire"
@@ -360,7 +361,7 @@ func main() {
 	// fake file (an AWS-shaped store whatever BROKER_SECRETS_STORE says, since the file holds
 	// Secrets Manager's fields), Secrets Manager under the AWS SDK's credential chain, or Secret
 	// Manager under Application Default Credentials.
-	var secretStore secrets.Store
+	var secretStore secretstore.Store
 	var credentials string
 	switch {
 	case fakeSecrets != "":
@@ -1509,7 +1510,7 @@ func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscall
 // names a Legion pod's issue's assignee, whose Inbox lists that pod's request for a shared secret.
 // groupReader is the broker's one reader of group members (newGroupReader), which the machine's
 // decisions, revokes and lists and its chain check ask who is a member of a group.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), ca *proxy.Authority, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secretstore.Store, replay func(context.Context, string, time.Time) (bool, error), ca *proxy.Authority, retry *secrets.Retry, dispatch *judge.Dispatch, groupReader record.Directory) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
@@ -1634,7 +1635,7 @@ func newGroupReader(cfg config.Config, iamURL string, own oauth2.TokenSource) *g
 // BROKER_SECRETS_PREFIX, the registered services, the service-account bindings, the profiles file,
 // the store-read counter on registry, and groupReader, which the loader's Current stamps on every
 // set it makes live and names each full load's groups to.
-func policyLoader(cfg config.Config, secretStore secrets.Store, profiles policy.Profiles, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
+func policyLoader(cfg config.Config, secretStore secretstore.Store, profiles policy.Profiles, registry *metrics.Registry, groupReader record.Directory) policy.Loader {
 	// The policy serves each profile by its name, checked against its source at every publish,
 	// and folds each profile's digest into its version, so an edit of a profile's entry ends that
 	// name's grants. With no profiles file it serves no profile and refuses every github-app

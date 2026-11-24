@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // Current is the live policy. The first load must succeed; a later load that fails keeps the
@@ -63,7 +63,7 @@ type Current struct {
 }
 
 // valueKey is what a type secret's value is decoded under: the version of the value the listing
-// names (secrets.Listing.Version), and the type tag that says how it is read, which a
+// names (secretstore.Listing.Version), and the type tag that says how it is read, which a
 // retag changes and leaves the version as it was.
 type valueKey struct{ version, secretType string }
 
@@ -553,7 +553,7 @@ func (c *Current) listOne(name string) (valueRead, bool) {
 // another reads that itself):
 //
 //   - the decoder refuses the value, or the store answers a value that is not text
-//     (secrets.ErrValueNotText), which no mint could use either: the secret's value is refused at
+//     (secretstore.ErrValueNotText), which no mint could use either: the secret's value is refused at
 //     that version, and the set made live leaves the secret out under ReasonValueMalformed
 //     (withhold), which publish writes as one RefusedMessage line, marked first_load when first;
 //   - the value decodes: any refusal of the value ends, which publish writes as one
@@ -580,10 +580,10 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 		}
 		outcome := valueOutcome{valueRead: read}
 		switch {
-		case errors.Is(err, secrets.ErrValueNotText):
+		case errors.Is(err, secretstore.ErrValueNotText):
 			// The sentinel's own words: the store's error around it names the call and the
 			// secret, which the refusal's line names already.
-			outcome.refused, outcome.why = true, secrets.ErrValueNotText.Error()
+			outcome.refused, outcome.why = true, secretstore.ErrValueNotText.Error()
 		case err != nil:
 			outcome.err = err
 		default:

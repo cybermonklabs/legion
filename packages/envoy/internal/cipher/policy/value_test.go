@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -431,7 +432,7 @@ func (b binaryValues) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 }
 
 // TestAValueThatIsNotTextIsRefusedAndReadOnce: a type secret whose store answers a value that is
-// not text (secrets.ErrValueNotText; here Secrets Manager's SecretBinary with no SecretString) is
+// not text (secretstore.ErrValueNotText; here Secrets Manager's SecretBinary with no SecretString) is
 // the decoder's case, not a failed read, since no mint could use it: the first load refuses it
 // as value-malformed, in one first_load RefusedMessage line and one broker_unservable_secrets
 // series, and writes no ValueReadFailedMessage. A reload and a reread read the value no more and
@@ -443,7 +444,7 @@ func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
 	id := policytest.ID("BINARY_APP")
 
 	refusedAs(t, cur.Get(), "BINARY_APP", policy.ReasonValueMalformed)
-	if got, want := gained(), noProfilesLine+valueRefusedLine(id, typeOwner, true, secrets.ErrValueNotText.Error()); got != want {
+	if got, want := gained(), noProfilesLine+valueRefusedLine(id, typeOwner, true, secretstore.ErrValueNotText.Error()); got != want {
 		t.Fatalf("the first load logged:\n%s\nwant:\n%s", got, want)
 	}
 	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, typeOwner); got != want {

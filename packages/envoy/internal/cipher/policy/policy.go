@@ -876,7 +876,7 @@ type Set struct {
 	// broker_unservable_secrets, and Current writes PendingMessage for an id that enters it.
 	Pending map[string]Pending
 	// versions is the version of each served type secret's value as the load or reread that read
-	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
+	// it listed it (secretstore.Listing.Version), keyed by Name. It is in neither Secret nor Version,
 	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).

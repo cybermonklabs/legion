@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -183,7 +184,7 @@ const MaxSupportedReplicas = 4
 // figures the comments below size. The burst is the fleet's and is divided by nothing, for the
 // reason DefaultRereadOverallLimit gives.
 var (
-	DefaultRereadFleetBudget = ratelimit.Limit{Every: 250 * time.Millisecond, Burst: 10}
+	DefaultRereadFleetBudget = secretstore.DefaultRereadBudget
 	GCPRereadFleetBudget     = ratelimit.Limit{Every: time.Second, Burst: 10}
 )
 

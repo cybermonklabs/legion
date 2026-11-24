@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -1114,7 +1115,7 @@ func TestCreateRequestForASourceOrARefusedProfileIs403(t *testing.T) {
 func TestCreateRequestForASecretWaitingForItsValueIs400PendingValue(t *testing.T) {
 	ts := newTestServer(t)
 	waiting := policytest.Secret("TYPED_KEY", testApprover, policy.TierAgent, "")
-	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.Tags[secretstore.CreateLabel] = "0123456789abcdef0123456789abcdef"
 	created := time.Now()
 	waiting.CreatedAt = &created
 	ts.Secrets.Put(waiting)

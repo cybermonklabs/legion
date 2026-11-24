@@ -14,6 +14,8 @@ import (
 
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // TestGCPLive runs the store against a real Secret Manager project under Application Default
@@ -99,14 +101,14 @@ func TestGCPLive(t *testing.T) {
 	}
 
 	// The listing is eventually consistent; the broker's policy anchors on that too.
-	var byID map[string]Listing
+	var byID map[string]secretstore.Listing
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		listings, err := store.List(ctx, prefix)
+		listings, err := store.List(ctx, prefix, secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		byID = map[string]Listing{}
+		byID = map[string]secretstore.Listing{}
 		for _, ls := range listings {
 			byID[ls.ID] = ls
 		}
@@ -118,7 +120,7 @@ func TestGCPLive(t *testing.T) {
 	if _, listed := byID[expiring]; len(byID) != 4 || listed {
 		t.Fatalf("List answered %d secrets within 90s, want the 4 with no expire_time: %+v", len(byID), byID)
 	}
-	onKey := func(ls Listing) bool {
+	onKey := func(ls secretstore.Listing) bool {
 		t.Helper()
 		on, err := ls.OnKey(ctx)
 		if err != nil {
@@ -138,26 +140,26 @@ func TestGCPLive(t *testing.T) {
 	if ls := byID[disabled]; !onKey(ls) || ls.HasCurrentValue {
 		t.Fatalf("disabled = %+v; want on the key with no value", ls)
 	}
-	if _, err := store.Describe(ctx, expiring); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Describe(ctx, expiring, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Describe(expiring) = %v, want ErrNotFound", err)
 	}
-	if _, err := store.Read(ctx, expiring); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, expiring); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(expiring) = %v, want ErrNotFound: Secret Manager still holds its value, and the store must not release it", err)
 	}
 
-	if ls, err := store.Describe(ctx, served); err != nil || !onKey(ls) || !ls.HasCurrentValue {
+	if ls, err := store.Describe(ctx, served, secretstore.ReadOptions{}); err != nil || !onKey(ls) || !ls.HasCurrentValue {
 		t.Fatalf("Describe(served) = %+v, %v", ls, err)
 	}
-	if _, err := store.Describe(ctx, prefix+"missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Describe(ctx, prefix+"missing", secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Describe(missing) = %v, want ErrNotFound", err)
 	}
 	if v, err := store.Read(ctx, served); err != nil || v != "live-value" {
 		t.Fatalf("Read(served) = %d bytes, %v", len(v), err)
 	}
-	if _, err := store.Read(ctx, disabled); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, disabled); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(disabled) = %v, want ErrNotFound", err)
 	}
-	if _, err := store.Read(ctx, noVersion); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, noVersion); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(no-version) = %v, want ErrNotFound", err)
 	}
 }

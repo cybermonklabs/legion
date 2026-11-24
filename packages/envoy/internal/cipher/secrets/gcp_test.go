@@ -25,6 +25,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 const (
@@ -210,6 +212,30 @@ func (f *fakeSecretManager) AccessSecretVersion(_ context.Context, req *secretma
 	return &secretmanagerpb.AccessSecretVersionResponse{Name: secret + "/versions/1", Payload: &secretmanagerpb.SecretPayload{Data: s.value}}, nil
 }
 
+// ListSecretVersions answers, in one page, the one version the fake keeps of the secret Parent
+// names, by its number and state, and none for a secret with no version.
+func (f *fakeSecretManager) ListSecretVersions(_ context.Context, req *secretmanagerpb.ListSecretVersionsRequest) (*secretmanagerpb.ListSecretVersionsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListSecretVersions"); err != nil {
+		return nil, err
+	}
+	s, ok := f.secrets[req.GetParent()]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "Secret [%s] not found", req.GetParent())
+	}
+	resp := &secretmanagerpb.ListSecretVersionsResponse{}
+	if !s.noVersion {
+		number := s.number
+		if number == "" {
+			number = "1"
+		}
+		resp.Versions = []*secretmanagerpb.SecretVersion{{Name: req.GetParent() + "/versions/" + number, State: s.state}}
+	}
+	resp.TotalSize = int32(len(resp.Versions))
+	return resp, nil
+}
+
 // startFake serves f over TLS on a loopback port and answers the broker's own Secret Manager
 // client (NewGCPClient, its retries included) dialled to it with no credentials.
 func startFake(t *testing.T, f *fakeSecretManager) *secretmanager.Client {
@@ -281,18 +307,18 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 	}}
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix)
+	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatalf("List = %v; want the secrets outside the prefix dropped before any call for them", err)
 	}
-	byID := map[string]Listing{}
+	byID := map[string]secretstore.Listing{}
 	for _, ls := range listings {
 		byID[ls.ID] = ls
 	}
 	if len(byID) != 5 {
 		t.Fatalf("List answered %d secrets, want the 5 under the prefix with no expire_time: %+v", len(byID), listings)
 	}
-	onKey := func(ls Listing) bool {
+	onKey := func(ls secretstore.Listing) bool {
 		t.Helper()
 		on, err := ls.OnKey(ctx)
 		if err != nil {
@@ -332,27 +358,27 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 // and describes with exactly its annotations as tags, and is served as the same secret without it.
 func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 	labelled := servedSecret("v1")
-	labelled.labels = map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
+	labelled.labels = map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "labelled": labelled,
 		fakePrefix + "plain":    servedSecret("v1"),
 	}}
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix)
+	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	described, err := store.Describe(ctx, fakePrefix+"labelled")
+	described, err := store.Describe(ctx, fakePrefix+"labelled", secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	byID := map[string]Listing{}
+	byID := map[string]secretstore.Listing{}
 	for _, ls := range listings {
 		byID[ls.ID] = ls
 	}
 	plain := byID[fakePrefix+"plain"]
-	for how, ls := range map[string]Listing{"listed": byID[fakePrefix+"labelled"], "described": described} {
+	for how, ls := range map[string]secretstore.Listing{"listed": byID[fakePrefix+"labelled"], "described": described} {
 		if !maps.Equal(ls.Tags, labelled.annotations) || ls.HasCurrentValue != plain.HasCurrentValue || ls.Version != plain.Version || ls.Unfilled {
 			t.Errorf("the labelled secret %s as %+v; want exactly its annotations %v as tags, served as the same secret without the label (%+v)", how, ls, labelled.annotations, plain)
 		}
@@ -364,7 +390,7 @@ func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 // the create label and holds no version at all: one without the label, or with a version (a
 // disabled one included), is not, however young.
 func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
-	label := map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
+	label := map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}
 	tags := map[string]string{"owner": "shared", "tier": "agent"}
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "labelled-empty":    {annotations: tags, labels: label, replicationKey: fakeKey, noVersion: true, created: noVersionCreated},
@@ -372,7 +398,7 @@ func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
 		fakePrefix + "labelled-disabled": {annotations: tags, labels: label, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_DISABLED, value: []byte("v"), created: noVersionCreated},
 	}}
 	store := NewGCP(startFake(t, f), fakeKey)
-	listings, err := store.List(context.Background(), fakePrefix)
+	listings, err := store.List(context.Background(), fakePrefix, secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +423,7 @@ func TestGCPDescribeAndRead(t *testing.T) {
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
 
-	ls, err := store.Describe(ctx, fakePrefix+"served")
+	ls, err := store.Describe(ctx, fakePrefix+"served", secretstore.ReadOptions{})
 	if err != nil || ls.ID != fakePrefix+"served" || !ls.HasCurrentValue {
 		t.Fatalf("Describe(served) = %+v, %v", ls, err)
 	}
@@ -405,27 +431,27 @@ func TestGCPDescribeAndRead(t *testing.T) {
 		t.Fatalf("Describe(served).OnKey = %v, %v; want on the key", on, err)
 	}
 	for _, name := range []string{"missing", "expiring"} {
-		if _, err := store.Describe(ctx, fakePrefix+name); !errors.Is(err, ErrNotFound) {
+		if _, err := store.Describe(ctx, fakePrefix+name, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 			t.Fatalf("Describe(%s) = %v, want ErrNotFound", name, err)
 		}
 	}
 	if v, err := store.Read(ctx, fakePrefix+"served"); err != nil || v != "hello" {
 		t.Fatalf("Read(served) = %q, %v", strings.ReplaceAll(v, "hello", "[ok]"), err)
 	}
-	if _, err := store.Read(ctx, fakePrefix+"missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, fakePrefix+"missing"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(missing) = %v, want ErrNotFound", err)
 	}
-	if _, err := store.Read(ctx, fakePrefix+"disabled"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, fakePrefix+"disabled"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(disabled) = %v, want ErrNotFound (FAILED_PRECONDITION)", err)
 	}
 	// Secret Manager would still answer its value; the store refuses it as Secrets Manager refuses
 	// a secret in its recovery window, so a grant made before the delete reads nothing after it.
-	if _, err := store.Read(ctx, fakePrefix+"expiring"); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, fakePrefix+"expiring"); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(expiring) = %v, want ErrNotFound: a secret scheduled for deletion is not readable", err)
 	}
 	for _, name := range []string{"empty", "binary"} {
 		_, err := store.Read(ctx, fakePrefix+name)
-		if !errors.Is(err, ErrValueNotText) || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "non-empty UTF-8") || strings.Contains(err.Error(), "\xff") {
+		if !errors.Is(err, secretstore.ErrValueNotText) || errors.Is(err, secretstore.ErrNotFound) || !strings.Contains(err.Error(), "non-empty UTF-8") || strings.Contains(err.Error(), "\xff") {
 			t.Fatalf("Read(%s) = %v; want ErrValueNotText, naming the rule and never the bytes", name, err)
 		}
 	}
@@ -445,7 +471,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 	}}
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix)
+	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +488,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 	if versionCalls != 3 {
 		t.Fatalf("List made %d GetSecretVersion calls for three secrets; want one each, no more", versionCalls)
 	}
-	if ls, err := store.Describe(ctx, fakePrefix+"seventh"); err != nil || ls.Version != "7" {
+	if ls, err := store.Describe(ctx, fakePrefix+"seventh", secretstore.ReadOptions{}); err != nil || ls.Version != "7" {
 		t.Fatalf("Describe(seventh) = %+v, %v; want version 7", ls, err)
 	}
 }
@@ -470,7 +496,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 func TestGCPListFailureNamesTheCodeNotTheMessage(t *testing.T) {
 	f := &fakeSecretManager{failList: status.Errorf(codes.PermissionDenied, "Permission denied on resource project 000000000000 (secret value: hunter2)")}
 	store := NewGCP(startFake(t, f), fakeKey)
-	_, err := store.List(context.Background(), fakePrefix)
+	_, err := store.List(context.Background(), fakePrefix, secretstore.ReadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "PermissionDenied") || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("List under a denied identity = %v; want the gRPC code and never the status message", err)
 	}
@@ -526,10 +552,10 @@ func TestGCPReadQuotaCost(t *testing.T) {
 		}
 		return f.reads() - before
 	}
-	if got := cost(func() error { _, err := store.List(ctx, fakePrefix); return err }); got != 1+3 {
+	if got := cost(func() error { _, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{}); return err }); got != 1+3 {
 		t.Fatalf("List of 3 secrets cost %d reads, want 4", got)
 	}
-	if got := cost(func() error { _, err := store.Describe(ctx, fakePrefix+"a"); return err }); got != 2 {
+	if got := cost(func() error { _, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{}); return err }); got != 2 {
 		t.Fatalf("Describe cost %d reads, want 2", got)
 	}
 	if got := cost(func() error { _, err := store.Read(ctx, fakePrefix+"a"); return err }); got != 1 {
@@ -546,10 +572,10 @@ func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
 	}
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
-	if ls, err := store.List(ctx, fakePrefix); err != nil || len(ls) != 1 {
+	if ls, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{}); err != nil || len(ls) != 1 {
 		t.Fatalf("List through one UNAVAILABLE each = %d secrets, %v; want 1 after retries", len(ls), err)
 	}
-	if _, err := store.Describe(ctx, fakePrefix+"a"); err != nil {
+	if _, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{}); err != nil {
 		t.Fatalf("Describe through one UNAVAILABLE each = %v; want it to succeed after retries", err)
 	}
 	if f.calls["ListSecrets"] != 2 || f.calls["GetSecret"] != 2 || f.calls["GetSecretVersion"] != 4 {
@@ -583,7 +609,7 @@ func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
 	f.secrets[fakePrefix+"a"].expires = now.Add(30 * 24 * time.Hour)
 	f.mu.Unlock()
 	now = now.Add(gcpHeldFor)
-	if err := read(); !errors.Is(err, ErrNotFound) {
+	if err := read(); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read after the window of a secret scheduled for deletion since = %v, want ErrNotFound", err)
 	}
 	if got := f.reads() - before; got != 1 {
@@ -602,7 +628,7 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 	ctx := context.Background()
 	before := f.reads()
 	for range 5 {
-		if _, err := store.Read(ctx, fakePrefix+"gone"); !errors.Is(err, ErrNotFound) {
+		if _, err := store.Read(ctx, fakePrefix+"gone"); !errors.Is(err, secretstore.ErrNotFound) {
 			t.Fatalf("Read(gone) = %v, want ErrNotFound", err)
 		}
 	}
@@ -639,7 +665,7 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, err := store.Describe(ctx, fakePrefix+"a")
+	_, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{})
 	if err == nil || !strings.Contains(err.Error(), "Unavailable") || time.Since(start) > 10*time.Second {
 		t.Fatalf("Describe through a lasting UNAVAILABLE = %v after %s; want Unavailable within seconds", err, time.Since(start))
 	}
@@ -650,7 +676,7 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 	if calls != gcpMetadataAttempts {
 		t.Fatalf("GetSecret calls = %d, want %d", calls, gcpMetadataAttempts)
 	}
-	if _, err := store.Read(context.Background(), fakePrefix+"broken"); err == nil || errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(context.Background(), fakePrefix+"broken"); err == nil || errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read of an enabled version that answers FAILED_PRECONDITION = %v; want a logged error, not ErrNotFound", err)
 	}
 }
@@ -665,7 +691,7 @@ func TestGCPReadDoesNotCacheAFailedCheck(t *testing.T) {
 	}
 	store := NewGCP(startFake(t, f), fakeKey)
 	ctx := context.Background()
-	if _, err := store.Read(ctx, fakePrefix+"a"); err == nil || errors.Is(err, ErrNotFound) {
+	if _, err := store.Read(ctx, fakePrefix+"a"); err == nil || errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("first Read through an outage = %v, want its error", err)
 	}
 	if v, err := store.Read(ctx, fakePrefix+"a"); err != nil || v != "v" {
@@ -681,7 +707,7 @@ func TestGCPReadCachesADisabledVersionsVerdict(t *testing.T) {
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{fakePrefix + "off": off}}
 	store := NewGCP(startFake(t, f), fakeKey)
 	for range 5 {
-		if _, err := store.Read(context.Background(), fakePrefix+"off"); !errors.Is(err, ErrNotFound) {
+		if _, err := store.Read(context.Background(), fakePrefix+"off"); !errors.Is(err, secretstore.ErrNotFound) {
 			t.Fatalf("Read(off) = %v, want ErrNotFound", err)
 		}
 	}
