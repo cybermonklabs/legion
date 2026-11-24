@@ -2671,7 +2671,12 @@ SCRIPT_TEST_GATES = [
         (f"{DAEMON}/go.mod", "the test job's setup-go installs its Go, which the harness's real-go cases run: they "
                              "check that the Go the fills run still marks the cache entries a build uses"),
         (f"{ENVOY}/go.mod", "the go-envoy, go-envoy-test and go-envoy-darwin-vet fills install its Go, so a bump "
-                            "of it changes the Go whose marking those fills' prunes rest on"),
+                            "of it changes the Go whose marking those fills' prunes rest on. The harness still runs "
+                            "on the daemon's Go, the one the test job installs, so for a bump of this file alone the "
+                            "check is those fills' own `go-cache-working-set.sh end`: from the second fill on the new "
+                            "Go (the first restores nothing of it), a Go that marks none of the entries it reads "
+                            "leaves no restored entry marked, and end prints its ::warning:: (the harness's "
+                            "\"warns that the build marked none of the restored entries\" case)"),
     ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
