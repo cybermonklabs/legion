@@ -1437,8 +1437,10 @@ export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
  * prompt the daemon sent — a phase reminder, an Envoy message, a background job's result — so no
  * prompt result comes for it and the daemon judges it from this report: a refusal whose status
  * cannot clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other refusal
- * counts in the claim's run of provider-error turns. A report without it is judged by the result
- * of the prompt its turn ran, never by itself (`claim.TurnOutcomeRequest`). */
+ * counts in the claim's run of provider-error turns. A refused report without it is judged by the
+ * result of the prompt its turn ran, never by itself, and a clean report, with it or without, ends
+ * that run when no later turn's report has reached the daemon before it
+ * (`claim.TurnOutcomeRequest`). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),

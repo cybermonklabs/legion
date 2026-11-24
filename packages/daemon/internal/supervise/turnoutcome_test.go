@@ -116,7 +116,7 @@ func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 	}
 	h.wantCalls("Spawn", spawns)
 	h.wantCalls("Resume", resumes)
-	// The run is counted up to the launch failure limit, which is what a retry reads.
+	// The run is counted up to the launch failure limit, which is what each report is answered with.
 	h.wantRefusedRun(testLimits().LaunchFailures)
 	if got := h.claim().ProviderErrorRun; got != turns {
 		t.Errorf("the run of provider errors is %d, want %d: the notice bounds nothing", got, turns)
@@ -418,7 +418,7 @@ func TestAReportOlderThanAFullWindowIsDropped(t *testing.T) {
 
 // The reports survive a daemon restart: the run is derived from what the store holds, so a daemon
 // that restarts between the second refusal and the third counts a run of three at the third, as
-// the daemon that saw all three would, which is what its retry reads.
+// the daemon that saw all three would, which is what it answers the third report with.
 func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

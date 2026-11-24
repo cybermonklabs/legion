@@ -205,6 +205,50 @@ func TestACleanPluginTurnEndsTheRunOfRefusedPrompts(t *testing.T) {
 	}
 }
 
+// A clean report the plugin marked prompted ends the run too, though no prompt result of its own
+// comes for it: a run in the window between Oh My Pi's acceptance of a prompt and its `input`, or
+// one after a prompt the host refused as busy, is read as the prompt's. The provider took that
+// turn, so five refusals, that clean turn and one more refusal make a run of one, and the
+// controller hears nothing; counted across the clean turn, the run would reach six and tell it.
+//
+// A clean report ends the run only when no later turn has reported before it: a clean report that
+// reaches the daemon after a later turn's refused report is of a turn before that refusal, so the
+// run the refusal began stays, whether the late report is marked prompted or not.
+func TestACleanReportMarkedPromptedEndsTheRunWithNoPromptResultOfItsOwn(t *testing.T) {
+	told := 0
+	h := workingClaim(t, countNotices(&told))
+	for turn := 1; turn < providerErrorRunTold; turn++ {
+		h.refusedTurn(uint64(turn), 529, "529 overloaded_error: Overloaded")
+		h.climbs(turn, promptRetryDelay(turn))
+	}
+	if got := h.claim().ProviderErrorRun; got != providerErrorRunTold-1 {
+		t.Fatalf("the run of provider errors is %d, want %d", got, providerErrorRunTold-1)
+	}
+
+	h.report(providerErrorRunTold, false, "")
+	h.refusedTurn(providerErrorRunTold+1, 529, "529 overloaded_error: Overloaded")
+
+	if got := h.claim().ProviderErrorRun; got != 1 {
+		t.Fatalf("the run of provider errors is %d after a clean prompted report and one refusal, want 1", got)
+	}
+	if told != 0 {
+		t.Fatalf("the controller was told %d times, want never: the run never reached %d", told, providerErrorRunTold)
+	}
+
+	// The refused report of turn 9 arrives before the clean report of turn 8, prompted.
+	h.pluginTurn(providerErrorRunTold+3, true, 529)
+	h.report(providerErrorRunTold+2, false, "")
+	if got := h.claim().ProviderErrorRun; got != 2 {
+		t.Fatalf("the run of provider errors is %d after an earlier turn's clean prompted report arrived late, want the 2 it was", got)
+	}
+	// And the same with the late clean report unprompted: turn 11's refusal, then turn 10 clean.
+	h.pluginTurn(providerErrorRunTold+5, true, 529)
+	h.pluginTurn(providerErrorRunTold+4, false, 0)
+	if got := h.claim().ProviderErrorRun; got != 3 {
+		t.Fatalf("the run of provider errors is %d after an earlier turn's clean unprompted report arrived late, want the 3 it was", got)
+	}
+}
+
 // The report of a turn the daemon's prompt ran is never judged, whether it reaches the daemon
 // before that prompt's result or after it: the two travel on two channels, and the result alone
 // judges the turn, so the turn counts once in the run either way. This case passes without R4 as
@@ -312,7 +356,11 @@ func TestTheNoticeOfARunEndedByAPluginTurnSendsNoTaskAgain(t *testing.T) {
 
 // The turn-outcome answer says whether this report failed the claim, read under the report's own
 // decision (HandleTurnOutcome): true for the report of a plugin turn refused with a 400, and false
-// for a clean report, a refused report of a turn a prompt ran, and one that can clear.
+// for a clean report, a refused report of a turn a prompt ran, and one that can clear. The answer
+// is this report's even when another event's decision fails the claim the moment this report's
+// decision lets its lock go (Machine.turnOutcomeDecided): a prompt result's 400 there leaves the
+// clean report answering that it failed nothing, where a read of the claim made after the
+// decision returned would find it failed and answer true.
 func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 	h := workingClaim(t)
 	for i, tc := range []struct {
@@ -341,4 +389,22 @@ func TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim(t *testing.T) {
 		t.Fatalf("the 400 answered %+v, %v; want %+v: the run of the three refused reports, and the claim failed", answer, err, want)
 	}
 	h.wantState(StateFailed)
+
+	// A clean report whose decision another event's follows at once: the prompt result's 400
+	// fails the claim between this report's decision and the return of HandleTurnOutcome.
+	p := workingClaim(t)
+	p.m.turnOutcomeDecided = func() {
+		p.m.turnOutcomeDecided = nil
+		p.errorTurn(StreamPromptResult{Error: "invalid_request_error", HTTPStatus: 400})
+	}
+
+	answer, err = p.m.HandleTurnOutcome(p.ctx, RequestTurnOutcome{
+		Claim: p.token, Generation: p.generation(), Sequence: 1,
+	})
+
+	p.wantState(StateFailed)
+	if err != nil || answer != (TurnOutcomeAnswer{}) {
+		t.Fatalf("the clean report answered %+v, %v; want no run and not failed: the prompt result's 400 failed the claim after this report's decision",
+			answer, err)
+	}
 }

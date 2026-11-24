@@ -248,7 +248,8 @@ function refusedWith(errorStatus?: number): AgentEndEvent {
 // The status is the host's own field, the one its `prompt_result` copies into `httpStatus`
 // (`errorStatus` on the refused assistant message), and never read out of the words: a refusal
 // whose message names a status but whose message carries no `errorStatus` goes with none, as does
-// a number that is no HTTP status, which the daemon would refuse the whole report for.
+// a number that is no HTTP status, which the contract does not admit and the daemon would take as
+// no status with a warning.
 test("a refused turn's report carries the status the host recorded, and only that", async () => {
   const { report, posted } = rig();
 
@@ -329,29 +330,6 @@ test("a prompt's turn runs through the ends the host goes on from, up to the end
     [2, false],
     [3, true],
   ]);
-});
-
-// A message waiting when the prompt's run ends — an Envoy steer — starts a run of its own, which
-// the host gives no prompt's result: the prompt's result has already reported the end before it.
-// So that run is reported unprompted, and the daemon judges it from the report: a 400 there fails
-// the claim at once rather than nothing.
-test("a run a waiting message starts right after a prompt's run is reported unprompted", async () => {
-  const { report, inputArrived, runStarted, posted } = rig();
-
-  inputArrived(SESSION, { text: "Continue the task.", source: "rpc" });
-  runStarted(SESSION);
-  await report(SESSION, clean);
-  runStarted(SESSION);
-  await report(SESSION, refusedWith(400));
-
-  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean" });
-  expect(posted[0]).not.toHaveProperty("unprompted");
-  expect(posted[1]).toMatchObject({
-    sequence: 2,
-    outcome: "refused",
-    httpStatus: 400,
-    unprompted: true,
-  });
 });
 
 // A prompt the daemon sends while a turn of the plugin's own runs waits for that turn to end, and

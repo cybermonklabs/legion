@@ -78,23 +78,18 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 	return m.providerErrorClears(ctx, cause)
 }
 
-// unpromptedTurnEnded judges a turn that ran no prompt of the daemon's — a phase reminder the
-// plugin sent, an Envoy message, a background job's result — from its turn-outcome report
+// unpromptedTurnEnded judges a refused turn that ran no prompt of the daemon's — a phase reminder
+// the plugin sent, an Envoy message, a background job's result — from its turn-outcome report
 // (turnOutcome), as providerErrored judges a prompt's turn from that prompt's result, and in the
-// same run of provider-error turns (providerErrorTurnEnded, providerErrorRunOver). It differs in
-// one thing: no task is the turn's to keep or send again, since whatever the claim owes, this turn
-// did not carry it, and the reminder that started it keeps its own pace
-// (packages/pi-shared/src/phase-reminder.ts). So a refusal that can clear, or whose report carries
-// no status, is counted and written down and nothing more, and the controller's notice says that
-// nothing is sent again. The cause is built from the status alone, and the notice names no model,
-// since a report carries none. Whether the report failed the claim is what the turn-outcome answer
-// says (Machine.turnOutcomeFailed, HandleTurnOutcome).
+// same run of provider-error turns (providerErrorTurnEnded); a clean report ends that run in
+// turnOutcome, whoever ran the turn. It differs in one thing: no task is the turn's to keep or
+// send again, since whatever the claim owes, this turn did not carry it, and the reminder that
+// started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts). So a refusal that can
+// clear, or whose report carries no status, is counted and written down and nothing more, and the
+// controller's notice says that nothing is sent again. The cause is built from the status alone,
+// and the notice names no model, since a report carries none. Whether the report failed the claim
+// is what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome).
 func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
-	if !r.Refused {
-		m.providerErrorRunOver("supervise: a turn that ran no prompt of the daemon's ended with no provider error; the run of provider errors is over",
-			"generation", r.Generation, "sequence", r.Sequence)
-		return m.persist(ctx)
-	}
 	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus,
 		line:   "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
@@ -148,7 +143,7 @@ func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTur
 }
 
 // providerErrorRunOver puts the claim's run of provider-error turns back to zero for a turn that
-// ended with none, whatever ran it (promptResulted, unpromptedTurnEnded), and logs line with
+// ended with none, whatever ran it (promptResulted, turnOutcome), and logs line with
 // attrs and the run that ended. It answers whether the run moved, which is whether the claim owes
 // a write for it.
 func (m *Machine) providerErrorRunOver(line string, attrs ...any) bool {

@@ -32,9 +32,12 @@ import { turnGoesOn } from "./turn-end";
  * whatever message waits to run next. Every report from that run's start to that end is a
  * prompted one, which the result alone judges, whichever of the two reaches the daemon first; a
  * run a waiting message starts after that end, an Envoy steer among them, is no prompt's, and its
- * report goes as unprompted. Where this reading could part from the host's — a prompt the host
- * refused as busy after its `input`, which leaves the next run taken for that prompt's — the
- * report goes as prompted, so that the turn goes uncounted rather than counted twice.
+ * report goes as unprompted. This reading can part from the host's in two windows. A prompt the
+ * host refused as busy after its `input` leaves the next run taken for that prompt's: that report
+ * goes as prompted, so the turn goes uncounted rather than counted twice. A run that starts
+ * between Oh My Pi accepting a prompt and emitting its `input` is reported unprompted, and is also
+ * judged by the prompt's result; where the prompt's result reports that run, the late `input`
+ * leaves the run after it read as prompted, and that run goes unjudged.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and

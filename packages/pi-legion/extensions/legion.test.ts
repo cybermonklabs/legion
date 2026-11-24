@@ -2307,6 +2307,46 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
+    // A prompt's run that settles with a message waiting — an Envoy steer the host runs next —
+    // is still the run the prompt's result reports: the pinned host gives a prompt the outcome of
+    // its first settled end whatever is queued (`rpc-prompt-results.ts:164-169`). So the run the
+    // waiting message starts is no prompt's, and its report says so, for the daemon to judge: a
+    // 400 there fails the claim. The entry reads nothing of `ctx.hasPendingMessages()` for this.
+    test("a run a waiting message starts after a prompt's settled end is reported unprompted", async () => {
+      const worker = await bootStalling({});
+      const outcomes = () =>
+        daemonRequests(worker.requests)
+          .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+          .map((request) => request.body);
+
+      await worker.prompted("Continue the task.");
+      await worker.starts();
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        { ...worker.context, hasPendingMessages: () => true }
+      );
+      await worker.starts();
+      await worker.ends({
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "400 invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
+
+      expect(outcomes()[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+      expect(outcomes()[0]).not.toHaveProperty("unprompted");
+      expect(outcomes()[1]).toMatchObject({
+        sequence: 2,
+        outcome: "refused",
+        httpStatus: 400,
+        unprompted: true,
+      });
+    });
+
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);

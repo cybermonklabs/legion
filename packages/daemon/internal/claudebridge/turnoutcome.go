@@ -117,8 +117,8 @@ func (r *turnReports) turnEnded(refusal string, status int, prompted bool) {
 	if refusal != "" {
 		request.Outcome, request.Message = claim.TurnRefused, refusal
 		// A number outside the HTTP range is no status the provider answered, and the daemon
-		// refuses a report that carries one, so such a refusal goes as one whose status cannot be
-		// read.
+		// takes such a number as no status, with a warning that names it, so the bridge sends the
+		// refusal as one whose status cannot be read and leaves the daemon nothing to warn about.
 		if status >= 100 && status <= 599 {
 			request.HTTPStatus = status
 		}

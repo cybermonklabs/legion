@@ -3409,15 +3409,17 @@ package api
 // that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
 // 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
 // `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
-// the claim's run of provider-error turns, whose sixth in a row tells the controller once; a clean
-// one ends that run. A report without `unprompted` is judged by nothing, so the report of a turn a
-// prompt ran is never counted beside that prompt's result. The daemon reads every body strictly,
-// so a report from this contract that carries either field is refused by a daemon before 240; the
-// boot gate refuses the mixed pair. (This entry took 239 at first, the lowest number above main's
-// 219 that no open pull request declared at a reading of the 132 open heads that change this file,
-// made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of 2026-11-23 that brought in
-// 7df64124 brought main's 220 (the entry above), and a reading of the 133 open heads that change
-// this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and 23:50:14Z, found each of 220 to
-// 239 declared by another pull request (239 by #4592) and 240 by none, so this entry moved to 240.
-// Read main's own number and every open head again at the next merge rather than from this line.)
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once. A
+// refused report without `unprompted` is judged by nothing, so the report of a turn a prompt ran is
+// never counted beside that prompt's result. A clean report, with `unprompted` or without, ends
+// that run when no later turn's report has reached the daemon before it. The daemon reads every
+// body strictly, so a report from this contract that carries either field is refused by a daemon
+// before 240; the boot gate refuses the mixed pair. (This entry took 239 at first, the lowest
+// number above main's 219 that no open pull request declared at a reading of the 132 open heads
+// that change this file, made between 2026-11-23T22:41:49Z and 22:44:42Z. The forward merge of
+// 2026-11-23 that brought in 7df64124 brought main's 220 (the entry above), and a reading of the
+// 133 open heads that change this file, at refs/pull/<n>/head between 2026-11-23T23:47:10Z and
+// 23:50:14Z, found each of 220 to 239 declared by another pull request (239 by #4592) and 240 by
+// none, so this entry moved to 240. Read main's own number and every open head again at the next
+// merge rather than from this line.)
 const DaemonAPIVersion = 240

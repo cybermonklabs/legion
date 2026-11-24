@@ -563,7 +563,10 @@ provider-error turns below. Nothing is sent again for such a turn: it carried no
 daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,
 with the run, the model where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
-held and nothing is stopped by that count: the task is still kept and still sent again. The run
+held and nothing is stopped by that count. A prompt's task is still kept and still sent again on
+the ladder, and the notice says so; a turn that no prompt of the daemon's ran carried no task, so
+nothing is sent again for it, the reminders keep their pace, and a notice whose sixth turn was such
+a turn says that the daemon sends no task again for it. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
 compaction of its session that ran (`legion claims compact`, or the controller's `compact`; one
 Oh My Pi refused or skipped resets nothing, since the session is as it was), and when the claim's

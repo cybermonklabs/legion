@@ -163,8 +163,10 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 // reminder), another extension did (an Envoy message), or the host did (a background job's
 // result). No prompt result comes for such a turn, so the daemon judges it from this report alone
 // (supervise's turnOutcome). A turn the daemon's prompt ran leaves it false, and so does every
-// producer from before the field: that turn's prompt result judges it, so its report is never
-// judged a second time, whichever of the two arrives first.
+// producer from before the field: that turn's prompt result judges a refusal of it, so a refused
+// report without the mark is never judged a second time, whichever of the two arrives first. A
+// clean report, marked or not, ends the claim's run of provider-error turns when no later turn's
+// report has reached the daemon before it.
 //
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same

@@ -144,19 +144,45 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // reminders end: their record check drops every reminder of a failed claim. A refusal that can
 // clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
 // counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
-// so the project's controller is told once when that run reaches providerErrorRunTold. A clean
-// such turn ends the run, as a clean prompt's turn does.
+// so the project's controller is told once when that run reaches providerErrorRunTold.
+//
+// A clean report ends that run whether or not it is marked unprompted (providerErrorRunOver), as
+// a clean prompt result does: the provider answered that turn either way. A turn the plugin reads
+// as a prompt's can have no prompt result of its own — a run in the window between Oh My Pi's
+// acceptance of a prompt and its `input`, or one after a prompt the host refused as busy
+// (packages/pi-legion/src/turn-outcome.ts) — and a clean such run that ended nothing would leave
+// the run counting across a turn the provider took. It ends the run only when it is the newest
+// report the window holds (newestTurnOutcome): a clean report that reaches the daemon after a later
+// turn's refused report is of a turn before that refusal, and must not end the run the refusal
+// began. A refused report marked prompted is still judged by nothing: its prompt's result counts
+// it. The same two bounds hold for every judgment: new to the window, and of the generation the
+// claim runs now.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.turnOutcomeFailed = false
-	kept := m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
+	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
+	kept := m.recordTurnOutcome(o)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
 		"refusedRun", m.claim.RefusedRun())
-	if !r.Unprompted || !kept || r.Generation != m.claim.Generation {
-		return m.persist(ctx)
+	switch {
+	case !kept || r.Generation != m.claim.Generation:
+	case !r.Refused:
+		if m.newestTurnOutcome(o) {
+			m.providerErrorRunOver("supervise: a turn ended with no provider error; the run of provider errors is over",
+				"generation", r.Generation, "sequence", r.Sequence, "unprompted", r.Unprompted)
+		}
+	case r.Unprompted:
+		return m.unpromptedTurnEnded(ctx, r)
 	}
-	return m.unpromptedTurnEnded(ctx, r)
+	return m.persist(ctx)
+}
+
+// newestTurnOutcome is whether o is the newest report the claim's window holds, in the order the
+// turns ran (compareTurnOutcomes): no report of a later turn has reached the daemon before it.
+func (m *Machine) newestTurnOutcome(o TurnOutcome) bool {
+	window := m.claim.TurnOutcomes
+	return len(window) > 0 && compareTurnOutcomes(window[len(window)-1], o) == 0
 }
 
 // freshSession is whether a retry starts a new session rather than relaunching the recorded one,

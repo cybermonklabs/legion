@@ -512,12 +512,13 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none. A turn a prompt ran is counted from that
-	// prompt's result (promptResulted), and a turn that ran no prompt of the daemon's from its
-	// report (unpromptedTurnEnded), in the one run. At providerErrorRunTold the
-	// project's controller is told once, and not again until a turn with no error puts it back to
-	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
-	// limit would fail every claim of a project at once in a provider outage.
+	// for a claim whose last turn ended with none. A refused turn a prompt ran is counted from that
+	// prompt's result (promptResulted), and a refused turn that ran no prompt of the daemon's from
+	// its report (unpromptedTurnEnded), in the one run; a clean prompt result and a clean report,
+	// prompted or not, each end it (turnOutcome). At providerErrorRunTold the project's controller
+	// is told once, and not again until a turn with no error puts it back to zero. It bounds
+	// nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a limit would fail
+	// every claim of a project at once in a provider outage.
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
@@ -1473,6 +1474,11 @@ type Machine struct {
 	// HandleTurnOutcome reads it before the decision's lock is let go. It is memory only and
 	// means nothing outside that one decision.
 	turnOutcomeFailed bool
+	// turnOutcomeDecided, when it is set, runs once HandleTurnOutcome's decision has let its lock
+	// go and before it returns: the moment another event's decision can run between a report's
+	// decision and a read of the claim made after it. Only a test sets it, to run such a decision
+	// there (TestTheTurnOutcomeAnswerSaysWhetherThisReportFailedTheClaim); it is nil otherwise.
+	turnOutcomeDecided func()
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -1894,6 +1900,9 @@ func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (
 	err := m.handle(ctx, r, func() {
 		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
 	})
+	if m.turnOutcomeDecided != nil {
+		m.turnOutcomeDecided()
+	}
 	return answer, err
 }
 
