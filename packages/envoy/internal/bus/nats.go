@@ -489,6 +489,10 @@ type Client struct {
 	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
 	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
 	streamMessageReads bool
+	// finishedTakeovers holds each finished takeover record this client read, with the count of
+	// messages its subject held then, so TakeoverRecords reads none of them again while that count
+	// stands (takeover.go).
+	finishedTakeovers finishedTakeovers
 
 	// recovery state
 	recovering int32

@@ -120,6 +120,14 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
+	// consumerGrant reports whether this listener's NATS user holds the session consumers' calls
+	// (natsgrant's sessionConsumerCalls), which a takeover pass's read of the previous holder's
+	// floor is one of (bus.Client.SessionReadFloor), and which Dispatch's user and every host's hold
+	// none of: main.go sets it to its session delivery's holdsConsumerGrant, which remembers a
+	// refusal for noGrantBackoff. A listener whose user holds none runs no takeover pass, and reads
+	// no takeover record for one (holdsConsumerGrant): the records are the listeners' that hold the
+	// calls. A config a test builds without it asks the server at each call instead.
+	consumerGrant func(context.Context) bool
 	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
 	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
 	// client.PublishStoredAck, and so does every test that builds a config, while a test that
@@ -175,6 +183,17 @@ type listenerDeliveryHandlerConfig struct {
 func wireRoleForwarder(cfg listenerDeliveryHandlerConfig) listenerDeliveryHandlerConfig {
 	cfg.roleForwards = newRoleForwarder(cfg)
 	return cfg
+}
+
+// holdsConsumerGrant reports whether this listener's NATS user holds the session consumers' calls,
+// which a takeover pass needs (consumerGrant): the answer of cfg.consumerGrant where main.go set
+// one, else of one read the server answers or refuses (bus.Client.ProbeConsumerCalls). A read that
+// did not answer is no: a pass would meet the same server.
+func (cfg listenerDeliveryHandlerConfig) holdsConsumerGrant(ctx context.Context) bool {
+	if cfg.consumerGrant != nil {
+		return cfg.consumerGrant(ctx)
+	}
+	return cfg.client.ProbeConsumerCalls(ctx) == nil
 }
 
 type deliveryMode uint8

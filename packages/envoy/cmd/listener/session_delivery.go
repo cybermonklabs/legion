@@ -265,9 +265,14 @@ type sessionDelivery struct {
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
 	// warning is logged, so a hub without the grant costs one line per episode rather than one per
-	// registration. A consumer call that succeeds ends the episode.
+	// registration. A consumer call that succeeds ends the episode. grantedAt is when one last
+	// succeeded, zero before the first (holdsConsumerGrant).
 	noGrantUntil  time.Time
 	noGrantLogged bool
+	grantedAt     time.Time
+	// grantProbeMu holds one probe of the grant at a time (holdsConsumerGrant), so callers that ask
+	// together, a sweep and the handovers of claims granted at once, send one read between them.
+	grantProbeMu sync.Mutex
 }
 
 // admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
@@ -939,6 +944,51 @@ func (m *sessionDelivery) granted() {
 	defer m.grantMu.Unlock()
 	m.noGrantUntil = time.Time{}
 	m.noGrantLogged = false
+	m.grantedAt = m.now()
+}
+
+// holdsConsumerGrant reports whether this listener's NATS user may make the session consumers'
+// calls, which a takeover pass needs and Dispatch's user and every host's hold none of
+// (listenerDeliveryHandlerConfig.consumerGrant). While a refusal episode runs (grantRefused) the
+// answer is no, with no call; within noGrantBackoff of a consumer call that succeeded it is yes,
+// with none either, which a listener that relays sessions makes at every registration. Otherwise it
+// asks the server with one read of a consumer no session has (bus.SessionConsumers.
+// ProbeConsumerCalls): a refusal starts an episode as any consumer call's does, so Dispatch's
+// listener is refused that read once per episode, and an answer counts as a call that succeeded. A
+// read that did not answer is no, and the caller's next pass asks again. A delivery with no
+// consumer connection manages no session consumer, and answers no. Callers that ask together wait
+// for one probe and take its answer, so one episode is one refused read however many asked.
+func (m *sessionDelivery) holdsConsumerGrant(ctx context.Context) bool {
+	if m == nil || m.consumers == nil {
+		return false
+	}
+	answered := func() (bool, bool) {
+		if m.grantRefused() {
+			return false, true
+		}
+		m.grantMu.Lock()
+		defer m.grantMu.Unlock()
+		return true, !m.grantedAt.IsZero() && m.now().Sub(m.grantedAt) < noGrantBackoff
+	}
+	if holds, known := answered(); known {
+		return holds
+	}
+	m.grantProbeMu.Lock()
+	defer m.grantProbeMu.Unlock()
+	if holds, known := answered(); known {
+		return holds
+	}
+	err := m.consumers.ProbeConsumerCalls(ctx)
+	switch {
+	case err == nil:
+		m.granted()
+		return true
+	case m.grantRefusal("read a session consumer before a takeover pass", "", err):
+		return false
+	}
+	m.logger.LogEvent(slog.LevelDebug, "the session consumers' grant could not be read; no takeover pass runs until it can",
+		slog.String("error", err.Error()))
+	return false
 }
 
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change

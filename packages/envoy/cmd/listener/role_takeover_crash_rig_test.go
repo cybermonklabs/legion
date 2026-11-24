@@ -60,7 +60,12 @@ type crashRig struct {
 
 func newCrashRig(t *testing.T) *crashRig {
 	t.Helper()
-	url := testnats.URL(t)
+	return newCrashRigOn(t, testnats.URL(t))
+}
+
+// newCrashRigOn is newCrashRig over the server url names, as the NATS user it carries.
+func newCrashRigOn(t *testing.T, url string) *crashRig {
+	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)

@@ -44,21 +44,21 @@ const roleKeepWakeAge = roleKeepWindow - 20*time.Minute
 // starts no handover, since only the registration that makes a holder live again
 // (subscribeHandler) and the claim route's refresh of a claimant that was not live
 // (roleSetHandler) start one. A role nobody claims is handed nothing at all, and its copies must
-// still end at the end of their hour, with a dead letter to their senders. Every interval, and
-// once as the listener starts, this hands over every lane with copies left (sweepKeptRoleLanes,
-// startSweep), at most roleKeepSweepHandovers at a time across the passes of this one loop.
+// still end at the end of their hour, with a dead letter to their senders. Every interval, at the
+// phase phase in it (startSweep, sweepPhase), this hands over every lane with copies left
+// (sweepKeptRoleLanes), at most roleKeepSweepHandovers at a time across the passes of this one loop.
 //
 // An edge listener runs none (cfg.edge) and returns a channel closed already: it hands no lane
 // over (drainKeptRole). The shared listeners' sweeps hand over every lane, the lane of a role held
 // at the edge among them, whose holder's session consumer at the edge delivers the forward.
-func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval time.Duration) <-chan struct{} {
+func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval, phase time.Duration) <-chan struct{} {
 	if cfg.edge != nil {
 		done := make(chan struct{})
 		close(done)
 		return done
 	}
 	slots := make(chan struct{}, roleKeepSweepHandovers)
-	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
+	return startSweep(ctx, interval, phase, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
 }
 
 // sweepKeptRoleLanes hands over every role the stream holds a kept copy on that its cursor has not
@@ -197,8 +197,14 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 
 // takenRoles is the takeover records that are not finished (bus.TakeoverRecords), by the role
 // each names, read once a sweep pass, for the sweep to run their passes. A read that failed is
-// logged and names none, and the next pass reads again.
+// logged and names none, and the next pass reads again. A listener whose NATS user holds no
+// session consumers' calls (holdsConsumerGrant), Dispatch's and a host's, reads none and names
+// none: it runs no pass, so the records are the other listeners', and a role it would have handed
+// over for a record alone is theirs to hand over too.
 func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[string][]bus.StoredTakeoverRecord {
+	if !cfg.holdsConsumerGrant(ctx) {
+		return nil
+	}
 	records, err := cfg.client.TakeoverRecords(ctx, "")
 	if err != nil {
 		if ctx.Err() == nil {
