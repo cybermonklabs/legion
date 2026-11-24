@@ -188,7 +188,7 @@ func (rig *sessionConsumerRig) startSeq(t *testing.T, sessionID string) uint64 {
 // when it does not within 2 s.
 func (rig *sessionConsumerRig) awaitPending(t *testing.T, sessionID string, want uint64) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := rig.consumers.Info(context.Background(), sessionID)
 		if err != nil {
@@ -1062,7 +1062,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 		// The registration leaves this window only once the restart has reached it: waiting for
 		// the lock (two callers) with the fix, and done with it without one, which is the drop
 		// this case is about.
-		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for lockUsers(&rig.deps.consumers.locks, sessionID) != 2 {
 			select {
 			case <-restarted:
@@ -1331,7 +1331,7 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 func awaitSkipped(t *testing.T, harness listenerDeliveryHarness, want int) {
 	t.Helper()
 	line := fmt.Sprintf(`test_messages_delivered{delivery_status="skipped"} %d`, want)
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		body := deliveredMetrics(t, harness)
 		if strings.Contains(body, line) {

@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -125,7 +124,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 		if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
 			t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role)
 		}
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the role holder received no forward while another task holds the durable:\n%s", listener.Output.String())
 	}
 
@@ -221,14 +220,14 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 				t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
 			}
 			keys[frame.DedupeKey]++
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the holder received %d of %d role messages", received, messages)
 		}
 	}
 	select {
 	case frame := <-frames:
 		t.Fatalf("the holder received a frame past the %d published: %+v", messages, frame)
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 	}
 	if len(keys) != messages {
 		t.Fatalf("the holder received %d distinct dedupe keys over %d frames, want %d: a publish was forwarded twice", len(keys), messages, messages)
@@ -460,7 +459,7 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	listener.waitHealthy(t)
 	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
 	// within a few one-second ticks of turning healthy; five seconds covers them.
-	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWaitBound(t)); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 		consumers := 0
 		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
 			consumers++
@@ -506,7 +505,7 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("settled %s after turning healthy", time.Since(healthy).Round(10*time.Millisecond))
-	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); ; time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWaitBound(t)); ; time.Sleep(100 * time.Millisecond) {
 		entry, err := kv.Get(key)
 		if err != nil {
 			t.Fatalf("read the seeded CI record: %v", err)
@@ -601,7 +600,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	for _, cache := range []string{"interest registry", "session registry", "cistore"} {
 		msg := cache + " cache warm-up"
 		warmUp := listenerJSONRecord(t, listener, msg)
-		for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); warmUp == nil && time.Now().Before(deadline); {
+		for deadline := time.Now().Add(listenerWaitBound(t)); warmUp == nil && time.Now().Before(deadline); {
 			time.Sleep(100 * time.Millisecond)
 			warmUp = listenerJSONRecord(t, listener, msg)
 		}
@@ -617,7 +616,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	// how this test gets one to read.
 	server.Stop(t)
 	textLine := regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} .*envoy nats disconnected`)
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !textLine.MatchString(listener.Output.String()) {
 		if time.Now().After(deadline) {
 			if listenerJSONRecord(t, listener, "envoy nats disconnected") != nil {

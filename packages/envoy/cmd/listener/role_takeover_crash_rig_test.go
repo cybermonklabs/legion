@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // crashWatch bounds a row's wait for a session to receive what the row waits for.
@@ -286,7 +285,7 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(testwait.Remaining(rig.t, time.Second)):
+	case <-time.After(listenerWaitBound(rig.t)):
 		rig.t.Fatalf("the stream did not acknowledge %d messages to %s within 30s", n, sessionID)
 	}
 }
@@ -330,7 +329,7 @@ func (rig *crashRig) seqOn(subject, eventID string) uint64 {
 // deadline as its only bound.
 func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 	rig.t.Helper()
-	deadline := time.Now().Add(testwait.Remaining(rig.t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(rig.t))
 	for {
 		held := rig.stored(subject)
 		if i := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID }); i >= 0 {

@@ -302,7 +302,7 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	// under a grant admitting every _INBOX. subject it reaches the relay as s2's own done and the
 	// frame is acknowledged away, which this wait names as soon as it sees it.
 	one.reply(heldFrame, relayReplyDone)
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !slices.Contains(s1.refusals(), heldFrame.msg.Reply) {
 		info, err := consumers.Info(t.Context(), s2.id)
 		if err != nil {
@@ -322,7 +322,7 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	// frame away, which this wait names as soon as it sees it.
 	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
 	refusedLine := []string{`"msg":"` + relayRefusedReplyLine + `"`, `"session_id":"` + s2.id + `"`, `"reply_session_id":"` + s1.id + `"`}
-	deadline = time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline = time.Now().Add(listenerWaitBound(t))
 	for !slices.ContainsFunc(strings.Split(listener.Output.String(), "\n"), func(line string) bool {
 		return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
 	}) {
@@ -586,12 +586,12 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-naked:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("onReply did not return within 2s of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
 		}
 		select {
 		case <-started:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("onReply never started the re-mark")
 		}
 		// The re-mark is still blocked. The other session's done is acked at once.
@@ -602,7 +602,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-done:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the other session's receipt was blocked behind the slow re-mark")
 		}
 		if otherAcker.acks.Load() != 1 {
@@ -624,7 +624,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		// A nak of a gap-marked frame runs the re-mark once.
 		frameFor(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01", "a-gap-mark")
 		nak(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01")
-		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for reMarked.Load() == 0 && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
@@ -734,7 +734,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	nak("TOKENOFTHEFIRSTREMARKFRAME01")
 	select {
 	case <-entered:
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("onReply never started the first re-mark")
 	}
 	// The second nak of the same session while the first re-mark is in flight: scheduleReMark folds
@@ -755,7 +755,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	close(release)
 	select {
 	case <-entered:
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the folded re-mark never ran after the first finished; the session's owed mark is dropped")
 	}
 }

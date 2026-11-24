@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // windowRig is a relayRig - the listener's /v1 routes, its session consumers relayed to the
@@ -152,7 +151,7 @@ func heldEventIDs(held []contracts.Envelope) []string {
 // it has returned.
 func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what string) contracts.Envelope {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		held := rig.heldForSession(t, sessionID)
 		if index := slices.IndexFunc(held, func(item contracts.Envelope) bool { return item.EventID == eventID }); index >= 0 {

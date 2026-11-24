@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -71,7 +70,7 @@ func readKeptRoleCopy(t *testing.T, client *bus.Client, role string) (contracts.
 // which the role lane writes after its own handler has answered, and returns it.
 func waitForKeptRoleMessage(t *testing.T, client *bus.Client, role, eventID string) contracts.Envelope {
 	t.Helper()
-	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(listenerWaitBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		item, ok := readKeptRoleMessage(t, client, role)
 		if ok && item.EventID == eventID {
 			return item
@@ -484,7 +483,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy handed to the role's next holder", frame)
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the claimant of %s was handed no kept copy in 30 seconds", role)
 	}
 
@@ -498,7 +497,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy forwarded to the live holder", frame)
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the live holder of %s was forwarded nothing in 30 seconds", role)
 	}
 }
@@ -1072,7 +1071,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 		if forwarded.KeptAt == nil || *forwarded.KeptAt <= 0 {
 			t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 		}
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the copy kept for %s, which held the role already, reached it in no 20 seconds and no second claim comes:\n%s",
 			holder, harness.logs.String())
 	}

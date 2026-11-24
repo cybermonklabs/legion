@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -138,7 +137,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 	t.Helper()
 	own, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	received := false
-	deadline := time.After(testwait.Remaining(t, time.Second))
+	deadline := time.After(listenerWaitBound(t))
 	for {
 		select {
 		case frame := <-standIn.frames:

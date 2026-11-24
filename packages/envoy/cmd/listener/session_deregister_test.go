@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -50,7 +49,7 @@ func (rig *sessionConsumerRig) requireNoConsumer(t *testing.T, sessionID string)
 // comes reads it before the delete.
 func (rig *sessionConsumerRig) awaitNoConsumer(t *testing.T, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		_, err := rig.consumers.Info(context.Background(), sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {

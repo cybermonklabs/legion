@@ -303,7 +303,7 @@ func TestEveryWebhookRouteReadsAgainstTheListenersOneBodyBudget(t *testing.T) {
 
 	_ = holder.Close()
 	var served webhookAnswer
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 50*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 50*time.Millisecond, func() bool {
 		served = postWebhook(t, addr, "/webhook/slack", slackHeaders(webhookTestSecret, time.Now(), event), event)
 		return served.status == http.StatusOK
 	}) {

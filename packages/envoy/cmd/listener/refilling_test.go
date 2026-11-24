@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -417,7 +416,7 @@ func (rig *listRig) awaitDisconnect(t *testing.T) {
 	t.Helper()
 	select {
 	case <-rig.disconnected:
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the bus never ran its disconnect hooks")
 	}
 }
@@ -617,7 +616,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		rig.server.Start(t)
 		select {
 		case <-failed:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the reconnect hook never ran its Rewatch")
 		}
 		var probeErr error

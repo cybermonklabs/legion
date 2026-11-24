@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleLaneProbePeriod is the self-health period the tests here run the monitor at, in place of
@@ -257,7 +256,7 @@ func (r *roleLaneHealthRig) requireDelivers(t *testing.T) {
 		if got != topic {
 			t.Fatalf("the role lane received %s, want %s", got, topic)
 		}
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the role lane received nothing on %s", topic)
 	}
 }

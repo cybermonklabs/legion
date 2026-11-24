@@ -20,7 +20,6 @@ import (
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file is the one proof that a role message Dispatch's outbox could not deliver reaches the
@@ -107,7 +106,7 @@ func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *d
 		cancel()
 		select {
 		case <-stopped:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Error("Dispatch's outbox did not stop")
 		}
 	})
@@ -456,7 +455,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// nothing, not part of what this test holds, so the handover's copy is selected by the event
 	// it carries and every assertion below is made of that frame.
 	var handed contracts.Envelope
-	deadline := time.After(testwait.Remaining(t, time.Second))
+	deadline := time.After(listenerWaitBound(t))
 	for handed.EventID != secondKey {
 		select {
 		case handed = <-taken:

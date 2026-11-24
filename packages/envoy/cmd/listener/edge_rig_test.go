@@ -241,7 +241,7 @@ func (r *edgeRig) tick(t *testing.T) {
 	before := r.reader.passes.Load()
 	select {
 	case r.ticks <- time.Now():
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the repository refresh loop took no tick within 10 s")
 	}
 	testwait.Eventually(t, "the repository refresh pass to finish", func() bool { return r.reader.passes.Load() > before })

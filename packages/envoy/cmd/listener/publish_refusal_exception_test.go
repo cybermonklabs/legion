@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusedPublish is an envelope of the shape the publish route builds for a role-lane publish,
@@ -100,7 +99,7 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 
 	publishRefusalException(client, logger, nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for time.Now().Before(deadline) {
 		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
 			return
@@ -124,7 +123,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	server.Stop(t)
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for client.Connected() || !client.Conn.IsReconnecting() {
 		if time.Now().After(deadline) {
 			t.Fatal("the client is not reconnecting 10 s after its server stopped")

@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session reaper a started listener runs deletes the consumer of every record it reaps. A
@@ -57,7 +56,7 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	if output := listener.Output.String(); !strings.Contains(output, `"session_id":"`+sessionID+`"`) {
 		t.Fatalf("the pass the listener ran names no record of %s:\n%s", sessionID, output)
 	}
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := consumers.Info(ctx, sessionID)
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {

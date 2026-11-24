@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -52,7 +51,7 @@ func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Con
 	select {
 	case recorder := <-answered:
 		return recorder
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the publish whose connection closed under it did not answer")
 		return nil
 	}

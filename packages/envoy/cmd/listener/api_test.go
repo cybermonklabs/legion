@@ -33,7 +33,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -1050,7 +1049,7 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 	if err := claimant.sessions.Delete(context.Background(), "ses_gone"); err != nil {
 		t.Fatalf("end ses_gone's session: %v", err)
 	}
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		_, fresh := observer.registry.Cached("ses_fresh")
 		_, gone := observer.registry.Cached("ses_gone")
@@ -2200,7 +2199,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 	// own deadline. The wait below only turns a blocked handler into a failure instead of a hang.
 	select {
 	case <-responded:
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("subscribe is still waiting on a stream-info lookup that never answers")
 	}
 	// The lookup goroutine records its deadline when it runs, which need not be before the handler
@@ -2210,7 +2209,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 		if remaining > unwiredRepositoryWarningTimeout {
 			t.Fatalf("stream-info lookup was issued with a deadline %s away, want at most the %s advisory bound", remaining, unwiredRepositoryWarningTimeout)
 		}
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("no stream-info lookup was issued with a deadline")
 	}
 	if recorder.Code != http.StatusOK {

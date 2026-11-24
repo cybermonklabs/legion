@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The role lane's forwarder publishes each holder's forwards in the order the handler handed them
@@ -249,7 +248,7 @@ func roleForwardsLogged(role string, listeners ...*listenerProcess) int {
 // they logged.
 func settledRoleForwards(t *testing.T, role string, want int, listeners ...*listenerProcess) int {
 	t.Helper()
-	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
+	for deadline := time.Now().Add(listenerWaitBound(t)); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(time.Second)

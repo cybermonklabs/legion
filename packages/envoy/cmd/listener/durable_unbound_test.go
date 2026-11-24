@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // /healthz answers 503 unhealthy once the listener's durable consumer has been recreated
@@ -183,7 +182,7 @@ func TestTheSelfHealthMonitorRebindsARecreatedDurable(t *testing.T) {
 	terminated, stop := startUnboundDurableMonitor(t, client, consumer, logging.New("test"), handler)
 
 	// The probe's confirming read alone costs 250ms, so the repair takes several intervals.
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for delivered.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("the message published after the recreation was never delivered")

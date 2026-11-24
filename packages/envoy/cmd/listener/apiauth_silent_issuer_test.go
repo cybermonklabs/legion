@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A client that half-closes its connection ends its own request's context, and can still read the
@@ -111,7 +110,7 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 					go verifier.Run(t.Context())
 					select {
 					case <-accepted:
-					case <-time.After(testwait.Remaining(t, time.Second)):
+					case <-time.After(listenerWaitBound(t)):
 						t.Fatal("the background discovery never dialed the silent issuer within 5 s")
 					}
 				}
@@ -190,7 +189,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 	// The key read the first request started is still under way. A request until it lands joins it
 	// (cut at its own budget, or admitted when the read lands inside that budget), and none starts
 	// a read of its own.
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status, _, elapsed, err = sendThroughTheServer(t, auth, token)
 		if err == nil && status == http.StatusNoContent {
@@ -239,7 +238,7 @@ func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
 				which, status, retryAfter, elapsed.Round(time.Millisecond), err)
 		}
 	}
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		status, _, elapsed, err := sendThroughTheServer(t, auth, tokenB)
 		if err == nil && status == http.StatusNoContent {

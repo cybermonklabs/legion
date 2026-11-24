@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
@@ -219,7 +218,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	relay.arm("$JS.API.CONSUMER.INFO.", 2)
 	select {
 	case <-relay.swallowed:
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the listener's durable bind never reached the controlled relay")
 	}
 	relay.drop()
@@ -276,7 +275,7 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
 				t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
 			}
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the listener forwarded %d of %d routed role messages during the reconnect:\n%s", received, messages, listener.Output.String())
 		}
 	}

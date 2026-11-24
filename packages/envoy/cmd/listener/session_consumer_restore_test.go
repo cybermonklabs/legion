@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A registration answered 200 with consumer delivery holds a consumer however a delete on
@@ -635,7 +634,7 @@ func awaitDeleteWaitingOrDone(t *testing.T, locks *sessionLocks, sessionID strin
 // delete made through it leaves once its own watch has delivered that delete.
 func awaitCacheHasNoRecord(t *testing.T, sessions *session.SessionRegistry, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, err := sessions.Get(sessionID); errors.Is(err, nats.ErrKeyNotFound) {
 			return

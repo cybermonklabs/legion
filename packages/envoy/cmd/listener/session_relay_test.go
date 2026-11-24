@@ -586,7 +586,7 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 		if !ok {
 			t.Fatal("the retry wait reported the run stopped")
 		}
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the retry wait did not end on the wake sent before it")
 	}
 }
@@ -1165,7 +1165,7 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 		refusal.requireRefused(t, http.StatusServiceUnavailable, "no_grant")
 	}
 	awaitRefusedCalls := func(want int) {
-		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+		deadline := time.Now().Add(listenerWaitBound(t))
 		for refusedCalls() < want && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
 		}

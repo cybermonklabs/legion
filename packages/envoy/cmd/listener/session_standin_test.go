@@ -8,7 +8,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session stand-in that its own test closes while it is answering a frame reports nothing: the
@@ -34,7 +33,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 			}
 			select {
 			case <-standIn.frames:
-			case <-time.After(testwait.Remaining(t, time.Second)):
+			case <-time.After(listenerWaitBound(t)):
 				t.Error("the stand-in never finished answering the frame")
 			}
 		})
@@ -54,7 +53,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 		}
 		select {
 		case <-answering:
-		case <-time.After(testwait.Remaining(t, time.Second)):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatal("the stand-in never started answering the frame")
 		}
 	})

@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A takeover's copy of the previous holder's unread role messages keeps Envoy's at-least-once
@@ -260,7 +259,7 @@ func crashTwoListenersCopyAtOnce(t *testing.T) {
 		beforeCopy: func(r, _ string, frameSeq uint64) error {
 			if r == role && frameSeq == first {
 				arrived.Add(1)
-				for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); arrived.Load() < 2 && time.Now().Before(deadline); {
+				for deadline := time.Now().Add(listenerWaitBound(t)); arrived.Load() < 2 && time.Now().Before(deadline); {
 					time.Sleep(5 * time.Millisecond)
 				}
 			}
@@ -404,7 +403,7 @@ func crashRoleTakenBack(t *testing.T) {
 	// Where the build copies at a takeover, the walk forwards the copies to B, which reads none of
 	// them: the row waits a while for them, and goes on without them at a build that makes none.
 	toB := contracts.LegacyAgentSubject(b)
-	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for len(rig.events(toB)) < len(sent) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -467,7 +466,7 @@ func crashConcurrentClaims(t *testing.T) {
 	select {
 	case answer = <-cAnswer:
 		cAnswer <- answer
-	case <-time.After(testwait.Remaining(t, time.Second)):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("%s's claim did not answer within 10s", c)
 	}
 	if answer.Code != http.StatusOK {
