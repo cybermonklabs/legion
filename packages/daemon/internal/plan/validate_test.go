@@ -301,17 +301,21 @@ func TestATaskWithASubOwnerNamesNoSteps(t *testing.T) {
 //   - a part that needs its own task, directly or through its tasks, with S3's reason;
 //   - a part that needs a task whose needs reach its own task, with the chain to that task;
 //   - a task that needs a part of its own, which starts only once the task has started;
-//   - a task that needs a part of a task it stands outside (R14), with S3's reason, named at the
-//     outermost task above the part that does not hold it.
+//   - a task that needs a part of a task it stands outside, with S3's reason, named at the
+//     outermost task above the part that does not hold it;
+//   - a part that needs a part of a task above its own task, which is no sibling of it, named at
+//     the task the part it needs is a part of: a part needs only the other parts of its own task,
+//     or a whole task of the top level.
 //
-// It takes a part that needs its sibling, a part of a part that needs a part of the task above it,
-// and a part that needs a task of the top level that does not wait for its own task.
+// It takes a part that needs its sibling, and a part that needs a task of the top level that does
+// not wait for its own task.
 //
-// The fault it catches is a plan whose part never starts taken (its controls: neverStarted that
-// answers nothing fails each row of a need that never ends; neverStarted with its second pass
-// alone names a's need of f in the row of the ids whose task of the top level sorts first, and
-// that row fails; R14 read as S3 writes it, a need of a part whose PartOf is not the task's own,
-// refuses the part of a part that needs a part of the task above it, and that row fails).
+// The fault it catches is a plan whose part never starts taken, or a part that needs a part of
+// another task taken (its controls: needReasons with no waits answers nothing for the rows of a
+// need that never ends; needReasons with its second pass alone names a's need of f in the row of
+// the ids whose task of the top level sorts first, and that row fails; the need of a part read as a
+// need of a task outside its own alone takes the part of a part that needs a part of the task above
+// it, and that row fails).
 func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 	f, f1 := partBlock("f", "", "owner", "architect"), partBlock("f1", "f", "steps", "implementer")
 	needing := func(id, parent string, needs ...string) Block {
@@ -349,9 +353,14 @@ func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 		{name: "a task outside a task that needs a part of its part",
 			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), partBlock("f1a", "f1", "steps", "implementer"), needing("h", "", "f1a")},
 			want:   []Refusal{{Task: "h", Reason: "task h needs f1a, a part of task f: a task outside f needs the whole task f, and no part of it."}}},
-		{name: "a part that needs a sibling", blocks: []Block{f, f1, needing("f2", "f", "f1")}},
+		{name: "a part that needs a part of its sibling",
+			blocks: []Block{f, needing("f1", "f", "f2a"), partBlock("f2", "f", "owner", "architect"), partBlock("f2a", "f2", "steps", "implementer")},
+			want:   []Refusal{{Task: "f1", Reason: "task f1 needs f2a, a part of task f2: a task outside f2 needs the whole task f2, and no part of it."}}},
 		{name: "a part of a part that needs a part of the task above",
-			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), partBlock("f2", "f", "steps", "implementer"), needing("f1a", "f1", "f2")}},
+			blocks: []Block{f, partBlock("f1", "f", "owner", "architect"), partBlock("f2", "f", "steps", "implementer"), needing("f1a", "f1", "f2")},
+			want: []Refusal{{Task: "f1a", Reason: "task f1a needs f2, a part of task f: " +
+				"a part needs only the other parts of its own task, or a whole task of the top level."}}},
+		{name: "a part that needs a sibling", blocks: []Block{f, f1, needing("f2", "f", "f1")}},
 		{name: "a part that needs a task of the top level", blocks: []Block{partBlock("g", "", "steps", "implementer"), f, needing("f1", "f", "g")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,6 +368,30 @@ func TestAPlanWhosePartNeverStartsIsRefused(t *testing.T) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A need that lies on a cycle of needs and is also a need of a part of a task its task stands
+// outside gets one reason, the cycle's: h needs f1, a part of f, and f1 needs h. Validate names the
+// cycle once, at f1, its first task in id order, and gives h's need no second reason. A need of a
+// part that closes no cycle keeps its own reason, as TestAPlanWhosePartNeverStartsIsRefused holds.
+//
+// The fault it catches is one need of the need graph judged by two loops that do not agree, so it
+// gets two reasons (its control: the need of a part judged before the cycles are cut, which gives
+// h's need its own reason beside the cycle's, and the case fails).
+func TestANeedOnACycleGetsTheCyclesReasonAlone(t *testing.T) {
+	words := func(needs ...string) string {
+		for i, need := range needs {
+			needs[i] = needWord(need)
+		}
+		return strings.Join(needs, " ")
+	}
+	p := planOf(t, 1, partBlock("f", "", "owner", "architect"),
+		partBlock("f1", "f", "steps", "implementer", "needs", words("h")),
+		partBlock("h", "", "steps", "implementer", "needs", words("f1")))
+	want := []Refusal{{Task: "f1", Reason: "task f1 needs itself: f1 needs h, h needs f1."}}
+	if got := Validate(p, builtin); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Validate =\n%+v\nwant\n%+v", got, want)
 	}
 }
 

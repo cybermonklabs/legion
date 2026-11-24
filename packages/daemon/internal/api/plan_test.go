@@ -379,8 +379,9 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 }
 
 // register_plan reads each task block's `parent` against the document it registers (plan.ParentOf),
-// as a reference to one of its blocks names it (documentReference): `dispatch://<KEY>/spec` for
-// the issue's primary document, and `dispatch://<KEY>/artifact/<slug>` for any other. So a
+// as a reference to one of its blocks names it (dispatch.DocumentRef, at registerPlan):
+// `dispatch://<KEY>/spec` for the issue's primary document, and
+// `dispatch://<KEY>/artifact/<slug>` for any other. So a
 // `parent` in the registered document's form puts its block under the block it names, and the
 // other form names another document, whatever its id: the block is then a task of the top level,
 // and version 3 is taken with the tasks a and b. Validate's refusals of an element and of a

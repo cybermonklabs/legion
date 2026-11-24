@@ -149,7 +149,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 			"Dispatch shows %s at version %d, not %d; give register_plan a version that Dispatch has", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
-	given, ok := s.planAt(w, r, artifactID, documentReference(req.Issue, approval), req.Version, req.Issue)
+	given, ok := s.planAt(w, r, artifactID, dispatch.DocumentRef(req.Issue, approval.Slug, approval.Primary), req.Version, req.Issue)
 	if !ok {
 		return
 	}
@@ -293,9 +293,9 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
 // each task block's Parent read from its `parent` (plan.ParentOf) against reference, the document
-// as a reference to one of its blocks names it (documentReference), then read as the plan of issue
-// (plan.FromBlocks). So a need that is a reference into another issue is no need of a task of this
-// plan, and a `parent` puts a block under a block of this document alone. A block the plan's
+// as a reference to one of its blocks names it (dispatch.DocumentRef), then read as the plan of
+// issue (plan.FromBlocks). So a need that is a reference into another issue is no need of a task of
+// this plan, and a `parent` puts a block under a block of this document alone. A block the plan's
 // grammar cannot read, a `parent` that is not one reference among them, is a refused plan whose one
 // reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all. Every
 // refusal records nothing.
@@ -333,13 +333,6 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, refe
 		return plan.Plan{}, false
 	}
 	return given, true
-}
-
-// documentReference is the document approval reads, a document of issue, as a reference to one of
-// its blocks names it before its `#b-` (dispatch.DocumentRef, by the document's slug and whether it
-// is the issue's primary document).
-func documentReference(issue string, approval dispatch.Approval) string {
-	return dispatch.DocumentRef(issue, approval.Slug, approval.Primary)
 }
 
 // registeredPlan is given as register_plan answers it.

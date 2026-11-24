@@ -131,25 +131,22 @@ func TestEachReaderGivesAPositionOfALineOnePlace(t *testing.T) {
 	}
 }
 
-// A run with no plan rows has the place of each phase of today's line read in two packages: by its
-// walk (todaysWalk, Walk.PlaceOf) and by the record's reading of its running step
-// (record.RunningOf), which the issue's own read, the idle view and the served state go through.
-// For each phase of phase.Order the running step stands where the walk puts that phase.
+// The record reads the running step of a run with no plan rows (record.RunningOf), which the
+// issue's own read, the idle view and the served state go through, at today's places: each phase
+// of phase.Order before the retro at its step from 1, then the retro and the merge, the places the
+// release before gave them and the row "a run with no plan rows" of
+// TestEachReaderGivesAPositionOfALineOnePlace holds for the walk.
 //
-// The fault it catches is a second rule of today's places that drifts from the walk's (its
-// controls: while the record had a rule of its own, that rule with the retro at step 6; once the
-// record reads the one function of a line's places, the record's reading given a rule of its own
-// again, which puts each phase one step on).
-func TestTheRecordReadsTodaysPlacesAsTheWalkDoes(t *testing.T) {
-	today := todaysWalk()
-	for _, p := range phase.Order {
-		want, ok := today.PlaceOf(p)
-		if !ok {
-			t.Fatalf("the walk of a run with no plan rows gives %s no place", p)
-		}
+// The fault it catches is today's places moved for the record (its controls: the record's reading
+// of today's places one step on; and the one function of a line's places, record.LinePlaces,
+// numbering its steps from 0, which moves the walk's places and the record's together, so a test
+// that compares the two cannot see it, and this one fails).
+func TestTheRecordReadsTodaysPlaces(t *testing.T) {
+	want := []record.TaskPlace{atStep(1), atStep(2), atStep(3), atStep(4), atStep(5), {Kind: record.PlaceRetro}, {Kind: record.PlaceMerge}}
+	for at, p := range phase.Order {
 		steps := record.RunningOf(record.Issue{Key: "LEGION-208", Phase: p}, false, nil)
-		if len(steps) != 1 || steps[0].Place != want || steps[0].Phase != p {
-			t.Errorf("the running steps of an issue with no plan rows in %s = %+v, want one at %+v, where its walk puts %s", p, steps, want, p)
+		if len(steps) != 1 || steps[0].Place != want[at] {
+			t.Errorf("the running steps of an issue with no plan rows in %s = %+v, want one at %+v", p, steps, want[at])
 		}
 	}
 }

@@ -157,7 +157,8 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 // (sub-owner.md). The role is architect, whose shared part is the sub-architect's, or one of
 // Legion's step roles, whose shared parts are those Compose gives it. Neither the role's own part
 // of this daemon nor worker-common.md is joined: a sub-owner writes the parts of its task and works
-// no phase. Any other role answers an error that names it.
+// no phase. Any other role answers an error that names it. No launch calls it yet: its caller to
+// come is the launch of a sub-owner, which composes that agent's prompt here.
 func (c *Composer) ComposeSubOwner(role string) (Parts, error) {
 	if c == nil {
 		return Parts{}, fmt.Errorf("compose sub-owner prompt: nil composer")
