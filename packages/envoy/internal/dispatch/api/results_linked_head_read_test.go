@@ -58,7 +58,7 @@ func TestAResultsReadReadsALinkedPullRequestWhoseHeadIsNotHeld(t *testing.T) {
 			const link = "https://github.com/acme/widgets/pull/12"
 			if row.linkedBefore {
 				if _, err := database.Pool.Exec(context.Background(),
-					`insert into issue_external_links (issue_key, url) values ($1, $2)`, issue.Key, link); err != nil {
+					`insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'url')`, issue.Key, link); err != nil {
 					t.Fatalf("store the link as a release before stored it: %v", err)
 				}
 			} else {
