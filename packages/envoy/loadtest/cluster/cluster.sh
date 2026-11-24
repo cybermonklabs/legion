@@ -292,6 +292,9 @@ ENVOY_DIR=$(cd -- "$here/../.." && pwd)
 REPO_DIR=$(cd -- "$ENVOY_DIR/../.." && pwd)
 # shellcheck source=packages/envoy/loadtest/common.sh
 source "$here/../common.sh"
+# The record rule's filter, the one daemon-release-gate.sh's lines pass (apply_manifest below).
+# shellcheck source=packages/envoy/scripts/lib/token-filter.sh
+source "$ENVOY_DIR/scripts/lib/token-filter.sh"
 export LC_ALL=C TZ=UTC
 
 CLUSTER_ROOT=${LOADTEST_CLUSTER_ROOT:-${TMPDIR:-/tmp}/dispatch-loadtest-cluster}
@@ -731,8 +734,11 @@ require_own_issuer() {
 # new object to the namespace's ResourceQuota, and two objects admitted at once race on the
 # quota's status: the loser is refused with "the object has been modified" and nothing of it is
 # created. That refusal alone is retried, up to 5 tries 3 s apart; any other failure stops.
+# kubectl's error is printed through the token filter (lib/token-filter.sh): it can quote what the
+# manifest holds, and the listener's image is the production repository's answer to gh, which
+# whatever answers in GitHub's place writes, and which resolve_image's grammar alone lets through.
 apply_manifest() {
-  local name=$1 values=() try err
+  local name=$1 values=() try err tokens
   shift
   [ $# -gt 0 ] || set -- "${SSA[@]}"
   mapfile -t values < <(manifest_values)
@@ -746,7 +752,11 @@ apply_manifest() {
     note "kubectl $1 of manifests/$name: the quota was updated under it (try $try of 5); retrying in 3 s"
     sleep 3
   done
-  cat -- "$err" >&2
+  tokens=$(mktemp "${TMPDIR:-/tmp}/cluster-tokens.XXXXXX") ||
+    die "kubectl $1 of manifests/$name failed, and no file could be made to filter its words; they are in $err"
+  token_filter_init "$tokens" cluster.sh
+  redact_lines "$tokens" <"$err" >&2
+  rm -f -- "$tokens"
   die "kubectl $1 of manifests/$name failed"
 }
 
