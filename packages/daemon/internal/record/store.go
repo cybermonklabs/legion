@@ -3488,21 +3488,33 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 	return nil
 }
 
-func (s *Postgres) TakeWaitingHookPrompts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, except int64, now time.Time) ([]OutboxRow, error) {
-	rows, err := tx.Query(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'role' = $3 and id <> $4
-		and (lease_until is null or lease_until <= $5) returning `+outboxColumns,
-		string(OutboxKindHookPrompt), issue, string(role), except, now)
-	if err != nil {
-		return nil, fmt.Errorf("take the waiting hook prompts of %s's %s: %w", issue, role, err)
+func (s *Postgres) HeldMessage(ctx context.Context, tx pgx.Tx, issue, opening string, now time.Time) (OutboxRow, bool, error) {
+	// The lease test is read again once the lock is held (READ COMMITTED), so a run that leased
+	// the row while this waited for it leaves it out.
+	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and left(payload->>'body', length($3)) = $3
+			and next_at > $4 and (lease_until is null or lease_until <= $4)
+		order by id limit 1 for update`,
+		string(OutboxKindDispatchMessage), issue, opening, now))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OutboxRow{}, false, nil
 	}
-	taken, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OutboxRow, error) {
-		return scanOutbox(row)
-	})
 	if err != nil {
-		return nil, fmt.Errorf("take the waiting hook prompts of %s's %s: %w", issue, role, err)
+		return OutboxRow{}, false, fmt.Errorf("read the held message of %s: %w", issue, err)
 	}
-	slices.SortFunc(taken, func(a, b OutboxRow) int { return cmp.Compare(a.ID, b.ID) })
-	return taken, nil
+	return row, true, nil
+}
+
+func (s *Postgres) ReplaceMessage(ctx context.Context, tx pgx.Tx, id int64, issue string, message MessagePost) error {
+	encoded, err := NewOutboxRow(issue, message, time.Time{})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2 where id = $1 and kind = $3`,
+		id, string(encoded.Payload), string(OutboxKindDispatchMessage)); err != nil {
+		return fmt.Errorf("replace the message of outbox row %d: %w", id, err)
+	}
+	return nil
 }
 
 // RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one

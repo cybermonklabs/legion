@@ -72,6 +72,68 @@ func issueMessages(t *testing.T, pool *store.Pool) []string {
 	return bodies
 }
 
+// heldMessage is one Dispatch message row the outbox holds for LEGION-208: its body and when it is
+// due to post.
+type heldMessage struct {
+	body string
+	due  time.Time
+}
+
+// heldMessages is every Dispatch message row the outbox holds for LEGION-208, in order.
+func heldMessages(t *testing.T, pool *store.Pool) []heldMessage {
+	t.Helper()
+	var held []heldMessage
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select payload->>'body', next_at from outbox where issue = 'LEGION-208' and kind = $1 order by id`,
+			string(record.OutboxKindDispatchMessage))
+		if err != nil {
+			return err
+		}
+		held, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldMessage, error) {
+			var message heldMessage
+			err := row.Scan(&message.body, &message.due)
+			return message, err
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("read the Dispatch messages of LEGION-208: %v", err)
+	}
+	return held
+}
+
+// requireDueAt fails unless message is due at want, to the database's microsecond.
+func requireDueAt(t *testing.T, message heldMessage, want time.Time, what string) {
+	t.Helper()
+	if gap := message.due.Sub(want); gap > time.Millisecond || gap < -time.Millisecond {
+		t.Fatalf("%s is due at %s, want %s: the message is held for the hour from the first of its prompts to end", what, message.due.UTC(), want.UTC())
+	}
+}
+
+// restartedHookRunner is a runner over pool as a daemon that restarted reads it: a new outbox and a
+// new supervisor with no claim, publishing to publisher and posting to posted, at the wall clock.
+// Nothing of an earlier runner carries over but what the database holds.
+func restartedHookRunner(t *testing.T, pool *store.Pool, publisher notify.Publisher, posted *outboxDispatch) (*outbox, *supervisor) {
+	t.Helper()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	runner := &outbox{
+		dispatchProject: "LEGION", pool: pool, records: record.NewStore(), supervisor: sup, trees: outboxTreeStore(t, pool),
+		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher, dispatch: posted,
+		now: time.Now, log: quietLogger(),
+	}
+	return runner, sup
+}
+
+// failedClaim creates role's claim on LEGION-208 in sup as failed, so no session of it will hold
+// the role again.
+func failedClaim(t *testing.T, sup *supervisor, role claim.Role) {
+	t.Helper()
+	if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role),
+		Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: role, Generation: 1, ServingGeneration: 1,
+		State: supervise.StateFailed}, ""); err != nil {
+		t.Fatalf("create the failed %s's claim: %v", role, err)
+	}
+}
+
 // requireSays fails unless body holds every one of words.
 func requireSays(t *testing.T, body string, words ...string) {
 	t.Helper()
@@ -115,18 +177,17 @@ func TestAHookPromptNoSessionHoldsWaitsForTheRoleInsideTheHour(t *testing.T) {
 }
 
 // Once the hour after its row was made has passed with no session holding its role, the prompt's
-// row finishes, and one Dispatch message on the issue says so, in the form of the hook's own firing
+// row finishes, and a Dispatch message on the issue names it, in the form of the hook's own firing
 // message: the hook, the role and the issue, why the prompt ended, the move back it was written
-// for and its words, and that no session got them and nothing sends them again. The control is
-// the same row at the base, which finishes at its first refusal with no message.
+// for and its words, and that no session got them and nothing sends them again. The message is
+// held for an hour from the prompt's end, so later prompts of the role join it. The control is the
+// same row at the base, which finishes at its first refusal with no message.
 func TestAHookPromptNoSessionHeldForAnHourEndsWithAMessageOnTheIssue(t *testing.T) {
 	t.Parallel()
 	runner, _, pool, publisher, _ := unheldHookRunner(t)
 	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Hour-time.Minute))
 
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("drain the hook prompt: %v", err)
-	}
+	ended := drainAt(t, runner, 0, "drain the hook prompt")
 
 	if attempts, delivered := publisher.snapshot(); attempts != 1 || len(delivered) != 0 {
 		t.Fatalf("publish attempts = %d with %d delivered, want the one refused attempt", attempts, len(delivered))
@@ -134,15 +195,16 @@ func TestAHookPromptNoSessionHeldForAnHourEndsWithAMessageOnTheIssue(t *testing.
 	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
 		t.Fatalf("hook-prompt rows left = %d, want the row finished", left)
 	}
-	posted := issueMessages(t, pool)
-	if len(posted) != 1 {
-		t.Fatalf("messages on the issue = %q, want one", posted)
+	held := heldMessages(t, pool)
+	if len(held) != 1 {
+		t.Fatalf("messages on the issue = %+v, want one", held)
 	}
-	t.Logf("the message on the issue: %s", posted[0])
-	requireSays(t, posted[0], "Legion hook back-to-implementing", "implementer", "LEGION-208",
-		"no session held the implementer's role in the hour after the hook fired",
-		"fired at 3 moves back: reviewing to implementing", firedHook.Prompt,
+	t.Logf("the message on the issue: %s", held[0].body)
+	requireSays(t, held[0].body, "Legion hook prompts to the implementer of LEGION-208 were not delivered.",
+		"Legion hook back-to-implementing fired at 3 moves back: reviewing to implementing.",
+		"no session held the implementer's role in the hour after the hook fired", firedHook.Prompt,
 		"No session of the implementer received", "will not send")
+	requireDueAt(t, held[0], ended.Add(time.Hour), "the message")
 }
 
 // A role whose claim failed or was retired has no session coming back for it, so its prompt ends
@@ -171,44 +233,94 @@ func TestAHookPromptToARoleThatIsNotComingEndsAtOnceWithAMessageOnTheIssue(t *te
 			if len(posted) != 1 {
 				t.Fatalf("messages on the issue = %q, want one", posted)
 			}
-			requireSays(t, posted[0], "Legion hook back-to-implementing", "LEGION-208",
+			requireSays(t, issueMessages(t, pool)[0], "Legion hook back-to-implementing", "LEGION-208",
 				"the implementer's claim is "+string(state)+", so no session of it will hold the role again", firedHook.Prompt)
 		})
 	}
 }
 
-// Prompts for one role that end together are named in one message, so a role that is not coming
-// posts one message rather than one per hook: when a row ends undelivered, every other prompt row
-// of that role on the issue ends with it, a younger one inside its own hour included, and the one
-// message names each hook and its words. A prompt for another role is no part of it. The control is
-// the base, which finishes the first row at its refusal and posts nothing.
-func TestTwoHookPromptsOfOneRoleThatEndTogetherAreNamedInOneMessage(t *testing.T) {
+// One message on an issue names every prompt to one role that ends undelivered in the hour from
+// the first of them to end, however far apart they end and across a restart of the daemon: the
+// first end writes the message, held for that hour, and each later end adds to it. A prompt to
+// another role gets a message of its own, and a prompt to the same role that ends after the hour
+// opens a new one. The control is the base, which finishes the first row at its refusal and posts
+// nothing; and the head before the window, which posts a message for each end at once, so two
+// prompts ending 20 minutes apart post two.
+func TestTheHookPromptsOfOneRoleThatEndWithinAnHourShareOneMessage(t *testing.T) {
 	t.Parallel()
-	runner, _, pool, _, _ := unheldHookRunner(t)
-	tester := firedHook
-	tester.Role, tester.Hook, tester.Prompt = claim.RoleTester, "tester-loop", "Run the failing case first."
+	publisher := &holderPublisher{}
+	runner, _, pool := hookRunner(t, publisher)
+	posted := &outboxDispatch{}
+	runner.dispatch = posted
+	publisher.setAbsent(notify.RoleTopicPrefix+string(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)),
+		notify.RoleTopicPrefix+string(mustClaimToken(t, "LEGION-208", claim.RoleTester)))
+	testerHook := firedHook
+	testerHook.Role, testerHook.Hook, testerHook.Prompt = claim.RoleTester, "tester-loop", "Run the failing case first."
+	againHook := firedHook
+	againHook.Hook, againHook.Prompt = "back-again", "Start from the failing test."
+
+	// 1. The first prompt to the implementer ends at the end of its own hour, and the message
+	//    that names it is held for an hour from then.
 	hookRowMadeAt(t, runner, pool, firedHook, time.Now().Add(-time.Hour-time.Minute))
-	hookRowMadeAt(t, runner, pool, loopHook, time.Now().Add(-5*time.Minute))
-	// The tester's own row is not due yet, so the drain runs the implementer's alone.
-	testerRow := mustOutboxRow(t, "LEGION-208", tester, time.Now().Add(time.Hour))
-	enqueueOutbox(t, pool, runner.records, testerRow)
+	opened := drainAt(t, runner, 0, "the first prompt's end")
+	held := heldMessages(t, pool)
+	if len(held) != 1 {
+		t.Fatalf("after the first prompt's end the outbox holds messages %+v, want one", held)
+	}
+	requireDueAt(t, held[0], opened.Add(time.Hour), "the implementer's message")
 
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("drain the hook prompts: %v", err)
+	// 2. The daemon restarts, and the implementer's and the tester's claims fail. Two prompts
+	//    fired after the first one ended, one to each role, end 20 minutes after it.
+	restarted, sup := restartedHookRunner(t, pool, publisher, posted)
+	failedClaim(t, sup, claim.RoleImplementer)
+	failedClaim(t, sup, claim.RoleTester)
+	hookRowMadeAt(t, restarted, pool, loopHook, time.Now())
+	hookRowMadeAt(t, restarted, pool, testerHook, time.Now())
+	later := drainAt(t, restarted, 20*time.Minute, "the prompts that end 20 minutes later")
+	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 0 {
+		t.Fatalf("hook-prompt rows left = %d, want both later prompts finished", left)
+	}
+	if len(posted.messages) != 0 {
+		t.Fatalf("Dispatch was posted %q inside the implementer's hour, want nothing yet", posted.messages)
+	}
+	held = heldMessages(t, pool)
+	if len(held) != 2 {
+		t.Fatalf("the outbox holds messages %+v, want the implementer's and the tester's", held)
+	}
+	requireSays(t, held[0].body, "Legion hook prompts to the implementer of LEGION-208 were not delivered.",
+		firedHook.Prompt, "no session held the implementer's role in the hour after the hook fired",
+		loopHook.Prompt, "the implementer's claim is failed, so no session of it will hold the role again")
+	requireDueAt(t, held[0], opened.Add(time.Hour), "the implementer's message, with its second prompt")
+	requireSays(t, held[1].body, "Legion hook prompts to the tester of LEGION-208 were not delivered.", testerHook.Prompt)
+	if strings.Contains(held[1].body, firedHook.Prompt) || strings.Contains(held[0].body, testerHook.Prompt) {
+		t.Fatalf("a role's message names another role's prompt: %+v", held)
+	}
+	requireDueAt(t, held[1], later.Add(time.Hour), "the tester's message")
+
+	// 3. The implementer's hour ends: its one message posts, naming both of its prompts, and the
+	//    tester's waits for its own hour.
+	drainAt(t, restarted, 61*time.Minute, "the end of the implementer's hour")
+	if len(posted.messages) != 1 {
+		t.Fatalf("Dispatch was posted %d messages at the end of the implementer's hour, want one: %q", len(posted.messages), posted.messages)
+	}
+	t.Logf("the message posted on the issue: %s", posted.messages[0])
+	requireSays(t, posted.messages[0], "Legion hook prompts to the implementer of LEGION-208 were not delivered.",
+		"Legion hook back-to-implementing fired", firedHook.Prompt, "Legion hook review-loop fired", loopHook.Prompt)
+	if held = heldMessages(t, pool); len(held) != 1 || !strings.Contains(held[0].body, testerHook.Prompt) {
+		t.Fatalf("after the implementer's message posted the outbox holds %+v, want the tester's alone", held)
 	}
 
-	if left := rowsOf(t, pool, record.OutboxKindHookPrompt); left != 1 {
-		t.Fatalf("hook-prompt rows left = %d, want the tester's alone", left)
+	// 4. A prompt to the implementer that ends after its hour opens a message of its own.
+	hookRowMadeAt(t, restarted, pool, againHook, time.Now())
+	third := drainAt(t, restarted, 70*time.Minute, "a prompt that ends after the implementer's hour")
+	if len(posted.messages) != 1 {
+		t.Fatalf("Dispatch was posted %q, want the implementer's first message alone", posted.messages)
 	}
-	posted := issueMessages(t, pool)
-	if len(posted) != 1 {
-		t.Fatalf("messages on the issue = %q, want one naming both of the implementer's prompts", posted)
+	held = heldMessages(t, pool)
+	if len(held) != 2 || !strings.Contains(held[1].body, againHook.Prompt) || strings.Contains(held[1].body, firedHook.Prompt) {
+		t.Fatalf("the outbox holds %+v, want the tester's message and a new one for the implementer naming its third prompt alone", held)
 	}
-	t.Logf("the message on the issue: %s", posted[0])
-	requireSays(t, posted[0], "back-to-implementing", firedHook.Prompt, "review-loop", loopHook.Prompt, "implementer")
-	if strings.Contains(posted[0], tester.Prompt) {
-		t.Fatalf("the message on the issue names the tester's prompt, which is still waiting: %s", posted[0])
-	}
+	requireDueAt(t, held[1], third.Add(time.Hour), "the implementer's second message")
 }
 
 // A released role's woken session can claim its role only after several of the row's attempts:

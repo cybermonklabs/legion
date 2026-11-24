@@ -2544,10 +2544,14 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
-	// TakeWaitingHookPrompts deletes and returns, by id, issue's hook-prompt rows for role, but for
-	// the row except, that no live lease holds at now: the prompts that end undelivered beside the
-	// one that does, so one message on the issue names them all (internal/daemon's finishRefused).
-	TakeWaitingHookPrompts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, except int64, now time.Time) ([]OutboxRow, error)
+	// HeldMessage reads, and locks in tx, the Dispatch message row of issue whose body begins with
+	// opening and that is held for later: due after now, and under no live lease, so no run has
+	// it. It answers the oldest such row and true, or false when the outbox holds none. A row it
+	// answers can be rewritten in the same tx (ReplaceMessage) before it runs.
+	HeldMessage(ctx context.Context, tx pgx.Tx, issue, opening string, now time.Time) (OutboxRow, bool, error)
+	// ReplaceMessage writes message, validated as a message of issue, as the payload of the
+	// Dispatch message row id, leaving when it is due as it is.
+	ReplaceMessage(ctx context.Context, tx pgx.Tx, id int64, issue string, message MessagePost) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
