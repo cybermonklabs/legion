@@ -83,6 +83,11 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// An issue of a project the caller does not see is an issue no row holds (issueEventSequence),
+// so its feed is the empty page under the ETag a missing key answers, and nothing is kept. The
+// kept bytes of a feed the caller does see are filed under what the caller sees beside the key
+// (keptViewOf), since referenced_by_count counts only the edges a reader sees.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -103,8 +108,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if answerNotModified(w, r, etag) {
 		return
 	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
+	// While a project is private, a reader that does not see every object is handed no kept page
+	// and keeps none (keepsListAnswerFor): what its payloads and counts name moves with rows the
+	// key does not name.
+	key, keep := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key")+keptViewOf(who), etag), keepsListAnswerFor(who)
+	if keep && s.listAnswers.answer(w, key) {
 		return
 	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
@@ -122,7 +130,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, issueHeld)
+	s.writeListAnswer(w, key, encoded, issueHeld && keep)
 }
 
 // keptViewOf is what a kept list answer read for who is filed under beside the owner the request
