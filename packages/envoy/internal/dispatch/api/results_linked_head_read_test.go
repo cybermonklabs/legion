@@ -27,7 +27,9 @@ import (
 // written through the issue PATCH a person or an agent links with, or stored as a link written
 // before a link owed a read. The first read of the results must compare the issue's checks with
 // #12's head, and Dispatch must hold #12's head after it. A link by hand is written after #12
-// opened, with no event of #12 since, as INFRA-1450's and INFRA-5094's links were.
+// opened, with no event of #12 since, as INFRA-1450's and INFRA-5094's links were. A pull
+// request stacked on another branch and a draft are read the same way (cybermonklabs/legion#5316
+// and #5302 had no head row).
 func TestAResultsReadReadsALinkedPullRequestWhoseHeadIsNotHeld(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -35,23 +37,32 @@ func TestAResultsReadReadsALinkedPullRequestWhoseHeadIsNotHeld(t *testing.T) {
 		document string
 		// linkedBefore stores the link as a link of a release before links owed a read.
 		linkedBefore bool
+		// base is the branch #12 merges into, "main" where empty; draft is GitHub's draft flag.
+		base  string
+		draft bool
 	}{
-		{"a check CI proves, linked by hand", ciCheckBlock("c1", ciCheckKept), false},
-		{"two checks CI proves, linked by hand", ciCheckBlock("c1", ciCheckKept) + "\n" + ciCheckBlock("c2", ciCheckKept), false},
-		{"a check CI proves, linked before a link owed a read", ciCheckBlock("c1", ciCheckKept), true},
-		{"a before_merge check with no result, linked by hand", twoChecks, false},
+		{name: "a check CI proves, linked by hand", document: ciCheckBlock("c1", ciCheckKept)},
+		{name: "two checks CI proves, linked by hand", document: ciCheckBlock("c1", ciCheckKept) + "\n" + ciCheckBlock("c2", ciCheckKept)},
+		{name: "a check CI proves, linked before a link owed a read", document: ciCheckBlock("c1", ciCheckKept), linkedBefore: true},
+		{name: "a before_merge check with no result, linked by hand", document: twoChecks},
+		{name: "a check CI proves, a pull request stacked on another branch", document: ciCheckBlock("c1", ciCheckKept), base: "legion/OTHER-1"},
+		{name: "a check CI proves, a draft pull request", document: ciCheckBlock("c1", ciCheckKept), draft: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			runs := newCheckRunsFake()
 			runs.set(headCommit, completedRun(51, ciCheckRun, "success"))
+			base := row.base
+			if base == "" {
+				base = "main"
+			}
 			handler, database, _ := oneRepositoryGitHub(t, "acme/widgets", runs, func(number string) string {
 				if number != "12" {
 					return ""
 				}
 				return fmt.Sprintf(`{"number":12,"title":"A change","body":"","state":"open","merged":false,"merged_at":null,
-					"draft":false,"html_url":"https://github.com/acme/widgets/pull/12","updated_at":"2026-11-24T04:36:47Z",
-					"head":{"ref":"topic","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}`, headCommit)
+					"draft":%t,"html_url":"https://github.com/acme/widgets/pull/12","updated_at":"2026-11-24T04:36:47Z",
+					"head":{"ref":"topic","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":%q}}`, row.draft, headCommit, base)
 			})
 			issue := issueInRepository(t, handler, "RLHR", "acme/widgets", "A linked pull request")
 			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", row.document)
