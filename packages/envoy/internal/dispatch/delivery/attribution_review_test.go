@@ -15,6 +15,7 @@ import (
 // external link naming the pull request (source 2) and one naming a GitHub issue its body cites
 // (source 3) credit it whatever case either side spells them in.
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
@@ -42,6 +43,7 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 // source wins exactly one row; handing any two inputs over in another order credits some row from
 // the wrong source.
 func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-211", "ATTR-212", "ATTR-213", "ATTR-214", "ATTR-215"}, map[string][]string{
 		"ATTR-212": {"https://github.com/acme/widgets/pull/210"},
@@ -92,6 +94,7 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // pull request belongs to: pull_request_heads is what a check result's commit is compared
 // with, delivery_pull_requests what the Delivery timeline credits.
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 9)
 	own := seedGadgetsIssue(t, ctx, pool, 9)
@@ -128,6 +131,7 @@ func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsIts
 // Delivery timeline must still credit them. The pair is seeded by SQL and the Renames read
 // after it, as a boot reads it.
 func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	own := seedGadgetsIssue(t, ctx, pool, 11)
@@ -160,6 +164,7 @@ func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t 
 // attributionHeld) holds the pull request to that name alone. The title names the issue under the
 // lesser new name first, so a rule that kept the other pair credits that issue.
 func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	lesser := seedGadgetsIssue(t, ctx, pool, 12)
@@ -206,6 +211,7 @@ func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGrea
 // batch's own column), so a pull request on the new name whose body cites an issue under the
 // old name credits the Dispatch issue that links it under the new name. Its title names nothing.
 func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	own := seedGadgetsIssue(t, ctx, pool, 13)
@@ -243,6 +249,7 @@ func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName
 // gadgets one the second. A rule that picked once for the walk would credit both to the same
 // issue.
 func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	widgets := seedHeadIssue(t, ctx, pool, 10)
 	gadgets := seedGadgetsIssue(t, ctx, pool, 10)
@@ -279,6 +286,7 @@ func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
 // order and the first one named wins. The rule reaches past a candidate of another
 // repository, never past one of this repository's own.
 func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-221", "ATTR-222"}, nil)
 
@@ -304,6 +312,7 @@ func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.
 // covers, a pass makes no more than attributionBackfillCalls GitHub calls for them, the rest wait
 // for later passes, and the workflow runs are read before the backfill spends anything.
 func TestTheAttributionBackfillStaysWithinItsCallBudget(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)

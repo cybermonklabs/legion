@@ -52,6 +52,7 @@ type corpusRow struct {
 // the next change to this file is answerable without another round finding a shape nobody
 // thought of.
 func TestCitedIssuesAgreesWithTheDefaultBranch(t *testing.T) {
+	t.Parallel()
 	for _, row := range citationCorpus {
 		t.Run(row.body, func(t *testing.T) {
 			got := citedIssues(refs.Renames{}, "acme/widgets", citebody.New(row.body, nil))

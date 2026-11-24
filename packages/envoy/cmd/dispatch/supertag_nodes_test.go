@@ -49,15 +49,20 @@ var typeMigrations = []string{
 // backfillVersion is the newest migration of the releases that carry the graph store and its
 // backfill (`backfill-graph-store`) and not 20261123080000: every legion-envoy release from
 // v34.11.0 up to the one that carries that migration (v34.11.0 to v34.11.4 on 2026-11-23) holds
-// every migration through 20261121060636_search_document_text and none after it, so a deployment
-// may have run the backfill over a store at this version. Every type migration of typeMigrations
-// is numbered below it; one numbered above it runs over graph_nodes and graph_tuples the backfill
-// may have filled.
+// every migration through 20261121060636_search_document_text but the backfill's four indexes
+// (20261119020700 to 20261119021000), and none after it, so a deployment may have run the backfill
+// over a store at this version. The four indexes sort below this version and came with a later
+// release; the runner applies every version it has not recorded, so this tree's MigrateThrough
+// builds them here too (openAtTheBackfill). Every type migration of
+// typeMigrations is numbered below it; one numbered above it runs over graph_nodes and
+// graph_tuples the backfill may have filled.
 const backfillVersion = 20261121060636
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:
 // the store a deployment of those releases holds before it runs the backfill, and the store the type
-// migrations before the backfill left.
+// migrations before the backfill left, with the backfill's four indexes beside it. Those are
+// indexes alone, so they change no row this test writes or reads, and the backfill this test runs
+// is this tree's (graphcensus.Backfill), which refuses to run without them.
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {

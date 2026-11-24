@@ -1,5 +1,9 @@
 package main
 
+// cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
+// DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
+//ci:reads packages/envoy/infra/gcp/testdata/dispatch-pod.golden TestDispatchPodGracePeriodCoversStopGrace
+
 import (
 	"encoding/json"
 	"os"

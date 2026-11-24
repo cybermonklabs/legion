@@ -1,3 +1,5 @@
 [test]
 # Each test starts with no secret held (`@legion/contracts/held-secrets`).
-preload = ["../contracts/src/held-secrets-test-preload.ts"]
+# Bun's transpiler cache off for every child that inherits this process's environment
+# (`tests/no-transpiler-cache-preload.ts`).
+preload = ["../contracts/src/held-secrets-test-preload.ts", "./tests/no-transpiler-cache-preload.ts"]

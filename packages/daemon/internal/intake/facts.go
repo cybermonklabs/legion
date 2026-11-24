@@ -2050,6 +2050,16 @@ func PlanRatingUnexpected(what string) *Refusal {
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
 //
+// A fact takes its pool's turn (factTurns, store.Pool.FactTurn) before it asks the pool for a
+// connection, and hands it on at its COMMIT, as the first of its commit hooks (store.OnCommit), so
+// the turn is held exactly as long as the fact lock plus the wait for a connection, and no later
+// hook holds it; a fact that does not commit hands it on when store.Transact returns. The facts of
+// one process then wait for each other outside the pool rather than each on a connection of its
+// own, so a burst of facts leaves the rest of the pool to every other read. A fact whose ctx ends
+// while it waits for the turn leaves the line holding nothing. A fact applied inside a transaction
+// already open on ctx joins that transaction (store.TransactWith) and needs no connection, so it
+// takes no turn: taking one there could wait on the very fact whose transaction it joins.
+//
 // Before anything else, source, eventID and every string fact carries are given through the
 // store's own rule (storetext.Text, storetext.Strings), so MarkProcessed, settleObserved and every
 // handler see the fact as the store keeps it. A handler compares what the fact says with what the
@@ -2062,8 +2072,20 @@ func PlanRatingUnexpected(what string) *Refusal {
 // Reconcile.
 func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
+	turn := func() {}
+	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
+		release, err := turns.FactTurn(ctx)
+		if err != nil {
+			return Result{}, fmt.Errorf("wait for the pool's turn to apply fact %s/%s: %w", source, eventID, err)
+		}
+		turn = release
+	}
+	defer turn()
 	var result Result
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		// The turn's release is the fact's first commit hook, so the next fact's turn starts at
+		// this one's COMMIT, as its wait on the fact lock does, and no later hook holds it.
+		store.OnCommit(ctx, turn)
 		if err := SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize fact %s/%s: %w", source, eventID, err)
 		}
@@ -2117,6 +2139,13 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// factTurns is a pool that gives one fact at a time its turn to apply (store.Pool.FactTurn): a
+// release that is safe to call more than once, or ctx's error once ctx ends first. A pool without
+// it, such as a test's own pgx pool, gives every fact its turn at once.
+type factTurns interface {
+	FactTurn(ctx context.Context) (release func(), err error)
 }
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one read-only

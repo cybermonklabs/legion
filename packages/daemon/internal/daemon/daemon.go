@@ -2091,8 +2091,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
+// record says its process died (recordedDeaths), which is relaunched for that death in the
+// unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
+// leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2184,9 +2186,19 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
-	if len(unfinished) > 0 {
-		s.relaunchUnfinished(unfinished, reconciled)
+	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
+	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
+	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
+	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	deaths := recordedDeaths(s.claims)
+	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	if len(deaths) > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", len(deaths))
+	}
+	if len(unfinished) > 0 || len(deaths) > 0 {
+		s.relaunchUnfinished(unfinished, deaths, reconciled)
 	}
 	return nil
 }
@@ -2545,109 +2557,6 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 		}
 	}
 	return false
-}
-
-// launchUnfinished starts only claims that remain queued with no locator, each on a goroutine of
-// its own, and returns once every one has: one relaunch never waits out another's launch, which
-// under a Sandbox can take minutes. A still-live old pane can reconnect while reconciliation was
-// uncertain; its hello changes the state before a later retry, and it must never be joined by a
-// second pane. It returns the claims whose release the store did not take, outside the daemon's
-// stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
-// relaunch derives a context of its own from it.
-func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
-	refused := make([]bool, len(tokens))
-	var launching sync.WaitGroup
-	for i, token := range tokens {
-		m, ok := s.supervisor.Machine(token)
-		if !ok {
-			continue
-		}
-		launching.Add(1)
-		go func() {
-			defer launching.Done()
-			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
-			// hold mark of its own rather than ctx's.
-			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
-		}()
-	}
-	launching.Wait()
-	var failed []claim.Token
-	for i, token := range tokens {
-		if refused[i] {
-			failed = append(failed, token)
-		}
-	}
-	return failed
-}
-
-// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
-// reports whether the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(ctx)
-	if err != nil {
-		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
-			"supervise: release an uncertain launch; retrying at the next orphan sweep")
-	}
-	c := m.Claim()
-	if !released || c.State != supervise.StateQueued || c.Locator != nil {
-		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false
-	}
-	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(ctx, spawn); err != nil {
-		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
-	}
-	return false
-}
-
-// relaunchUnfinished launches tokens' unfinished launches on a goroutine of its own, never on the
-// boot: at once when the boot reconciliation succeeded (reconciled), then on the normal orphan-sweep
-// cadence, until none is left or the daemon stops. A relaunched worker reaches the daemon only once
-// the daemon is up — a Sandbox pod's launcher dials it through its Service, which routes only to a
-// pod whose probes pass, so only once the API answers /healthz, and a shim's hello is resolved only
-// once restoration has closed — so a relaunch the boot waited on could not register: it spent its
-// whole launch budget, launch_failure_limit × worker_boot_timeout_seconds, with the API unanswered.
-//
-// The pre-restart process of such a launch, when one still runs, may now say hello before its
-// relaunch writes the next generation, and be admitted: its claim, launch_uncertain or queued until
-// then, ignores the hello and refuses its registration, and at the next generation the fence drops
-// it. Its connection holds the claim's stream slot only while that process lives, and the relaunch
-// ends it before it starts the next generation: a tmux boot's reconciliation kills every pane no
-// claim records, and a Sandbox relaunch stops its launcher's earlier generation first. Once the next
-// generation is written, the old process's boot token resolves stale.
-//
-// Until the boot reconciliation has succeeded, each sweep retries it first — each reconciliation
-// has the bounded retry above, and only a success releases these claims to launch; once it has, a
-// sweep retries only the releases the store did not take (launchUnfinished), since the
-// reconciliation's proof that no predecessor runs still holds.
-func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
-		// so this goroutine takes a hold mark of its own.
-		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
-		if reconciled {
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-		ticker := time.NewTicker(s.plan.orphanSweep)
-		defer ticker.Stop()
-		for len(tokens) > 0 {
-			select {
-			case <-s.supervisor.ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
-					continue
-				}
-			}
-			tokens = s.launchUnfinished(relaunching, tokens)
-		}
-	}()
 }
 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of

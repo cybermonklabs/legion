@@ -216,11 +216,17 @@ prompt it launched with until then.
 - **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
   be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
   directory, which the prompt is composed from (`error` names the path and the cause). Launches go
-  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
-  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
-  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
-  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
-  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  on carrying the old text while the old copy is still there. Never delete the copy yourself: while
+  the write fails, each launch whose prompt reads that copy fails to compose it. For the deployment's
+  copy that is every launch, the controller's included; for an arm's copy, the memory block's among
+  them, it is each launch of a unit drawn into that arm. Fix what `error` names:
+  - `permission denied`: give the daemon's user write access to the copy's directory.
+  - `file exists`: a directory stands at the copy's path, so the old copy is already gone and each
+    launch that reads it fails. Remove that directory.
+  - `not a directory`: a file stands where the copy's directory should be. Remove that file.
+  - `no space left on device`, `disk quota exceeded` or `read-only file system`: free space or
+    quota on the state directory's volume, or remount it writable.
+
   The next launch writes the copy and logs the edit.
 - **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
   Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
@@ -856,7 +862,13 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. Read what the pacing still holds before you act on anything below:
+twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+claim launching with no process, and the relaunches of processes the previous daemon found dead go
+back into the pacing in one order, the order their tasks were queued, the oldest first, so among
+those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
+pass takes its turns as it reaches the gate, and while the project is paused the unfinished
+launches wait for the resume instead. Read what the pacing still holds before you act on anything
+below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -873,9 +885,27 @@ An empty array says the wave has
 gone out; the last `dueAt` in it says when the last of the wave goes.
 A claim on that list needs
 nothing from you: its wake is reserved and it runs at the moment named.
-Your own requests are what
-drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
-back, so nothing you ask for waits for a turn.
+To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
+process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
+a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
+their turns.
+
+A claim whose process the daemon found dead before the restart is on that list as well.
+Its record says the death was charged, and the boot raises the relaunch that death raised again, in
+the restart's own wave and in one order with the launches the previous daemon did not finish,
+without waiting for the runtime to report the death a second time.
+Until its turn, such a claim reads the state it was in when its process died, most often `working`
+or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
+was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
+its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
+launch it waits for.
+The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
+`working`, `launching` or `shim_connected`: its launch is already in flight, and runs at the
+`dueAt` the list names.
+A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
+at once.
+A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when
+it reaches the claim before the boot raises the relaunch.
 
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
@@ -1774,8 +1804,13 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
   grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it, and nothing else
-  changes.
+  oldest message is `unavailable` on each consumer while messages wait on it. The same get
+  confirms the Dispatch consumer idle; when it does not answer within its bound, from a missing
+  grant or a loaded NATS server, a reconcile reads the consumer as not idle and holds the roots its
+  listing shows behind their log, and the hold poller releases them on the consumer's own count
+  (WARN lines `the Dispatch consumer's next stored message could not be read` say which, naming
+  both causes). That count can miss a message the server has stored and not yet counted, so a held
+  root can be released a moment early.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request
