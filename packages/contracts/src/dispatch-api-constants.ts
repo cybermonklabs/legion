@@ -34,6 +34,14 @@ import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
  *  `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 
+/** The scope words a Dispatch token can carry where its scopes are listed: the agent token list,
+ *  and `scopes` in `GET /api/v1/whoami`. They are the two of `DISPATCH_SCOPES` and `read`. A
+ *  token that holds `read` is read-only (`DISPATCH_READ_ONLY_TOKEN`): a personal token holds it
+ *  alone or beside `person`, never beside `approve`. `read` is a mark on the token and not a
+ *  scope a credential acts under, so no act records it, and `DISPATCH_SCOPES` and
+ *  `ActorActSchema` keep `person` and `approve` alone. */
+export const DISPATCH_TOKEN_SCOPES = ["person", "approve", "read"] as const;
+
 /**
  * How long an issue claim is held for a holder the Envoy registry calls `unresponsive`: a
  * session past the listener's live window but inside its gone horizon has missed heartbeats, not
@@ -268,8 +276,11 @@ export const REFERENCE_TARGETS_MAX = 256;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment or an issue message, eight
- * routes answer its repeat with that post read afresh, under the first answer's status: a
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. `POST /api/v1/issues/{key}/status-change` keeps a recovery
+ * point too: a repeat of a finished call answers its `200` from what its steps stored, each issue
+ * as its step's write answered it, and a repeat that takes the key of a call that stopped runs
+ * only the steps the point does not hold. Where a first answer was a comment or an issue message,
+ * eight routes answer its repeat with that post read afresh, under the first answer's status: a
  * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
  * reply to a comment or a message. Any other stored success is not replayed once it holds a
  * comment or an issue message that is deleted (an object whose own id is the post, such as a
@@ -531,15 +542,25 @@ export function everyBuildReadsSearch(request: object): boolean {
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
 
 /**
- * The code of the `403` for a request by an access token the secrets broker issued that holds
- * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
- * service and a session, no person and no project, and Dispatch serves it on the routes its read
- * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
- * runs and before its idempotency key is read, so the refused request claims no key and writes
- * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
- * the request possible for that token.
+ * The code of the `403` for a request by a read-only token to a route outside Dispatch's read
+ * class. Every token that holds `read` is read-only: one the secrets broker minted from a read
+ * entry or narrowed when its trade asked for `read`, and a personal token minted with `read`.
+ * Dispatch serves such a token on the GET routes it classes as reads and refuses it on every
+ * other route and on `GET /ws/live`, before the route's handler runs and before its idempotency
+ * key is read. So the refused request claims no key, and writes nothing but the record of the
+ * token's use: a broker token's spent DPoP proof, or a personal token's last use. No sign-in and
+ * no other scope makes the request possible for that token.
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
+
+/**
+ * The code of the `403` for a request by a read-only token that carries a cut (the broker's
+ * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
+ * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
+ * handler runs, and names the cut, rather than answer it with the present. On a route outside
+ * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ */
+export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it

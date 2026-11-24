@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DISPATCH_SCOPES } from "./dispatch-api-constants";
+import { DISPATCH_SCOPES, type DISPATCH_TOKEN_SCOPES } from "./dispatch-api-constants";
 import type { ASK_URGENCIES } from "./dispatch-tools";
 import { GATED_STEPS } from "./legion-roles";
 
@@ -40,6 +40,8 @@ export const ActorOriginSchema = z
 export type ActorOrigin = z.output<typeof ActorOriginSchema>;
 
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
+
+export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
 
 /** The agent that made an act for the person it acts for: the session a broker-issued token
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
