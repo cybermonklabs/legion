@@ -644,7 +644,9 @@ func (c *cache) publishLocked(ctx context.Context, fetched time.Time) error {
 // walk calls visit, in lexical order, for every regular file and directory of the clone the tar
 // streams, with its slash-separated path relative to the clone: the clone's history and refs
 // (workspace.FeedEntry), nothing of its own configuration, and no temporary or lock file git is
-// writing. A directory it cannot list fails it with no path named (unpathed).
+// writing. A directory it cannot list, and an entry it cannot stat, each fail it with no path
+// named (unpathed): a path under refs/ holds a branch name the answering party of the cache's
+// fetch wrote.
 func (c *cache) walk(visit func(name string, entry fs.DirEntry, info fs.FileInfo) error) error {
 	return filepath.WalkDir(c.dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -666,7 +668,7 @@ func (c *cache) walk(visit func(name string, entry fs.DirEntry, info fs.FileInfo
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			return unpathed(err)
 		}
 		return visit(name, entry, info)
 	})
@@ -852,7 +854,7 @@ func (c *cache) snapshotOnce() ([]tarEntry, error) {
 			header.Name += "/"
 		case strings.HasPrefix(name, "objects/pack/"):
 			if one.file, err = os.Open(path); err != nil {
-				return err
+				return unpathed(err)
 			}
 			taken[path] = true
 		default:
