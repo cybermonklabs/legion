@@ -3846,6 +3846,18 @@
         "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
         "files": ["packages/envoy/internal/dispatch/githubapp/api_base_join_test.go"],
         "capture": "githubapp.api-base/unparsed"
+      },
+      {
+        "row": "dispatch-http-url-unparsed-userinfo-ts",
+        "base": "701c38c846185fcd8f82a9cfef7ee822c04c05c9",
+        "files": ["packages/envoy-client/src/__tests__/dispatch-url-join.test.ts"],
+        "capture": "dispatch-http.url/unparsed-userinfo/JSON.stringify"
+      },
+      {
+        "row": "dispatch-http-url-unparsed-query-ts",
+        "base": "701c38c846185fcd8f82a9cfef7ee822c04c05c9",
+        "files": ["packages/envoy-client/src/__tests__/dispatch-url-join.test.ts"],
+        "capture": "dispatch-http.url/unparsed-query/JSON.stringify"
       }
     ],
     "boundary_fields": {
@@ -15374,6 +15386,167 @@
       "file": "packages/contracts/src/public-request-names.test.ts",
       "test": "a route on every path is one a protocol its source cites fixes",
       "production": "PUBLIC_REQUEST_NAMES' guard (routeProblem with PROTOCOL_METHODS): a route on a method's every path passes only from a source that cites a protocol fixing that method, never from one that repeats the route, and any other route only from a source that names it"
+    },
+    {
+      "id": "slack-post-api-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/slack-post.test.ts",
+      "test": "the post goes to chat.postMessage joined onto SLACK_POST_API_URL's path > query",
+      "production": "postSlackReply: a SLACK_POST_API_URL with a path and a query (http://host/api?team=...) posts to chat.postMessage joined onto its path, the query kept (joinUrl: /api/chat.postMessage?team=...), where the method appended to the URL's text sat inside the query (/api?team=.../chat.postMessage) and the post asked /api"
+    },
+    {
+      "id": "slack-post-api-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/slack-post.test.ts",
+      "test": "the post goes to chat.postMessage joined onto SLACK_POST_API_URL's path > query-trailing-slash",
+      "production": "postSlackReply: a SLACK_POST_API_URL whose path ends in a slash and that has a query (http://host/api/?team=...) posts to /api/chat.postMessage?team=..., where the method appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "dispatch-http-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "a Dispatch request goes to its route joined onto the configured URL's path > query",
+      "production": "DispatchClient #url: a Dispatch URL with a path and a query (http://host/dispatch?key=...) sends each request to its route joined onto that path, the configured query first and the request's own after it (joinUrl: /dispatch/api/v1/search?key=...&q=...), where new URL(path, base + \"/\") put the slash in the query and asked /api/v1/... on the bare host with the query lost"
+    },
+    {
+      "id": "dispatch-http-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "a Dispatch request goes to its route joined onto the configured URL's path > query-trailing-slash",
+      "production": "DispatchClient #url: a Dispatch URL whose path ends in a slash and that has a query keeps the query ahead of the request's own (joinUrl), where URL resolution dropped it"
+    },
+    {
+      "id": "dispatch-http-url-query-userinfo-port-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "a Dispatch request goes to its route joined onto the configured URL's path > query-userinfo-port",
+      "production": "DispatchClient #url: a Dispatch URL with user information, a port, a path and a query keeps all four in each request URL (joinUrl)"
+    },
+    {
+      "id": "dispatch-http-url-unparsed-userinfo-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "a Dispatch URL that does not parse fails the request without printing it > unparsed-userinfo",
+      "production": "DispatchClient #url: a Dispatch URL that does not parse fails the request in fixed words naming the setting, never the URL parser's TypeError, which keeps the URL whole as `base` (its user information included) for JSON.stringify and inspection to print"
+    },
+    {
+      "id": "dispatch-http-url-unparsed-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/dispatch-url-join.test.ts",
+      "test": "a Dispatch URL that does not parse fails the request without printing it > unparsed-query",
+      "production": "DispatchClient #url: a Dispatch URL that does not parse fails the request in fixed words naming the setting, never the URL parser's TypeError, which keeps the URL whole as `base` (its query included)"
+    },
+    {
+      "id": "device-login-broker-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/broker-url-join.test.ts",
+      "test": "a device login asks each route joined onto the broker URL's path > query",
+      "production": "device-login brokerConfiguration, startDeviceLogin, finishDeviceLogin, refreshDeviceLogin: a broker URL with a path and a query (http://host/broker?key=...) sends the device authorization, the poll and the refresh to each route joined onto that path, the query kept (joinUrl: /broker/v1/oauth/token?key=...), where the route appended to the URL's text sat inside the query and the broker was asked /broker"
+    },
+    {
+      "id": "device-login-broker-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/broker-url-join.test.ts",
+      "test": "a device login asks each route joined onto the broker URL's path > query-trailing-slash",
+      "production": "device-login: a broker URL whose path ends in a slash and that has a query (http://host/broker/?key=...) asks /broker/v1/oauth/... with the query kept"
+    },
+    {
+      "id": "token-client-broker-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/broker-url-join.test.ts",
+      "test": "the broker client trades at the token route joined onto the broker URL's path > query",
+      "production": "BrokerTokenClient #exchange: a broker URL with a path and a query trades at the token route joined onto that path, the query kept (joinUrl: /broker/v1/oauth/token?key=...), where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "token-client-broker-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/broker-url-join.test.ts",
+      "test": "the broker client trades at the token route joined onto the broker URL's path > query-trailing-slash",
+      "production": "BrokerTokenClient #exchange: a broker URL whose path ends in a slash and that has a query trades at /broker/v1/oauth/token with the query kept"
+    },
+    {
+      "id": "pool-identity-iam-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/pool-identity-url-join.test.ts",
+      "test": "the mint goes to the resource joined onto IAM Credentials' path > query",
+      "production": "poolIdentity generateIdToken: an IAM Credentials URL with a path and a query (http://host/iam?key=...) mints at generateIdToken's resource joined onto that path, the query kept (joinUrl: /iam/v1/projects/-/serviceAccounts/<account>:generateIdToken?key=...), as Go's generateIDToken does, where the resource appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "pool-identity-iam-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/pool-identity-url-join.test.ts",
+      "test": "the mint goes to the resource joined onto IAM Credentials' path > query-trailing-slash",
+      "production": "poolIdentity generateIdToken: an IAM Credentials URL whose path ends in a slash and that has a query mints at /iam/v1/... with the query kept"
+    },
+    {
+      "id": "pool-identity-iam-url-unparsed-userinfo-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/pool-identity-url-join.test.ts",
+      "test": "an IAM Credentials URL that does not parse fails the mint without printing it > unparsed-userinfo",
+      "production": "poolIdentity generateIdToken: an IAM Credentials URL that does not parse fails the mint as \"not a valid URL\", naming the URL by its setting (urlForText), never its user information"
+    },
+    {
+      "id": "pool-identity-iam-url-unparsed-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/pool-identity-url-join.test.ts",
+      "test": "an IAM Credentials URL that does not parse fails the mint without printing it > unparsed-query",
+      "production": "poolIdentity generateIdToken: an IAM Credentials URL that does not parse fails the mint as \"not a valid URL\", naming the URL by its setting (urlForText), never its query"
+    },
+    {
+      "id": "listener-relay-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/listener-relay-url-join.test.ts",
+      "test": "the relay socket opens at its route joined onto the listener URL's path > query",
+      "production": "relaySocketUrl (ListenerRelay's upgrade and its proof): a listener URL with a path and a query (http://host/listener?key=...) opens the relay socket at its route joined onto that path, the query kept (joinUrl: /listener/v1/sessions/<s>/relay?key=...), the proof's htu that URL less the query, where the route appended to the URL's text sat inside the query and the upgrade asked /listener"
+    },
+    {
+      "id": "listener-relay-url-query-trailing-slash-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/envoy-client/src/__tests__/listener-relay-url-join.test.ts",
+      "test": "the relay socket opens at its route joined onto the listener URL's path > query-trailing-slash",
+      "production": "relaySocketUrl: a listener URL whose path ends in a slash and that has a query opens /listener/v1/sessions/<s>/relay with the query kept"
+    },
+    {
+      "id": "meaning-search-check-dispatch-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "scripts/dispatch/__tests__/meaning-search-check.test.ts",
+      "test": "liveDispatch > the reads keep the Dispatch URL's path and query",
+      "production": "meaning-search-check liveDispatch healthz and coverage: a Dispatch URL with a path and a query reads /healthz and /api/v1/search/coverage joined onto that path, the query kept (joinUrl), where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "moved-approval-check-dispatch-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "scripts/dispatch/__tests__/moved-approval-production-check.test.ts",
+      "test": "the health read's URL > keeps the Dispatch URL's path and query",
+      "production": "moved-approval-production-check liveDispatch healthz: a Dispatch URL with a path and a query reads /healthz joined onto that path, the query kept (joinUrl), where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "label-comments-gateway-url-query-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/pi-legion/scripts/skill-scenarios/label-comments.test.ts",
+      "test": "the gateway route keeps the gateway URL's query, after <gateway>/v1/messages",
+      "production": "label-comments modelRoute: a --gateway URL with a path and a query (http://host/anthropic/?team=...) posts each model call to v1/messages joined onto that path, the query kept (joinUrl), where /v1/messages appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "library-error-answered-oauth-error-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/remote-text-library-error.test.ts",
+      "test": "answeredOAuthError reads the library's code for the class, not the error's name > renamed-class",
+      "production": "LibraryError.answeredOAuthError: an OAuth error the far side answered (oauth4webapi's ResponseBodyError) is read by the code the library gives the class, OAUTH_RESPONSE_BODY_ERROR, so a renamed class is still one and an error that only carries the name is not"
+    },
+    {
+      "id": "broker-refusal-subclass-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/oauth-refusal-class.test.ts",
+      "test": "an OAuth error answered under another class name is the broker's refusal",
+      "production": "brokerRefusal (and refusedCode, grantRefused, issuerSaid): a subclass of openid-client's own ResponseBodyError is the broker's refusal (LibraryError.answeredOAuthError), where the name comparison answered a failed trade"
+    },
+    {
+      "id": "broker-refusal-name-only-ts",
+      "requirement": "r3-each-site",
+      "file": "packages/cipher-client/src/__tests__/oauth-refusal-class.test.ts",
+      "test": "an error only named ResponseBodyError is a failure of the trade, not a refusal",
+      "production": "brokerRefusal: an error that only carries the name ResponseBodyError, with no library code, is a failed trade, where the name comparison read it as the broker's refusal"
     }
   ],
   "recall": [
@@ -17381,6 +17554,56 @@
       "site": "githubapi ProxyREST: a GitHub answer the proxy does not decode is written to the browser, and no row named the function",
       "source": "the round-9 decisions of #4368",
       "guard": "githubapi-print-relayed-refusal"
+    },
+    {
+      "site": "packages/envoy-client/src/slack-post.ts postSlackReply (chat.postMessage on SLACK_POST_API_URL)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "slack-post-api-url-query-ts"
+    },
+    {
+      "site": "packages/envoy-client/src/dispatch-http.ts DispatchClient #url",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-http-url-query-ts"
+    },
+    {
+      "site": "packages/cipher-client/src/device-login.ts brokerConfiguration and the endpoints its texts name",
+      "source": "the round-9 decisions of #4368",
+      "guard": "device-login-broker-url-query-ts"
+    },
+    {
+      "site": "packages/cipher-client/src/token-client.ts BrokerTokenClient #exchange",
+      "source": "the round-9 decisions of #4368",
+      "guard": "token-client-broker-url-query-ts"
+    },
+    {
+      "site": "packages/cipher-client/src/pool-identity.ts generateIdToken",
+      "source": "the round-9 decisions of #4368",
+      "guard": "pool-identity-iam-url-query-ts"
+    },
+    {
+      "site": "packages/envoy-client/src/listener-relay.ts relaySocketUrl",
+      "source": "the round-9 decisions of #4368",
+      "guard": "listener-relay-url-query-ts"
+    },
+    {
+      "site": "scripts/dispatch/meaning-search-check.ts liveDispatch healthz and coverage",
+      "source": "the round-9 decisions of #4368",
+      "guard": "meaning-search-check-dispatch-url-query-ts"
+    },
+    {
+      "site": "scripts/dispatch/moved-approval-production-check.ts liveDispatch healthz",
+      "source": "the round-9 decisions of #4368",
+      "guard": "moved-approval-check-dispatch-url-query-ts"
+    },
+    {
+      "site": "packages/pi-legion/scripts/skill-scenarios/label-comments.ts modelRoute",
+      "source": "the round-9 decisions of #4368",
+      "guard": "label-comments-gateway-url-query-ts"
+    },
+    {
+      "site": "an OAuth refusal told apart by the library error's name: device-login.ts refusedCode, person-identity.ts grantRefused and issuerSaid, token-client.ts brokerRefusal (LibraryError.answeredOAuthError)",
+      "source": "the round-8 quality review",
+      "guard": "broker-refusal-subclass-ts"
     }
   ]
 }
