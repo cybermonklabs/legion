@@ -332,7 +332,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
-		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, contracts.IssueLabelMax)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
@@ -493,6 +493,15 @@ type server struct {
 	// Only a test sets it, so a budget that ends before every selected session is read is the
 	// test's choice rather than a race against five seconds of wall clock (INFRA-249).
 	broadcastResolveBudget time.Duration
+	// mentionLookupBound replaces mentionLookupTimeout, the bound on each try of each listener
+	// lookup a comment's creation makes, for the target that lookup is of (commentLookupBound);
+	// nil, which every server the deployment builds leaves it, keeps mentionLookupTimeout for every
+	// target. Only a test sets it, so which of a comment's lookups that bound ends and which the
+	// listener's answer ends is the test's choice rather than a race between a loaded machine and
+	// 250 ms of wall clock. It is called as each lookup try starts, on that try's own goroutine,
+	// just before the try's bound begins, so a test may block in it to hold the start of a lookup
+	// (TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost does).
+	mentionLookupBound func(target string) time.Duration
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
@@ -888,16 +897,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
-		// object, into another session's own rows, or by a credential that names no person
-		// claims no idempotency key and costs no body (withinProjectScope,
+		// object, into another session's own rows, or by a machine's credential that names no
+		// person claims no idempotency key and costs no body (withinProjectScope,
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a caller whose credential names a service and no person
+		// Outermost of the three, so a machine whose credential names a service and no person
 		// is told it may make no write at all rather than which session the write it tried
 		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). A read-only token names a service and no
-		// person too, and never reaches here: the read-only gate further out has answered it
+		// held to no one project (broker_token.go). An account entry's token naming no person
+		// passes it, recorded under its account, and meets the two checks behind it as any
+		// credential naming no project does. A read-only token names a service and no person
+		// too, and never reaches here: the read-only gate further out has answered it
 		// (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)

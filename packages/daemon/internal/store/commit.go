@@ -67,6 +67,102 @@ const (
 // reply.
 const CommitSettleBound = commitReplyBound + outcomeReadBound
 
+// afterAcquireKey is the context key a write bound counted from its connection (BoundAfterAcquire)
+// lives under, and afterAcquire is the bound; a nil *afterAcquire is no bound.
+type afterAcquireKey struct{}
+
+type afterAcquire struct{ acquire, write time.Duration }
+
+// BoundAfterAcquire is ctx with every transaction TransactWith opens under it bounded by its own
+// time rather than by its wait for a connection: the transaction waits at most acquire in the
+// daemon's pool's queue for a connection, and from the moment the pool hands it one its BEGIN and
+// everything after it end write later, its commit's settle aside (CommitSettleBound); Pool.BeginTx
+// applies both. The bound is a value of ctx, so it reaches every transaction opened under ctx, a
+// join included; the read of a lost commit's outcome clears it (readOutcome), since that read's
+// own deadline is its hard end. ctx itself is bounded by all three together, so a call that opens
+// no transaction through TransactWith is bounded too.
+//
+// Only the queue is acquire's. A connection the pool dials for the transaction is dialled under
+// write as well (PoolConfig's BeforeConnect); a pooled one is not pinged, its BEGIN is the check,
+// and a BEGIN that meets a connection the server closed is tried again on another (Pool.BeginTx).
+// So a database that stops answering holds a bounded transaction that holds a connection for up to
+// about twice write: twice in the one case of a dial that succeeds just short of write followed by
+// a BEGIN the database never answers, which runs its own write from the hand-out, and once write
+// in every other. A transaction queued behind others waits in the queue first, up to acquire, as
+// the connections ahead of it come back each within its holder's own bound. The hard bound of a
+// bounded call is ctx's own deadline: acquire, write and CommitSettleBound together (a claim
+// write's are supervise.Deps.BoundWrite's). A deadline counted from before the wait was the queue's
+// bound as well as the write's: a wave of transactions on a pool of a few connections cut the last
+// of them for the writes ahead of it, however quickly each would have run.
+func BoundAfterAcquire(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc) {
+	bounded, cancel := context.WithTimeout(ctx, acquire+write+CommitSettleBound)
+	return context.WithValue(bounded, afterAcquireKey{}, &afterAcquire{acquire: acquire, write: write}), cancel
+}
+
+// afterAcquireOf is the bound BoundAfterAcquire put on ctx, nil for none.
+func afterAcquireOf(ctx context.Context) *afterAcquire {
+	bound, _ := ctx.Value(afterAcquireKey{}).(*afterAcquire)
+	return bound
+}
+
+// WithoutWriteBound is ctx with no bound of BoundAfterAcquire on it, whatever ctx carries: the
+// bound is a value, so a context that drops its parent's deadline (context.WithoutCancel) keeps it
+// unless this takes it off. The read of a lost commit's outcome is one such context
+// (readOutcome), and so is a test's write that must run under no bound of its caller's.
+func WithoutWriteBound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, afterAcquireKey{}, (*afterAcquire)(nil))
+}
+
+// writing is ctx under b's write bound, counted from now, or ctx itself for no bound.
+func (b *afterAcquire) writing(ctx context.Context) (context.Context, context.CancelFunc) {
+	if b == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, b.write)
+}
+
+// writingFrom is ctx under b's write bound counted from handedOut, the moment the pool first
+// handed the transaction a connection, or ctx itself for no bound.
+func (b *afterAcquire) writingFrom(ctx context.Context, handedOut time.Time) (context.Context, context.CancelFunc) {
+	if b == nil {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, handedOut.Add(b.write))
+}
+
+// acquiring is ctx under b's acquire bound, the wait in the pool's queue, or ctx itself for no
+// bound.
+func (b *afterAcquire) acquiring(ctx context.Context) (context.Context, context.CancelFunc) {
+	if b == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, b.acquire)
+}
+
+// running is the context a begun transaction runs on: ctx under b's write bound, counted from the
+// moment the daemon's pool handed tx its first connection (storeTx.handedOut), or from now for a
+// transaction of another pool, which records none; ctx itself for no bound.
+func (b *afterAcquire) running(ctx context.Context, tx pgx.Tx) (context.Context, context.CancelFunc) {
+	if own, ok := tx.(*storeTx); ok && !own.handedOut.IsZero() {
+		return b.writingFrom(ctx, own.handedOut)
+	}
+	return b.writing(ctx)
+}
+
+// notBegun is the error of a begin under b that the pool's queue ended (Pool.BeginTx):
+// errAcquireBound when acquiring, the wait under b's acquire bound, ended while ctx still ran,
+// err itself otherwise.
+func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error {
+	if b != nil && ctx.Err() == nil && acquiring.Err() != nil {
+		return fmt.Errorf("%w (%s): %w", errAcquireBound, b.acquire, err)
+	}
+	return err
+}
+
+// errAcquireBound is a bounded transaction (BoundAfterAcquire) that waited its whole acquire bound
+// in the pool's queue and was handed no connection.
+var errAcquireBound = errors.New("store: the pool handed out no connection within the wait for one")
+
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
 // and readOutcome and ForConcurrentWorker store none (TestOnlyTransactOpensACommitScope). Its type
@@ -175,7 +271,15 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     (errTransactionOnAnotherPool, errJoinOfOtherOptions). A joined write runs under a
 //     savepoint: one that fails is rolled back to it, and its hooks are cut, whatever the open
 //     transaction's body then does with its error; one that succeeds releases it. Either
-//     statement that fails fails the whole transaction (below).
+//     statement that fails fails the whole transaction (below). Under a bound (BoundAfterAcquire)
+//     the join's write bound runs from the join, since the open transaction holds its connection.
+//   - The transaction begins through the pool's BeginTx, the boundary's one begin. Under a bound
+//     the daemon's pool ends its first wait in the queue at the acquire bound (errAcquireBound) and
+//     runs the BEGIN under the write bound counted from the moment it first handed out a
+//     connection (Pool.BeginTx), and the transaction runs under that same deadline (running). A
+//     BEGIN tried again on another connection, because the one it met was closed, answers its own
+//     failure where its wait for that other connection ends, not errAcquireBound. A transaction of
+//     another pool, which records no hand-out, runs under the write bound counted from its begin.
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
@@ -207,13 +311,18 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
 func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
+	bound := afterAcquireOf(ctx)
 	if open := scopeOf(ctx); open != nil && open.writing.Load() {
-		return open.join(ctx, pool, options, write)
+		joining, stop := bound.writing(ctx)
+		defer stop()
+		return open.join(joining, pool, options, write)
 	}
 	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
 		return err
 	}
+	ctx, stopBound := bound.running(ctx, tx)
+	defer stopBound()
 	committing, stop := commitContext(ctx)
 	defer stop()
 	// Once a commit has been tried, the transaction is closed and this does nothing.
@@ -480,7 +589,10 @@ const (
 // status the query read stands. A failed read, a status the server does not keep (NULL), and a
 // transaction still in progress when ctx ends are unknown, with the error that says which.
 func readOutcome(ctx context.Context, pool TxPool, xid string) (outcome, error) {
-	reading := context.WithValue(context.WithValue(ctx, noCommitGrace{}, true), commitHooksKey{}, (*commitScope)(nil))
+	// The read is no transaction of its caller's: it holds no commit scope of theirs and no write
+	// bound of theirs, whose deadline would cut it short of its own (BoundAfterAcquire).
+	reading := WithoutWriteBound(context.WithValue(context.WithValue(ctx, noCommitGrace{}, true),
+		commitHooksKey{}, (*commitScope)(nil)))
 	for {
 		var status *string
 		if err := TransactWith(reading, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

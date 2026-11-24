@@ -256,10 +256,12 @@ type Issue struct {
 	// first phase waits for — and nil for every other record. It is the mark that stands an issue
 	// whose row was taken away for a wait in the waiting line at the moment it lost that row
 	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
-	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
-	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
-	// a row for good, and the issue's departure from the workflow, which the release's own read
-	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. These
+	// writes clear it (Store.ClearReleasedForWait, Store.ReleaseTreeSlots), and this is the one
+	// list of them: the grant of a slot, the ordinary release of a row for good, the issue's
+	// departure from the workflow, which the release's own read of the live issues no longer
+	// reaches (workflow's leave), and the re-admission of its tree's root, for every issue of the
+	// tree (admit's releaseTreeSlots). PutIssue keeps the stored value.
 	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
@@ -286,6 +288,24 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// MembersOwed says that a re-admission started this root's generation and its tree has not yet
+	// run in it, so the members that re-admission left mid-phase, and the members reopened at done,
+	// are still to be brought back (dispatch://INFRA-5471). admit's readmit sets it. It is cleared
+	// in three places. Two bring the members back in the same transaction (admit's
+	// returnOwedMembers): the root's promotion from the waiting line, and the first admission pass
+	// that finds its tree running before any promotion while the root is still handed to Legion
+	// and its design gate has opened (admit's returnMembersOfRunningTrees, MembersReturnOwed). The
+	// third is that same pass meeting a root a daemon of an earlier release promoted, which brought
+	// the members back and never names the column (admit's promotedByEarlierRelease). It clears
+	// that mark and starts nothing. A root whose label a person takes off while it waits stops
+	// being a queued root and keeps the mark until the label returns. While the mark stands, a
+	// tree whose lifecycle is not open under the workflow keeps
+	// its root queued whatever the gate says (ran).
+	// It is false on a child's row and on every root no re-admission started. Only Store.OweMembers
+	// and Store.ClearMembersOwed write it, and PutIssue keeps the stored value, as it does for
+	// released_for_wait_at: every write site that records the root holds a copy read before its own
+	// fact, and a copy read before the clear would otherwise owe the members a second return.
+	MembersOwed bool
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -674,8 +694,8 @@ type PhaseRow struct {
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
-	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it by one and
+	// phase the issue has moved into, the start of a mid-phase worker a re-admitted tree's first run
+	// brings back, and a root architect's start of work it was not on raise it by one and
 	// write the three fields below beside it, in their own transaction (workflow's start,
 	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
@@ -724,8 +744,8 @@ type PhaseRow struct {
 	// completion as the release before did (store migration
 	// 20261113090512_phase_entry_moved_back.up.sql), until the role's next entry writes what its
 	// own move was. A row PutPhase writes reads what it was given: false on one this release
-	// inserted before raising any entry on it, and after the promotion's start of a mid-phase
-	// worker, which moves no phase back.
+	// inserted before raising any entry on it, and after the start of a mid-phase worker a
+	// re-admitted tree's first run brings back, which moves no phase back.
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record
@@ -2140,8 +2160,9 @@ type Store interface {
 	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
 	// TreeMembersRun is whether an issue of tree other than its root stands past
 	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
-	// and its phase is neither admitted nor done. Those are the members a
-	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
+	// and its phase is neither admitted nor done. Those are the members a re-admitted tree's first
+	// run starts again, its promotion or the admission pass that finds it running first (admit's
+	// startMidPhaseMembers, which passes over a
 	// member at admitted and one out of the workflow), and a member a person set todo once its
 	// own first phase has started. It is what says a root architect's tree has work under way
 	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool
@@ -2415,6 +2436,17 @@ type Store interface {
 	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseTreeSlots frees the slot of every issue of tree and clears Issue.ReleasedForWaitAt
+	// from every issue of it, and answers the issues whose slot it freed, in slot order: the
+	// re-admission of the tree's own root, which ends the generation those rows and marks were of
+	// (admit's releaseTreeSlots).
+	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error)
+	// OweMembers sets Issue.MembersOwed on the root key: its re-admission has started a generation
+	// whose members are still to be brought back (admit's readmit).
+	OweMembers(ctx context.Context, tx pgx.Tx, key string) error
+	// ClearMembersOwed sets Issue.MembersOwed back to false on the root key: its members came back
+	// with its promotion, or with the pass that found its tree running first.
+	ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.

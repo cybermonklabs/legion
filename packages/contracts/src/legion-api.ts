@@ -1490,12 +1490,27 @@ export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
  * the producer's own count of the turns it has ended at `generation`, from 1, and the daemon
  * keeps the report under the pair, so a report that arrives late or out of order lands in its own
  * place and the run of refused turns it derives is the same either way. `message` is what the
- * provider said about a refusal, and a clean turn carries none. */
+ * provider said about a refusal, and a clean turn carries none.
+ *
+ * `httpStatus` is the HTTP status the provider refused the turn with, where the producer's
+ * provider library gives one (Oh My Pi's `errorStatus` on the refused assistant message, Claude
+ * Code's `api_error_status`); a refusal without it is one whose status cannot be read, and the
+ * daemon reads no status out of `message`. This schema admits 100 to 599 alone; a daemon that is
+ * sent another number takes it as no status and warns. `unprompted: true` says the turn ran no
+ * prompt the daemon sent — a phase reminder, an Envoy message, a background job's result — so no
+ * prompt result comes for it and the daemon judges it from this report: a refusal whose status
+ * cannot clear (a 4xx other than 401, 403, 408 and 429) fails the claim, and any other refusal
+ * counts in the claim's run of provider-error turns. A refused report without it is judged by the
+ * result of the prompt its turn ran, never by itself, and a clean report, with it or without, ends
+ * that run when no later turn's report has reached the daemon before it
+ * (`claim.TurnOutcomeRequest`). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
   outcome: z.enum(["clean", "refused"]),
   message: z.string().optional(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  unprompted: z.boolean().optional(),
 };
 
 /** `claim.AgentCaller`'s report: the producer inside the agent's own session — pi-legion's
@@ -1530,9 +1545,14 @@ export const LegionTurnOutcomeRequest = z.union([
 export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequest>;
 
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
- * turns the claim's reports now end with, and `failed` whether this report took that run to
- * `launch_failure_limit` and failed the claim. The producer acts on neither — its turn is over —
- * and logs them, which is where an operator sees the count that failed a claim being made. */
+ * turns the claim's reports now end with, counted up to `launch_failure_limit`, which the daemon
+ * answers each report with and which decides nothing. `failed` is whether this report failed the
+ * claim: a run of refused turns fails none (dispatch://INFRA-4508), and the one report that does
+ * is that of an `unprompted` turn the provider refused with a status that cannot clear, which
+ * holds the issue for its architect as such a prompt's result does. This and
+ * `claim.TurnOutcomeResponse` are where that rule is stated; every other reader of `failed` points
+ * here. The producer acts on neither field — its turn is over — and logs them, which is where an
+ * operator sees the count being made. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),
