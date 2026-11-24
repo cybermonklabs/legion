@@ -2,8 +2,8 @@
 # scored-job.sh: one build-cluster Job of a scored scenario (the Job line of the plan's "The
 # Jobs"), run at the repository's root of a runner's pod by `legion-remote-test.sh --sh`. It runs
 # the rig (rig.sh) on its scenario's label group and prints, in the Job's log, each run's row, a
-# `reach` line for each entry of each run's reach, and a line for each case's cell, the last line
-# the last case's.
+# `reach` line for each entry of each run's reach, the last lines of each log of a run the rig
+# failed, and a line for each case's cell, the last line the last case's.
 #
 #   scored-job.sh <scenario> <label group> [--case <case>] [--count <n>]
 #
@@ -172,6 +172,18 @@ for name in "${selected[@]}"; do
   SKILL_SCENARIOS_OWNER_WALK_CASE=$name bash "$rig" batch-scored "$scenario" "$(case_count "$name")" "$(label_of "$form")"
 done
 bash "$rig" rows "$scenario"
+# A run the rig failed keeps its logs in the pod alone, and the pod keeps nothing: the last lines of
+# each, so the Job's log says why.
+for row in "$SKILL_SCENARIOS_WORK/runs/$scenario"-*/row.json; do
+  [ -f "$row" ] && [ "$(jq -r .outcome "$row")" = rig-error ] || continue
+  dir=$(dirname -- "$row")
+  for log in "$dir"/logs/*.log "$dir"/daemon.log "$dir"/fixture.log "$dir"/texts/label-texts.log "$dir"/omp-stderr.txt \
+    "$SKILL_SCENARIOS_WORK/scored-logs/${dir##*/}.err"; do
+    [ -s "$log" ] || continue
+    say "rig error ${dir##*/}: the last lines of ${log#"$SKILL_SCENARIOS_WORK"/}"
+    tail -n 20 "$log" | sed 's/^/  /'
+  done
+done
 [ -n "$one_case" ] || bun "$here/score.ts" cells "$SKILL_SCENARIOS_WORK/runs" "$scenario"
 for name in "${selected[@]}"; do
   IFS=- read -r _ form _ <<<"$name"
