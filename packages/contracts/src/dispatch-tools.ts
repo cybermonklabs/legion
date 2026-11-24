@@ -3084,7 +3084,11 @@ export const dispatchToolSpecs = [
       "NODE_STATE_NOT_WRITABLE, naming the node's kind, its state and the value: gone on a " +
       "block of a document, an issue, a document, an ask, a comment or a message, and any " +
       "state on a block of an ask, a comment or a message, which the store keeps no node of " +
-      "and every read answers live. Settle a proposal with dispatch settle. A node taken gone " +
+      "and every read answers live. A write on the block of an :::ask block of a document " +
+      "returns 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose node holds the " +
+      "question's state (its own ask or the source ask for a copy) or saying no ask holds " +
+      "it yet. Write the state on the named ask instead. " +
+      "Settle a proposal with dispatch settle. A node taken gone " +
       "takes what stands under it, those nodes you may not see included, so a person alone " +
       "takes a lens, a finding, a risk or a constraint to gone: any other caller, the node's " +
       "own author included, is refused with 403 STATE_NOT_PERMITTED naming the node, whatever " +
@@ -3117,8 +3121,10 @@ export const dispatchToolSpecs = [
       "that names a person, the same session for a broker session that names none, the same " +
       "workload for a pod's service-account token. Any other is refused with 403 " +
       "SETTLE_NOT_PERMITTED; the deployment's shared agent token proves no author, so it " +
-      "settles nothing. A gone node is refused with 409 NODE_GONE, and any other node that is " +
-      "not proposed with 409 NODE_NOT_PROPOSED. " +
+      "settles nothing. A gone node is refused with 409 NODE_GONE. A settle on the block of " +
+      "an :::ask block returns 409 ASK_HOLDS_STATE and writes nothing, naming the ask whose " +
+      "node holds the question's state (its own ask or the source ask for a copy) or saying " +
+      "no ask holds it yet. Any other node not at proposed is refused with 409 NODE_NOT_PROPOSED. " +
       "dispatch proposed lists the issue's proposed nodes. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
