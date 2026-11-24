@@ -627,14 +627,15 @@ func tlsWords(err error) (string, bool) {
 }
 
 // tlsErrorWords is the words err itself, not an error it wraps, prints as where it is a TLS record
-// or certificate failure, and whether it is one: fixed words for its type, never its own text.
-// x509 writes into that text what the certificate the answering party sent holds - every name it
-// is valid for (HostnameError), the common name of a candidate authority it sent with it
-// (UnknownAuthorityError), a name an issuer's constraint excludes (CertificateInvalidError) - and
-// whoever answers in the server's place chooses those, the request's credential among them if it
-// likes. A certificate crypto/tls could not verify prints its words with the words for x509's
-// reason under it. Every other print of a transport failure's text reads these words
-// (transportWords), so they are the one rule for it.
+// or certificate failure, and whether it is one: fixed words for its type, and for x509's
+// CertificateInvalidError for its reason (x509InvalidWords), never its own text. x509 writes into
+// that text what the certificate the answering party sent holds - every name it is valid for
+// (HostnameError), the common name of a candidate authority it sent with it
+// (UnknownAuthorityError), a name an issuer's constraint does not permit (CertificateInvalidError)
+// - and whoever answers in the server's place chooses those, the request's credential among them
+// if it likes. A certificate crypto/tls could not verify prints its words with the words for the
+// x509 failure it wraps after them, and alone where it wraps another error. Every other print of
+// a transport failure's text reads these words (transportWords), so they are the one rule for it.
 func tlsErrorWords(err error) (string, bool) {
 	switch e := err.(type) {
 	case tls.RecordHeaderError:
@@ -649,20 +650,72 @@ func tlsErrorWords(err error) (string, bool) {
 	case x509.UnknownAuthorityError:
 		return x509AuthorityWords, true
 	case x509.CertificateInvalidError:
-		return x509InvalidWords, true
+		return x509InvalidWords(e), true
 	}
 	return "", false
 }
 
+// x509InvalidWords is the words e prints as: fixed words for its reason, one for each reason x509
+// names (crypto/x509's InvalidReason, go1.27.3), and fixed words of their own for a reason it does
+// not name, never e's own text. x509 puts e's Detail into that text for five reasons, and Detail
+// can quote the certificate: the name an issuer's constraint does not permit, or on macOS the
+// system's own words for an expired certificate, which can name its subject.
+func x509InvalidWords(e x509.CertificateInvalidError) string {
+	switch e.Reason {
+	case x509.NotAuthorizedToSign:
+		return x509NotAuthorizedToSignWords
+	case x509.Expired:
+		return x509ExpiredWords
+	case x509.CANotAuthorizedForThisName:
+		return x509NameNotPermittedWords
+	case x509.TooManyIntermediates:
+		return x509TooManyIntermediatesWords
+	case x509.IncompatibleUsage:
+		return x509IncompatibleUsageWords
+	case x509.NameMismatch:
+		return x509NameMismatchWords
+	case x509.NameConstraintsWithoutSANs:
+		return x509NoSANWords
+	case x509.UnconstrainedName:
+		return x509UnconstrainedNameWords
+	case x509.TooManyConstraints:
+		return x509TooManyConstraintsWords
+	case x509.CANotAuthorizedForExtKeyUsage:
+		return x509ExtKeyUsageWords
+	case x509.NoValidChains:
+		return x509NoValidChainsWords
+	}
+	return x509UnknownReasonWords
+}
+
 // The words a TLS record or certificate failure prints as (tlsErrorWords), one for each type
-// crypto/tls and crypto/x509 answer one as. Each is the package's own fixed words for its type
-// where those name nothing of the certificate, so a reader that looks for them still finds them
-// (gax reads "x509: certificate signed by unknown authority" to stop retrying a call), and says
-// what it leaves out where they do.
+// crypto/tls and crypto/x509 answer one as, and one for each reason of x509's
+// CertificateInvalidError (x509InvalidWords). Each is the package's own fixed words for its type
+// or reason where those name nothing of the certificate, so a reader that looks for them still
+// finds them (gax reads "x509: certificate signed by unknown authority" to stop retrying a call),
+// and those words followed by what it leaves out where x509 adds what may quote the certificate.
+// x509 has no words for TooManyConstraints ("x509: unknown error"), so it has its own.
 const (
 	tlsRecordWords     = "tls: a record the server sent is not TLS this client can read (most often: what listens at the address does not speak TLS)"
 	tlsUnverifiedWords = "tls: failed to verify certificate"
 	x509HostnameWords  = "x509: certificate is not valid for the host asked (the names it is valid for are not printed: the answering party chose them)"
 	x509AuthorityWords = "x509: certificate signed by unknown authority"
-	x509InvalidWords   = "x509: certificate is not valid (x509's reason is not printed: it can quote the certificate, which the answering party chose)"
+
+	x509NotAuthorizedToSignWords  = "x509: certificate is not authorized to sign other certificates"
+	x509ExpiredWords              = "x509: certificate has expired or is not yet valid" + x509DetailNotPrinted
+	x509NameNotPermittedWords     = "x509: a root or intermediate certificate is not authorized to sign for this name" + x509NameNotPrinted
+	x509TooManyIntermediatesWords = "x509: too many intermediates for path length constraint"
+	x509IncompatibleUsageWords    = "x509: certificate specifies an incompatible key usage"
+	x509NameMismatchWords         = "x509: issuer name does not match subject from issuing certificate"
+	x509NoSANWords                = "x509: issuer has name constraints but leaf doesn't have a SAN extension"
+	x509UnconstrainedNameWords    = "x509: issuer has name constraints but leaf contains unknown or unconstrained name" + x509NameNotPrinted
+	x509TooManyConstraintsWords   = "x509: checking the certificate's names against its issuers' name constraints takes more comparisons than the limit allows"
+	x509ExtKeyUsageWords          = "x509: a root or intermediate certificate is not authorized for an extended key usage" + x509DetailNotPrinted
+	x509NoValidChainsWords        = "x509: no valid chains built" + x509DetailNotPrinted
+	x509UnknownReasonWords        = "x509: certificate is not valid, for a reason this client has no words for (x509's text is not printed: it can quote the certificate, which the answering party chose)"
+
+	// x509NameNotPrinted and x509DetailNotPrinted follow x509's own words for a reason whose text
+	// adds its Detail: a name the certificate holds, or what else x509 or the system wrote there.
+	x509NameNotPrinted   = " (the name is not printed: the answering party chose it)"
+	x509DetailNotPrinted = " (x509's detail is not printed: it can quote the certificate, which the answering party chose)"
 )
