@@ -7,8 +7,8 @@
 -- (store.Store.RecordPodRelease), before any later step of the teardown. Those steps can fail, and
 -- the teardown row then runs again. The release before read the mark again on that attempt, and a
 -- claim taken over or a start queued since made it cancel a release whose pod was already gone:
--- the cancel deleted the bundle of unpushed work that the pod's next start restores, and the next
--- attempt of a teardown that did not cancel wrote a second pod_releases row. A mark that names its
+-- the cancel resumed roles in a pod that no longer stood, and the next attempt of a teardown that
+-- did not cancel wrote a second pod_releases row. A mark that names its
 -- release now makes the teardown finish its remaining steps and no more
 -- (store.Store.IssueRelease), the record answers the row it wrote and writes none, and a cancel
 -- of such a mark is refused (store.Store.CancelIssueRelease).

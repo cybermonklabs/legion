@@ -57,7 +57,7 @@ body: |-
   still cancels it. A teardown that fails after that authorization runs again and finishes: it
   asks the runtime again until the runtime answers without an error, and then records the release
   once; a teardown that fails after that record asks the runtime nothing and finishes its own
-  steps. The bundle of unpushed work stays for the next pod. A record of a release that cannot be
+  steps. A record of a release that cannot be
   written makes the teardown run again in the same way. The row's `outbox row failed` line names
   that error, and the daemon no longer logs `outbox: could not record an issue pod's release`.
   While such a release has not finished, the issue's whole workflow waits: every start of its

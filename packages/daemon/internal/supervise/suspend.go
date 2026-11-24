@@ -137,7 +137,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	if !deadline.IsZero() && (m.held.Deadline.IsZero() || deadline.Before(m.held.Deadline)) {
 		m.held.Deadline = deadline
 		if a, ok := m.timers[TimerSuspend]; !ok || deadline.Before(a.due) {
-			m.arm(TimerSuspend, max(0, deadline.Sub(m.deps.Clock.Now())), "")
+			m.armAt(TimerSuspend, deadline, "")
 			m.log.Info("supervise: the held suspension stops the agent at its deadline if its turn has not ended", "deadline", deadline, "by", m.held.By)
 		}
 	}

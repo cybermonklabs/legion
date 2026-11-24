@@ -30,6 +30,9 @@ describe("consumer delivery", () => {
   for (const refusal of [
     { status: 503, reason: "no_grant" },
     { status: 409, reason: "not_requested" },
+    // A consumer filter past the server's max payload, which the listener answers 413: the
+    // session is told the same way.
+    { status: 413, reason: "too_large" },
   ] as const) {
     test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, the next heartbeat asks again, and the accepted registration is told once`, async () => {
       const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {

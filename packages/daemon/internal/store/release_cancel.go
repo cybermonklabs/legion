@@ -15,9 +15,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// This file is the cancel of an idle release that did not finish (CancelIssueRelease) and the
-// helpers only the cancel uses. The release's mark, its rows and its teardown's decisions are in
-// idle.go and issue_release.go.
+// This file is the cancel of an idle release that did not finish (CancelIssueRelease), the cancel a
+// workspace check makes when it declines the release (DeclineIssueRelease), and the helpers only the
+// cancel uses. The release's mark, its rows, its decline's record and its teardown's decisions are
+// in idle.go and issue_release.go.
 
 // DroppedWake is what a cancel deleted of one role's wake (dropWakesUnderRelease): Kind, Detail
 // and Task, the wake kind, the detail and the task of the start it deleted
@@ -39,18 +40,15 @@ type DroppedWake struct {
 // is the workflow's rule (workflow.CancelledWakeTask).
 type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error)
 
-// CancelIssueRelease ends a release that did not finish, in one transaction: the bundle that
-// release saved is deleted, the resume of each claim this release suspended and still holds is
-// queued, and the mark goes with them. The three are one act because any of them alone is a
-// wrong state of the pod: a mark deleted before the resumes are durable leaves those roles
-// `released` in a pod that still stands, with no backstop — a release arms one only once its
-// pod is gone — and nothing left to read that says they are owed a process, since the next row
-// of the release reads the release as over and the next idle tick sees a pod whose claims are
-// suspended; and a bundle left behind is a copy of work the pod the roles resume in holds on
-// its own disk, waiting for some later pod of the issue to restore it over whatever those roles
-// push in the meantime. Queueing the resumes rather than relaunching here is what makes them
-// durable: the row is the daemon's own record of what the pod is owed, and its lane retries it
-// until the role has it back.
+// CancelIssueRelease ends a release that did not finish, in one transaction: the resume of each
+// claim this release suspended and still holds is queued, and the mark goes with it. The two are
+// one act because either alone is a wrong state of the pod: a mark deleted before the resumes are
+// durable leaves those roles `released` in a pod that still stands, with no backstop — a release
+// arms one only once its pod is gone — and nothing left to read that says they are owed a
+// process, since the next row of the release reads the release as over and the next idle tick
+// sees a pod whose claims are suspended. Queueing the resumes rather than relaunching here is what
+// makes them durable: the row is the daemon's own record of what the pod is owed, and its lane
+// retries it until the role has it back.
 //
 // woken builds the row that resumes each claim (ReleaseWokenRow). It is told the kind, the detail
 // and the task of the wake the cancel dropped for that role, and the zero DroppedWake for a role
@@ -64,20 +62,20 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 //
 // A wake of a role this release recorded as `released` can come before the release ends, and the
 // release goes on then (releaseOvertaken). A cancel can still follow that wake, for another cause:
-// a bundle too large or a save that failed, a role stop that met a live start of another role, or
-// an issue that left the workflow. Then the pod never goes away, and the wake brings nothing
-// back. So, for each role of the mark's set that is still suspended as `released` and has a wake
-// recorded above the mark's wake_row, this transaction deletes those resumes and the starts the
-// wake queued (wakeStartRow, above the release's last row), and then queues the role's resume
-// as above. Those starts have not run: a start waits while the release's teardown row is in the
-// outbox (record's outboxInOrder), and that row is still there whichever row runs the cancel. So
-// the role starts once, in the pod it was in, with no task that says its pod was released, and
-// no resume is left for a release that did not happen. A root architect's entry start and a
-// production check's look of that role name no phase either, but they are work the pod was
-// given, not a wake's start, and they stay. The cause of the wake still reaches the
-// role: a message that Envoy stored or kept arrives in the role's session, and the text of a CI
-// settlement or of the backstop, which reach the role only through the wake's task (workflow's
-// tellChecks tells the woken role no message of its own), goes to the role in the cancel's resume.
+// a role stop that met a live start or a turn of another role, or an issue that left the workflow.
+// Then the pod never goes away, and the wake brings nothing back. So, for each role of the mark's
+// set that is still suspended as `released` and has a wake recorded above the mark's wake_row,
+// this transaction deletes those resumes and the starts the wake queued (wakeStartRow, above the
+// release's last row), and then queues the role's resume as above. Those starts have not run: a
+// start waits while the release's teardown row is in the outbox (record's outboxInOrder), and
+// that row is still there whichever row runs the cancel. So the role starts once, in the pod it
+// was in, with no task that says its pod was released, and no resume is left for a release that
+// did not happen. A root architect's entry start and a production check's look of that role name
+// no phase either, but they are work the pod was given, not a wake's start, and they stay. The
+// cause of the wake still reaches the role: a message that Envoy stored or kept arrives in the
+// role's session, and the text of a CI settlement or of the backstop, which reach the role only
+// through the wake's task (workflow's tellChecks tells the woken role no message of its own), goes
+// to the role in the cancel's resume.
 // The builder is told the kind, the detail and the task of the wake dropped for each role
 // (DroppedWake), and its text says that the release did not finish rather than that the pod came
 // back. A cancel made while the project is paused drops no wake of a released role; the paragraph
@@ -171,6 +169,34 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // order.
 func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, woken ReleaseWokenRow,
 	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+	return s.cancelIssueRelease(ctx, project, issue, woken, outOfWorkflow, paused, nil)
+}
+
+// DeclineIssueRelease cancels a release whose check declined it, as CancelIssueRelease does, and in
+// the same transaction records the decline (recordDecline). The decline is written only where the
+// cancel found the release's mark: a check of a release that is over records nothing and tells
+// nobody, so a check its lane runs again after the decline committed writes no second row and no
+// second message. ReleaseCancelled.Declined says whether it was written, and Told whether its
+// message was queued.
+func (s *Store) DeclineIssueRelease(ctx context.Context, project, issue string, decline IdleReleaseDecline, woken ReleaseWokenRow,
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause) (ReleaseCancelled, error) {
+	if err := decline.check(issue); err != nil {
+		return ReleaseCancelled{}, err
+	}
+	var told bool
+	cancelled, err := s.cancelIssueRelease(ctx, project, issue, woken, outOfWorkflow, paused, func(tx pgx.Tx) (err error) {
+		told, err = recordDecline(ctx, tx, project, issue, decline)
+		return err
+	})
+	cancelled.Told = told && cancelled.Declined
+	return cancelled, err
+}
+
+// cancelIssueRelease is CancelIssueRelease, and DeclineIssueRelease where declined is not nil:
+// declined runs in the cancel's transaction once the mark is read, before the mark is deleted, and
+// only where a mark stood that the cancel may end.
+func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, woken ReleaseWokenRow,
+	outOfWorkflow func(status string) bool, paused ReleaseCancelPause, declined func(pgx.Tx) error) (ReleaseCancelled, error) {
 	if project == "" || issue == "" || woken == nil || outOfWorkflow == nil {
 		return ReleaseCancelled{}, errors.New("cancelling a release needs its project, its issue, the row that resumes a claim and the workflow's own rule for a status")
 	}
@@ -183,12 +209,12 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 			return err
 		}
 		cancelled = ReleaseCancelled{}
-		var release, first, wake, last, recorded int64
+		var first, wake, last, recorded int64
 		var suspended []string
 		var kind string
 		var committed bool
-		err := tx.QueryRow(ctx, `select id, suspended, kind, first_row, wake_row, last_row, released_id, committed from issue_releases
-			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &first, &wake, &last, &recorded, &committed)
+		err := tx.QueryRow(ctx, `select suspended, kind, first_row, wake_row, last_row, released_id, committed from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&suspended, &kind, &first, &wake, &last, &recorded, &committed)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -198,7 +224,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 		// A release whose teardown recorded it has taken its pod (ReleaseDecision.PodTaken), and
 		// one whose teardown the runtime was authorized to carry out may have taken it
 		// (ReleaseDecision.Committed). Nothing undoes that: its teardown finishes it, and no cancel
-		// may resume its roles in a pod that is gone or delete the bundle the next pod restores.
+		// may resume its roles in a pod that is gone.
 		if recorded != 0 {
 			return fmt.Errorf("the release of %s took its pod and was recorded as release %d, so it cannot be cancelled: its teardown finishes it", issue, recorded)
 		}
@@ -206,16 +232,11 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, w
 			return fmt.Errorf("the release of %s was authorized to take its pod, so it cannot be cancelled: its teardown finishes it", issue)
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
-		// The bundle this release saved goes with the mark, in this transaction. The pod it was
-		// taken off is the pod the roles resume in, with that work in its own workspace, so the
-		// row holds a copy of work a live disk has; left behind it would hold the issue's pod
-		// (workflow.IdleHoldBundleUnrestored) and wait for a pod created after the save — an
-		// eviction's, an update round's, a park and unpark's — which would restore it over
-		// however much its roles had pushed since. A delete that fails fails the cancel, which
-		// its row's lane runs again; a cancel that left the bundle behind and went on was that
-		// sequence's first step.
-		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
-			return err
+		if declined != nil {
+			if err := declined(tx); err != nil {
+				return err
+			}
+			cancelled.Declined = true
 		}
 		roles, err := stillReleasedRoles(ctx, tx, project, issue, suspended)
 		if err != nil {
@@ -348,12 +369,16 @@ type ReleaseCancelPause struct {
 // Stopped are the roles it recorded stopped by the project's open pause in place of resuming
 // them, and Pause that pause; Pause is 0 where the cancel recorded no role stopped: while the
 // project runs, and while it is paused where the cancel found no role to resume. A cancel that
-// met a pause resumes none.
+// met a pause resumes none. Declined is whether a decline found the release's mark and recorded
+// the decline (DeclineIssueRelease), and Told whether it queued the decline's message, which a
+// decline that found the work on record does not; a cancel answers false for both.
 type ReleaseCancelled struct {
 	Resumed        []claim.Role
 	SuspendsNoRole bool
 	Pause          int64
 	Stopped        []claim.Role
+	Declined       bool
+	Told           bool
 }
 
 // stopReleasedForPause records, for a cancel made while held is open, each role the release had

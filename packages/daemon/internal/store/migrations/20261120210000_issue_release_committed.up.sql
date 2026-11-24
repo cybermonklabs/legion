@@ -7,8 +7,8 @@
 -- store.Store.CommitIssueRelease). It is written in the transaction of that read. The runtime's
 -- steps after it can fail once the pod is already gone: the wait for the pod, the delete of the
 -- Secrets, the record on the Sandbox, the delete of the Sandbox. The teardown row then runs again,
--- and before this column its next read could cancel the release, which deleted the bundle of
--- unpushed work and resumed roles in a pod that was gone. A committed mark makes that read act
+-- and before this column its next read could cancel the release, which resumed roles in a pod
+-- that was gone. A committed mark makes that read act
 -- (store.Store.IssueRelease), and a cancel of it is refused (store.Store.CancelIssueRelease). The
 -- runtime is asked again, since each of its steps is done at most once, and the release is then
 -- recorded (20261120193000's released_id).

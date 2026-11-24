@@ -103,10 +103,10 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 }
 
 // The same two transactions, where the release does not finish: a cancel for another cause (a
-// bundle the release cannot save, say) deletes each wake taken under the mark and starts the role
-// once (dropWakesUnderRelease), since the pod never went away. A take still open when the cancel
-// runs must not leave its resume behind: that resume names no release that happened, and the
-// wake's own start beside it would tell the role its pod was released.
+// role stop that met a start of another role, say) deletes each wake taken under the mark and
+// starts the role once (dropWakesUnderRelease), since the pod never went away. A take still open
+// when the cancel runs must not leave its resume behind: that resume names no release that
+// happened, and the wake's own start beside it would tell the role its pod was released.
 func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 	store := migratedStore(t)
 	ctx := context.Background()

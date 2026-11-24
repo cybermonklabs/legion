@@ -81,15 +81,15 @@ const cutoverOldContract = 68
 const cutoverStoredSeq = 5
 
 // cutoverWait bounds each wait of this test on the daemon's own work: a boot, a launch, a
-// registration, an outbox row's tries, an idle pass. The longest of those is a merger's start
-// that a closed design gate held: once the gate opens the test makes the row due at once, and the
-// outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
-// row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
-// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
-// reported at, so a slow machine is no failure, and a start that never comes fails here rather
-// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
-// of the daemon's claims over its API or of its database.
+// registration, an outbox row's tries, an idle pass, the record of a design's news. The longest of
+// those is a merger's start that a closed design gate held: once the gate opens the test makes the
+// row due, and the row's backoff timer or the outbox's sweep, every outboxLease (30 seconds), runs
+// it. A try of that row that read the gate closed just before the test opened it can still record
+// its retry after the test made the row due, which puts the row back on its backoff, up to the
+// outbox's 64 seconds (record.RetryBackoff), so the bound stays above that. It is the bound a
+// fault is reported at, so a slow machine is no failure, and a start that never comes fails here
+// rather than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a
+// read of the daemon's claims over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -99,6 +99,14 @@ const (
 // production minute): the idle release of the second half is read from the claim rows the test
 // back-dates (releaseAgain), so the tick buys nothing but the wait for it.
 const cutoverIdleTick = 250 * time.Millisecond
+
+// cutoverEntrySweep is how often this test's daemon runs its entry sweep (overrides.entrySweep,
+// the production minute). The test opens E's design gate by writing the gate's row, where a
+// person's approval arrives as a fact that queues the reconcile of the news it carries; with no
+// such fact the reconcile is queued by the sweep's backstop (queueOwedDesignNews), and E's merger
+// start waits for that news to be recorded (mergerWaitsForTheDesignGate). At the production minute
+// that wait was most of this test's time.
+const cutoverEntrySweep = time.Second
 
 // TestTheCutoverStartsTheMergersTheOldBuildLeftStopped holds that the first boot of this release on
 // a record legion-v19.57.3 left gives a merging task to each merger nothing else would start
@@ -318,7 +326,10 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
 	// The held start waits on its row's backoff, up to the outbox's 64 seconds
-	// (record.RetryBackoff): made due now, it runs at the outbox's next sweep.
+	// (record.RetryBackoff). Made due here, behind the daemon, it runs when its lane wakes: at the
+	// backoff timer the lane armed for the old due time, or at the outbox's next sweep. It then waits
+	// for the news of version 2 to be recorded, which the entry sweep's backstop queues
+	// (cutoverEntrySweep).
 	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
 		t.Fatalf("let the backoff of E's merger start go: %v", err)
 	}
@@ -548,6 +559,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github(t)
 	rig.o.idleTick = cutoverIdleTick
+	rig.o.entrySweep = cutoverEntrySweep
 	relaunchable := true
 	rig.o.pluginRelaunchable = &relaunchable
 	return rig

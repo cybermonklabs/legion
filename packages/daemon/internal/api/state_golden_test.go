@@ -1534,7 +1534,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
+//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
 //     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
 //     rather than absent;

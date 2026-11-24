@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -258,7 +257,7 @@ func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
 
 	queued := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) })
 	if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
-		t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown: the architect is already released", queued)
+		t.Fatalf("queued rows = %v, want the workspace check, the implementer's stop and the teardown: the architect is already released", queued)
 	}
 	rig.rt.beforeAuthorize = func() {
 		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
@@ -516,81 +515,12 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 	}
 }
 
-// bundleDeleteRefused is the daemon's tree store with the bundle delete it once ran on its own
-// before a cancel taken away: a store that answers every DeleteWorkspaceBundle with an error.
-// Nothing of a cancel calls it any more, which is what this stands for.
-type bundleDeleteRefused struct {
-	outboxTrees
-	err error
-}
-
-func (t bundleDeleteRefused) DeleteWorkspaceBundle(context.Context, string) error { return t.err }
-
-// A cancel whose bundle delete fails leaves no bundle for a later pod, because the delete is
-// the cancel's own transaction and no call of its own.
-//
-// The sequence it stops ran like this. A release saved the bundle of pod P and a delivery
-// around the mark cancelled it; the cancel's separate delete failed, it logged a warning and
-// went on, so P stood with its roles resumed and the bundle stayed. P is the pod the work came
-// off, so it is answered nothing and spends nothing, and the row held the issue's pod
-// (workflow.IdleHoldBundleUnrestored) rather than being replaced by another release. P's roles
-// worked and pushed for hours. Then some later pod of the issue — an eviction's, an update
-// round's replacement, a park and unpark's — asked for the bundle, was created after the save,
-// and was sent it: `jj bookmark set --allow-backwards` and `jj edit` over a workspace
-// provisioned from the branch those hours had been pushed to.
-//
-// So this drives that same cancel with the delete refused, and reads what the later pod is
-// answered: nothing, and none of the saved bookmarks a restore would move back.
-func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing.T) {
-	t.Parallel()
-	rig := newIdleRig(t)
-	ctx := context.Background()
-	rig.rt.bundle.Bookmarks = map[string]string{"legion/" + rig.issue.Key: "dffe88ae2f793e13436cef3921adc988433fbd4e"}
-	rig.runner.trees = bundleDeleteRefused{outboxTrees: rig.st, err: errors.New("the pool is gone")}
-
-	rig.w.releaseIdlePods(ctx)
-	boundary := rig.boundary(t)
-	// A start the pod is given above the release's own rows, which cancels at the boundary. It
-	// is not due yet, so the drain runs the release's rows and leaves it queued.
-	if _, err := rig.pool.Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
-		values ($1, 'supervise', $2, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now() + interval '1 hour', '')`,
-		boundary+10, rig.issue.Key); err != nil {
-		t.Fatal(err)
-	}
-
-	rig.drain(t)
-
-	// The pod stands with its roles back in it, which is the state the bundle must not outlive.
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the claim = %s by %s, want the cancelled release to have left it running", got.State, got.SuspendedBy)
-	}
-	if _, suspended := rig.rt.reads(); suspended != 0 {
-		t.Fatalf("Sandbox teardowns = %d, want none: the pod goes on", suspended)
-	}
-	if rig.marked(t) {
-		t.Fatal("the release's mark outlived it, so the cancel did not run")
-	}
-	if rig.bundled(t) {
-		t.Fatal("the cancel left its bundle behind when the store refused a delete of its own")
-	}
-
-	// The pod an eviction or an update round makes hours later, with the resumed roles' work
-	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
-	}
-	if len(later.Bookmarks) != 0 {
-		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bookmarks)
-	}
-}
-
 // A release cancelled because its issue left the workflow queues no resume, and the issue's
 // close then deletes its Sandbox, which is what takes the pod's role Secrets — its launcher
 // tokens and its `gh` credentials — with it.
 //
-// The sequence is the one the lane runs. The release's save and role stop have run, so the
-// implementer is suspended as `released`; the root is parked under the teardown's pod lock, so
+// The sequence is the one the lane runs. The release's workspace check and role stop have run, so
+// the implementer is suspended as `released`; the root is parked under the teardown's pod lock, so
 // the linger's own rows — the role suspends and the issue_suspend that deletes the Sandbox —
 // are queued above the release's; the teardown then reads the issue as no longer the workflow's
 // and cancels. A resume queued for the claim the release suspended would land above the close's
@@ -639,8 +569,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
 	}
-	if rig.bundled(t) {
-		t.Fatal("the cancelled release left its bundle behind")
+	if rig.declined(t) {
+		t.Fatal("the cancelled release recorded a decline: only its workspace check declines")
 	}
 	var left int
 	if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1

@@ -371,7 +371,7 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 // A second record answers the row the first wrote and writes no second row. The teardown's next
 // attempt is answered ReleaseActs, whatever happened since: here an operator took a claim of the
 // release over, which cancels a release whose pod still stands. A cancel of such a mark is refused
-// and leaves the mark and the bundle as they are.
+// and leaves the mark as it is.
 func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

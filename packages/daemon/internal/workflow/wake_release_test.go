@@ -313,6 +313,57 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		}
 	})
 
+	// (k) A release whose workspace check declines it ends at the decline, which cancels it before
+	// any role stops (store.Store.DeclineIssueRelease). A wake report held while that release stood
+	// is applied at its next delivery: it finds the claim live in no release and does nothing more,
+	// as (e) does, with no retry and no warning that drops it. Its control is the first delivery,
+	// made while the release stands, which is retried.
+	t.Run("(k) a declined release ends, and the wake it held is applied", func(t *testing.T) {
+		rig := newWakeRig(t)
+		st := releaseStore(t, rig.pool)
+		ctx := context.Background()
+		project := wakeProjectToken(t)
+		setClaimState(t, rig.pool, claim.RoleImplementer, "idle", "")
+		markRelease(t, st)
+
+		fact := intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-agent"}
+		var later *intake.RetryLater
+		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
+			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
+		}
+		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+				Role: role, Generation: generation}, time.Now())
+			if err != nil {
+				return store.IdleReleaseRow{}, err
+			}
+			return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
+		}
+		declined, err := st.DeclineIssueRelease(ctx, project, "LEGION-208", store.IdleReleaseDecline{At: time.Now(),
+			Role: claim.RoleImplementer, Reason: pods.DeclineUnpushedWork, Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Commits: 1},
+			resume, record.OutOfWorkflow, store.ReleaseCancelPause{At: time.Now()})
+		if err != nil || !declined.Declined || len(declined.Resumed) != 0 {
+			t.Fatalf("DeclineIssueRelease = %+v, %v; want the decline recorded and no resume: no role had stopped", declined, err)
+		}
+
+		if err := applyWake(rig, "wake", fact); err != nil {
+			t.Fatalf("applying the held wake after the decline = %v, want it applied with no retry", err)
+		}
+		if !processedEvent(t, rig.pool, "wake") {
+			t.Fatal("the held wake is not recorded as applied after the decline, want it applied once")
+		}
+		if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+			t.Fatalf("supervise start rows = %+v, want none: the declined release stopped no role", starts)
+		}
+		if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+			t.Fatalf("pod resumes = %v, want none: the pod never went away", resumes)
+		}
+		const dropped = "wake: a wake that came during a release was dropped"
+		if lines := loggedLines(rig, "WARN", dropped); len(lines) != 0 {
+			t.Fatalf("WARN lines %q = %q, want none: the decline ended the release, so the wake was not dropped", dropped, lines)
+		}
+	})
+
 	// (f) Fix B: a wake taken after the release recorded the implementer's claim as released,
 	// and before the release's teardown, does not cancel the release. The architect's stop and
 	// the teardown go on, the wake's start waits for the teardown in the issue's lifecycle lane,
@@ -466,10 +517,12 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 }
 
 // R4: a woken role reads a text that is true whether or not Envoy stored the message that woke
-// it. The CI settlement and backstop texts do not change.
+// it. The CI settlement and backstop texts do not change. The release's preamble says what the
+// role finds of its workspace in the words of WorkspaceAfterRelease: the release took the pod only
+// because the workspace held nothing that origin does not hold, and it kept no copy of any work.
 func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
-	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
+		WorkspaceAfterRelease + " Your session is as you left it. "
 
 	wokenTask := func(t *testing.T, fact intake.ListenerWake) string {
 		t.Helper()

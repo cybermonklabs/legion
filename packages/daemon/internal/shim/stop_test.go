@@ -25,12 +25,12 @@ const (
 )
 
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
-// process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a save or an adoption
+// process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption
 // used to get it because it shared the pane's process group. Each command has a group of its own
 // now, so that signal reaches the shim alone (internal/procgroup), and the shim is what has to
 // pass the stop on: every command site builds its context from the one Run was given, so the stop
 // ends the command at once instead of leaving it to run against the clone every role of the issue
-// shares until its own budget ends it — up to five minutes for a save.
+// shares until its own budget ends it.
 //
 // What each case reads is the command's own end: its whole process group — the leader and the
 // child it had started — was signalled, and the shim returned without waiting for the command's
@@ -79,11 +79,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			},
 		},
 		{
-			name:      "the release's save",
-			workspace: bundleSkeleton,
-			request: shimwire.BundleWorkspace{
-				ID: "bundle-1", Issue: "INFRA-3098", MaxBytes: 40 << 20,
-				TimeoutMs: int(commandBudget.Milliseconds()),
+			name:      "the workspace read",
+			workspace: func(t *testing.T) string { return t.TempDir() },
+			request: shimwire.WorkspaceWork{
+				ID: "read-1", Issue: workIssue, TimeoutMs: int(commandBudget.Milliseconds()),
 			},
 		},
 	} {
@@ -333,24 +332,4 @@ func recorded(t *testing.T, record string) string {
 		t.Fatalf("read the jj's record: %v", err)
 	}
 	return string(body)
-}
-
-// bundleSkeleton is the two files of a jj workspace the save reads before it starts a command
-// (workspace.GitDir): the repository directory and the git directory it names. Nothing here runs
-// a real jj or git — the save's first command is the hanging jj — so the git directory needs to
-// exist and hold nothing.
-func bundleSkeleton(t *testing.T) string {
-	t.Helper()
-	workspace := t.TempDir()
-	store := filepath.Join(workspace, ".jj", "repo", "store")
-	git := filepath.Join(workspace, ".git")
-	for _, dir := range []string{store, git} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(store, "git_target"), []byte(git+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return workspace
 }

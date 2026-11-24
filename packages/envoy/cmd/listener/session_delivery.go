@@ -43,6 +43,9 @@ const (
 	// deliveryReasonConsumerError: the consumer could not be read, created or updated, or this
 	// listener has no session-consumer connection.
 	deliveryReasonConsumerError = "consumer_error"
+	// deliveryReasonTooLarge: the consumer's filter makes a create or update request past the
+	// server's max payload, which the bus refuses at every retry (bus.ErrTooLarge).
+	deliveryReasonTooLarge = "too_large"
 	// deliveryReasonNotRequested: the registration asked for no consumer, registered no serving
 	// port, and came from no client this listener gives a consumer unasked (readsUnaskedRelay), so
 	// nothing would deliver to the session it describes.
@@ -929,12 +932,25 @@ func consumerLimitRefusal(sessionID string) *deliveryRefusal {
 }
 
 // refused is the refusal of a registration whose consumer call for sessionID failed with err:
-// every cause may pass of itself, so all are 503. A refusal for want of a grant starts the
-// no-grant backoff (noGrantBackoff), or extends the episode running (grantRefusal). A call that
-// failed because NATS is reconnecting is no refusal by name (deliveryRefusal.unanswered).
+// every cause but one may pass of itself, so those are 503. A refusal for want of a grant starts
+// the no-grant backoff (noGrantBackoff), or extends the episode running (grantRefusal). The one
+// that cannot pass is a filter whose request the bus refuses for its size (bus.ErrTooLarge): the
+// same registration is refused the same way at every retry, so it is a 413 naming the filter's
+// size and the bound, which no client retries. A call that failed because NATS is reconnecting is
+// no refusal by name (deliveryRefusal.unanswered).
 func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal {
 	if m.grantRefusal("create or update a session consumer", sessionID, err) {
 		return noGrantRefusal(sessionID)
+	}
+	if errors.Is(err, bus.ErrTooLarge) {
+		m.logger.Warn("the session consumer's filter is too large for the bus; the registration is refused",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return &deliveryRefusal{
+			status: http.StatusRequestEntityTooLarge,
+			Error: fmt.Sprintf("the session consumer of %s cannot be created or updated: %s. A wildcard topic that covers many of the topics makes the filter smaller",
+				sessionID, err),
+			Reason: deliveryReasonTooLarge,
+		}
 	}
 	if consumerLimitReached(err) {
 		// No backoff, unlike no_grant: the cap refuses only the creates, so a session whose

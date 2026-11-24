@@ -1,13 +1,16 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -102,4 +105,70 @@ func TestARegistrationWhoseKnownSessionRecordIsNotWrittenIsRefusedForItsClientTo
 		t.Fatalf("the registration whose known-session record write never landed answered 200 %s: the session is registered with no record", recorder.Body.String())
 	}
 	wantWriteBusUnanswered(t, "POST /v1/interests/subscribe with its record write unanswered", recorder)
+}
+
+// A registration whose known-session record is stored in chunks (kvchunk.Write), and one of whose
+// chunk writes does not land, is refused as a whole record's unanswered write is: with the
+// bus-unavailable 503, never 200. The record counts as written only once its last chunk and its
+// manifest have landed. The registration also leaves no record of the session that reads as
+// written: the manifest is written after every chunk, so a reader of the bucket, and the
+// listener's own copy, find no record rather than part of one. The relay swallows the first chunk
+// write of the known-session bucket and everything after it. The control is
+// TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted, where a known-session record of the
+// same size is written in chunks, answered 200, and read back with every topic.
+func TestARegistrationWhoseKnownSessionChunkIsNotWrittenIsRefusedAndLeavesNoRecord(t *testing.T) {
+	url := testnats.URL(t)
+	relay := startListenerRelay(t, url)
+	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the listener's bus through the relay: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newKnownSessionRigOn(t, client, url)
+	clock := rig.stillClock()
+	const sessionID = "ses_record_chunk_unwritten"
+	// The wide topics of the size rows, past the server's max payload, less their last topic, a
+	// role lane, which would make the registration a claim of that role too.
+	wide := wideTopics(300, 3900, "legion-controller")
+	topics := wide[:len(wide)-1]
+	direct := testnats.Connect(t, url)
+	t.Cleanup(direct.Close)
+	if size, maxPayload := len(mustJSON(t, topics)), int(direct.MaxPayload()); size <= maxPayload {
+		t.Fatalf("the topics take %d bytes as JSON, within the server's max payload of %d bytes: the record would be stored whole", size, maxPayload)
+	}
+
+	relay.arm("$KV."+bus.KnownSessionBucket+"."+kvchunk.Prefix, 1)
+	answers := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, postJSON("/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-"+sessionID, topics...)))
+		answers <- recorder
+	}()
+	testwait.Receive(t, "the first chunk write of the registration's known-session record to reach the silent bus", relay.swallowed)
+	select {
+	case recorder := <-answers:
+		t.Fatalf("the registration answered %d %s while a chunk write of its record was still unanswered", recorder.Code, recorder.Body.String())
+	default:
+	}
+	clock.Advance(sendRequestBudget)
+	recorder := testwait.Receive(t, "the registration's answer once its record write's bound had passed", answers)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("the registration whose record chunk never landed answered 200 %s: the session is registered with no record", recorder.Body.String())
+	}
+	wantWriteBusUnanswered(t, "POST /v1/interests/subscribe with a chunk of its record unwritten", recorder)
+
+	js, err := direct.JetStream()
+	if err != nil {
+		t.Fatalf("open a JetStream context on a connection of the test's own: %v", err)
+	}
+	kv, err := js.KeyValue(bus.KnownSessionBucket)
+	if err != nil {
+		t.Fatalf("open the known-session bucket: %v", err)
+	}
+	if entry, err := kv.Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the bucket holds %s's record after a chunk of it was not written (%v, %v), want none: no part of a record reads as written", sessionID, entry, err)
+	}
+	if record, ok := rig.known.Get(sessionID); ok {
+		t.Fatalf("the listener's copy holds %s's record %+v after a chunk of it was not written, want none", sessionID, record)
+	}
 }

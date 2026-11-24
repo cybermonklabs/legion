@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -80,51 +79,6 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 }
 
-// The bundle a cancelled release saved goes in the cancel's own transaction, with the resumes and
-// the mark. The pod that work came off is the pod the resumes bring back, with the work in its own
-// workspace, so the row is a second copy of a live disk's work: left behind it would hold the
-// issue's pod (workflow.IdleHoldBundleUnrestored) and wait for whatever pod the issue made next —
-// an eviction's, an update round's, a park and unpark's — to restore it over everything those
-// roles pushed in the meantime.
-//
-// One transaction is what makes that true of a cancel that fails too: a resume the store cannot
-// queue leaves the mark standing and the bundle with it, so the row's retry runs the whole cancel
-// again rather than going on with the bundle already gone or already kept.
-func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T) {
-	const first, boundary, last = 18, 20, 22
-	st := migratedStore(t)
-	ctx := context.Background()
-	openRunningTree(t, st)
-	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
-	releasedClaim(t, st, claim.RoleArchitect)
-	var release int64
-	if err := st.Pool().QueryRow(ctx, `select id from issue_releases where issue = $1`, rootIssue).Scan(&release); err != nil {
-		t.Fatalf("read the id of the release of %s: %v", rootIssue, err)
-	}
-	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the cancelled release"),
-		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC(), PodUID: "pod-being-released"}
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, release, saved); err != nil {
-		t.Fatalf("save the release's bundle: %v", err)
-	}
-
-	refused := errors.New("the resume could not be encoded")
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64, DroppedWake) (IdleReleaseRow, error) {
-		return IdleReleaseRow{}, refused
-	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
-		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
-	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || !held {
-		t.Fatalf("after a cancel that failed the store holds the bundle = %t (%v), want it kept with the mark", held, err)
-	}
-
-	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
-		t.Fatalf("carry the cancel out: %v", err)
-	}
-	if _, held, err := st.WorkspaceBundleSize(ctx, rootIssue); err != nil || held {
-		t.Fatalf("after the cancel the store holds the bundle = %t (%v), want it deleted with the mark", held, err)
-	}
-}
-
 // A cancel resumes the claims its own release suspended and no others. A release that finishes
 // leaves its claims `released` until a wake brings them back, so an issue being released again
 // can hold claims an earlier release left: resuming those puts a role back into a pod that has
@@ -159,7 +113,7 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 // of an issue that has left run on in it with their launcher tokens and `gh` credentials.
 //
 // The sequence is the one production runs: the release's stops have suspended the pod's claims,
-// the root is parked while the save runs so the linger's rows are queued above the release's,
+// the root is parked while the check runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
 	st := migratedStore(t)
@@ -218,12 +172,12 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	}
 }
 
-// A release can still be cancelled after such a wake, for another cause, such as a bundle too
-// large to carry; this test calls the cancel as the outbox does then. The pod never goes away, so
-// the wake brings nothing back. The cancel deletes the wake's resume and the start the wake
-// queued, and queues the role's own resume, which carries no task: the role starts once, in the
-// pod it was in, told nothing about a release that did not happen, and no resume stands for that
-// release. A wake taken before the mark is no wake of this release, and it stays.
+// A release can still be cancelled after such a wake, for another cause, such as a role stop that
+// met a start of another role; this test calls the cancel as the outbox does then. The pod never
+// goes away, so the wake brings nothing back. The cancel deletes the wake's resume and the start
+// the wake queued, and queues the role's own resume, which carries no task: the role starts once,
+// in the pod it was in, told nothing about a release that did not happen, and no resume stands
+// for that release. A wake taken before the mark is no wake of this release, and it stays.
 func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -290,6 +244,73 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 	}
 	if releaseMarked(t, st) {
 		t.Fatal("the cancel left its mark behind")
+	}
+}
+
+// R3 on the release's turn fence: a turn that starts after the release's mark is one of the ends
+// of a release, and it ends it as a cancel. The implementer's stop has recorded its claim
+// `released`, and a wake of the implementer is taken under the mark, which does not cancel the
+// release. The architect, which the release has not stopped yet, then starts a turn: its stop
+// reads the pod given work since the mark (releaseOvertaken, issue_releases.turn_start) and
+// decides the cancel. The cancel does for the woken implementer what every cancel does: it deletes
+// the wake's start and resume and queues the implementer's one resume. The control row has no
+// turn, and the architect's stop acts.
+func TestATurnAfterTheMarkCancelsTheReleaseAndStartsTheWokenRoleOnce(t *testing.T) {
+	for _, turned := range []bool{false, true} {
+		name := "no turn after the mark"
+		if turned {
+			name = "the architect starts a turn after the mark"
+		}
+		t.Run(name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken,
+				pods.WakeAgentMessage, time.Now().UTC(), 0); err != nil || !taken {
+				t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
+			}
+			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
+			if turned {
+				if _, err := st.Pool().Exec(ctx, `update claims set last_turn_start = now() where issue = $1 and role = $2`,
+					rootIssue, string(claim.RoleArchitect)); err != nil {
+					t.Fatalf("start the architect's turn: %v", err)
+				}
+			}
+
+			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, stop)
+			if err != nil {
+				t.Fatalf("the architect's stop: %v", err)
+			}
+			if !turned {
+				if decision.Act != ReleaseActs {
+					t.Fatalf("the architect's stop with no turn = %s for %s, want it to act: the wake of the recorded implementer cancels nothing", decision.Act, decision.Cause)
+				}
+				return
+			}
+			if decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+				t.Fatalf("the architect's stop after its turn = %s for %s, want %s for %s", decision.Act, decision.Cause, ReleaseCancel, ReleaseCauseOvertaken)
+			}
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+			if resumed := cancelled.Resumed; err != nil || len(resumed) != 1 || resumed[0] != claim.RoleImplementer {
+				t.Fatalf("CancelIssueRelease = %v, %v; want the implementer's resume queued", resumed, err)
+			}
+			var starts, resumes int
+			if err := st.Pool().QueryRow(ctx, `select
+				(select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'),
+				(select count(*) from pod_resumes where issue = $1)`, rootIssue).Scan(&starts, &resumes); err != nil {
+				t.Fatalf("read the starts and resumes: %v", err)
+			}
+			if starts != 1 || resumes != 0 {
+				t.Fatalf("starts = %d and resumes = %d, want the cancel's one start of the implementer and no resume: the pod never went away", starts, resumes)
+			}
+			if releaseMarked(t, st) {
+				t.Fatal("the cancel left its mark behind")
+			}
+		})
 	}
 }
 
