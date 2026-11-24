@@ -162,6 +162,19 @@ require_smoke_repo_read() {
     fail "the devbox's ordinary gh cannot read $repo; gh's own words are in $evidence/gh/repo-view.err"
 }
 
+# require_commit_outside_legion COMMIT: the implementer's commit COMMIT changes no file under
+# .legion/, where no handoff goes now. Its paths are gh's answer (smoke_commit_files), which
+# whatever answers gh in GitHub's place writes, so they are kept in
+# $evidence/gh/implementer-commit-files.answer and a refusal names that file, never a path.
+require_commit_outside_legion() {
+  local files kept="$evidence/gh/implementer-commit-files.answer"
+  files=$(smoke_commit_files "$1") || exit 1
+  mkdir -p "$evidence/gh"
+  printf '%s\n' "$files" >"$kept"
+  ! grep -q '^\.legion/' <<<"$files" ||
+    fail "the implementer's commit $1 changes files under .legion/, where no handoff goes now; the paths GitHub answered are in $kept"
+}
+
 cleanup() {
   local status=$? p
   set +e
@@ -836,8 +849,7 @@ send_agent "$issue" implementer "Claude backend proof implementation operation (
 until_true 900 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
 assert_handoff_record "$issue" implementer implementing 0
-files=$(smoke_commit_files "$commit") || exit 1
-! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
+require_commit_outside_legion "$commit"
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
 note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/"
