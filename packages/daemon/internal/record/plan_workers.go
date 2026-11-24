@@ -11,7 +11,7 @@ import (
 // the claim is left for that row to name (WorkerClaim). Callers judge owner from the issue's
 // current place or the plan step whose worker they need.
 func StepRecipient(issue Issue, role claim.Role, owner bool) (claim.Role, claim.Token, error) {
-	if owner {
+	if owner && false {
 		token, err := OwnerClaim(issue)
 		return role, token, err
 	}
