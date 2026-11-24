@@ -190,16 +190,43 @@ func logRefusal() {
 // can reach past the refusal: Store.Pool hands out this type and nothing else.
 type Pool struct {
 	pool *pgxpool.Pool
+	// factTurn holds the one turn this pool gives at a time to a fact (FactTurn).
+	factTurn chan struct{}
 }
 
 // NewPool wraps an open pgx pool. The daemon's own pool is opened by Open; a test that builds a
 // pool of its own wraps it here, so that it exercises what this type adds to any pool it wraps:
-// the guard (ErrNestedAcquire) and the argument rule (storableArgs). The codec rule, which is what
-// makes a string storable, belongs to the pgx pool instead: it runs only on a pool built from
-// PoolConfig (testpg.ClonePool's is), and a pool built without it sends a NUL, an invalid byte or a
-// \u0000 escape to the server as pgx's own codecs write it, and the server refuses the write.
+// the guard (ErrNestedAcquire), the argument rule (storableArgs) and the fact turn (FactTurn). The
+// codec rule, which is what makes a string storable, belongs to the pgx pool instead: it runs only
+// on a pool built from PoolConfig (testpg.ClonePool's is), and a pool built without it sends a NUL,
+// an invalid byte or a \u0000 escape to the server as pgx's own codecs write it, and the server
+// refuses the write.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
+	return &Pool{pool: pool, factTurn: make(chan struct{}, 1)}
+}
+
+// FactTurn waits for this pool's turn to apply a fact, which it gives to one caller at a time and
+// in the order they asked, and returns the release that hands it to the next; it returns ctx's
+// error, holding nothing, once ctx ends first. intake.ApplyFact takes it before it asks for a
+// connection and hands it on at its COMMIT. Facts apply one at a time anyway, each holding the
+// fact lock (intake.SerializeFacts, a transaction-scoped advisory lock) until it commits, so the
+// turn moves their wait out of the pool at a small cost: a fact that follows another at once now
+// begins its transaction after the other's COMMIT rather than beside it, about two round trips to
+// the server (the BEGIN and the lock) more per back-to-back fact. Without the turn, every fact
+// waiting on the lock held a connection while it waited, and a burst of facts larger than the pool
+// held every connection, so any other read of the pool queued behind the whole burst. With it, at
+// most one fact applied through ApplyFact on each pool waits on the lock: a second daemon process
+// on the same database holds a pool and a turn of its own, and so at most one more. The turn is
+// for facts: the seven other transactions of the daemon that take the fact lock (the boot's
+// listing reconcile and the like, each calling SerializeFacts in its own transaction) take no
+// turn, and each still holds a connection while it waits on the lock.
+func (p *Pool) FactTurn(ctx context.Context) (release func(), err error) {
+	select {
+	case p.factTurn <- struct{}{}:
+		return sync.OnceFunc(func() { <-p.factTurn }), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // storableArgs is the argument rule: args, with each string argument that the store's text rule

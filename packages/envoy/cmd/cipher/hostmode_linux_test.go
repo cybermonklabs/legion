@@ -84,16 +84,15 @@ func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sh must print its pid, got %q", out)
 	}
-	select {
-	case seen := <-requests:
-		if seen.pid != printed {
-			t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
-		}
-		if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
-			t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the helper saw no register")
+	seen, ok := received(t, requests)
+	if !ok {
+		t.Fatalf("the helper saw no register, %s before the test binary's deadline", waitMargin)
+	}
+	if seen.pid != printed {
+		t.Fatalf("the pid the helper pinned (%d) must be the pid the command runs as (%d)", seen.pid, printed)
+	}
+	if strings.Contains(seen.line, `"root_pid"`) || strings.Contains(seen.line, `"attach"`) {
+		t.Fatalf("register --exec sent %s; want neither root_pid nor attach", strings.TrimSpace(seen.line))
 	}
 }
 
@@ -115,7 +114,7 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {
 	t.Helper()
-	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, 5*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "sessions"}, untilGiveUp(t))
 	if err != nil || !resp.OK {
 		t.Fatalf("sessions: %+v %v", resp, err)
 	}
@@ -251,11 +250,9 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 			}
 		}
 	}()
-	var report launcherReport
-	select {
-	case report = <-reports:
-	case <-time.After(60 * time.Second):
-		t.Fatalf("the launcher never reported; stderr %q", stderr.String())
+	report, ok := received(t, reports)
+	if !ok {
+		t.Fatalf("the launcher never reported, %s before the test binary's deadline; stderr %q", waitMargin, stderr.String())
 	}
 
 	if report.RegisterCode != 0 || !strings.HasSuffix(strings.TrimSpace(report.RegisterOut), "enrolled") {
@@ -326,20 +323,20 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 //
 // The orphan cannot be waited on, so it reports through files: its process ID, its stdout, its
 // stderr and its exit code. The process ID and the exit code are written under another name and
-// renamed, so a read of either is never a partial write.
+// renamed, so a read of either is never a partial write. The orphan waits for the go-ahead with
+// no span of its own: it gives up when this test writes the stop file (its cleanup) or when this
+// test's process is gone, so it outlives neither.
 func runWithNoLauncherAbove(t *testing.T, binary string, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "orphan.sh")
 	const body = `d=$1
-shift
+test=$2
+shift 2
 printf '%s\n' "$$" > "$d/shell.pid.tmp"
 mv "$d/shell.pid.tmp" "$d/shell.pid"
-i=0
 while [ ! -e "$d/go" ]; do
-	if [ -e "$d/stop" ]; then exit 1; fi
-	i=$((i + 1))
-	if [ "$i" -gt 1500 ]; then exit 1; fi
+	if [ -e "$d/stop" ] || ! kill -0 "$test" 2>/dev/null; then exit 1; fi
 	sleep 0.02
 done
 "$@" > "$d/out" 2> "$d/err"
@@ -349,13 +346,13 @@ mv "$d/code.tmp" "$d/code"
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, binary)
+	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, strconv.Itoa(os.Getpid()), binary)
 	outer.Args = append(outer.Args, args...)
 	outer.Env = append(os.Environ(), env...)
 	if err := outer.Run(); err != nil {
 		t.Fatalf("starting the orphaned shell: %v", err)
 	}
-	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"), 10*time.Second)
+	shellPID := atoiFile(t, filepath.Join(dir, "shell.pid"))
 	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(dir, "stop"), nil, 0o600) })
 	if pid, found := ancestorNamed(t, shellPID, "omp"); found {
 		t.Fatalf("pid %d is still an `omp` above the orphaned shell %d, so this test could not show the refusal it is for", pid, shellPID)
@@ -363,14 +360,14 @@ mv "$d/code.tmp" "$d/code"
 	if err := os.WriteFile(filepath.Join(dir, "go"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code = atoiFile(t, filepath.Join(dir, "code"), 60*time.Second)
+	code = atoiFile(t, filepath.Join(dir, "code"))
 	return code, readFile(t, filepath.Join(dir, "out")), readFile(t, filepath.Join(dir, "err"))
 }
 
-// atoiFile is the number in path once it is there, waiting at most wait for it.
-func atoiFile(t *testing.T, path string, wait time.Duration) int {
+// atoiFile is the number in path once it is there, waiting for it until the waits of these tests
+// give up (waitsGaveUp).
+func atoiFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(wait)
 	for {
 		data, err := os.ReadFile(path)
 		if err == nil {
@@ -380,8 +377,8 @@ func atoiFile(t *testing.T, path string, wait time.Duration) int {
 			}
 			return n
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was never written (%v)", path, err)
+		if waitsGaveUp(t) {
+			t.Fatalf("%s was never written (%v), %s before the test binary's deadline", path, err, waitMargin)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -518,13 +515,12 @@ func TestRegisterSendsTheNearestLauncherAsRoot(t *testing.T) {
 	if code := cmdRegister([]string{"--session-id", "s"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("register --session-id: exit %d, stderr %q", code, stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != launcher {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake helper saw no request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" || !req.Attach || req.RootPID != launcher {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, root_pid %d", req, launcher)
 	}
 	wire, err := json.Marshal(helper.Request{Op: "register", Attach: true, RootPID: 4242})
 	if err != nil || !strings.Contains(string(wire), `"attach":true`) || !strings.Contains(string(wire), `"root_pid":4242`) {
@@ -546,13 +542,12 @@ func TestRegisterWithNoLauncherStillAsksTheHelper(t *testing.T) {
 	if code != 0 || stdout.String() != "session-s\tenr-h\tenrolled\n" {
 		t.Fatalf("register with no launcher inside a session: exit %d, stdout %q, stderr %q; want 0 and the session's line", code, stdout.String(), stderr.String())
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" || !req.Attach || req.RootPID != 0 {
-			t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake helper saw no request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake helper saw no request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" || !req.Attach || req.RootPID != 0 {
+		t.Fatalf("the request the helper saw: %+v; want register, attach, no root_pid", req)
 	}
 }
 
@@ -695,12 +690,11 @@ func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
 	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
 		t.Fatalf("register output: got %q, want %q", got, want)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" {
-			t.Fatalf("request sent to the default socket: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the helper on the default socket never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the helper on the default socket never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "register" {
+		t.Fatalf("request sent to the default socket: %+v", req)
 	}
 }

@@ -4289,8 +4289,10 @@ without it the state's `consumers` show `unavailable: read the oldest waiting me
 It publishes on no core subject: role and controller notices go to the Envoy listener over HTTP, and control directives over the worker stream, so the Go daemon needs no `legion.ctl` grant.
 These subjects were verified live: a server granting exactly them logged no refusal across a boot creating both durables, a restart onto the existing ones, Dispatch and GitHub events acknowledged and a poison message terminated, and its trace showed no other API subject (no `$JS.API.INFO`, no `CONSUMER.DURABLE.CREATE`, which the TypeScript daemon uses instead);
 the daemon's permission test (`internal/daemon/nats_permissions_test.go`) creates all three durables and reads their lag under the same grant and expects no refusal.
+The same get confirms the Dispatch consumer idle before admission releases the roots it holds for that consumer to catch up: nats-server answers a publish before it counts the message as pending on a consumer, so the consumer's own count can read idle while a message waits, and the daemon reads the stream for the first message after the consumer's delivered sequence instead.
+When that get does not answer within its bound, because the NATS server is loaded or because the daemon's user lacks the grant (NATS refuses by not answering), a boot's or a recovery's reconcile reads the consumer as not idle and holds the roots its listing shows behind their log, and the hold poller, which reads again on its ticker, takes the consumer's own count, so holds are still released; each logs a WARN line naming both causes.
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
-until then the daemon runs as before, and only the lag's oldest message is `unavailable`.
+until then the daemon runs as before, except that a reconcile's holds wait for the poller, and the lag's oldest message is `unavailable`.
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.
@@ -7418,6 +7420,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   Agent Sandbox recreates a `Running` Sandbox's pod under the same name at once, and that pod brings a claim of its own:
   the same name, a new uid, the new pod as its owner.
   Nothing waits for a detach, since the replacement mounts no volume the pod it replaces held, so the `FailedAttachVolume` and `Multi-Attach` events a reattached `ReadWriteOnce` volume used to produce do not arise for an issue's disk.
+  Its role launchers' first hello binds the role Secrets to it, so the roles' next launches keep it rather than replace it again ([The daemon's Kubernetes request rate](#the-daemons-kubernetes-request-rate)).
 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
@@ -8666,6 +8669,16 @@ A read that fails is logged (`sandbox runtime: a launcher Secret could not
 be read; …`, naming the Secret and the error) and is not repeated for that Sandbox for 10 s;
 a hello meanwhile is refused without a request, so three hundred launchers whose reads fail ask for at most thirty a second.
 A launch into a kept pod reads its roles' Secrets to check their binding, and holds each bound one, so its launcher is not refused for an earlier failed read.
+A pod that Agent Sandbox made again outside a launch, after an eviction or a node loss, projects the Secrets that a launch bound to the pod before it.
+Its launchers hold their roles' current tokens and name a pod that no Secret binds.
+The first such hello binds each role's Secret of the pod to that pod, and the launcher is accepted (`bindAtHello`, `internal/runtime/sandbox/launcher_auth.go`), when the pod is the Sandbox's current pod, the Sandbox is not Suspended, and the pod is neither being deleted nor ended.
+The daemon logs `sandbox runtime: bound the role launchers of a pod made outside a launch to that pod`.
+It writes each Secret once for the pod, however many of its launchers say hello, and the roles' next launches keep the pod.
+Before it writes anything, it reads the hello's role Secret again and checks the hello's token against the token that Secret holds now, not against the copy the daemon keeps.
+Each pod, role and token gets one binding flight of its own, and a hello never waits on a flight that another role or token started; the flights of one pod run one at a time, serialized by the pod's launch turn.
+While a launch, a suspension, a release or another binding flight holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
+A binding holds the turn for at most 30 s: at that deadline its requests are cancelled and the turn is given back, and each Secret it bound by then stays bound.
+A binding that fails is logged (`sandbox runtime: binding the role launchers of a pod made outside a launch failed; …`) and is not tried again for that pod for 10 s.
 The daemon reads each Secret by name because its RBAC grants `get` and never `list` on Secrets (next section).
 
 ### RBAC the Go daemon needs
