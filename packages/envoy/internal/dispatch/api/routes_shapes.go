@@ -576,6 +576,13 @@ var routeShapes = map[string]routeShape{
 		OpaqueContentTypes: []string{"application/json"},
 	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
+	"POST /api/v1/deploys": {
+		Status: http.StatusCreated, Response: deployResponse{}, Request: deployInput{},
+		Also: []routeAnswer{{Status: http.StatusOK, Response: deployResponse{}}},
+	},
+	"GET /api/v1/deploys": {
+		Status: http.StatusOK, Response: deploysResponse{}, Params: deploysQuery{},
+	},
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},

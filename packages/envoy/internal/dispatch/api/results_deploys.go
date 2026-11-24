@@ -31,6 +31,10 @@ type deploysResponse struct {
 	Deploys []model.Deploy `json:"deploys"`
 }
 
+type deploysQuery struct {
+	Repo string `query:"repo" required:"true"`
+}
+
 // deployWriterOf records the credential's resolved identity, without accepting a body-selected
 // writer or imposing a second caller list after the deployment-wide write scope.
 func deployWriterOf(actor model.Actor) model.Actor { return actor.Recorded() }
