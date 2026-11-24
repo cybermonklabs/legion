@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -57,16 +56,14 @@ func fakeJJ(t *testing.T, dir, version string) string {
 // "R". K4 merges two merges of the same two commits, which set f to "x" and "y", one resolved to
 // "x" and one to "y", and must give a conflict at f, not one side's text or the root's "o". The
 // pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100, so this
-// test is red at every pin that lacks that fix.
+// test is red at every pin that lacks that fix. It runs the first compiled jj on PATH
+// (fixturegit.CompiledJJ), which on CI is the one CI's daemon-go-race job installs at ARG JJ_TOOL
+// of packages/daemon/docker/worker.Dockerfile. Run locally, it fails unless that first compiled jj
+// is the pinned one, by design.
 func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("this test runs the jj the worker image pins, which CI's daemon-go job installs at ARG JJ_TOOL of packages/daemon/docker/worker.Dockerfile: %v", err)
-	}
-	git, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatalf("this test reads its fixture's merge bases with a real git: %v", err)
-	}
+	t.Parallel()
+	jj := fixturegit.CompiledJJ(t)
+	git := fixturegit.CompiledGit(t)
 	home := t.TempDir()
 	version := fixturegit.Isolated(t, home).Run(home, jj, "--version")
 	t.Logf("%s is %s", jj, version)
