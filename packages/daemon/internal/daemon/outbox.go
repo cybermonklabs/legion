@@ -476,7 +476,10 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 // it. Every decision that would bring the claim back asks its pod first and answers the pod's
 // refusal while that pod stands (supervise's podStillRefuses, in resume, resumeByRule and every
 // launch), and an operator's suspension holds the row on its backoff (the start below), so no start
-// of a refused claim is answered at the machine without launching while that pod stands. A start a
+// of a refused claim is answered with no error at the machine while that pod stands. A start the
+// machine answers with an error of its own launches nothing either, and ends the row: that is a
+// step the issue left, which resumeByRule answers before it asks the pod
+// (supervise.ErrStartLeft). A start a
 // refusal queued is marked with the pod whose refusal queued it (record.SuperviseRequest.RefusedPod),
 // and its end asks nothing while the machine reports that same pod, since a start queued for that
 // refusal again would end the same way; a start marked with a pod that no longer refuses the claim
@@ -2520,6 +2523,64 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
+// startFence names the fence a supervise row of a phase's work fails (startFenceOf): fenceHolds where
+// every fence lets it through.
+type startFence int
+
+const (
+	// fenceHolds is a row every fence lets through.
+	fenceHolds startFence = iota
+	// fenceGeneration is a row of a generation its issue no longer runs.
+	fenceGeneration
+	// fenceStep is a start of a phase or a step its issue has left (record.Issue.HoldsQueued).
+	fenceStep
+	// fenceEntry is a start of an entry below the one its role's phases row names.
+	fenceEntry
+)
+
+// startFenceOf is the one judgment of whether a supervise row that is no production check's look
+// (payload) is still the work of its issue, and the first fence it fails: the outbox's run of the
+// row logs that fence and finishes the row (supervise), and the judgment again under a machine's
+// lock asks only whether every fence holds (stepStands). Three fences, all of them and not a part:
+//   - The issue runs the generation the row serves.
+//   - A row that names a phase is the work the issue holds of its role there
+//     (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too). At the
+//     phase step, which every role the deployment defines runs as, the role names which step: a
+//     start of one step's role that waited on its row's backoff while the task went on or back to
+//     another step of the phase reads the same phase, generation and entry, since that move raises
+//     no entry on the earlier step's row, and only the step's role says it is no longer the work.
+//   - A start of a phase entry (record.SuperviseRequest.Entry) is of no entry below the one its
+//     role's phases row names now (record.PhaseRow.Entry). A row below that number carries work a
+//     later entry of the same phase has superseded, whose own start carries that entry's task, so
+//     finishing it is what lets a start row be a message with no state of its own: a row that
+//     outlives its entry is harmless rather than something to rewrite. Only a row that carries an
+//     entry and names a phase is held to it: every start of no entry is held to the generation
+//     alone, and so is a root architect's start, which carries an entry and names no phase, since
+//     that architect serves every phase of its tree; the claim's own rule keeps one entry to one
+//     task for it (supervise.Claim.GivenEntry).
+//
+// rows reads the issue's phases rows, and is called for the entry fence alone, the one that reads
+// them.
+func startFenceOf(issue record.Issue, payload record.SuperviseRequest, rows func() ([]record.PhaseRow, error)) (startFence, error) {
+	if payload.Generation != issue.Generation {
+		return fenceGeneration, nil
+	}
+	if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
+		return fenceStep, nil
+	}
+	if payload.Entry <= 0 || payload.Phase == "" {
+		return fenceHolds, nil
+	}
+	read, err := rows()
+	if err != nil {
+		return fenceHolds, err
+	}
+	if payload.Entry < record.PhaseRowOf(read, payload.Role).Entry {
+		return fenceEntry, nil
+	}
+	return fenceHolds, nil
+}
+
 func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {
 	if r.supervisor == nil {
 		return errors.New("supervise executor has no claim supervisor")
@@ -2544,59 +2605,46 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if (payload.Op == "suspend" || payload.Op == "tree_close") && payload.Tree != issue.Tree {
 		return r.stopInLeftTree(ctx, row, payload, issue)
 	}
+	// The issue's phases rows are read at most once, where the entry fence or the claim of a row that
+	// names none needs them, so the two are judged on one read.
+	var rows []record.PhaseRow
+	read := false
+	phaseRows := func() ([]record.PhaseRow, error) {
+		if !read {
+			var err error
+			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
+				return nil, err
+			}
+			read = true
+		}
+		return rows, nil
+	}
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
-	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
-	// the phase.
+	// row names — and its look (checkLookHolds) where every other row is fenced on the generation,
+	// the phase and the entry (startFenceOf), and logs the fence it failed.
 	var check *record.ProductionCheck
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
 		}
 	} else {
-		if payload.Generation != issue.Generation {
+		fence, err := startFenceOf(issue, payload, phaseRows)
+		if err != nil {
+			return err
+		}
+		switch fence {
+		case fenceGeneration:
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
-		}
-		// A start names the phase it was queued for, and at the phase step, which every role the
-		// deployment defines runs as, the role names which step: a start of one step's role that
-		// waited on its row's backoff while the task went back to another step of the phase reads
-		// the same phase, generation and entry, and is not the work of the step that runs
-		// (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too).
-		if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
+		case fenceStep:
 			r.log.Info("outbox start serves a phase or a step the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
 			return nil
-		}
-	}
-	// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the role's
-	// phases row names the entry its phase is on now (record.PhaseRow.Entry). A row below that
-	// number carries work a later entry of the same phase has superseded, and that entry's own start
-	// carries that entry's task, so running this one would hand the worker work the record has moved
-	// past. Finishing it here is what lets a start row be a message with no state of its own: a row
-	// that outlives its entry is harmless rather than something to rewrite.
-	//
-	// Only a row that carries an entry and names a phase is held to it: a production check's look
-	// carries neither and is fenced on its check above, every start of no entry
-	// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and so is a
-	// root architect's start, which carries an entry and names no phase, since that architect serves
-	// every phase of its tree and its row must act whatever phase the root stands in. What keeps one
-	// entry to one task for the architect is the claim's own rule: a delivery of an entry it was
-	// already queued a task of queues no second one (supervise.Claim.GivenEntry).
-	fencesEntry := payload.CheckLook == 0 && payload.Entry > 0 && payload.Phase != ""
-	// The issue's phases rows are read once, where the entry fence or the claim of a row that names
-	// none needs them, so the two are judged on one read.
-	var rows []record.PhaseRow
-	if fencesEntry || payload.Claim == "" {
-		if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
-			return err
-		}
-	}
-	if fencesEntry {
-		if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
+		case fenceEntry:
 			r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-				"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+				"phase", payload.Phase, "entry", payload.Entry, "current", record.PhaseRowOf(rows, payload.Role).Entry, "role", payload.Role)
 			return nil
 		}
 	}
@@ -2608,6 +2656,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// can be the claim of a key's agent that started on an earlier step of another role.
 	token := payload.Claim
 	if token == "" {
+		if _, err := phaseRows(); err != nil {
+			return err
+		}
 		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
 			return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 		}
@@ -2740,36 +2791,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
 			}
 		}
-		// The start of a step's entry whose claim holds another role gives the claim that role
-		// (reroleForStep): the steps of one key are one claim, and its next step may be of another
-		// role. A start of no entry — a wake, a resume, a role admission brings back — starts the
-		// claim with the role it holds. A step the issue left after the fences above read it is
-		// no step to give a role for: the re-role refuses it under the machine's lock, and the
-		// row finishes without acting, since the claim runs nothing and the start of the step
-		// the issue stands in now gives it its role.
-		if found && payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
-			if err := r.reroleWaitsForCredential(ctx, row, issue, token, payload.Role); err != nil {
-				return err
-			}
-			err := r.reroleForStep(ctx, machine, token, row, payload)
-			if errors.Is(err, supervise.ErrStepLeft) {
-				r.log.Info("outbox start serves a step its issue left before the claim took its role; finished without acting", "row", row.ID,
-					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-		}
-		// A start that leaves a session (record.SuperviseRequest.LeaveSession) reaches a claim that
-		// may still run in it: the agent of a name a key held, whose step's agent of a later
-		// generation starts in a session of its own. The claim is suspended first, as the daemon and
-		// keeping its session, so the decision below brings it back and leaves that session there
-		// (supervise's revive); the start waits on the row's backoff until it runs nothing.
+		// The claim is readied for the start before anything brings it back (readyClaimForStart):
+		// it takes the role of the step the start is for, and leaves a key's session where the
+		// start leaves one. A step the issue left after the fences above read it is no step to
+		// ready a claim for: each judgment refuses it under the machine's lock, and the row
+		// finishes without acting, since the claim runs nothing and the start of the step the
+		// issue stands in now readies it and brings it back.
+		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, LeaveSession: payload.LeaveSession}
 		if found {
-			err := r.suspendToLeave(ctx, machine, token, row, payload)
+			err := r.readyClaimForStart(ctx, machine, token, row, issue, payload, work)
 			if errors.Is(err, supervise.ErrStepLeft) {
-				r.log.Info("outbox start serves a step its issue left before its claim left a key's session; finished without acting", "row", row.ID,
+				r.log.Info("outbox start serves a step its issue left before its claim was readied for it; finished without acting", "row", row.ID,
 					"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
 				return nil
 			}
@@ -2884,11 +2916,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// settled by then (workflow.StartOrOwe); by here it is a start like any other.
 		//
 		// The phase and run this row was queued for travel with the request that brings the claim
-		// back (supervise.StartWork): the fences above read the issue in a transaction of their
-		// own, which the workflow's move of the issue does not wait on, so the machine judges the
-		// same rule again under its own lock before it starts a process, and a start the issue has
-		// left since starts none and is finished without acting here (supervise.ErrStartLeft).
-		work := supervise.StartWork{Phase: payload.Phase, Generation: payload.Generation, LeaveSession: payload.LeaveSession}
+		// back (supervise.StartWork, work above): the fences above read the issue in a transaction
+		// of their own, which the workflow's move of the issue does not wait on, so the machine
+		// judges the same rule again under its own lock before it starts a process, and a start
+		// the issue has left since starts none and is finished without acting here
+		// (supervise.ErrStartLeft).
 		var brought error
 		switch state {
 		case supervise.StateQueued:

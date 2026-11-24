@@ -36,7 +36,7 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 2, Role: "checker", Type: "testing"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 3, Role: string(stepStartLinter), Type: "testing"},
-		})
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}

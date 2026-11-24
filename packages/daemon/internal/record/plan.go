@@ -571,8 +571,12 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
-			select issue, $3, task, position, role, type, agent_key, agent
+		// Every column of plan_steps but the generation, leave_session among them: a default step
+		// whose agent took a key's name carries the key's session to leave into the generation it is
+		// carried to, or that agent's first start there resumes the key's session
+		// (TestACarriedPlanHoldsEveryColumnOfItsSteps fails on a column the copy leaves out).
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent, leave_session)
+			select issue, $3, task, position, role, type, agent_key, agent, leave_session
 			from plan_steps where issue = $1 and generation = $2`,
 	} {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {

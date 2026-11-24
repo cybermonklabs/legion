@@ -3676,8 +3676,9 @@ func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue st
 	return claims, nil
 }
 
-// RoleRun reads one role's run of an issue generation as the store holds it. RoleRuns owns the
-// query shape, so the one-role caller and a state-report batch share it.
+// RoleRun reads one role's run of an issue generation as the store holds it, through RoleRuns, so
+// the one-role caller and a state-report batch share one read; ClaimQueued selects from the same
+// read of the queued rows (readQueued).
 func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error) {
 	runs, err := s.RoleRuns(ctx, tx, []RoleRunKey{{Token: token, Issue: issue, Role: role, Generation: generation}})
 	if err != nil {
@@ -3698,13 +3699,9 @@ type roleRunIdentity struct {
 }
 
 // RoleRuns reads the phases rows of keys' issues (PhaseEntries), the queued supervise rows and the
-// claims of keys in three bounded queries. The outbox query reads the selected issues' supervise
-// rows by the outbox_issue index with each
-// payload's role and generation as text, each row's age in the store's own clock
-// (QueuedSupervise.Age) and whether a live lease holds the row at that same now()
-// (QueuedSupervise.Running), and decodes only the rows of keys' roles and generations. A row of
-// another role is never decoded, so one that does not decode fails only a read of its own role's
-// run, as RoleRun's did.
+// claims of keys in three bounded queries (readQueued, readRoleClaims). It decodes only the rows of
+// keys' roles and generations, so a row of another role that does not decode fails only a read of
+// its own role's run, as RoleRun's did.
 //
 // The rows are read first and the claims second, and that order is what makes the two answers
 // safe to judge together under a READ COMMITTED transaction, which every fact handler's is
@@ -3744,63 +3741,29 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			issues = append(issues, key.Issue)
 		}
 	}
-	// A row that names no claim, which the release before wrote, reaches the claim of the worker
-	// on its role's step when it runs (the outbox's workerToken, WorkerClaim), so it is read as
-	// that claim's run; the rows of the phases table say which claim that is.
-	entries, err := s.PhaseEntries(ctx, tx, issues)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
-		coalesce(payload->>'claim', ''),
-		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
-		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
-	if err != nil {
-		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
-	}
-	for rows.Next() {
-		var role, generation, named string
-		var age time.Duration
-		var running bool
-		row, err := scanOutbox(rows, &role, &generation, &named, &age, &running)
-		if err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
-		}
-		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent
-		// on a step of another role holds the role beside the role's own claim from an earlier
-		// version, and a start that names one is no queued run of the other. A row that names
-		// none is the run of the claim it reaches, the worker on its role's step.
-		wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		token := claim.Token(named)
+	// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent on a
+	// step of another role holds the role beside the role's own claim from an earlier version, and
+	// a start that names one is no queued run of the other. A row that names none is the run of the
+	// claim it reaches, the worker on its role's step.
+	reaches := func(row queuedIdentity, entries map[PhaseRole]PhaseEntry) claim.Token {
+		wanted := candidates[row.roleRunIdentity]
+		token := row.named
 		if token == "" && len(wanted) > 0 {
-			token = roleRunWorker(wanted[0], row.Issue, claim.Role(role), entries)
+			token = roleRunWorker(wanted[0], row.issue, claim.Role(row.role), entries)
 		}
 		if token == "" || !slices.Contains(wanted, token) {
-			continue
+			return ""
 		}
-		decoded, err := DecodeOutboxPayload(row)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		request, ok := decoded.(SuperviseRequest)
-		if !ok {
-			rows.Close()
-			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
-		}
-		run := runs[token]
-		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts,
-			Running: running, Age: age})
-		runs[token] = run
+		return token
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
+	if err := s.readQueued(ctx, tx, issues, func() string { return fmt.Sprintf("read the queued role runs of %d issues", len(issues)) }, reaches,
+		func(token claim.Token, queued QueuedSupervise) {
+			run := runs[token]
+			run.Queued = append(run.Queued, queued)
+			runs[token] = run
+		}); err != nil {
+		return nil, err
 	}
-	rows.Close()
-
 	if err := readRoleClaims(ctx, tx, tokens, func(token claim.Token, held *RoleClaim) {
 		run := runs[token]
 		run.Claim = held
@@ -3812,51 +3775,85 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 }
 
 func (s *Postgres) ClaimQueued(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, generation uint64) ([]QueuedSupervise, error) {
-	entries, err := s.PhaseEntries(ctx, tx, []string{issue})
-	if err != nil {
+	at := strconv.FormatUint(generation, 10)
+	reaches := func(row queuedIdentity, entries map[PhaseRole]PhaseEntry) claim.Token {
+		if row.generation != at {
+			return ""
+		}
+		named := row.named
+		if named == "" {
+			named = roleRunWorker(token, issue, claim.Role(row.role), entries)
+		}
+		if named != token {
+			return ""
+		}
+		return token
+	}
+	var queued []QueuedSupervise
+	if err := s.readQueued(ctx, tx, []string{issue}, func() string { return fmt.Sprintf("read the queued rows of claim %s of %s", token, issue) }, reaches,
+		func(_ claim.Token, row QueuedSupervise) { queued = append(queued, row) }); err != nil {
 		return nil, err
+	}
+	return queued, nil
+}
+
+// queuedIdentity is a queued supervise row as readQueued matches it before decoding it: its issue,
+// its payload's role and generation exactly as Postgres renders them (roleRunIdentity), and the
+// claim it names (SuperviseRequest.Claim), "" where it names none.
+type queuedIdentity struct {
+	roleRunIdentity
+	named claim.Token
+}
+
+// readQueued is the one read of queued supervise rows that RoleRuns and ClaimQueued select from.
+// It reads the phases rows of issues (PhaseEntries), which say the claim a row that names none
+// reaches when it runs, then the issues' supervise rows by the outbox_issue index, oldest first,
+// each with its payload's role and generation as text, its age in the store's own clock
+// (QueuedSupervise.Age) and whether a live lease holds it at that same now()
+// (QueuedSupervise.Running). reaches answers the claim whose queued row each is, or "" for a row
+// the caller does not read, and only a row it answers a claim for is decoded and handed to add, so
+// a row that does not decode fails only a read that selects it. describe names the read in its
+// errors.
+func (s *Postgres) readQueued(ctx context.Context, tx pgx.Tx, issues []string, describe func() string,
+	reaches func(queuedIdentity, map[PhaseRole]PhaseEntry) claim.Token, add func(claim.Token, QueuedSupervise)) error {
+	entries, err := s.PhaseEntries(ctx, tx, issues)
+	if err != nil {
+		return err
 	}
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
 		coalesce(payload->>'claim', ''),
 		now() - created_at, coalesce(lease_token <> '' and lease_until > now(), false)
-		from outbox where kind = $1 and issue = $2 order by id`, string(OutboxKindSupervise), issue)
+		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
-		return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+		return fmt.Errorf("%s: %w", describe(), err)
 	}
 	defer rows.Close()
-	var queued []QueuedSupervise
 	for rows.Next() {
-		var role, at, named string
+		var role, generation, named string
 		var age time.Duration
 		var running bool
-		row, err := scanOutbox(rows, &role, &at, &named, &age, &running)
+		row, err := scanOutbox(rows, &role, &generation, &named, &age, &running)
 		if err != nil {
-			return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+			return fmt.Errorf("%s: %w", describe(), err)
 		}
-		if at != strconv.FormatUint(generation, 10) {
-			continue
-		}
-		reaches := claim.Token(named)
-		if reaches == "" {
-			reaches = roleRunWorker(token, issue, claim.Role(role), entries)
-		}
-		if reaches != token {
+		token := reaches(queuedIdentity{roleRunIdentity: roleRunIdentity{issue: row.Issue, role: role, generation: generation}, named: claim.Token(named)}, entries)
+		if token == "" {
 			continue
 		}
 		decoded, err := DecodeOutboxPayload(row)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		request, ok := decoded.(SuperviseRequest)
 		if !ok {
-			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
+			return fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
 		}
-		queued = append(queued, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts, Running: running, Age: age})
+		add(token, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts, Running: running, Age: age})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the queued rows of claim %s of %s: %w", token, issue, err)
+		return fmt.Errorf("%s: %w", describe(), err)
 	}
-	return queued, nil
+	return nil
 }
 
 // roleRunWorker is the claim a supervise row of role on issue that names no claim reaches when it

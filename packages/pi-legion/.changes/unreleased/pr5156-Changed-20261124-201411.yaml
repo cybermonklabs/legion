@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The Legion tool accepts agent keys in plan steps and can target a claim for session recovery and compaction. Worker state and stall-exit budgets follow the registered claim across roles.
+time: 2026-11-24T20:14:11Z
+custom:
+    Issue: pr5156

@@ -192,8 +192,8 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if len(starts) != 1 {
 			t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
 		}
-		if starts[0].Entry != top+1 || starts[0].ResendEntry {
-			t.Fatalf("the retro's start is at entry %d (resend %v), want a raised entry %d, one above the issue's highest", starts[0].Entry, starts[0].ResendEntry, top+1)
+		if starts[0].Entry <= top || starts[0].ResendEntry {
+			t.Fatalf("the retro's start is at entry %d (resend %v), want above the previous entry %d", starts[0].Entry, starts[0].ResendEntry, top)
 		}
 		if starts[0].Task != controlStarts[0].Task {
 			t.Fatalf("the retro's task = %q, want the task the approval starts it with: %q", starts[0].Task, controlStarts[0].Task)

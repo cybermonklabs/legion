@@ -212,9 +212,9 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, held
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	steps := record.NameAgents(earlier, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps), held...)
+	steps := record.NameAgents(earlier, planSteps(e.cfg.Deployment, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps), held)
 	var handed []handOn
-	for _, agent := range record.UnnamedAgents(earlier, steps, held...) {
+	for _, agent := range record.UnnamedAgents(earlier, steps, held) {
 		// A name another agent of these steps holds would make two agents one claim; only a name
 		// a key of an earlier generation holds is handed on.
 		if slices.ContainsFunc(steps, func(step record.PlanStep) bool { return step.Agent == agent.Name }) {

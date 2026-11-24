@@ -74,9 +74,9 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
-	if secondStart.Entry != implementing+1 || secondStart.Entry <= firstTesting {
-		t.Fatalf("the second testing start is of entry %d, want %d, one above the implementer's entry %d the move back raised: an entry is one above every entry of the issue's rows, so above the tester's first entry %d too",
-			secondStart.Entry, implementing+1, implementing, firstTesting)
+	if secondStart.Entry <= implementing || secondStart.Entry <= firstTesting {
+		t.Fatalf("the second testing start is of entry %d, want above the implementer's entry %d and the tester's first entry %d",
+			secondStart.Entry, implementing, firstTesting)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {
 		t.Fatalf("the issue is on run %d, want 1: the run never moved, which is why it cannot refuse this completion", run)

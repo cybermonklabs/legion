@@ -173,7 +173,7 @@ func seedKeyedStepPlan(t *testing.T, pool *store.Pool, records record.Store, key
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: "testing", AgentKey: "a"},
 			{Issue: key, Generation: 1, Task: "a", Position: 3, Role: "linter", Type: "testing"},
-		})
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}

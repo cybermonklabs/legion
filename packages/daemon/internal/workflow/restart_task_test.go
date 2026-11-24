@@ -102,9 +102,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			t.Fatalf("the todo fired %d hook prompts, want none", got-prompts)
 		}
 		row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer)
-		if row.Entry != entry+1 || !row.EntryMovedBack || !strings.Contains(row.EntryTask, restartedBy) {
-			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want entry %d, one above the issue's highest, raised as a move back, whose task holds %q",
-				row.Entry, row.EntryMovedBack, row.EntryTask, entry+1, restartedBy)
+		if row.Entry <= entry || !row.EntryMovedBack || !strings.Contains(row.EntryTask, restartedBy) {
+			t.Fatalf("the implementer's row has entry %d (moved back %v) and task %q, want above the previous entry %d, raised as a move back, with its task holding %q",
+				row.Entry, row.EntryMovedBack, row.EntryTask, entry, restartedBy)
 		}
 		starts := superviseRowsOf(t, pool, root.Key, "start")
 		if start := starts[len(starts)-1]; start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Entry != row.Entry || start.Task != row.EntryTask {

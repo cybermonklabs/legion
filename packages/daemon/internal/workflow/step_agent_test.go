@@ -64,27 +64,26 @@ func TestAKeyedAgentsTwoStepsStartOneClaim(t *testing.T) {
 	}
 }
 
-// The entries of one claim rise across its rows: the tester's row of key a's agent holds entry 2,
-// one above the implementer's row's 1, and the tester's start carries it, so the claim's given
-// entry, 1, does not refuse the task of its second step. Numbered on the tester's row alone, the
-// entry was 1.
+// Every entry of an issue rises above every earlier entry of its rows. Key a's agent works the
+// implementer's and tester's steps in order: their entries are 1 and 2 in this fixture, and the
+// tester's start carries 2, above the entry its claim was given. Counting only the tester's row
+// would give 1 again and lose the second step's task.
 func TestAnEntryRisesAcrossTheRowsOfItsClaim(t *testing.T) {
 	pool, root := keyedRun(t)
 	if got := storedPhaseRow(t, pool, root.Key, claim.RoleImplementer).Entry; got != 1 {
 		t.Fatalf("the implementer's row holds entry %d, want 1", got)
 	}
 	if got := storedPhaseRow(t, pool, root.Key, claim.RoleTester).Entry; got != 2 {
-		t.Fatalf("the tester's row holds entry %d, want 2: one above every row of its claim", got)
+		t.Fatalf("the tester's row holds entry %d, want 2: one above every row of the issue", got)
 	}
 	if got := roleStartsOf(t, pool, root.Key, claim.RoleTester); len(got) != 1 || got[0].Entry != 2 {
 		t.Fatalf("the tester's starts are %+v, want one start of entry 2", got)
 	}
 }
 
-// An entry never falls below its row's own: the release before raised a phase worker's row to entry
-// 3 and no completion wrote a claim on it. The next entry of that worker, on an issue with no plan
-// rows, is 4. Numbered by the rows that name its claim alone, it fell to 1, which the completion
-// route reads as behind.
+// An entry never falls below any row of its issue: the release before raised every phase worker's
+// row to entry 3 and no completion wrote a claim on it. The next entry is 4. Counting only rows
+// that name the claim would give 1, which the completion route reads as behind.
 func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -103,7 +102,7 @@ func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	role := phase.RoleFor(issueAt(t, pool, root.Key))
 	if got := storedPhaseRow(t, pool, root.Key, role).Entry; got != 4 {
-		t.Fatalf("the %s's row holds entry %d, want 4: one above its own 3", role, got)
+		t.Fatalf("the %s's row holds entry %d, want 4: one above every row's seeded 3", role, got)
 	}
 }
 

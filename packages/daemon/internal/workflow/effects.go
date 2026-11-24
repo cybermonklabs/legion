@@ -1074,8 +1074,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the issue holds, a start still queued or in flight included. A number counted on the role's row,
 // or across the rows that name the claim now, falls at or below a claim's given entry wherever a
 // version moves the row that held the claim's highest entry to another claim, and the claim's queue
-// then takes its next task as given already (supervise's given) and no sweep owes it. Readers
-// compare entries for order alone, never for nearness: a role's entries need not be consecutive.
+// then takes its next task as given already (supervise's given) and no sweep owes it. A role's
+// entries need not be consecutive: the difference printed as "which is %d behind" by
+// intake/facts.go and engine.go counts issue-wide raises, including other roles' entries, not
+// entries missed by this role.
 // The facts that raise an entry are applied one at a time (intake.SerializeFacts), so two raises
 // of one issue never read the same highest entry.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
