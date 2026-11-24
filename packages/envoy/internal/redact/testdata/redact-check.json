@@ -12553,7 +12553,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/mcpbridge",
       "test": "TestTheSSEURLKeepsTheConfiguredQuery/query",
-      "production": "mcpbridge HTTPServer.Start: a configured URL with a query (http://host/mcp?key=...) connects to its path joined with sse, the query kept (url.URL.JoinPath: /mcp/sse?key=...), where /sse appended to the URL's text sat inside the query (/mcp?key=.../sse) and the server answered 404"
+      "production": "mcpbridge HTTPServer.Start: a configured URL with a query (http://host/mcp?key=...) connects to its path joined with sse, the query kept (urljoin.Join: /mcp/sse?key=...), where /sse appended to the URL's text sat inside the query (/mcp?key=.../sse) and the server answered 404"
     },
     {
       "id": "mcpbridge-sse-url-query-trailing-slash",
@@ -12580,7 +12580,7 @@
       "mutation": {
         "file": "packages/envoy/internal/mcpbridge/http_server.go",
         "preimage": "fmt.Errorf(\"create SSE request: the configured URL does not parse\")",
-        "replacement": "fmt.Errorf(\"create SSE request: the configured URL does not parse: %w\", err)"
+        "replacement": "fmt.Errorf(\"create SSE request: the configured URL does not parse: %s\", s.cfg.URL)"
       }
     },
     {
@@ -13427,7 +13427,7 @@
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
         "preimage": "oauth2call.Unanswered(err, ask, \"\")",
-        "replacement": "oauth2call.Unanswered(err, ask, ask.URL.String())"
+        "replacement": "oauth2call.Unanswered(err, ask, request.CacheURL)"
       }
     },
     {
@@ -13456,7 +13456,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
       "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/query",
-      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with a query (http://host/daemon?sig=...) sends each report to its path joined with the turn-outcome route, the query kept (url.URL.JoinPath: /daemon/legion/v1/claims/turn-outcome?sig=...), where the route appended to the URL's text sat inside the query (/daemon?sig=.../legion/v1/claims/turn-outcome) and the daemon was asked /daemon"
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with a query (http://host/daemon?sig=...) sends each report to its path joined with the turn-outcome route, the query kept (urljoin.Join: /daemon/legion/v1/claims/turn-outcome?sig=...), where the route appended to the URL's text sat inside the query (/daemon?sig=.../legion/v1/claims/turn-outcome) and the daemon was asked /daemon"
     },
     {
       "id": "claudebridge-turn-report-url-query-trailing-slash",
@@ -13483,7 +13483,7 @@
       "mutation": {
         "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
         "preimage": "logger.Printf(\"reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL (its value is not printed)\")",
-        "replacement": "logger.Printf(\"reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL: %v\", err)"
+        "replacement": "logger.Printf(\"reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL: %s\", cfg.DaemonURL)"
       }
     },
     {
@@ -13631,7 +13631,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheAskGoesToThePathJoinedOntoTheCacheURL/query",
-      "production": "workspace askCache: a --cache-url with a path and a query (http://host/cache?sig=...) asks that path joined with the ask's, the query kept (url.URL.JoinPath: /cache/healthz?sig=...), where /healthz appended to the URL's text sat inside the query (/cache?sig=.../healthz) and the cache was asked /cache"
+      "production": "workspace askCache: a --cache-url with a path and a query (http://host/cache?sig=...) asks that path joined with the ask's, the query kept (urljoin.Join: /cache/healthz?sig=...), where /healthz appended to the URL's text sat inside the query (/cache?sig=.../healthz) and the cache was asked /cache"
     },
     {
       "id": "workspace-cache-url-query-trailing-slash",
@@ -13697,7 +13697,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/judge",
       "test": "TestADispatchReadGoesToTheRouteJoinedOntoTheDispatchURL/query",
-      "production": "judge Dispatch.get: a Dispatch URL with a path and a query (http://host/dispatch?sig=...) reads its path joined with each route, the query kept and the token presented (url.URL.JoinPath: /dispatch/api/v1/issues/<key>?sig=...), where the route appended to the URL's text sat inside the query and Dispatch was asked /dispatch"
+      "production": "judge Dispatch.get: a Dispatch URL with a path and a query (http://host/dispatch?sig=...) reads its path joined with each route, the query kept and the token presented (urljoin.Join: /dispatch/api/v1/issues/<key>?sig=...), where the route appended to the URL's text sat inside the query and Dispatch was asked /dispatch"
     },
     {
       "id": "judge-dispatch-url-query-trailing-slash",
@@ -13755,7 +13755,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestGenerateIDTokenGoesToTheResourceJoinedOntoTheIAMURL/query",
-      "production": "cipherclient generateIDToken: an IAM Credentials URL with a path and a query (http://host/iam?key=...) calls that path joined with the resource's, the query kept (url.URL.JoinPath: /iam/v1/projects/-/serviceAccounts/<account>:generateIdToken?key=...), where the path appended to the URL's text sat inside the query and IAM Credentials was asked /iam"
+      "production": "cipherclient generateIDToken: an IAM Credentials URL with a path and a query (http://host/iam?key=...) calls that path joined with the resource's, the query kept (urljoin.Join: /iam/v1/projects/-/serviceAccounts/<account>:generateIdToken?key=...), where the path appended to the URL's text sat inside the query and IAM Credentials was asked /iam"
     },
     {
       "id": "cipherclient-iam-url-query-trailing-slash",
@@ -13805,7 +13805,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
       "test": "TestAnIAMURLWithACredentialPrintsNoneOfIt/unparsed",
-      "production": "cipherclient generateIDToken: an IAM Credentials URL that url.Parse refuses is named by its class (redact.Class), never url.Parse's error, which quotes the URL whole, its user information and query included",
+      "production": "cipherclient generateIDToken: an IAM Credentials URL that url.Parse refuses is named by its class, \"not a valid URL\" (redact.Masked with redact.ClassNotAURL), never url.Parse's error, which quotes the URL whole, its user information and query included",
       "capture": "cipherclient.iam-url/unparsed"
     },
     {
@@ -13813,7 +13813,7 @@
       "requirement": "r3-each-site",
       "package": "./agentloop",
       "test": "TestADecisionGoesToThePathJoinedOntoTheBaseURL/query",
-      "production": "agentloop Decide: a base URL with a path and a query (http://host/base?sig=...) posts to that path joined with the System One path, the query kept (url.URL.JoinPath: /base/v1/systemone?sig=...), where the path appended to the URL's text sat inside the query and the endpoint was asked /base"
+      "production": "agentloop Decide: a base URL with a path and a query (http://host/base?sig=...) posts to that path joined with the System One path, the query kept (urljoin.Join: /base/v1/systemone?sig=...), where the path appended to the URL's text sat inside the query and the endpoint was asked /base"
     },
     {
       "id": "agentloop-decide-url-query-trailing-slash",
@@ -13856,7 +13856,7 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestACloudSQLReadGoesToTheRouteJoinedOntoTheAPIURL/query",
-      "production": "loadtest readCloudSQLSeries: an -api URL with a path and a query (http://host/monitoring?key=...) reads that path joined with the timeSeries route, its own query kept ahead of the read's parameters (url.URL.JoinPath: /monitoring/v3/projects/<project>/timeSeries?key=...&filter=...), where the route appended to the URL's text sat inside the query and Cloud Monitoring was asked /monitoring"
+      "production": "loadtest readCloudSQLSeries: an -api URL with a path and a query (http://host/monitoring?key=...) reads that path joined with the timeSeries route, its own query kept ahead of the read's parameters (urljoin.Join: /monitoring/v3/projects/<project>/timeSeries?key=...&filter=...), where the route appended to the URL's text sat inside the query and Cloud Monitoring was asked /monitoring"
     },
     {
       "id": "loadtest-cloudsql-api-url-query-trailing-slash",
