@@ -183,6 +183,12 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	if err := client.JS().DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
+	// The longest wait of this package, about 20 s measured under load: the view keeps answering
+	// until its watcher has noticed the bucket is gone, which is a sequence of the watcher's own
+	// bounds (internal/kvwatch: a stream probe every streamProbeInterval, the confirm it waits for
+	// at streamConfirmMaxAge, the reread after it at rereadDelay, and the scan's ScanIdleTimeout,
+	// about 21 s together). All but the last are unexported, so this row cannot state the sum and
+	// takes the package's bound (listenerWaitBound), which leaves it roughly three times its need.
 	waitFor(t, "the role claim view to stop answering", func() bool {
 		_, err := registry.RolesHeldBy(sender)
 		return err != nil
