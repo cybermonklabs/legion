@@ -1144,11 +1144,12 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 //
 // A root is in the line as a root that never ran (LineQueuedRoot) only while its own record says
 // the generation it carries has not run — it stands at admitted with its design gate never
-// opened, or it arrived from another tree carrying the phase it ran there (ran). So a person's
-// todo on a running root puts it back in no queue: the root whose gate has opened waits here for
-// its own first phase, and the root in accepting, in merging or at work waits for nothing. The
-// slot does not say it either, for the reason the queued-root loop states at the skip it guards
-// below.
+// opened, or it arrived from another tree carrying the phase it ran there, or it is a re-admitted
+// root whose tree has no lifecycle open under the workflow, whose gate says nothing until its
+// promotion opens the tree (ran). So a person's todo on a running root puts it back in no queue:
+// the root whose gate has opened in a tree that runs waits here for its own first phase, and the
+// root in accepting, in merging or at work waits for nothing. The slot does not say it either, for
+// the reason the queued-root loop states at the skip it guards below.
 //
 // An issue holding a slot row is in the line where its promotion needs more than that row, the
 // three kinds LineEntry.Holds names, and each is promoted without taking a second slot: the
@@ -1186,8 +1187,17 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	queued := queuedRoots(issues, facts)
 	live := liveRoots(issues, facts, queued)
 	queuedKeys := make(map[string]struct{}, len(queued))
+	// unopened is the queued roots whose promotion has still to open their tree (AwaitsPromotion):
+	// nothing of such a tree starts before that promotion, which offers the root's own work and
+	// brings back its members (admit's startMidPhaseMembers), so the line offers none of its members
+	// a place. A queued root holding a row the daemon granted it in this tree has been promoted
+	// already, and its members stand in the line as the members of any tree that runs.
+	unopened := make(map[string]struct{}, len(queued))
 	for _, issue := range queued {
 		queuedKeys[issue.Key] = struct{}{}
+		if _, holds := slotted[issue.Key]; AwaitsPromotion(issue, facts.Lifecycles[issue.Key], facts.Gates[issue.Key], holds) {
+			unopened[issue.Key] = struct{}{}
+		}
 	}
 	// Every drop site reports what it left behind through one ladder, built over the facts the
 	// line itself is judged on, so that the word an issue reads here and the word the assembly
@@ -1234,6 +1244,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot {
 			// A root whose tree is not open yet is in the second part whatever rows it owes: its
 			// promotion opens the tree, and the starts of a run it carries are queued then.
+			hold(issue)
+			continue
+		}
+		// A member of a tree whose root waits for its promotion is not offered a slot either,
+		// whatever start it owes: the promotion starts the member's phase role, which a start it
+		// already owes stands for (workflow.StartFor), and only then does the tree run. Without
+		// this, a start a lease hid from finishFencedStarts through the tree's close would put the
+		// member in the line before its tree had opened (dispatch://INFRA-5471).
+		if _, waitsForTree := unopened[issue.Tree]; waitsForTree {
 			hold(issue)
 			continue
 		}
@@ -1341,12 +1360,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// A root waiting in the line for its tree to be opened starts nothing of that tree, its own
-		// first phase or a member's, before the promotion that opens it: the promotion offers the
-		// root's own work and brings back its members (admit's startMidPhaseMembers). The gate of
-		// such a root is shut but in one case, a re-admitted root whose tree has no open lifecycle
-		// to run in (ran), and it is that case this holds a member for (dispatch://INFRA-5471).
-		if _, queuedTree := queuedKeys[issue.Tree]; queuedTree || !runs(issue) {
+		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) {
+			hold(issue)
+			continue
+		}
+		// A member of a tree whose root waits for its promotion takes no first phase before that
+		// promotion opens the tree. Such a root's gate is shut but where a re-admitted root's tree has
+		// no open lifecycle to run in (ran) or a handed-over root carries an open gate, and those are
+		// the cases this holds a member for (dispatch://INFRA-5471).
+		if _, waitsForTree := unopened[issue.Tree]; waitsForTree {
 			hold(issue)
 			continue
 		}
@@ -1556,8 +1578,14 @@ func AwaitsPromotion(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGat
 // longer comes, and the pass brings them back instead, once, and clears the mark
 // (dispatch://INFRA-5471). A promotion clears the mark itself, so a tree it opened never reads
 // true here.
+//
+// The root must still be handed to Legion (Issue.HandedOver), as a promotion asks of a queued root:
+// a root whose label a person took off while it waited is no queued root either, and the tree runs
+// by its lifecycle, but nothing hands that tree's work to the daemon, so the mark stands until the
+// label is back and the members come back then.
 func MembersReturnOwed(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
-	return root.MembersOwed && claim.IsTreeRoot(root.Key, root.Tree) && gate.EverOpened() && TreeRuns(root, lifecycle, gate)
+	return root.MembersOwed && root.HandedOver && claim.IsTreeRoot(root.Key, root.Tree) && gate.EverOpened() &&
+		TreeRuns(root, lifecycle, gate)
 }
 
 // treeLive is TreeLive over the facts of one root already in hand: its tree's lifecycle and its

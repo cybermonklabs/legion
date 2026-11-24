@@ -679,8 +679,8 @@ type PhaseRow struct {
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
-	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it by one and
+	// phase the issue has moved into, the start of a mid-phase worker a re-admitted tree's first run
+	// brings back, and a root architect's start of work it was not on raise it by one and
 	// write the three fields below beside it, in their own transaction (workflow's start,
 	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
@@ -729,8 +729,8 @@ type PhaseRow struct {
 	// completion as the release before did (store migration
 	// 20261113090512_phase_entry_moved_back.up.sql), until the role's next entry writes what its
 	// own move was. A row PutPhase writes reads what it was given: false on one this release
-	// inserted before raising any entry on it, and after the promotion's start of a mid-phase
-	// worker, which moves no phase back.
+	// inserted before raising any entry on it, and after the start of a mid-phase worker a
+	// re-admitted tree's first run brings back, which moves no phase back.
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record
@@ -2061,8 +2061,9 @@ type Store interface {
 	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
 	// TreeMembersRun is whether an issue of tree other than its root stands past
 	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
-	// and its phase is neither admitted nor done. Those are the members a
-	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
+	// and its phase is neither admitted nor done. Those are the members a re-admitted tree's first
+	// run starts again, its promotion or the admission pass that finds it running first (admit's
+	// startMidPhaseMembers, which passes over a
 	// member at admitted and one out of the workflow), and a member a person set todo once its
 	// own first phase has started. It is what says a root architect's tree has work under way
 	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool

@@ -8904,7 +8904,7 @@ each issue's pod (every role of it alike) and the image probe's.
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  a backward move into its phase, the first run of a re-admitted tree (the root's promotion, or the admission pass that finds the tree running when its design gate opened first), or a production check's look after the issue's merge;
   the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 

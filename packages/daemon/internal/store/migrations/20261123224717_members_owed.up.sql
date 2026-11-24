@@ -11,15 +11,21 @@
 -- opening leaves the root queued, so the promotion that opens the tree's next epoch brings the
 -- members back (record's ran).
 --
--- Every row takes the default, false, but the roots whose re-admission has still to bring their
--- members back: a root of its own tree standing in todo at admitted on a generation past the first,
--- holding no slot, released for no wait and with no linger, whose tree does not already run under
--- an ever-opened gate. A root the release before promoted stands in progress or holds the slot its
--- promotion granted, so it stays false, and the first pass of this release starts nothing for a
--- generation that already ran. A root whose gate opened before its promotion while its tree's
--- lifecycle stood open stays false as well: its tree already runs, and the members that tree left
--- suspended are the operator's to resume, as on the release before. A root whose gate opened while
--- its tree's lifecycle was not open is marked, and so queues again until its promotion.
+-- Every row takes the default, false, but the roots whose re-admitted generation no promotion has
+-- opened: a root of its own tree standing in todo at admitted on a generation past the first,
+-- holding no slot, released for no wait and with no linger. A root the release before promoted
+-- stands in progress, or holds the slot its promotion granted, or carries the mark of the wait it
+-- gave that slot back for, so it stays false, and the first pass of this release brings nothing of
+-- a promoted generation back again. The mark reads no design gate: the steps a tree is gated on
+-- are the deployment's configuration, which SQL cannot read, so no statement here can tell a root
+-- whose gate has opened at every step from one still waiting on a step it has not registered. So a
+-- root whose gate opened before its promotion on the release before is marked as well. Its tree
+-- runs and its members stood suspended with nothing owed; the first pass of this release brings
+-- them back once, as that release's promotion would have. A member whose phase worker the operator
+-- resumed meanwhile and that still runs is started no second time (workflow.StartFor), though each
+-- other role of it that ran is started again with no task. A marked root whose gate opened while
+-- its tree's lifecycle was not open queues
+-- again until the promotion that opens its tree.
 --
 -- The release before this one names each column of the table it writes (record's PutIssue) and
 -- reads none of this one, so every row it inserts takes the default.
@@ -48,7 +54,4 @@ alter table issues add column members_owed boolean not null default false;
 update issues set members_owed = true
  where key = tree and generation > 1 and status = 'todo' and phase = 'admitted' and linger_until is null
    and released_for_wait_at is null
-   and not exists (select 1 from slots where slots.issue = issues.key)
-   and not (exists (select 1 from tree_lifecycles lifecycle
-                     where lifecycle.tree = issues.key and lifecycle.authority = 'workflow' and not lifecycle.cleanup_started)
-            and exists (select 1 from design_gates gate where gate.issue = issues.key and gate.ever_opened));
+   and not exists (select 1 from slots where slots.issue = issues.key);

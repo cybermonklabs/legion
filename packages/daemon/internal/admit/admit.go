@@ -2829,10 +2829,11 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	// reading of the claims half of it made.
 	var members []midPhaseMember
 	var keys []record.RoleRunKey
-	// The caller hands this the pass's own records and the promoted root beside them
-	// (promoteHolds), and the records still carry that root as the pass read it, before the
-	// promotion wrote it. So the root's own record is taken from the parameter, which is the
-	// fresher of the two, and the copy among the records is passed over. It is walked last, the
+	// The caller hands this the pass's own records and the root beside them: the promoted root as
+	// the promotion wrote it, while the records still carry that root as the pass read it
+	// (promoteHolds), or the running root as the pass read it (returnMembersOfRunningTrees). So
+	// the root's own record is taken from the parameter, which is never the staler of the two,
+	// and the copy among the records is passed over. It is walked last, the
 	// place the appended copy held, so the order of the rows this writes is unchanged. Reading
 	// both would start one member twice: a phase worker handed the same task on two rows, which
 	// the start of accepting, retro or merging no longer coalesces into one (workflow.StartOrOwe).

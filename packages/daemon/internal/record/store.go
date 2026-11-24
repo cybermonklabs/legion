@@ -1482,11 +1482,12 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
-		// rather than level with it, and the re-admitted tree's promotion raises the entry again
-		// and writes the task of that entry beside it (admit's startMidPhaseMembers). That the
-		// number is never reset is also what keeps a review of the old entry from moving the
-		// reviewer's commit after the promotion: its footer names a number the row has left
-		// (PhaseRow.ReviewedHead), and until the promotion the row holds no entry's task. The mark
+		// rather than level with it, and the first run of the re-admitted tree — its promotion, or
+		// the admission pass that finds it running first — raises the entry again and writes the
+		// task of that entry beside it (admit's startMidPhaseMembers). That the number is never
+		// reset is also what keeps a review of the old entry from moving the reviewer's commit
+		// after that run begins: its footer names a number the row has left
+		// (PhaseRow.ReviewedHead), and until then the row holds no entry's task. The mark
 		// that the task is sent as written goes with the task it was about, and so does the step
 		// the row ran (step_task, step_place), a step of the last generation's plan, whose task ids
 		// the new generation's plan need not share. The time the entry was raised stays with the

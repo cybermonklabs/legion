@@ -40,8 +40,8 @@ const (
 
 // WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
 // to be opened, with no architect running for it yet: the one queued-root rule (QueuedRoot),
-// read with the root's own design gate, not lingering, and holding no slot of its own. steps
-// are the design-gate steps the deployment gates.
+// read with the root's own design gate and its tree's lifecycle (RootFacts), not lingering, and
+// holding no slot of its own. steps are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a

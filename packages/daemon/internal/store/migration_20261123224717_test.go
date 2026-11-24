@@ -21,16 +21,17 @@ const membersOwedVersion = 20261123224717
 // failure to read that block names it.
 const membersOwedRelease = "the release that brings a re-admitted tree's members back the first time the tree runs"
 
-// 20261123224717 adds issues.members_owed and marks only the roots whose re-admission has still
-// to bring their members back (dispatch://INFRA-5471): a root standing in todo at admitted on a
-// generation a re-admission started, holding no slot, released for no wait and with no linger,
-// whose tree does not already run under an ever-opened gate. A root the release before promoted,
-// one whose gate opened before its promotion while its tree's lifecycle stood open, a root that
-// never ran and a child all stay unmarked, so the first pass after the upgrade starts nothing for
-// a generation that already ran. A root whose gate opened while its tree's lifecycle was not open
-// is marked: it queues again until the promotion that opens its tree. Its way back, the last
-// paragraph of the migration's header, drops the column and deletes the migration's version row,
-// and the roll-forward marks the same roots again.
+// 20261123224717 adds issues.members_owed and marks the roots whose re-admitted generation no
+// promotion has opened (dispatch://INFRA-5471): a root standing in todo at admitted on a
+// generation a re-admission started, holding no slot, released for no wait and with no linger. A
+// root the release before promoted (in progress, holding its slot, or released for a wait), a root
+// that never ran, a root parked again, a root whose first phase started and a child all stay
+// unmarked, so the first pass after the upgrade brings nothing of a promoted generation back. The
+// mark reads no design gate, which only the deployment's steps can judge: a root still queued
+// behind its gate, a root whose gate opened before its promotion while its tree's lifecycle stood
+// open, one whose spec opened while its Verification document waits, and one whose gate opened
+// while its tree's lifecycle was not open are all marked, since no promotion has brought their
+// members back. Its way back, the last
 func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -47,10 +48,12 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	seed := []record.Issue{
 		root("LEGION-1", "todo", 2, phase.Admitted, nil),         // queued after its re-admission: owed
 		root("LEGION-2", "in_progress", 2, phase.Admitted, nil),  // promoted by the release before
-		root("LEGION-3", "todo", 2, phase.Admitted, nil),         // gate opened first, its tree's lifecycle open
+		root("LEGION-3", "todo", 2, phase.Admitted, nil),         // gate opened first, its tree's lifecycle open: owed
+		root("LEGION-31", "todo", 2, phase.Admitted, nil),        // spec opened, criteria not yet: owed
 		root("LEGION-4", "todo", 2, phase.Admitted, nil),         // gate opened first, its tree's cleanup reserved: owed
 		root("LEGION-5", "todo", 1, phase.Admitted, nil),         // a root that never ran
 		root("LEGION-6", "todo", 2, phase.Admitted, nil),         // promoted, then set back to todo, holding its slot
+		root("LEGION-62", "todo", 2, phase.Admitted, nil),        // promoted, then released for a wait and set back to todo
 		root("LEGION-7", "backlog", 2, phase.Admitted, &lingers), // parked again, lingering
 		root("LEGION-8", "todo", 2, phase.Planning, nil),         // its first phase started
 		{Key: "LEGION-9", Tree: "LEGION-1", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Admitted, Generation: 1,
@@ -62,7 +65,7 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 				return err
 			}
 		}
-		for _, key := range []string{"LEGION-2", "LEGION-3", "LEGION-4", "LEGION-6"} {
+		for _, key := range []string{"LEGION-2", "LEGION-3", "LEGION-31", "LEGION-4", "LEGION-6"} {
 			if _, err := treelifecycle.Open(ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
@@ -79,11 +82,18 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 				return err
 			}
 		}
-		for _, key := range []string{"LEGION-3", "LEGION-4"} {
-			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, ArtifactID: "artifact-" + key, LatestVersion: 3,
+		for _, key := range []string{"LEGION-3", "LEGION-31", "LEGION-4"} {
+			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "artifact-" + key, LatestVersion: 3,
 				ApprovedVersion: &approved, EverOpened: true}); err != nil {
 				return err
 			}
+		}
+		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-31", Step: record.DesignStepCriteria, ArtifactID: "criteria-LEGION-31",
+			LatestVersion: 1}); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `update issues set released_for_wait_at = $2 where key = $1`, "LEGION-62", lingers); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -94,8 +104,8 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 		t.Fatalf("migrate through the members' mark: %v", err)
 	}
 	const owed = `select key || ' ' || members_owed::text from issues order by key`
-	want := []string{"LEGION-1 true", "LEGION-2 false", "LEGION-3 false", "LEGION-4 true", "LEGION-5 false", "LEGION-6 false",
-		"LEGION-7 false", "LEGION-8 false", "LEGION-9 false"}
+	want := []string{"LEGION-1 true", "LEGION-2 false", "LEGION-3 true", "LEGION-31 true", "LEGION-4 true", "LEGION-5 false",
+		"LEGION-6 false", "LEGION-62 false", "LEGION-7 false", "LEGION-8 false", "LEGION-9 false"}
 	if got := rowsAsText(t, store, owed); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the marks after the migration = %v, want %v", got, want)
 	}
