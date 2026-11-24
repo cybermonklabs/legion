@@ -6,15 +6,20 @@ import { lstat } from "node:fs/promises";
  * report is the fixed text before the path and the fixed text after it: the path runs from the one
  * up to the first of the other on that line, at least one character long, as the daemon's
  * gitLockReports (`'(.+?)'`) read it. They are read with indexOf, not a pattern: a lazy pattern
- * here costs time quadratic in a line that holds many openings and no fixed tail. */
-const GIT_LOCK_REPORTS: readonly (readonly [opening: string, closing: string])[] = [
+ * here costs time quadratic in a line that holds many openings and no fixed tail. A path stays on
+ * its line, which is a trade: `'([^']+)'`, which this replaced, matched a newline, so a lock whose
+ * path holds a newline got its note then and gets none now. */
+type LockReport = readonly [opening: string, closing: string];
+const GIT_LOCK_REPORTS: readonly LockReport[] = [
   ["The lockfile at '", "' might need manual deletion"],
   ["Unable to create '", "': File exists"],
 ];
 
-/** Each path `report` names on `line`, in order. A line with no closing after its first opening
- * has none after any later opening either, so the read ends there. */
-function lockPaths(line: string, [opening, closing]: readonly [string, string]): string[] {
+/** Each path `report` names on `line`, in order: from each opening to the first closing at least
+ * one character after it. A line with no closing after its first opening has none after any later
+ * opening either, so the read ends there. */
+function lockPaths(line: string, report: LockReport): string[] {
+  const [opening, closing] = report;
   const paths: string[] = [];
   for (let from = 0; ; ) {
     const start = line.indexOf(opening, from);

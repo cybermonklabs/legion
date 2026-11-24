@@ -105,26 +105,41 @@ func TestStaleGitLockNoteNamesTheLockAndTellsTheRoleToRunTheCommandAgain(t *test
 	})
 
 	// git and jj print the lock's path between single quotes and do not escape it, so a path that
-	// holds a quote of its own (a TMPDIR or a checkout named so) still names its lock: the path
-	// runs to the quote before the message's fixed text, not to the first quote in it. Each of the
-	// two reports, alone and both on one line of output, names the lock once.
+	// holds a quote of its own (a TMPDIR or a checkout named so) still names its lock. Two rules
+	// read it, and pi-shared's git-lock.test.ts holds its copy to the same rows: the path ends at
+	// the first closing text after its opening, so two locks one report names on one line are two
+	// paths, not one path running from the first opening to the last closing; and a path stays on
+	// its line, so an opening cut off at the end of a line takes nothing from the next line's report.
 	t.Run("a lock whose path holds a single quote", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "tmp-sq'x", "it's here")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		lock := plantedLock(t, dir, "index.lock", now)
-		opening := "git lock " + lock + " was last written " + ageWords + " ago"
-		for name, output := range map[string]string{
-			"git's report":     gitLockFailure(lock),
-			"jj's report":      jjLockFailure(lock),
-			"both on one line": jjLockFailure(lock) + " " + gitLockFailure(lock),
-			"both, two lines":  jjLockFailure(lock) + "\n" + gitLockFailure(lock),
+		index := plantedLock(t, dir, "index.lock", now)
+		ref := plantedLock(t, dir, "main.lock", now)
+		for _, tc := range []struct {
+			name   string
+			output string
+			locks  []string
+		}{
+			{"git's report", gitLockFailure(index), []string{index}},
+			{"jj's report", jjLockFailure(index), []string{index}},
+			{"two locks git names on one line", gitLockFailure(index) + " " + gitLockFailure(ref), []string{index, ref}},
+			{"two locks jj names on one line", jjLockFailure(index) + " " + jjLockFailure(ref), []string{index, ref}},
+			{"a cut-off git opening before git's report", "fatal: Unable to create '/cut off\n" + gitLockFailure(index), []string{index}},
+			{"a cut-off jj opening before jj's report", "Error: The lockfile at '/cut off\n" + jjLockFailure(index), []string{index}},
 		} {
-			note := StaleGitLockNote(output, now)
-			if lines := strings.Split(note, "\n"); len(lines) != 1 || !strings.HasPrefix(note, opening) {
-				t.Errorf("%s: the note is %q, want one line that opens %q", name, note, opening)
-			}
+			t.Run(tc.name, func(t *testing.T) {
+				lines := strings.Split(StaleGitLockNote(tc.output, now), "\n")
+				if len(lines) != len(tc.locks) {
+					t.Fatalf("the note is %q, want one line for each of %q", lines, tc.locks)
+				}
+				for i, lock := range tc.locks {
+					if !strings.HasPrefix(lines[i], "git lock "+lock+" was last written "+ageWords+" ago") {
+						t.Errorf("line %d is %q, want it to name %s and its age", i, lines[i], lock)
+					}
+				}
+			})
 		}
 	})
 }

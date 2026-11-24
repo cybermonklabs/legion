@@ -159,7 +159,11 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 // backend (gitoxide), and git's own lockfile API, which every git jj runs reports through. Both
 // print the path between single quotes without escaping it, so a path may hold a quote of its own:
 // each pattern takes the path up to the first quote that the message's fixed text follows, never
-// up to the first quote alone, and `.` stops at the end of the line.
+// up to the first quote alone. `.` stops at the end of the line, so an opening cut off at a line's
+// end takes nothing from the next line. That is a trade: `'([^']+)'`, which these replace, matched
+// a newline, so a lock whose path holds a newline got its note then and gets none now; a quote in a
+// path is far likelier than a newline, and only the advisory line is lost. pi-shared's
+// git-lock.ts reads the same paths.
 var gitLockReports = []*regexp.Regexp{
 	regexp.MustCompile(`The lockfile at '(.+?)' might need manual deletion`),
 	regexp.MustCompile(`Unable to create '(.+?)': File exists`),
