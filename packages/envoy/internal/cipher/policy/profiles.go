@@ -84,7 +84,7 @@ type ProxyBlock struct {
 	Hosts   []string           `json:"hosts"`
 	Headers []string           `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []proxyrules.Allow `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string             `json:"kind"`    // "", "aws" or "azure"
+	Kind    string             `json:"kind"`    // "", "aws", "azure" or "dpop"
 	Judge   *uint32            `json:"judge"`   // the judge's longest lifetime, in seconds
 	// Guidance is what the model judge reads when it decides a request for the profile. It is
 	// no part of Digest's fingerprint.
@@ -300,7 +300,32 @@ func (e profileEntry) check(i int, seen map[string]int) error {
 	if err := e.Google.check(refuse); err != nil {
 		return err
 	}
-	return e.Proxy.check(e.Name, refuse)
+	if err := e.Proxy.check(e.Name, refuse); err != nil {
+		return err
+	}
+	return e.checkMinted(refuse)
+}
+
+// checkMinted holds a profile whose proxy block is of kind dpop to a name and that block alone:
+// the broker mints its credential for a grant of its own (requests.MintedKind) and holds it, so it
+// is made from no stored secret and its grant is decided by the kind, not by the tag policy. A
+// field that scopes or limits a stored secret's grant would read as a limit that holds nothing.
+func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
+	if e.Proxy == nil || e.Proxy.Kind != proxyrules.KindDPoP {
+		return nil
+	}
+	for _, f := range []struct {
+		field string
+		set   bool
+	}{
+		{"source", e.Source != ""}, {"tier", e.Tier != ""}, {"requesters", e.Requesters != nil},
+		{"maxGrant", e.MaxGrant != ""}, {"github", e.GitHub != nil}, {"google", e.Google != nil},
+	} {
+		if f.set {
+			return refuse(f.field, "is set on a profile of kind dpop, a capability the broker mints and holds from no stored secret")
+		}
+	}
+	return nil
 }
 
 // checkRequesters holds the requesters list to a requesters tag's shape (ParseRequesterShapes),
@@ -447,7 +472,7 @@ func (b *GoogleBlock) check(refuse func(field, why string) error) error {
 // each host in the one grammar a rules host is written in (rulehost.Refusal), whose refusal names
 // the host's reason and repeats no text of it but the form to write; then proxyrules.Validate's
 // answer for the block as the entry ProxyRules makes of it, which is the Lean model's (a judge
-// above 900 seconds, a kind other than "", aws or azure); and last the guidance's length, this
+// above 900 seconds, a kind other than "", aws, azure or dpop); and last the guidance's length, this
 // program's own rule and not the model's. The grammar serves a host only where Validate's
 // proxyrules.HostShapeOK accepts it, so Validate refuses no host here.
 func (b *ProxyBlock) check(name string, refuse func(field, why string) error) error {

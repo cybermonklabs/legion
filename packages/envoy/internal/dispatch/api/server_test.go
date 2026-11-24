@@ -45,13 +45,14 @@ import (
 )
 
 // apiTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel. Every test of the package calls t.Parallel but those that change or measure
-// something the whole process shares (the default logger, the environment, a package variable,
-// heap statistics), which stay serial and run before the rest. Alone, a test spends most of its
-// time waiting on Postgres, not on a core, so go test's default of GOMAXPROCS (four on CI's arm
-// runner) leaves the runner idle, and on a dev box with hundreds of cores it would open more
-// connections than the test server allows: each test has a database and pools of its own
-// (storetest.Open), and testlimits.ServerConnections sizes the server for a few at once.
+// no -parallel. Most tests of the package call t.Parallel; those that change or measure something
+// the whole process shares (the default logger, the environment, a package variable, heap
+// statistics, the xid rig's GOMAXPROCS and collector) or hold a wall-clock bound stay serial and
+// run before the rest. Alone, a database-backed test spends most of its time waiting on Postgres,
+// not on a core, so go test's default of GOMAXPROCS (four on CI's arm runner) leaves the runner
+// idle, and on a dev box with hundreds of cores it would open more connections than the test
+// server allows: each test has a database and pools of its own (storetest.Open), and
+// testlimits.ServerConnections sizes the server for a few at once.
 //
 // Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
 // test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a
@@ -216,6 +217,13 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// relatedBound is the related-item check's meaning allowance and its wait for the
+	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
+	// zero keeps production's. A case whose verdict is what the check's meaning stage found
+	// passes meaningVerdictBound, so whether the machine met production's three seconds is not
+	// what it measures. The bound counts from each check's start, the seed writes' checks among
+	// them.
+	relatedBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -223,6 +231,10 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
+	// list asks the listener and stores no copy, as the browser suite's server runs
+	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
+	listenerRosterUncached bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -372,21 +384,22 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:     horizontest.StallWarning,
-		HorizonWarnEvery:      horizontest.StallWarning,
-		OIDC:                  options.oidc,
-		BrokerTokens:          brokerTokens,
-		AgentSecretsURL:       options.agentSecretsURL,
-		AgentSecretsTokenFile: agentSecretsTokenFile,
-		AgentStream:           options.agentStream,
-		AgentPublisher:        agentPublisher,
-		Embedder:              options.embedder,
-		Answerer:              options.answerer,
-		Files:                 options.files,
-		DashboardEntry:        options.dashboardEntry,
-		BuildCommit:           options.buildCommit,
-		OutboxPublishes:       options.outboxPublishes,
-		Metrics:               options.metrics,
+		HorizonStallAfter:      horizontest.StallWarning,
+		HorizonWarnEvery:       horizontest.StallWarning,
+		OIDC:                   options.oidc,
+		BrokerTokens:           brokerTokens,
+		AgentSecretsURL:        options.agentSecretsURL,
+		AgentSecretsTokenFile:  agentSecretsTokenFile,
+		AgentStream:            options.agentStream,
+		AgentPublisher:         agentPublisher,
+		Embedder:               options.embedder,
+		Answerer:               options.answerer,
+		Files:                  options.files,
+		DashboardEntry:         options.dashboardEntry,
+		BuildCommit:            options.buildCommit,
+		OutboxPublishes:        options.outboxPublishes,
+		Metrics:                options.metrics,
+		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -399,6 +412,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

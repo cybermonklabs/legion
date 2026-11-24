@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // roleKeepWindow is a kept copy's hour: how old it may be, counted from the time the stream stored
@@ -967,7 +968,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, leaderRoleClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1343,19 +1344,35 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	return claimed == holder, nil
 }
 
-// readRoleClaimHolder reads role's claim record from the role bucket through the role lane's own
-// claim read (roleLaneClaims.RoleClaim, within ctx and roleHolderReadTimeout, whichever ends
+// readRoleClaimHolder reads role's claim record from the role bucket stream's leader
+// (store.Registry.RoleClaimFromLeader, within ctx and roleHolderReadTimeout, whichever ends
 // first), and returns the session it names, empty for a role no record claims. It is the read the
-// kept lane makes of who holds a role outside a resolution - the handover's retry and the drain
-// hold - so each decides on the record, and none on the registry's watched copy of the bucket,
-// which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
-// roleLaneClaims keeps the bound on a claim read in one place for both lanes.
+// session relay makes before it delivers a role message (takeOverFrame) and the read the kept lane
+// makes of who holds a role outside a resolution - the handover's retry and the drain hold - so
+// each decides on the record, and none on the registry's watched copy of the bucket, which can
+// lack a claim the bucket holds or keep one the bucket dropped. It is never a direct get: on a
+// replicated bucket a copy that has not applied a takeover answers the previous holder's claim,
+// and the relay would hand that holder a role message the new holder never receives.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	defer cancel()
+	claim, err := cfg.registry.RoleClaimFromLeader(readCtx, role)
 	if err != nil {
 		return "", err
 	}
 	return claim.HolderSessionID, nil
+}
+
+// leaderRoleClaims is the claim side (roles.ClaimStore) of the kept lane handover's resolution of
+// the role's holder: each claim read is the role bucket stream leader's
+// (store.Registry.RoleClaimFromLeader). On a replicated bucket a direct get can answer the claim
+// as it stood before a takeover; the handover would then walk the lane for the previous holder,
+// whose drain hold (roleKeepDrainHolds, a leader read) refuses every forward, and give the lane up
+// with the copy left on it until the next sweep, minutes later.
+type leaderRoleClaims struct{ registry *store.Registry }
+
+func (c leaderRoleClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
+	return c.registry.RoleClaimFromLeader(ctx, role)
 }
 
 // isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather
@@ -1725,16 +1742,16 @@ func keyedEventID(key string) string {
 // key and its message id are both envoy.dead-letter.<role>.<the copy's sequence>, which no other
 // copy has, so the stream holds one dead letter for each copy however many walks and listeners
 // send it, and its event id is that key's (keyedEventID). issued_at is the walk's clock when it
-// judged the copy. Its text names the role, the copy's event id and first line, why Envoy dropped
-// it, and when Envoy kept it and dropped it, in UTC. The first line is the copy's summary cut by
-// contracts.OneLineSummary, the rule the publish route cuts every summary it stores by, so a copy
-// the route kept is quoted as it was stored, and a raw role publish's at the same 160 runes.
+// judged the copy. Its text names the role, the copy's event id, the message (keptCopyNamed: a
+// Dispatch comment or message by its reference and none of its body, any other Dispatch message
+// by its event id alone, a message from any other source by its first line), why Envoy dropped
+// it, and when Envoy kept it and dropped it, in UTC.
 func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.Envelope, dropped time.Time, drop keptRoleDrop) (contracts.Envelope, string) {
 	key := "envoy.dead-letter." + role + "." + strconv.FormatUint(stored.Sequence, 10)
 	text := strings.Join([]string{
 		"Envoy dropped a message that you published to role " + role + ".",
 		"The event ID of the message is " + item.EventID + ".",
-		"The first line of the message is: " + contracts.OneLineSummary(item.PayloadSummary),
+		keptCopyNamed(item),
 		"Envoy kept the message at " + stored.Time.UTC().Format(time.RFC3339) +
 			". Envoy dropped the message at " + dropped.UTC().Format(time.RFC3339) + ".",
 		drop.explanation(),
@@ -1750,6 +1767,84 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 		Payload:        text,
 		TraceID:        id.New(),
 	}, key
+}
+
+// dispatchPostUnquoted is the sentence a dead letter gives after naming a Dispatch comment or
+// message by its id and its reference, in place of its first line.
+const dispatchPostUnquoted = "Envoy names a comment or a message from Dispatch by its ID and its reference and quotes none of it, because its author can edit or delete it."
+
+// dispatchUnquoted is the line a dead letter gives in place of the first line of any other
+// Dispatch message, which the letter names by its event id alone.
+const dispatchUnquoted = "Envoy does not quote a message from Dispatch, and names this one by its event ID alone."
+
+// keptCopyNamed is the line of item's dead letter that says which message item is. A message from
+// any source but dispatch is named by its first line: its summary cut by contracts.OneLineSummary,
+// the rule the publish route cuts every summary it stores by, so a copy the route kept is quoted
+// as it was stored, and a raw role publish's at the same 160 runes. A Dispatch frame's summary is
+// the head of what the event carries (internal/dispatch/outbox payloadSummary), and the line
+// quotes none of it. A comment's or a message's frame carries the head of the post's body, and the
+// letter is written as late as the end of the copy's hour, after the post's author may have edited
+// or deleted the post, so the line names the post by its id and its reference (dispatchPostRef),
+// which gives the post as it is now, and says why (dispatchPostUnquoted). Every other Dispatch
+// frame - an ask's, an issue's, a delivery receipt, and a post's whose event names no reference -
+// is named by its event id alone, and the line says only that (dispatchUnquoted).
+func keptCopyNamed(item contracts.Envelope) string {
+	if item.Source != "dispatch" {
+		return "The first line of the message is: " + contracts.OneLineSummary(item.PayloadSummary)
+	}
+	kind, postID, ref := dispatchPostRef(item.Payload)
+	if ref == "" {
+		return dispatchUnquoted
+	}
+	return "The message is Dispatch " + kind + " " + postID + ": " + ref + ". " + dispatchPostUnquoted +
+		" Read the reference to see the " + kind + " as it is now."
+}
+
+// dispatchPostKinds is the kind of post a Dispatch event carries, by the event type's first
+// token, as a reference names it: a suggestion is a comment (model.CommentEventPayload).
+var dispatchPostKinds = map[string]string{
+	"message":    "message",
+	"comment":    "comment",
+	"suggestion": "comment",
+}
+
+// dispatchEvent is what dispatchPostRef reads of a Dispatch frame's payload, the whole Dispatch
+// event (internal/dispatch/outbox envelope, model.Event): the event's type and issue key, and of
+// the event's own payload the post's id and, for a comment on a project document, the document's
+// project and slug (model.CommentEventPayload's project_key and artifact_slug).
+type dispatchEvent struct {
+	Type     string `json:"type"`
+	IssueKey string `json:"issue_key"`
+	Payload  struct {
+		ID           string `json:"id"`
+		ProjectKey   string `json:"project_key"`
+		ArtifactSlug string `json:"artifact_slug"`
+	} `json:"payload"`
+}
+
+// dispatchPostRef is the kind, the id and the reference of the post that payload, a Dispatch
+// event, carries. The reference is written as Dispatch's reference graph addresses an item
+// (internal/dispatch/refs itemRef): dispatch://<issue key>/<kind>/<id> for a post of an issue, and
+// dispatch://<project>/artifact/<slug>/comment/<id> for a comment on a project document. All three
+// are empty for a payload that does not decode as an event, for an event of no message or
+// comment, and for one that lacks the post's id or its owner, so a dead letter names no reference
+// it would have to guess.
+func dispatchPostRef(payload string) (kind, postID, ref string) {
+	var event dispatchEvent
+	if json.Unmarshal([]byte(payload), &event) != nil {
+		return "", "", ""
+	}
+	prefix, _, _ := strings.Cut(event.Type, ".")
+	kind, postID = dispatchPostKinds[prefix], event.Payload.ID
+	switch {
+	case kind == "" || postID == "":
+		return "", "", ""
+	case event.IssueKey != "":
+		return kind, postID, "dispatch://" + event.IssueKey + "/" + kind + "/" + postID
+	case kind == "comment" && event.Payload.ProjectKey != "" && event.Payload.ArtifactSlug != "":
+		return kind, postID, "dispatch://" + event.Payload.ProjectKey + "/artifact/" + event.Payload.ArtifactSlug + "/comment/" + postID
+	}
+	return "", "", ""
 }
 
 // deadLetterRefusal is why the stream refuses letter, the dead letter of a copy whose publish named

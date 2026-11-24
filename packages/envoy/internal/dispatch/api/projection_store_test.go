@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -520,6 +521,14 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: delete from tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.ItemIndexing.queueBlockRefs: insert into tables.refs":    {},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state":                 {},
+	// The tombstone of a deleted comment or message (refs.TombstoneItem): each block's stored
+	// excerpt and each text a revision recorded, over the item's own blocks and block texts
+	// tables, none of them projected.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts":  {},
+	// A delete's settle of its post's pending send attempts (queueDeletedPostSettlement):
+	// comment_deliveries or message_deliveries, neither of them projected.
+	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
 	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {},
@@ -971,7 +980,7 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 			t.Fatalf("read migration %s: %v", entry.Name(), err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(string(body))) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(string(body))) {
 			if !clause.held {
 				t.Logf("migration %s: %s: no column it sets is one a tuple projects", entry.Name(), clause.text)
 				continue
@@ -983,18 +992,6 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 		t.Fatal("no migration was read, so nothing was checked")
 	}
 	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
-}
-
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // --- the fixture the Postgres halves run on ---------------------------------------------
@@ -1149,7 +1146,7 @@ func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectio
 			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
-		for _, clause := range projectionClauses(withoutSQLComments(body)) {
+		for _, clause := range projectionClauses(pgmigrate.WithoutComments(body)) {
 			if !clause.held {
 				t.Logf("%s: %s: no column it sets is one a tuple projects", name, clause.text)
 				continue

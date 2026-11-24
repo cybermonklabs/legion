@@ -44,6 +44,11 @@ type fakeClock struct {
 	armed  int
 	// slept is every wait a machine asked to Sleep, in order.
 	slept []time.Duration
+	// advancing is how many Advance calls are moving the clock now, and stood is signalled each
+	// time one ends; posted is how many functions wait for the clock to stand still (whenStill).
+	advancing int
+	stood     *sync.Cond
+	posted    int
 }
 
 // Sleep records d and returns at once, with ctx's error when it has ended: a machine's wait costs
@@ -64,7 +69,11 @@ type fakeTimer struct {
 	fired   bool
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: epoch} }
+func newFakeClock() *fakeClock {
+	c := &fakeClock{now: epoch}
+	c.stood = sync.NewCond(&c.mu)
+	return c
+}
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
@@ -95,7 +104,15 @@ func (t *fakeTimer) Stop() bool {
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	until := c.now.Add(d)
+	c.advancing++
 	c.mu.Unlock()
+	// A callback that ends its goroutine (t.Fatal) still leaves the clock standing.
+	defer func() {
+		c.mu.Lock()
+		c.advancing--
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	}()
 	for {
 		c.mu.Lock()
 		var next *fakeTimer
@@ -117,6 +134,30 @@ func (c *fakeClock) Advance(d time.Duration) {
 		c.mu.Unlock()
 		next.f()
 	}
+}
+
+// whenStill runs f on a goroutine of its own once no Advance is moving the clock: podHarness's
+// post of the gate's grants (PodStarts.post). It drains nothing before a later Advance begins.
+func (c *fakeClock) whenStill(f func()) {
+	c.mu.Lock()
+	c.posted++
+	c.mu.Unlock()
+	go func() {
+		c.mu.Lock()
+		for c.advancing > 0 {
+			c.stood.Wait()
+		}
+		c.posted--
+		c.mu.Unlock()
+		f()
+	}()
+}
+
+// waitingPosts is how many functions wait for the clock to stand still (whenStill).
+func (c *fakeClock) waitingPosts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.posted
 }
 
 // dropAll is every armed timer dying with the process that armed it.

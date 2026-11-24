@@ -17,11 +17,9 @@ const artifactReviewsEventSeqVersion = 120
 // appended none without one; its check is added `not valid`, so the migration reads no row of the
 // table it locks; and a sequence below 1 is refused all the same.
 func TestMigrationAddsTheReviewsEventSequence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, artifactReviewsEventSeqVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", artifactReviewsEventSeqVersion-1, err)
-	}
+	store := openMigratedTestStore(t, artifactReviewsEventSeqVersion-1)
 	var artifactID string
 	for _, seed := range []string{
 		`insert into projects (key, name) values ('TEST', 'Test')`,

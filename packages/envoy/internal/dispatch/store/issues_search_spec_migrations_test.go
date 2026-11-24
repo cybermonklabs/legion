@@ -17,6 +17,7 @@ const (
 	beforeIssuesSearchSpec = 20261103070013
 	issuesSearchSpec       = 20261105145242
 	issuesSearchSpecTrig   = 20261105145243
+	issuesSearchLatest     = 20261124034909
 )
 
 // seedIssueWithSpec writes one issue, its primary document and one version of it, at whatever
@@ -76,9 +77,9 @@ func rankIssue(t *testing.T, ctx context.Context, store *Store, key, query strin
 // it, and the words of its key and title still outrank them, so the spec rides at a lower weight
 // rather than at the title's.
 func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeIssuesSearchSpec)
+	store := openMigratedTestStore(t, beforeIssuesSearchSpec)
 	const spec = "The rhumb lines of the Tyrrhenian portolan cross at Capo Testa.\n"
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", spec)
 	bare := seedIssueWithSpec(t, ctx, store, 2, "Sailing directions", "   \n")
@@ -117,11 +118,9 @@ func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T)
 // 20261105145243's trigger re-indexes an issue when its primary document gains a version, which
 // is the only write that changes the issue's vector without touching the issue's own row.
 func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", "Nothing of note.\n")
 	if matchesIssue(t, ctx, store, key, "Tyrrhenian") {
@@ -144,6 +143,83 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 	}
 }
 
+// One statement that inserts many versions of an issue's primary document re-vectors the issue
+// once (20261124034909), where 20261105145243's trigger re-vectored it for each version, every
+// time over the same latest version. The issue ends with the vector the schema before the change
+// wrote, byte for byte, so the change is the count alone. Each re-vector is an update of the
+// issue's search, which 20261101182522's trigger records in search_term_queue, so the queue
+// counts them. The second case's latest version holds no markdown (an image), which fires no
+// trigger; the version below it still re-vectors the issue, over that image version as before.
+// The third inserts a version below one the document already holds: it re-vectors nothing, where
+// the old body rewrote the vector the stored latest version already gave, so the vector is the
+// same only because it was current; no writer inserts below the latest.
+func TestAMultiVersionInsertReVectorsItsIssueOnce(t *testing.T) {
+	for _, test := range []struct {
+		name, setup, versions string
+		want, wantAfter       int
+	}{
+		{"eight versions with markdown", "", `
+			select a.id, n, case when n = 9 then 'The rhumb lines of the Tyrrhenian portolan.' else 'Draft ' || n || '.' end, null, '[]'
+			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 8, 1},
+		{"seven versions with markdown under an image", "", `
+			select a.id, n, case when n < 9 then 'Draft ' || n || ' of the Tyrrhenian portolan.' end, case when n = 9 then 'image/png' end, '[]'
+			from artifacts a cross join generate_series(2, 9) n where a.issue_key = $1 and a.is_primary`, 7, 1},
+		{"a version below the latest the document holds", `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			select a.id, 3, 'Version three of the Tyrrhenian portolan.', '[]' from artifacts a where a.issue_key = $1 and a.is_primary`, `
+			select a.id, 2, 'Version two.', null, '[]' from artifacts a where a.issue_key = $1 and a.is_primary`, 1, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			insert := func(t *testing.T, version int) (vector string, reVectors int) {
+				t.Helper()
+				store := openMigratedTestStore(t, version)
+				seedCoreWithADefaultAssignee(t, store)
+				key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", "Nothing of note.\n")
+				if test.setup != "" {
+					if _, err := store.Pool.Exec(ctx, test.setup, key); err != nil {
+						t.Fatalf("write the version the insert lands below: %v", err)
+					}
+				}
+				var queued int
+				count := `select count(*) from search_term_queue where kind = 'issue' and issue_key = $1`
+				if err := store.Pool.QueryRow(ctx, count, key).Scan(&queued); err != nil {
+					t.Fatalf("count the issue's queued re-vectors: %v", err)
+				}
+				if _, err := store.Pool.Exec(ctx,
+					`insert into artifact_versions (artifact_id, number, markdown, mime, authors)`+test.versions, key); err != nil {
+					t.Fatalf("insert the versions in one statement: %v", err)
+				}
+				var after int
+				if err := store.Pool.QueryRow(ctx, count, key).Scan(&after); err != nil {
+					t.Fatalf("count the issue's queued re-vectors: %v", err)
+				}
+				var current bool
+				if err := store.Pool.QueryRow(ctx, `
+					select search::text, search = issue_search_vector(key, title, issue_embedding_spec(key))
+					from issues where key = $1`, key).Scan(&vector, &current); err != nil {
+					t.Fatalf("read the issue's vector: %v", err)
+				}
+				if !current {
+					t.Errorf("the issue's vector %s is not the one its latest version gives", vector)
+				}
+				return vector, after - queued
+			}
+			before, beforeCount := insert(t, issuesSearchLatest-1)
+			after, afterCount := insert(t, latestVersion)
+			if beforeCount != test.want {
+				t.Errorf("before 20261124034909 the insert re-vectored the issue %d times, want %d, one for each version with markdown: the count this test reads does not count what it means to", beforeCount, test.want)
+			}
+			if afterCount != test.wantAfter {
+				t.Errorf("the insert re-vectored the issue %d times, want %d", afterCount, test.wantAfter)
+			}
+			if after != before {
+				t.Errorf("the issue's vector after the insert is\n%s\nwant the one the schema before 20261124034909 wrote,\n%s", after, before)
+			}
+		})
+	}
+}
+
 // 20261105145243 is a function and a trigger and nothing else, which is what lets it ship: the
 // pre-deploy census refuses a migration that locks a table above its size limit, and the trigger's
 // table, artifact_versions, is 5.2 GiB in production. Neither statement reads a row, so the time
@@ -153,8 +229,8 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 // file would cost the exemption and refuse every deploy carrying it. The limit is injected at one
 // byte so the test needs no gigabyte.
 func TestCensusExemptsTheIssuesSearchTriggerFromTheTableLimit(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, issuesSearchSpec)
+	t.Parallel()
+	store := openMigratedTestStore(t, issuesSearchSpec)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, issuesSearchSpecTrig), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
@@ -172,11 +248,13 @@ func TestCensusExemptsTheIssuesSearchTriggerFromTheTableLimit(t *testing.T) {
 	}
 }
 
-// What each of the two migrations locks above ACCESS SHARE, read as the census reads it. The
+// What each of the migrations locks above ACCESS SHARE, read as the census reads it. The
 // re-index names issues alone: it reads each issue's latest primary version through 0140's
 // issue_embedding_spec, under ACCESS SHARE, which the census leaves out of a migration's tables on
-// purpose, so no deploy is refused over the size of artifact_versions.
+// purpose, so no deploy is refused over the size of artifact_versions. 20261124034909 replaces the
+// trigger's function body and names no table.
 func TestTheIssuesSearchSpecMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
+	t.Parallel()
 	for _, migration := range []struct {
 		name string
 		file string
@@ -184,6 +262,7 @@ func TestTheIssuesSearchSpecMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
 	}{
 		{"20261105145242, the expression and the re-index", "20261105145242_issues_search_spec.up.sql", []string{"issues"}},
 		{"20261105145243, the function and the trigger", "20261105145243_artifact_versions_issues_search_trigger.up.sql", []string{"artifact_versions"}},
+		{"20261124034909, the function alone", "20261124034909_artifact_versions_issues_search_latest.up.sql", nil},
 	} {
 		t.Run(migration.name, func(t *testing.T) {
 			sql, err := migrationFiles.ReadFile("migrations/" + migration.file)

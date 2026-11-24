@@ -21,11 +21,9 @@ const repoProjectsDefaultVersion = 113
 // repository to a mapping of its project, is gone again: 20261112004945 drops it, and
 // TestMigrationLetsAnIssueNameAnyRepository proves that.
 func TestMigrationAddsADefaultMappingAndTheIssueRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OTHER', 'Other');
 		insert into repo_projects (repo, project, created_by) values
@@ -90,11 +88,9 @@ func censusCount(t *testing.T, store *Store, version int) int64 {
 // migration itself names the first 20 and the repair (detach a chain on the release still running)
 // and applies nothing.
 func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "DEEP", 34) // DEEP-34 is 33 links below DEEP-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 1 {
 		t.Fatalf("census = %d, want 1: DEEP-34 alone sits more than 32 links below its root", got)
@@ -127,11 +123,9 @@ func TestMigrationRefusesAnIssueMoreThan32LinksBelowItsRoot(t *testing.T) {
 // A chain whose deepest issue sits exactly 32 links below its root is within the cap: the census
 // answers 0 and the migration applies.
 func TestMigrationAppliesOverAChain32LinksDeep(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "EDGE", 33) // EDGE-33 is 32 links below EDGE-1
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 0 {
 		t.Fatalf("census = %d, want 0", got)
@@ -173,11 +167,9 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 // migration takes its tables' locks before it counts, so a row committed while it waits is in the
 // count, and an issue 33 links down refuses the migration as it would have before it began.
 func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, repoProjectsDefaultVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", repoProjectsDefaultVersion-1, err)
-	}
+	store := openMigratedTestStore(t, repoProjectsDefaultVersion-1)
 	seedChain(t, store, "EDGE", 33) // EDGE-33 is 32 links below EDGE-1, within the cap
 	if got := censusCount(t, store, repoProjectsDefaultVersion); got != 0 {
 		t.Fatalf("census = %d, want 0", got)

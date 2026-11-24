@@ -235,6 +235,13 @@ const environmentKeys = [
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
   "PI_CODING_AGENT_DIR",
+  // The secrets broker and the identity this machine trades there (`brokerRouteConfigured`,
+  // `@legion/envoy-client/broker-credential`). A dev box sets both, and then a listener call the
+  // fixture gives no token of its own trades for one first: the trade fails here and waits to
+  // try again, and "closes its controller-topic subscription once a later controller takes the
+  // role" saw no unregister reach the stand-in. Unset, nothing trades.
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
 ] as const;
 
 /** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,

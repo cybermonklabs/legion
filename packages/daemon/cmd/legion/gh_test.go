@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/gh TestGhTargetOfRoutesEverySelectorKindOfARead ../../docker/gh
+
 import (
 	"bytes"
 	"cmp"
@@ -396,6 +398,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
+		// A remote whose host holds a letter beyond ASCII is refused, not passed over as another
+		// host's: gh lowers `gİthub.com` (U+0130) to github.com and acts on its repository.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://g\u0130thub.com/acme/widgets.git"}), err: "whose host holds a letter beyond ASCII"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_CONFIG_DIR": "/owners", "LEGION_GH_OWNERS_DIR": "/owners"}, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]ghRemote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},
@@ -628,6 +633,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// A URL is one in any case, as gh parses it.
 		{argv: []string{"pr", "view", "HTTPS://GITHUB.COM/sjawhar/legion/pull/1"}, owner: "sjawhar"},
 		{argv: []string{"api", "HTTPS://API.GITHUB.COM/repos/sjawhar/legion"}, owner: "sjawhar"},
+		{argv: []string{"api", "HTTPS://UPLOADS.GITHUB.COM/repos/sjawhar/legion/releases/1/assets?name=x"}, owner: "sjawhar"},
 		{argv: []string{"api", "REPOS/sjawhar/legion"}, owner: "sjawhar"},
 		// A command naming no repository, and GH_REPO where the leaf reads it.
 		{argv: []string{"pr", "list"}},
@@ -672,6 +678,19 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"--bogus", "pr", "list"}, err: `"--bogus" comes before the command's name`},
 		{argv: []string{"api", "repositories/12345"}, err: "by its id"},
 		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/w"}, err: "another host"},
+		// gh api's whole URL is placed only over https and on api.github.com or uploads.github.com,
+		// spelled in ASCII: another GitHub host, http, and `ſ` (U+017F), which strings.EqualFold
+		// folds onto `s`, are refused.
+		{argv: []string{"api", "https://github.com/repos/acme/widgets"}, err: "another host"},
+		{argv: []string{"api", "https://gist.github.com/repos/acme/widgets"}, err: "another host"},
+		{argv: []string{"api", "https://upload\u017f.github.com/repos/acme/widgets/releases/1/assets?name=x"}, err: "names another host than api.github.com or uploads.github.com"},
+		{argv: []string{"api", "http://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, err: "is no https URL"},
+		{argv: []string{"api", "http://api.github.com/repos/acme/widgets"}, err: "is no https URL"},
+		// A host is compared in ASCII alone: `İ` (U+0130), which strings.ToLower lowers to `i`,
+		// makes no github.com of `gİthub.com`, in -R, a URL argument or --hostname.
+		{argv: []string{"pr", "view", "1", "-R", "g\u0130thub.com/acme/widgets"}, err: "names another host than github.com"},
+		{argv: []string{"pr", "view", "https://g\u0130thub.com/acme/widgets/pull/1"}, err: "names another host than github.com"},
+		{argv: []string{"api", "--hostname", "g\u0130thub.com", "repos/acme/w"}, err: "names another host than github.com"},
 		{argv: []string{"api", "--hostname", "ghe.example.com", "repos/acme/w"}, err: "another host"},
 		{argv: []string{"api", "repos/../x/y"}, err: `"..", which is no GitHub login`},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "../x/y"}, err: `names another host`},
@@ -848,6 +867,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "REPOS/sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
+		{argv: []string{"api", "https://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, owner: "acme", repo: "widgets"},
 		{argv: []string{"api", "search/issues?q=repo:sjawhar/legion+is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/{owner}/{repo}/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
@@ -2305,7 +2325,10 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // read answers, nothing on standard output and exit 1, which the check reads as an unknown
 // visibility and refuses. The guard's reads come back through `legion gh` to the stand-in gh: the
 // REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
-// git's ls-remote, which can answer only public. Neither stream carries the shared check's own
+// git's ls-remote, which can answer only public. Where gh's REST read fails on its connection to
+// GitHub, the read through curl comes next, and it is a stand-in curl's (testCurlEnv) that records
+// itself beside them: the system's curl would carry a token of the bundle to api.github.com, and
+// the row's verdict would be the network's. Neither stream carries the shared check's own
 // refusal, which only the check prints.
 //
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
@@ -2344,6 +2367,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	graphQLNotFound := graphQL(`{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}`, 1)
 	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
 	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	// tlsTimeout is gh's REST read failing on its connection before GitHub answered anything, in the
+	// one line gh 2.98.0 printed for a TLS handshake that never finished (leakguard's
+	// ghTransportFailure), so the guard reads through curl next.
+	tlsTimeout := "echo 'Get \"https://api.github.com/repos/" + slug + "\": net/http: TLS handshake timeout' >&2\nexit 1\n"
+	// curlAnswers is the read through curl answered by GitHub with visibility; curlUnreached is a curl
+	// that could not connect, exit 7, which the guard reads as no answer from GitHub and follows
+	// with ls-remote. A case that names no curl answer gets curlUnreached.
+	curlAnswers := func(visibility string) string {
+		return "printf '%s\\r\\n' 'HTTP/2 200' ''\nprintf '%s\\n' '{\"visibility\":\"" + visibility + "\"}'\nexit 0\n"
+	}
+	curlUnreached := "echo 'curl: (7) Failed to connect to api.github.com port 443 after 0 ms: Could not connect to server' >&2\nexit 7\n"
 	// keptFiles is each file of the guard's kept visibility answers under state, with its content.
 	keptFiles := func(t *testing.T, state string) map[string]string {
 		t.Helper()
@@ -2394,6 +2428,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		slug          string
 		rest, graphql string
 		git           string
+		// curl is the stand-in curl's answer, curlUnreached where it is empty.
+		curl string
 		// kept is whether the guard holds a kept public answer for the repository when the read
 		// is made.
 		kept bool
@@ -2416,6 +2452,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
 		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+		{name: "gh cannot finish its TLS handshake and curl answers private", rest: tlsTimeout, curl: curlAnswers("private"), git: lists, want: "private\n", reads: "rest\ncurl\n"},
+		{name: "gh and curl cannot reach GitHub and ls-remote answers", rest: tlsTimeout, git: lists, want: "public\n", reads: "rest\ncurl\ngit\n"},
 		{name: "an unserved owner's repository ls-remote lists", slug: "other-owner/invented-repo", rest: rest("private"), git: lists, want: "public\n", reads: "git\n"},
 		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
@@ -2439,10 +2477,17 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
 				t.Fatal(err)
 			}
+			// The stand-in curl runs with only the names leakguard.TokenChildKeeps keeps, which hold
+			// no GH_STANDIN_RECORD, so its record's path is written into it. It reads the token the
+			// guard hands it on its standard input, as curl does, and keeps none of it.
+			curl := filepath.Join(t.TempDir(), "curl")
+			if err := os.WriteFile(curl, []byte("#!/bin/sh\ncat >/dev/null\necho curl >> '"+record+"'\n"+cmp.Or(tc.curl, curlUnreached)), 0o700); err != nil {
+				t.Fatal(err)
+			}
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo,
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo, testCurlEnv: curl,
 			}, leakguard.VisibilityReadArgs(repo)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):

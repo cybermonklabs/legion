@@ -16,11 +16,9 @@ const issueRepoNeedsNoMappingVersion = 20261112004945
 // by the catalogue alone: a repository another project maps, a repository no project maps, and
 // the move and the delete of a mapping an issue names, each of which the foreign key refused.
 func TestMigrationLetsAnIssueNameAnyRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, issueRepoNeedsNoMappingVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", issueRepoNeedsNoMappingVersion-1, err)
-	}
+	store := openMigratedTestStore(t, issueRepoNeedsNoMappingVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice'), ('OTHER', 'Other', 'alice');
 		insert into repo_projects (repo, project, created_by) values

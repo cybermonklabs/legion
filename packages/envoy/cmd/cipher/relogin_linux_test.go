@@ -71,7 +71,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "self-box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "self-box-" + t.Name(), Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key with the approved login's credential: %+v %v", enrolled, err)
 	}
@@ -164,12 +164,10 @@ func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action st
 
 	rig.DecideMachineLogin(t, code, action == "approve")
 
-	select {
-	case <-waited:
-	case <-time.After(30 * time.Second):
+	if _, ok := received(t, waited); !ok {
 		_ = cmd.Process.Kill()
 		<-waited
-		t.Fatalf("machine login never read the %s decision; stderr %q", action, errOut.String())
+		t.Fatalf("machine login never read the %s decision, %s before the test binary's deadline; stderr %q", action, waitMargin, errOut.String())
 	}
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {
@@ -195,7 +193,7 @@ func refuseTheHeldCredential(t *testing.T, rig *ciphertest.Rig, srv *helper.Serv
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "box-" + t.Name(), Thumbprint: thumbprint}, 10*time.Second); err != nil || resp.OK {
+	if resp, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: "box-" + t.Name(), Thumbprint: thumbprint}, untilGiveUp(t)); err != nil || resp.OK {
 		t.Fatalf("enroll-session-key with an expired credential: %+v %v; want the broker's refusal", resp, err)
 	}
 	if srv.Broker.HasCredential() {

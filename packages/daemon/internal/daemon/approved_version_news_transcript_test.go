@@ -27,10 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The three variables that narrow a run of part two to one step, one arm or another count of
@@ -228,7 +225,9 @@ func sessionsNoteBeforeRound(task, note string) (string, bool) {
 // and the reviewer would read no entry for its round, or one the daemon did not give.
 func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testing.T) {
 	t.Parallel()
-	resume := workflow.ResumePhaseTask(record.Issue{Key: "AS0001-1", Title: "The reader", Phase: phase.Reviewing})
+	// The reviewer's resume task as the engine composes it for an issue with no plan rows and no
+	// working copy (workflow.Engine.ResumeTask).
+	const resume = "Continue The reader. Issue: AS0001-1. Phase: reviewing. Resume the existing phase work."
 	const note = "The pull request makes the reader fetch one page on each call."
 	noted, ok := sessionsNoteBeforeRound(resume+reviewround.Sentences("", 1), note)
 	if want := resume + " " + note + reviewround.Sentences("", 1); !ok || noted != want {
