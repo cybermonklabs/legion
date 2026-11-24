@@ -2630,7 +2630,10 @@ test("read_state names the reached claim after a generation clears a second agen
               ? {}
               : { implementer: { claim: { token: reached, state: "idle" } } },
           otherClaims: [
-            { role: "implementer", claim: { token: reached === undefined ? own : second, state: "idle" } },
+            {
+              role: "implementer",
+              claim: { token: reached === undefined ? own : second, state: "idle" },
+            },
           ],
         },
       },
@@ -2651,7 +2654,9 @@ test("read_state names the reached claim after a generation clears a second agen
     const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) =>
       line.startsWith("paused: ")
     );
-    expect(/; waits on [12] claims? — (.+); holds no row$/.exec(line ?? "")?.[1]?.split(", ")).toEqual(
+    expect(
+      /; waits on [12] claims? — (.+); holds no row$/.exec(line ?? "")?.[1]?.split(", ")
+    ).toEqual(
       reached === own
         ? ["LEGION-208 implementer", `LEGION-208 implementer (claim ${second})`]
         : [`LEGION-208 implementer (claim ${own})`]
@@ -2680,7 +2685,9 @@ test("read_state names a pause stop whose claim does not parse by issue and role
   const line = (await summaryLinesOf(recordingDaemon({ state }).daemon)).find((line) =>
     line.startsWith("paused: ")
   );
-  expect(/; waits on 1 claim — (.+); holds no row$/.exec(line ?? "")?.[1]).toBe("LEGION-208 implementer");
+  expect(/; waits on 1 claim — (.+); holds no row$/.exec(line ?? "")?.[1]).toBe(
+    "LEGION-208 implementer"
+  );
 });
 
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
