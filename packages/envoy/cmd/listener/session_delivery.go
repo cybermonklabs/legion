@@ -130,9 +130,9 @@ func (o sessionDeliveryOutcome) relayed() bool {
 // claims through this listener.
 type sessionRelay interface {
 	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
-	// or a role claim refresh through this listener that recorded the session's admission. Either
-	// resumes a relay run that paused and starts one that ended for want of an admission; a claim
-	// passes epochChanged false and heard 0.
+	// or, at the edge, a role claim refresh that wrote the session's record (api.go's roleSetHandler).
+	// Either resumes a paused relay run and starts an ended one; a claim passes epochChanged false
+	// and heard 0.
 	// epochChanged is set when the entry it replaced did not hold consumer delivery with the same
 	// epoch: the plugin connected anew, so the relay restarts the session's consumer at its ack
 	// floor before it relays again, unless the relay's run restarted the consumer after heard,
@@ -143,7 +143,8 @@ type sessionRelay interface {
 // sessionDelivery manages the session consumers (bus.SessionConsumers) for the listener's
 // registrations: it creates each one a registration asks for, keeps its filter on the session's
 // agent subject and stored followed topics as they change, and tells the relay of each
-// registration. A nil sessionDelivery, or one without consumers, refuses every registration with
+// registration, and at the edge of each role claim refresh. A nil sessionDelivery, or one
+// without consumers, refuses every registration with
 // consumer_error; main's listener has neither, since its start ends when the session-consumer
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
@@ -155,9 +156,9 @@ type sessionDelivery struct {
 	// this build compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
-	// relay hears each registration that records consumer delivery. A sessionDelivery with
-	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
-	// that relay cannot start), so a registration answered consumer is relayed.
+	// relay hears each registration that records consumer delivery, and at the edge each role claim
+	// refresh. A sessionDelivery with consumers has one (startSessionRelays sets it before /v1 opens,
+	// and main's start ends when that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
 	// admissions is, on an edge listener, the projects of the token each session's latest
 	// registration here was admitted on (subscribeHandler), which the relay holds the session's

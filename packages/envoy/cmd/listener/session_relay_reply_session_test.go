@@ -676,29 +676,32 @@ func TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice(t *testing.T) {
 	}
 }
 
+// openOwningStreamRegistry connects an owning-stream client and opens a session registry on it,
+// both closed when the test ends. name labels the pair in any failure.
+func openOwningStreamRegistry(t *testing.T, name string) (*bus.Client, *session.SessionRegistry) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect %s: %v", name, err)
+	}
+	t.Cleanup(client.Close)
+	reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open %s's registry: %v", name, err)
+	}
+	return client, reg
+}
+
 // N10: a nak's re-mark whose write fails notes a fresh id in memory, so this listener's next relay
 // run still sends it (owedRepositoryGap). The loop has cleared the frame's own mark as sent, and
 // noteRepositoryGap notes nothing when its write fails, so without the in-memory note the notice is
 // owed nowhere. The write is made to fail by closing the relay's registry connection. Control: with
 // the in-memory note removed, the failed re-mark owes nothing.
 func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
-	open := func(name string) (*bus.Client, *session.SessionRegistry) {
-		t.Helper()
-		client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
-		if err != nil {
-			t.Fatalf("connect %s: %v", name, err)
-		}
-		t.Cleanup(client.Close)
-		reg, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-		if err != nil {
-			t.Fatalf("open %s's registry: %v", name, err)
-		}
-		return client, reg
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	run := func(sessionID string, failWrite bool) string {
-		client, reg := open(sessionID)
+		client, reg := openOwningStreamRegistry(t, sessionID)
 		m := &sessionRelays{sessions: reg, logger: logging.New("test")}
 		if err := reg.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
 			t.Fatalf("register %s: %v", sessionID, err)
@@ -720,5 +723,64 @@ func TestANakReMarkWhoseWriteFailsStillOwesAFreshMark(t *testing.T) {
 	}
 	if owed := run("ses_remark_fail", true); owed == "" {
 		t.Error("a re-mark whose write failed owes no mark, though its next run should send a fresh one it noted")
+	}
+}
+
+// The repository-gap-sent residue (the failing-write cell of the re-mark matrix, beside
+// TestANakReMarkBeforeTheLoopsClearKeepsTheGapNotice and TestANakReMarkWhoseWriteFailsStillOwesAFreshMark):
+// frame F carried mark X; F is nak'd and its re-mark runs before the relay loop's clear of X (the
+// N7 ordering), and the re-mark's write fails, so it notes a fresh mark Y in this process alone
+// (reMarkWithheldGap). The loop's clear then runs with the bus answering again: repositoryGapSent
+// forgets only the mark the frame carried, so Y stays owed in memory and the next frame this run
+// sends carries it, while X is cleared from the entry. The failing write is the re-mark's registry
+// on a closed connection; the clear runs on the relay's working registry. Control: the same steps
+// with the re-mark's write working keep a mark owed on the entry too.
+func TestARepositoryGapSentForgetsOnlyTheMarkTheFrameCarried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, reader := openOwningStreamRegistry(t, "reader")
+	run := func(sessionID string, failWrite bool) (owed, stored, mark string) {
+		_, reg := openOwningStreamRegistry(t, sessionID)
+		failingClient, failing := openOwningStreamRegistry(t, sessionID+"-failing")
+		m := &sessionRelays{sessions: reg, logger: logging.New("test")}
+		if err := reg.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{"PRIV"}}); err != nil {
+			t.Fatalf("register %s: %v", sessionID, err)
+		}
+		mark, err := m.noteRepositoryGap(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("the loop's mark: %v", err)
+		}
+		testwait.Eventually(t, "the relay's cache to show the loop's mark", func() bool {
+			entry, _ := reg.Lookup(sessionID)
+			return entry.RepositoryGap == mark
+		})
+		if failWrite {
+			failingClient.Close()
+			m.sessions = failing
+		}
+		m.reMarkWithheldGap(sessionID)
+		m.sessions = reg
+		m.repositoryGapSent(ctx, sessionID, mark)
+		got, _, err := reader.StoredByWriter(ctx, sessionID)
+		if err != nil {
+			t.Fatalf("read %s: %v", sessionID, err)
+		}
+		testwait.Eventually(t, "the relay's cache to show the stored mark", func() bool {
+			entry, _ := reg.Lookup(sessionID)
+			return entry.RepositoryGap == got.RepositoryGap
+		})
+		return m.owedRepositoryGap(sessionID), got.RepositoryGap, mark
+	}
+	// Control, the write working: the re-mark's fresh mark reaches the entry, so a mark is owed both
+	// in memory and on the entry.
+	if owed, stored, _ := run("ses_gap_sent_ok", false); owed == "" || stored == "" {
+		t.Fatalf("CONTROL: a working re-mark before the loop's clear kept no mark (owed=%q stored=%q)", owed, stored)
+	}
+	// The failing write: X is cleared from the entry (stored empty), and the fresh mark Y, distinct
+	// from X, is owed in memory alone for the next frame this run sends.
+	owed, stored, mark := run("ses_gap_sent_fail", true)
+	t.Logf("failed re-mark before the loop's clear: owed=%q stored=%q mark=%q", owed, stored, mark)
+	if owed == "" || owed == mark || stored != "" {
+		t.Errorf("a failed re-mark did not leave a fresh mark owed in memory alone: owed=%q mark=%q stored=%q (want owed non-empty and != mark, stored empty)", owed, mark, stored)
 	}
 }

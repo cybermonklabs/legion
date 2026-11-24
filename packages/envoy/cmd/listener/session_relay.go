@@ -174,13 +174,14 @@ type relayOutcome uint8
 
 const (
 	// relayEnded: the relay was stopped, or it may start again only at the session's next
-	// registration.
+	// registration, or, at the edge, a role claim.
 	relayEnded relayOutcome = iota
 	// relayRetry: a consumer call or the pull failed; the relay restarts at the ack floor after a
 	// wait while it is still this listener's.
 	relayRetry
 	// relayPaused: the session answered no frame within relayReceiptWait; the relay restarts at the
-	// ack floor after the pause backoff, or at the session's next registration, whichever is first.
+	// ack floor after the pause backoff, at the session's next registration, or, at the edge, a role
+	// claim, whichever is first.
 	relayPaused
 )
 
@@ -469,8 +470,9 @@ func (r *relayRun) wake() bool {
 	return true
 }
 
-// exit marks the run as returning, and reports whether a wake was waiting for it: a registration
-// the loop heard since the run's last pause began, for which no run would start otherwise.
+// exit marks the run as returning, and reports whether a wake was waiting for it: a registration,
+// or at the edge a role claim, the loop heard since the run's last pause began, for which no run
+// would start otherwise.
 func (r *relayRun) exit() bool {
 	r.exitMu.Lock()
 	defer r.exitMu.Unlock()
@@ -496,8 +498,8 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 	return at != 0 && at < heard
 }
 
-// waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
-// run, and reports whether the run goes on.
+// waitPause waits out a paused run's backoff, d, the session's next registration (or, at the edge, a
+// role claim), or the end of the run, and reports whether the run goes on.
 func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-r.resume:
@@ -516,7 +518,8 @@ func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 
 // waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
 // the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before it began:
-// a registration heard while the failed call or pull ran restarts the run at once.
+// a registration, or at the edge a role claim, heard while the failed call or pull ran restarts the
+// run at once.
 func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -892,7 +895,7 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 			}
 			if !paused {
 				paused = true
-				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, or at the session's next registration",
+				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, at the session's next registration, or at the edge a role claim",
 					slog.String("session_id", run.sessionID),
 					slog.String("receipt_wait", m.receiptWait.String()),
 					slog.String("backoff", pause.String()))
@@ -1254,10 +1257,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			m.logger.Warn("session relay could not publish a frame; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
 		}
-		if gap {
-			m.repositoryGapSent(ctx, sessionID, owed)
-		}
 		if owed != "" {
+			// owed is set only together with gap (the frameAnswerUnknown case and the
+			// owedRepositoryGap adoption above), so a frame carrying a gap mark clears that mark as
+			// sent and becomes the one carried onto the next frame that owes none.
+			m.repositoryGapSent(ctx, sessionID, owed)
 			carried = owed
 		}
 		gap, gapReason, owed = false, "", ""
@@ -1328,15 +1332,13 @@ func (m *sessionRelays) owedRepositoryGap(sessionID string) string {
 // written since, for an event withheld later, is a later frame's to clear. A write of the entry
 // that fails or does not answer in time is logged; the entry then keeps the mark, and the
 // session's next relay run sends it once more.
+// mark is never empty: relayNATS calls this only for a frame that owed a mark (owed != "").
 func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark string) {
 	m.repositoryGapsMu.Lock()
 	if m.repositoryGaps[sessionID] == mark {
 		delete(m.repositoryGaps, sessionID)
 	}
 	m.repositoryGapsMu.Unlock()
-	if mark == "" {
-		return
-	}
 	if entry, _ := m.sessions.Lookup(sessionID); entry.RepositoryGap == "" {
 		return
 	}

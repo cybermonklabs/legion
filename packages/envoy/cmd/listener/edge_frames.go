@@ -167,11 +167,12 @@ func ownFrameAgentSubject(sessionID string, projects []string, subject string) b
 	return ownAgentSubject(sessionID, projects, subject) && subject != contracts.AgentTopicPrefix+"*."+sessionID
 }
 
-// edgeAdmissions is the projects of the token each session's latest registration on this replica
-// was admitted on (subscribeHandler), the list the relay holds that session's frames to
-// (sessionRelays.edgeWithholds). It is memory only and is never read back from a record: a session
-// this replica admitted no registration of since it started has none here, and the relay holds its
-// messages in its consumer until it registers through this replica (sessionRelays.relayNATS),
+// edgeAdmissions is the projects of the token each session's latest registration or role claim on
+// this replica was admitted on (subscribeHandler, and the claim's admitHeld in api.go), the list
+// the relay holds that session's frames to (sessionRelays.edgeWithholds). It is memory only and is
+// never read back from a record: a session this replica admitted no registration or role claim of
+// since it started has none here, and the relay holds its messages in its consumer until it
+// registers or claims a role through this replica (sessionRelays.relayNATS),
 // which the plugin does at every heartbeat. An entry is forgotten once its session's record has
 // left the session cache (prune): the map holds the sessions whose records the bucket holds and
 // those admitted within the last edgeAdmissionGrace, each one session id and its token's list, at
