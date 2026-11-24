@@ -156,6 +156,9 @@ const RoleHeldWireSchema = z.object({
   holder: z.string(),
 });
 
+/** Any JSON object body's `reason`, where it is a string, whatever else the body names. */
+const ReasonWireSchema = z.object({ reason: z.string() });
+
 /**
  * A listener's error body. Beyond the message and its `code`, a refusal that names a session
  * names that session's state and its last registration, and a role's 404 names its holder too:
@@ -849,7 +852,10 @@ export class EnvoyApiError extends Error {
   /**
    * Why the listener refused, when its error body carries one: one of the names
    * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
-   * can be given is refused with, or `sender_rate_limited`.
+   * can be given is refused with, or `sender_rate_limited`. A body that is not the listener's
+   * error JSON as this client reads it (a later listener's holder state, say) still gives the
+   * string `reason` it names (`ReasonWireSchema`), which the phase reminder reads a 404 by, as it
+   * read the body itself before the field was held.
    */
   readonly reason: RemoteText | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
@@ -924,7 +930,8 @@ export class EnvoyApiError extends Error {
     this.details = { ...answer, responseBody: held(answer.responseBody) };
     this.expected = parsed?.expected?.map(held);
     this.code = parsed?.code === undefined ? undefined : held(parsed.code);
-    this.reason = parsed?.reason === undefined ? undefined : held(parsed.reason);
+    const reason = parsed?.reason ?? ReasonWireSchema.safeParse(body).data?.reason;
+    this.reason = reason === undefined ? undefined : held(reason);
     this.holder = parsed?.holder === undefined ? undefined : held(parsed.holder);
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;

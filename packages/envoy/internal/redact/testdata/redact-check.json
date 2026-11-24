@@ -10001,6 +10001,13 @@
       "file": "packages/envoy-client/src/__tests__/remote-words.test.ts",
       "test": "a near copy whose candidates quote a URL reaches the dispatch command's text with no secret",
       "production": "packages/envoy-client/src/dispatch-commands/issues.ts#issueCommand: a near copy's candidates printed through their boxes in the dispatch command's text"
+    },
+    {
+      "id": "pi-shared-unheld-role-reason",
+      "requirement": "r4-unchanged",
+      "file": "packages/pi-shared/src/phase-reminder.test.ts",
+      "test": "a 404 naming the reason beside a holder state this client does not know is still no holder",
+      "production": "packages/pi-shared/src/phase-reminder.ts#roleUnheld: a 404's reason read from any JSON body that names one, through its box"
     }
   ],
   "recall": [
@@ -11521,6 +11528,18 @@
       "site": "envoy-client dispatch-commands/issues.ts issueCommand: a near copy's candidates printed in the dispatch command's text and its details as Dispatch wrote them",
       "source": "the coordinator's review of the TypeScript slice of the second pull request",
       "guard": "dispatch-client-duplicates-cli"
+    },
+    {
+      "site": "envoy-client transport.ts setRole: a 409 read as role-held from its holder alone, where RoleHeldWireSchema required the role and the holder",
+      "source": "the coordinator's review of the TypeScript slice of the second pull request",
+      "guard": "envoy-client-soft-claim-no-role",
+      "note": "not a leak: the base reads it the same way, and the row pins that the change kept it"
+    },
+    {
+      "site": "pi-shared phase-reminder.ts roleUnheld: a 404's reason read only from the listener's error JSON as this client reads it, where it read any JSON body's reason before",
+      "source": "the class search of the coordinator's review of the TypeScript slice, finding (a)",
+      "guard": "pi-shared-unheld-role-reason",
+      "note": "not a leak: the base reads it the same way, and the row pins that the change kept it"
     }
   ]
 }
