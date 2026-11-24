@@ -487,6 +487,11 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		{name: "a zero app ID", input: "appId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppId = "0" }, err: []string{"appId", "numeric"}},
 		{name: "an invalid app private key secret name", input: "appPrivateKeySecretName", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretName = "Example_Key" }, err: []string{"appPrivateKeySecretName", "DNS subdomain"}},
 		{name: "an invalid app private key secret key", input: "appPrivateKeySecretKey", edit: func(a *gcp.DispatchArgs) { setApp(a); a.AppPrivateKeySecretKey = "bad/key" }, err: []string{"appPrivateKeySecretKey", "must match"}},
+		{name: "a verdict App id without the App", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { a.VerdictAppId = pulumi.StringRef("5341240") }, err: []string{"verdictAppId is given without the GitHub App", "appClientId"}},
+		{name: "a blank verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(" ") }, err: []string{"verdictAppId is blank: give the verdict App's id, or leave it out"}},
+		{name: "a non-numeric verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("not-a-number") }, err: []string{`verdictAppId "not-a-number" is not a GitHub App id: a whole number above 0, with no leading zero`}},
+		{name: "a verdict App id with a leading zero", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("05341240") }, err: []string{`verdictAppId "05341240" is not a GitHub App id`}},
+		{name: "a zero verdict App id", input: "verdictAppId", edit: func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef("0") }, err: []string{`verdictAppId "0" is not a GitHub App id`}},
 		{name: "fewer than one replica", input: "replicas", edit: func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(0) }, err: []string{"replicas", "at least 1"}},
 		{name: "fewer than one front-door replica", input: "frontDoorReplicas", edit: func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(0) }, err: []string{"frontDoorReplicas 0", "at least 1"}},
 		{name: "fewer than one listener replica", input: "listenerReplicas", edit: func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(-1) }, err: []string{"listenerReplicas -1", "at least 1"}},
@@ -835,6 +840,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed as the app ID", "appId", func(a *gcp.DispatchArgs) { a.AppId = seed }},
 		{"a seed as the app private key secret name", "appPrivateKeySecretName", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretName = lower }},
 		{"a seed as the app private key secret key", "appPrivateKeySecretKey", func(a *gcp.DispatchArgs) { a.AppPrivateKeySecretKey = seed }},
+		{"a seed as the verdict App id", "verdictAppId", func(a *gcp.DispatchArgs) { setApp(a); a.VerdictAppId = pulumi.StringRef(seed) }},
 		{"a seed in the consumer-name setting", "consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh-" + seed }},
 		{"a seed in the Azure federation audience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
@@ -2597,6 +2603,29 @@ func TestDispatchPodWithBrokerAndAppMatchesGolden(t *testing.T) {
 	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
 	require.NoError(t, err)
 	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-broker-and-app.golden")
+}
+
+// verdictAppId gives Dispatch the verdict App's id as DISPATCH_VERDICT_APP_ID, right after the App's
+// own three variables, so its CI reconcile pass leaves that App's check suites out of the CI record
+// as the listener does under ENVOY_VERDICT_APP_ID; nothing else in the pod changes. Unset, the pod
+// renders no such variable and is TestDispatchPodWithBrokerAndAppMatchesGolden's own.
+func TestDispatchPodWritesTheVerdictAppIdOnlyWhenGiven(t *testing.T) {
+	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
+	require.NoError(t, err)
+	require.NotContains(t, containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch")), "DISPATCH_VERDICT_APP_ID")
+
+	m, err = runDispatch(t, dispatchVerdictAppArgs(t), true)
+	require.NoError(t, err)
+	requirePodGolden(t, m, "example-dispatch", "dispatch-pod-with-verdict-app.golden")
+}
+
+// dispatchVerdictAppArgs is dispatchBrokerAndAppArgs with the verdict App's id given, the fixture
+// of testdata/dispatch-pod-with-verdict-app.golden.
+func dispatchVerdictAppArgs(t *testing.T) *gcp.DispatchArgs {
+	t.Helper()
+	args := dispatchBrokerAndAppArgs(t)
+	args.VerdictAppId = pulumi.StringRef("5341240")
+	return args
 }
 
 // With a broker configured, the app's container carries what Dispatch boots on: Dispatch requires

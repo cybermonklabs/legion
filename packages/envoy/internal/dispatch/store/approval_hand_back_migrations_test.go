@@ -19,7 +19,8 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `
-			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted)
+			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted
+				and database = (select oid from pg_database where datname = current_database()))
 		`, relation, mode).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_locks: %v", err)
 		}
@@ -41,6 +42,7 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 // From 0065 a comment that names no created_at is stamped when its insert runs, so two comments
 // one transaction inserts are ordered as they were written.
 func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 63)
 	if _, err := store.Pool.Exec(ctx, `

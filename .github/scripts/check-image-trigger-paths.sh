@@ -64,9 +64,16 @@
 #     matches when a pattern without `!` does and no `!` pattern does, so a `!` pattern
 #     excludes. Any other quantifier (`every` among them), and a pattern holding a brace, which
 #     picomatch expands, are refused. The filters are read where the action reads them: from
-#     the file a step's `filters` input names, which is .github/ci-filters.yaml for ci.yaml's
-#     changes job, once however many gates it decides, and a file that is absent, refuses the
-#     open, is not valid YAML or holds no mapping is refused, naming the file. One more term is
+#     the file a step's `filters` input names, once however many gates it decides. ci.yaml's
+#     changes job names the file it computes when it runs (`${{ runner.temp }}/ci-filters.yaml`,
+#     .github/scripts/ci-filters-generate.sh), which this check reads from the path
+#     CI_FILTERS_FILE gives - the lint job hands it the file its own run's changes job wrote - and,
+#     with none given, computes itself with `.github/scripts/check-ci-filters.sh generate`, the
+#     changes job's whole computation (about a minute on a CI runner, several in a busy pod; a
+#     local run that has a filters file at hand names it in CI_FILTERS_FILE). A file
+#     that is absent, refuses the open, is not valid YAML, holds no mapping or was written because
+#     the filters could not be computed (its first line `# FAIL-OPEN:`) is refused, naming the file.
+#     One more term is
 #     admitted beside the filters, in a job's `if:` only: a
 #     CALL MODE, `inputs.<name> == ''`, exactly the empty literal, on a <name> the workflow's
 #     own `on.workflow_call.inputs` declares `type: string` with no `default` or `default:
@@ -168,8 +175,8 @@
 #      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
 #      match only files the builds read, the workflows involved (the building one and the
-#      caller), or .github/ci-filters.yaml, the file a filter lives in, which decides whether
-#      the job runs and reaches no build input. A `push` or `merge_group` trigger, a filter
+#      caller), or a file of .github/ci-gates, which a filter is computed from, which decides
+#      whether the job runs and reaches no build input. A `push` or `merge_group` trigger, a filter
 #      that also decides a job doing more, and a workflow with other jobs are left alone: what
 #      they start reads more than an image.
 #      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
@@ -192,6 +199,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json
 import posixpath
 import re
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -201,9 +209,24 @@ from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_r
                             unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
-# Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
-# step hands the action this path rather than a filters string of its own.
-FILTERS_FILE = ".github/ci-filters.yaml"
+# What ci.yaml's changes job hands its one dorny/paths-filter step: the file it computes its
+# filters into when it runs, which this check reads from CI_FILTERS_FILE (generated_filters).
+GENERATED_INPUT = "${{ runner.temp }}/ci-filters.yaml"
+# The first line of a filters file written because the filters could not be computed.
+FAIL_OPEN_HEAD = "# FAIL-OPEN:"
+# The directory whose files the changes job's filters are computed from.
+GATES_DIR = ".github/ci-gates/"
+# A gate file's declaration of the filter it is for: `excluded("<name>", ...)` or `gate("<name>", ...)`.
+DECLARES = re.compile(r"""\b(?:excluded|gate)\(\s*["']([\w-]+)["']""")
+
+
+def declaring_gate_file(name: str):
+    """The one file of .github/ci-gates that declares filter `name`, or None where none or more
+    than one does."""
+    found = [str(path) for path in sorted(Path(GATES_DIR).glob("*.py")) if name in DECLARES.findall(path.read_text())]
+    return found[0] if len(found) == 1 else None
+
+
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
 NEEDS_OUTPUT = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
 STEP_OUTPUT = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)")
@@ -563,7 +586,7 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         "action and of the BuildKit image it runs in. Two more of its paths decide whether "
         "this job runs and reach nothing the build receives: .github/workflows/ci.yaml, which "
         "holds the job's `if:` and hands it one input, ci-ok-changes, which reaches the ci-ok "
-        "report, and .github/ci-filters.yaml, the file the filter itself lives in. What the "
+        "report, and .github/ci-gates/browser-image.py, the file the filter is kept in. What the "
         "trigger exists to guarantee, that a change "
         "to a build input produces the image the row pins, is therefore already true wherever "
         "the build is skipped, and this gate cannot hide a changed input, because the hash of "
@@ -1280,7 +1303,7 @@ FILTER_FILES: dict[str, dict | None] = {}
 def step_filters(step: dict) -> dict | None:
     """A paths-filter step's filters, by name, read as dorny/paths-filter v4.0.3 reads its
     `filters` input (src/main.ts, isPathInput): the path of a file when the text holds no newline
-    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it .github/ci-filters.yaml
+    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it the file it computes
     that way. Empty when inline filters are not a mapping. None when inline filters are not valid
     YAML, a repeated key included, or when the file a step names is absent, refuses the open, is
     not valid YAML or holds no mapping, each refused here naming the file and which, so the gate it
@@ -1295,8 +1318,33 @@ def step_filters(step: dict) -> dict | None:
             return None
         return filters if isinstance(filters, dict) else {}
     if given not in FILTER_FILES:
-        FILTER_FILES[given] = filters_file(given)
+        path = generated_filters() if given == GENERATED_INPUT else given
+        FILTER_FILES[given] = filters_file(path) if path else None
     return FILTER_FILES[given]
+
+
+GENERATED_SCRATCH = []  # the scratch directory a computed file is in, removed when the run ends
+
+
+def generated_filters() -> str | None:
+    """The file of the filters ci.yaml's changes job computed: the one CI_FILTERS_FILE names (the
+    lint job hands this check the file its own run's changes job wrote), else one computed here
+    with `.github/scripts/check-ci-filters.sh generate`. None, with the refusal recorded, when
+    neither is there."""
+    if os.environ.get("CI_FILTERS_FILE"):
+        return os.environ["CI_FILTERS_FILE"]
+    import subprocess
+    import tempfile
+    GENERATED_SCRATCH.append(tempfile.TemporaryDirectory(prefix="check-image-trigger-paths."))
+    out = Path(GENERATED_SCRATCH[-1].name) / "ci-filters.yaml"
+    result = subprocess.run([".github/scripts/check-ci-filters.sh", "generate", str(out)], capture_output=True,
+                            text=True)
+    if result.returncode != 0:
+        problems.append(f"::error file=.github/scripts/check-image-trigger-paths.sh::no CI_FILTERS_FILE is given, "
+                        f"and `.github/scripts/check-ci-filters.sh generate` could not compute the changes job's "
+                        f"filters (exit {result.returncode}), so no gate that reads them can be read")
+        return None
+    return str(out)
 
 
 def filters_file(path: str) -> dict | None:
@@ -1312,6 +1360,11 @@ def filters_file(path: str) -> dict | None:
         why = error.strerror if isinstance(error, OSError) and error.strerror else str(error)
         problems.append(f"::error file={path}::{path} is there and refuses the open ({type(error).__name__}: "
                         f"{why}), and {reads}, so no gate that step decides can be read")
+        return None
+    if text.startswith(FAIL_OPEN_HEAD):
+        problems.append(f"::error file={path}::{path} is the file .github/scripts/ci-filters-generate.sh writes when "
+                        f"the filters could not be computed, every filter `'**'`, and {reads}, so no gate that step "
+                        f"decides can be held to an image build: {text.splitlines()[0]}")
         return None
     try:
         filters = yaml.load(text, Loader=UniqueKeyLoader)
@@ -1890,19 +1943,6 @@ BUILD_PLUMBING_STEPS: list[tuple[str, str, str, tuple[str, ...], str]] = [
         "event context and no file at all",
     ),
     (
-        ".github/workflows/worker-image.yaml", "build", "served-leaves",
-        (
-            'for chain in packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem; do',
-            'end=$(openssl x509 -in "$chain" -noout -enddate 2>&1) || { echo "::warning file=$chain::openssl could not read its leaf: $end"; continue; }',
-            'openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null || echo "::warning file=$chain::its leaf is valid until ${end#notAfter=}, within 30 days or past: vendor the chains again (cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go) and commit what it writes, or from then every client of the TLS probe is held to the public site in its place"',
-            'done',
-        ),
-        "warns, never fails, when a leaf of the two chains the image's TLS probe serves ends within "
-        "30 days: it reads packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem, which the "
-        "build embeds in the image's legion, so the worker_image filter matches them for the build "
-        "already and the step justifies no breadth of the trigger",
-    ),
-    (
         ".github/workflows/worker-image.yaml", "build", "record",
         (
             'test -n "$DIGEST"',
@@ -2043,17 +2083,20 @@ for label, (filters, origin, selectors, read) in started.items():
         continue
     if not selectors and not only_builds(origin):
         continue
-    # Two files a gating filter names that no build reads are passed over: the workflow whose
-    # trigger it is, and .github/ci-filters.yaml, the file the filter itself lives in now. That
-    # file decides whether the job runs, as a workflow's own `if:` does, and reaches no build
-    # input; any other file no build reads is still refused.
+    # Two kinds of file a gating filter names that no build reads are passed over: the workflow
+    # whose trigger it is, and the one file of .github/ci-gates that declares that filter (its
+    # `excluded("<name>", ...)` or `gate("<name>", ...)`), which the filter is computed from and
+    # which decides whether the job runs, as a workflow's own `if:` does, reaching no build input.
+    # Any other file no build reads, another gate file among them, is still refused.
+    # A selector names its filter as a label, `jobs.<job> filter <name>`: the name is its last word.
+    own = {declaring_gate_file(name.rsplit(" ", 1)[-1]) for _where, name in selectors} - {None}
     extra = [
         path
         for path in FILES
         if all(f.covers(path) for f in filters)
         and path not in read
         and path != str(origin)
-        and path != FILTERS_FILE
+        and path not in own
     ]
     if not extra:
         print(f"{label}: matches only files its image builds read")
