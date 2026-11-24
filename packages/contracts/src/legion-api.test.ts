@@ -2715,12 +2715,13 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // aside: the mark names the contract the caller is served at, 199, the recorded contract below
   // the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
-  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
-  // above 199: the repositories block's, and contract 220's, which takes `plan` off each
-  // assignment, so the golden's rows are compared without it. One value strip stands above 199 as
-  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
-  // row is served here without its `source`, every other field of it and every other row as the
-  // state golden holds them.
+  // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Three bands stand
+  // above 199: the repositories block's; contract 220's, which takes `plan` off each assignment;
+  // and contract 221's, which takes `priority` off each issue and off its `waitingLine`. So the
+  // golden's issues are compared without those keys. One value strip stands above 199 as well:
+  // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
+  // served here without its `source`, every other field of it and every other row as the state
+  // golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2743,17 +2744,20 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     ...rest
   } = fixtureBody("state.json");
   const issues = Object.fromEntries(
-    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => [
-      key,
-      issue.assignments === undefined
-        ? issue
-        : {
-            ...issue,
-            assignments: (issue.assignments as Record<string, unknown>[]).map(
-              ({ plan: _plan, ...row }) => row
-            ),
-          },
-    ])
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+      const { priority: _priority, ...kept } = issue;
+      const line = kept.waitingLine;
+      if (isJsonObject(line)) {
+        const { priority: _placed, ...placed } = line;
+        kept.waitingLine = placed;
+      }
+      if (kept.assignments !== undefined) {
+        kept.assignments = (kept.assignments as Record<string, unknown>[]).map(
+          ({ plan: _plan, ...row }) => row
+        );
+      }
+      return [key, kept];
+    })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();

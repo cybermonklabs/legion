@@ -593,7 +593,7 @@ func TestAWaitingLineTextIsHeldWhereAReaderSeesIt(t *testing.T) {
 			"It stands <!--\nwithin its priority, among the issues whose work came back,\noldest first, --> until it resumes.", quotation,
 			errCommented},
 		{"a comment inside a quotation", "guide.md",
-			"It stands among the issues <!-- a note --> whose work came back, oldest first.", quotation, errCommented},
+			"It stands within its priority, among the issues <!-- a note --> whose work came back, oldest first.", quotation, errCommented},
 		{"a quotation of TypeScript inside a \"<!--\"", "legion-api.ts",
 			"/** It stands <!-- within its priority, among the issues whose work came back, oldest first --> */", quotation, nil},
 		{"no quotation", "guide.md", "It stands among the issues, oldest first.", quotation, errPassageMissing},
