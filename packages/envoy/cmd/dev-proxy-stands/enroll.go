@@ -203,8 +203,9 @@ func brokerRoute(base, route string) (string, error) {
 	return joined.String(), nil
 }
 
-// call makes one JSON call and reads its answer into out. A refusal is an error naming the
-// status and the broker's own body, which carries the contract's code and no credential.
+// call makes one JSON call and reads its answer into out. A refusal is an error naming the call by
+// its method and its URL as redact.URL prints it, since --url can carry user information or a
+// query, and the status and the broker's own body as the rule reads it (redact.Answer.Words).
 func call(ctx context.Context, method, url string, headers map[string]string, body, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -234,7 +235,7 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 		return err
 	}
 	if answer.StatusCode != http.StatusOK && answer.StatusCode != http.StatusCreated {
-		return fmt.Errorf("%s %s answered %d: %s", method, url, answer.StatusCode, read.Words())
+		return fmt.Errorf("%s %s answered %d: %s", method, redact.URL(url), answer.StatusCode, read.Words())
 	}
 	return read.Decode(out)
 }
