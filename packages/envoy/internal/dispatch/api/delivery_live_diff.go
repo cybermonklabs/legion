@@ -107,17 +107,13 @@ func encodeDeliveryBody(kind string, body any) (deliveryLiveEncoded, error) {
 		encoded.revs.Items[list] = revs
 	}
 
-	for name, excluded := range classes.maps {
-		value, err := field(name)
-		if err != nil {
+	for name := range classes.maps {
+		// PROBE, not a fix: no map entry is read and no entry revision taken, to measure the
+		// recompute's floor with the body still encoded once. Deltas carry no map entry.
+		if _, err := field(name); err != nil {
 			return deliveryLiveEncoded{}, err
 		}
-		values, revs, err := deliveryLiveMapEntries(value, excluded)
-		if err != nil {
-			return deliveryLiveEncoded{}, fmt.Errorf("delivery live: read %s.%s: %w", kind, name, err)
-		}
-		encoded.maps[name] = values
-		encoded.revs.Maps[name] = revs
+		encoded.maps[name], encoded.revs.Maps[name] = map[string]deliveryLiveValue{}, map[string]string{}
 	}
 
 	for _, name := range classes.counts {
