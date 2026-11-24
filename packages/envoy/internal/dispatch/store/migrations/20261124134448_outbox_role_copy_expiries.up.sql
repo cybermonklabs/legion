@@ -17,12 +17,23 @@
 -- outbox_kept_expiry_cursor is its one row: the stream sequence of the last expiry notice the
 -- outbox read, so a read goes on from the notice after it.
 --
--- The partial index holds the unsettled rows alone, in the order the pass reads them: a pass with
--- nothing to keep reads an empty index, and a settled row leaves it.
+-- outbox_role_undelivered_notes holds one row per event recorded undelivered to a role, in the
+-- transaction that appends its role.undelivered record: the issue the message about it is posted
+-- on (the event's own issue, or the issue of the event's document), the document for a document
+-- event, what the message names of the event (its type, its keeps, why it ended, and the reference
+-- of the post or document it is about), and window_opened_at, the start of the hour its message
+-- covers: the window of the same issue and role that opened less than an hour before, or now when
+-- none did. Once a window is an hour old the outbox posts one message on its issue naming every
+-- event of the window (postUndeliveredNotes) and writes posted_at and message_id; next_attempt_at
+-- and attempt_count are that post's backoff. The state is all here, so a window outlives the
+-- process that opened it.
 --
--- Two new tables and an index: nothing existing is read, locked or rewritten here, and the release
--- before this one neither reads nor writes either table, which is what a rolling update requires
--- of a migration (cmd/dispatch/README.md, "Database migrations").
+-- Each partial index holds the unsettled rows alone, in the order a pass reads them: a pass with
+-- nothing to do reads an empty index, and a settled row leaves it.
+--
+-- Three new tables and their indexes: nothing existing is read, locked or rewritten here, and the
+-- release before this one neither reads nor writes any of them, which is what a rolling update
+-- requires of a migration (cmd/dispatch/README.md, "Database migrations").
 create table outbox_role_copy_expiries (
     event_id bigint not null,
     role text not null,
@@ -46,3 +57,26 @@ create table outbox_kept_expiry_cursor (
     id boolean primary key default true check (id),
     sequence bigint not null
 );
+
+create table outbox_role_undelivered_notes (
+    event_id bigint not null,
+    role text not null,
+    issue_key text not null,
+    artifact_id uuid,
+    event_type text not null,
+    keeps integer not null check (keeps >= 1),
+    reason text not null check (reason in ('expired', 'copy_gone')),
+    item_ref text,
+    window_opened_at timestamptz not null,
+    noted_at timestamptz not null default now(),
+    posted_at timestamptz,
+    message_id uuid,
+    next_attempt_at timestamptz,
+    attempt_count integer not null default 0,
+    primary key (event_id, role),
+    check ((posted_at is null) = (message_id is null))
+);
+
+create index outbox_role_undelivered_notes_unposted on outbox_role_undelivered_notes (window_opened_at) where posted_at is null;
+
+create index outbox_role_undelivered_notes_window on outbox_role_undelivered_notes (issue_key, role, window_opened_at);

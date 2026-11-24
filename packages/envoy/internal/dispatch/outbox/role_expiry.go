@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,11 +53,12 @@ const keptExpiryNotices = bus.KeptExpiredSubjectPrefix + ">"
 
 // passKeptExpiries is the outbox's work on the copies it kept for roles whose hour ended with no
 // session taking them: it reads the listeners' expiry notices into outbox_role_copy_expiries
-// (readKeptExpiries), and keeps each event again whose expiry owes it a keep, or forwards it to the
-// session that holds the role by now (keepExpiredCopiesAgain). It runs on the publisher hold's
-// holder, after the fallback pass of each scan and every keptExpiryReadEvery besides
-// (Outbox.serve), and reports what the holder does next as that pass does: full, there is more to
-// read or keep now; failed, a read or a claim failed and the holder backs off.
+// (readKeptExpiries), keeps each event again whose expiry owes it a keep, or forwards it to the
+// session that holds the role by now (keepExpiredCopiesAgain), and posts the message about each
+// window of events recorded undelivered that has ended (postUndeliveredNotes). It runs on the
+// publisher hold's holder, after the fallback pass of each scan and every keptExpiryReadEvery
+// besides (Outbox.serve), and reports what the holder does next as that pass does: full, there is
+// more to read, keep or post now; failed, a read or a claim failed and the holder backs off.
 //
 // A Deps with no kept-lane reader reads no notice and keeps nothing again: the outbox has no
 // stream to read the notices or the copies from, as it makes no keep's handover then
@@ -64,7 +66,8 @@ const keptExpiryNotices = bus.KeptExpiredSubjectPrefix + ">"
 func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
 	readFull, readFailed := readKeptExpiries(ctx, o.deps)
 	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
-	return readFull || keepFull, readFailed || keepFailed
+	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
+	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
 }
 
 // readKeptExpiries reads the expiry notices the stream holds past the outbox's cursor
@@ -208,14 +211,28 @@ func recordExpiry(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, noti
 // event's own owner - its issue, its document or its project - written by the outbox's own system
 // actor (graphWriter), which notifies nobody (events.Broker.Notify), so the record wakes no route
 // and reaches no role: it is published to its owner's topic alone, where a person reads it in the
-// owner's history and a session that follows that topic is sent it. It logs the record at Warn and
-// returns it for the caller to publish once tx has committed. An event the log does not hold, and
-// one that names no owner, which the outbox never keeps a copy of, records nothing but that line.
+// owner's history and a session that follows that topic is sent it. It also notes the event for
+// the message a person is sent about it (noteUndelivered). It logs the record at Warn and returns
+// it for the caller to publish once tx has committed.
+//
+// An event the log does not hold records nothing but an Error line, and so does one that names no
+// owner. Every event the outbox keeps a copy of for a role is of an issue or of an issue's
+// document: a role destination is the route (addRoute), which is read from the event's issue or
+// from the issue of its document (readBatchSQL, coalesce(i.route, ai.route)), and a role topic's
+// fallback row holds that route's copy (fallbackCopy.ofASessionsOwnTopic). So no write makes an
+// expiry of a project's own event or of a project document's, and none of those owners has a
+// place to post a message on.
 func appendUndelivered(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64, role string, keeps int, keptAt, droppedAt time.Time, reason string) (*model.Event, error) {
 	record := model.Event{Type: model.RoleUndeliveredEventType, Actor: graphWriter}
-	var eventType string
-	err := tx.QueryRow(ctx, `select issue_key, artifact_id::text, project_key, type from events where id = $1`, eventID).
-		Scan(&record.IssueKey, &record.ArtifactID, &record.ProjectKey, &eventType)
+	var about undeliveredEvent
+	err := tx.QueryRow(ctx, `
+		select e.issue_key, e.artifact_id::text, e.project_key, e.type, coalesce(e.payload ->> 'id', ''),
+		       ar.id::text, ar.issue_key, coalesce(ar.slug, '')
+		from events e
+		left join artifacts ar on ar.id::text = coalesce(e.artifact_id::text, e.payload ->> 'artifact_id')
+		where e.id = $1
+	`, eventID).Scan(&record.IssueKey, &record.ArtifactID, &record.ProjectKey, &about.eventType, &about.postID,
+		&about.documentID, &about.documentIssue, &about.documentSlug)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && record.IssueKey == nil && record.ArtifactID == nil && record.ProjectKey == nil {
 		slog.Error("dispatch outbox: an event's copy for a role reached no session, and the event names no owner to record it on",
 			"event_id", eventID, "role", role, "keeps", keeps, "reason", reason)
@@ -225,15 +242,94 @@ func appendUndelivered(ctx context.Context, deps Deps, tx pgx.Tx, eventID int64,
 		return nil, err
 	}
 	record.Payload = model.RoleUndeliveredEventPayload{
-		EventID: eventID, EventType: eventType, Role: role, Keeps: keeps, KeptAt: keptAt, DroppedAt: droppedAt, Reason: reason,
+		EventID: eventID, EventType: about.eventType, Role: role, Keeps: keeps, KeptAt: keptAt, DroppedAt: droppedAt, Reason: reason,
 	}
 	appended, err := deps.Broker.Append(ctx, tx, record)
 	if err != nil {
 		return nil, fmt.Errorf("append the role.undelivered record of event %d: %w", eventID, err)
 	}
 	slog.Warn("dispatch outbox: an event's copy for a role reached no session; it is recorded undelivered",
-		"event_id", eventID, "event_type", eventType, "role", role, "keeps", keeps, "reason", reason, "record_id", appended.ID)
+		"event_id", eventID, "event_type", about.eventType, "role", role, "keeps", keeps, "reason", reason, "record_id", appended.ID)
+	about.issueKey = record.IssueKey
+	if err := noteUndelivered(ctx, tx, eventID, role, keeps, reason, about); err != nil {
+		return nil, err
+	}
 	return &appended, nil
+}
+
+// undeliveredEvent is what the message about an undelivered event names of it, as appendUndelivered
+// reads it: its own issue, its type, the id of the post it carries, and the document it is about -
+// the event's own document, or the document an issue's document event names (payload artifact_id,
+// as artifact.version and artifact.human_edited carry it) - with that document's issue and slug.
+type undeliveredEvent struct {
+	issueKey      *string
+	eventType     string
+	postID        string
+	documentID    *string
+	documentIssue *string
+	documentSlug  string
+}
+
+// undeliveredNoteWindow is the hour one message about the events recorded undelivered to one role
+// on one issue covers: the first such event opens it, every one recorded before it ends joins it,
+// and the message is posted once it has ended (postUndeliveredNotes). A role nobody holds misses
+// each event routed to it, so this is what keeps the issue to one message an hour for that role
+// rather than one per event; the role.undelivered record of each is in the history at once.
+const undeliveredNoteWindow = time.Hour
+
+// noteUndelivered notes, in tx, eventID as undelivered to role, for the message postUndeliveredNotes
+// posts about it: on the event's own issue, or on the issue of its document, which is the issue
+// whose route the role is. It joins the window of that issue and role opened less than
+// undeliveredNoteWindow before, and opens one at now when none was. The note names the post an
+// issue's comment or message event carries (dispatch://<issue>/<kind>/<id>), or else the document a
+// document event is about (dispatch://<issue>/artifact/<slug>), and names nothing for any other
+// event, which the message names by its id and type alone. An event of neither an issue nor an
+// issue's document is noted nowhere, with an Error line (appendUndelivered says why no write makes
+// one). A repeat of the note for one event and role is no new note.
+func noteUndelivered(ctx context.Context, tx pgx.Tx, eventID int64, role string, keeps int, reason string, about undeliveredEvent) error {
+	var issueKey string
+	switch {
+	case about.issueKey != nil:
+		issueKey = *about.issueKey
+	case about.documentIssue != nil:
+		issueKey = *about.documentIssue
+	default:
+		slog.Error("dispatch outbox: an event recorded undelivered to a role is of neither an issue nor an issue's document, so no message is posted about it",
+			"event_id", eventID, "role", role)
+		return nil
+	}
+	var ref string
+	var document *string
+	switch kind := dispatchPostKind(about.eventType); {
+	case about.issueKey != nil && kind != "" && about.postID != "":
+		ref = "dispatch://" + issueKey + "/" + kind + "/" + about.postID
+	case about.documentID != nil && about.documentSlug != "":
+		ref, document = "dispatch://"+issueKey+"/artifact/"+about.documentSlug, about.documentID
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into outbox_role_undelivered_notes
+			(event_id, role, issue_key, artifact_id, event_type, keeps, reason, item_ref, window_opened_at)
+		values ($1, $2, $3, $4::uuid, $5, $6, $7, nullif($8, ''), coalesce(
+			(select max(window_opened_at) from outbox_role_undelivered_notes
+			 where issue_key = $3 and role = $2 and window_opened_at > now() - $9::interval),
+			now()))
+		on conflict (event_id, role) do nothing
+	`, eventID, role, issueKey, document, about.eventType, keeps, reason, ref, undeliveredNoteWindow); err != nil {
+		return fmt.Errorf("note event %d undelivered to role %s: %w", eventID, role, err)
+	}
+	return nil
+}
+
+// dispatchPostKind is the kind of post an event of type eventType carries, as a reference names
+// it - a suggestion is a comment - and "" for an event that carries no post.
+func dispatchPostKind(eventType string) string {
+	switch prefix, _, _ := strings.Cut(eventType, "."); prefix {
+	case "comment", "suggestion":
+		return "comment"
+	case "message":
+		return "message"
+	}
+	return ""
 }
 
 // expiredCopy is one outbox_role_copy_expiries row the expiry pass claimed: the copy of eventID
