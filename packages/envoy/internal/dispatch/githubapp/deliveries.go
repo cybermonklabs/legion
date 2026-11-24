@@ -3,7 +3,6 @@ package githubapp
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -501,10 +500,10 @@ const shownBodyRunes = 512
 //   - A refusal's body is cut alone, with the body's size. Every error of this package whose text
 //     holds a body GitHub answered holds it as this shows it (withBody). A reader that finds the
 //     body at the end of such a text (api's gitHubErrorText) finds it as this shows it.
-//   - A value an answer could not decode, in a time parse error or a JSON type error, is cut
-//     alone, with the value's size. The error still names the layout, or the field and the type
-//     (ShownErr). The reason of a time parse error quotes the text after a valid time, and it is
-//     cut alone too, with the reason's size.
+//   - A value an answer could not decode is in no error: each answer decodes through
+//     redact.Answer.Decode, whose error names the member that did not decode and the types around
+//     it, quotes none of the value, whole or cut, and reaches none of the decoder's own errors,
+//     whose text quotes it.
 //   - A transport error of send names its target as ShownBody shows it, with the target's size,
 //     and its failure by redact.Unanswered: a transport failure's own words or a fixed class, so it
 //     quotes no line of an answer at all.
@@ -513,9 +512,8 @@ const shownBodyRunes = 512
 //   - A request's target, which a status error names, is cut alone, with the target's size. So is
 //     a next page link in nextLink's refusal. A target holds names Dispatch keeps and text GitHub
 //     gave (a next page link).
-//   - A time parse error, a JSON type error or a URL's parse error whose text is still longer than
-//     shownErrMost (4,414 bytes) after the cuts above is cut whole, with the size of that text
-//     (ShownErr).
+//   - A URL's parse error whose text is still longer than shownErrMost (4,414 bytes) after the
+//     cuts above is cut whole, with the size of that text (ShownErr).
 //
 // It reads at most shownBodyRunes × 4 bytes of body, the most that many runes take, and never
 // splits a rune. A byte that is no UTF-8 counts as one rune.
@@ -537,59 +535,37 @@ func ShownBody[Body ~string | ~[]byte](body Body) string {
 // shownErrMost is the longest text ShownErr answers, 4,414 bytes: two texts as ShownBody shows
 // them, and 256 bytes for the words of the error's type around them. A text ShownBody shows is at
 // most 2,079 bytes: shownBodyRunes runes of at most utf8.UTFMax bytes each, and `… (<n> bytes)`
-// for the largest n, 9223372036854775807 (math.MaxInt64). The text of each type that ShownErr cuts
-// the fields of holds at most two cut fields: a url.Error's URL and its cause, a time.ParseError's
-// Value and ValueElem or its Value and Message, and a json.UnmarshalTypeError's literal. In the
-// usual case, the text is inside the bound and still names each field and reason. A field that
-// the text escapes can make the text longer. Package time writes each byte below 0x20 or past
-// ASCII as \xNN and puts a \ before each " and \, and a url.Error quotes its URL with %q. ShownErr
-// cuts whole each error whose text is still longer after it cuts the fields (shownErr), so no
-// answer passes the bound, whatever field is long.
+// for the largest n, 9223372036854775807 (math.MaxInt64). The one type ShownErr cuts the fields
+// of, a url.Error, holds two cut fields: its URL and its cause. In the usual case, its text is
+// inside the bound and still names each. A field the text escapes can make the text longer, since
+// a url.Error quotes its URL with %q, and so can its Op, which ShownErr keeps. ShownErr cuts whole
+// each error whose text is still longer after it cuts the fields (shownErr), so no answer passes
+// the bound, whatever field is long.
 const shownErrMost = 2*(shownBodyRunes*utf8.UTFMax+len("… (9223372036854775807 bytes)")) + 256
 
 // ShownErr is err as the errors of this package show it, cut once where it enters such an error,
 // and nil for nil. The text of its answer is never longer than shownErrMost. ShownErr is err
 // itself where ShownBody shows each text in err whole and err's text is at most shownErrMost, so
 // err keeps its own type and every method a caller type-asserts, such as net.Error's Timeout.
-// Otherwise it cuts the text of GitHub's that err holds as ShownBody shows it. Three types hold
-// that text in a field of its own, and ShownErr cuts that field alone and keeps the type, so
-// errors.As reaches the answer as it reaches err. ShownErr reads the type of err itself (a type
-// switch), not of the errors that err wraps:
+// Otherwise it cuts the text of GitHub's that err holds as ShownBody shows it. It reads the type
+// of err itself (a type switch), not of the errors that err wraps:
 //
 //   - A *url.Error, the error of a URL that does not parse (send's build of a request of its
-//     target, nextLink's parse of a next page link), has the text `<Op> "<URL>": <cause>`.
-//     ShownErr answers a new *url.Error with the same Op, the URL as ShownBody shows it, with the
-//     URL's size, and the cause (Err) as ShownErr shows it. So a long URL never pushes the cause
-//     out of the text.
-//   - A *time.ParseError is a time in an answer that JSON could not decode. ShownErr answers a
-//     copy whose Value, ValueElem and Message are as ShownBody shows them, each with its own
-//     size. Message is the reason. For a valid time with text after it, the reason quotes that
-//     text (`: extra text: "<text>"`). Layout and LayoutElem stay, so the error still names the
-//     layout and the reason. Package time quotes each value in the error's text and writes each
-//     byte past ASCII as \xNN, so the `…` of the cut shows as \xe2\x80\xa6 there.
-//   - A *json.UnmarshalTypeError is a value in an answer that its Go type cannot take. Its Value
-//     is the JSON kind of the value ("number"), and after a space the literal the decode copies
-//     where it copies one (a number past the range of int64). ShownErr answers a copy whose
-//     literal is as ShownBody shows it, with the literal's size. A Value with no space is cut
-//     whole. Field, Struct, Type, Offset and Err stay, so the error still names the field and the
-//     type.
+//     target, nextLink's parse of a next page link), has the text `<Op> "<URL>": <cause>`, with
+//     the URL in a field of its own. ShownErr answers a new *url.Error with the same Op, the URL as
+//     ShownBody shows it, with the URL's size, and the cause (Err) as ShownErr shows it, so
+//     errors.As reaches the answer as it reaches err, and a long URL never pushes the cause out of
+//     the text. Where that text is still longer than shownErrMost, ShownErr cuts it whole, as
+//     below, with the size of that text.
+//   - Any other error is cut whole: ShownErr answers an error whose text is err's text as
+//     ShownBody shows it, with the size of err's text, and whose Unwrap is err (shownError). So
+//     errors.Is and errors.As still reach err, and Timeout and Temporary still answer through err's
+//     chain. Go's own words take part of the shownBodyRunes runes there.
 //
-// Any other error is cut whole: ShownErr answers an error whose text is err's text as ShownBody
-// shows it, with the size of err's text, and whose Unwrap is err, so errors.Is and errors.As still
-// reach err (shownError). Go's own words take part of the shownBodyRunes runes there.
-//
-// An error of the three types is cut whole too where its text is longer than shownErrMost after
-// ShownErr cuts its fields. ShownErr then answers an error whose text is that text as ShownBody
-// shows it, with the size of that text, and whose Unwrap is err (shownError). So errors.Is and
-// errors.As still reach err, and Timeout and Temporary still answer through err's chain. A field
-// that ShownErr keeps can make such a text, for example a url.Error's Op, a time.ParseError's
-// Layout, or a json.UnmarshalTypeError's Struct, Field or Err. A cut field can make one too where
-// package time writes it past ASCII: each such byte takes four bytes in time's quotes, so a
-// time.ParseError whose Value and ValueElem are cut to 512 runes of four bytes is about 16,500
-// bytes long.
-//
-// The package cuts with it the error of every JSON decode of an answer GitHub gave whose error it
-// returns, the error of a URL that does not parse, and the error of send's read of the answer.
+// A decode error has no case of its own: every answer decodes through redact.Answer.Decode, whose
+// error is fixed text that quotes none of the answer and wraps no error of the decoder's. The
+// package cuts with ShownErr the error of every JSON decode of an answer GitHub gave whose error
+// it returns, the error of a URL that does not parse, and the error of send's read of the answer.
 // Another package cuts with it an error whose text quotes GitHub's text (redeliver's bucketErr,
 // for a bucket error that quotes a key).
 func ShownErr(err error) error {
@@ -598,10 +574,9 @@ func ShownErr(err error) error {
 }
 
 // shownErr is ShownErr(err), and cut is whether shown is an error other than err. shown starts as
-// err, and the nil case answers nil and false. The case of each type whose fields it cuts
-// replaces shown only where it cuts a field, and every such case ends at the check of shownErrMost
-// after the switch. The *url.Error case reads cut for its cause and never compares two errors,
-// since == panics on two errors of one type that Go cannot compare.
+// err, and the nil case answers nil and false. The *url.Error case replaces shown only where it
+// cuts a field, and ends at the check of shownErrMost after the switch. It reads cut for its cause
+// and never compares two errors, since == panics on two errors of one type that Go cannot compare.
 func shownErr(err error) (shown error, cut bool) {
 	shown = err
 	switch e := err.(type) {
@@ -611,22 +586,6 @@ func shownErr(err error) (shown error, cut bool) {
 		cause, causeCut := shownErr(e.Err)
 		if target := ShownBody(e.URL); causeCut || target != e.URL {
 			shown, cut = &url.Error{Op: e.Op, URL: target, Err: cause}, true
-		}
-	case *time.ParseError:
-		value, valueElem, message := ShownBody(e.Value), ShownBody(e.ValueElem), ShownBody(e.Message)
-		if value != e.Value || valueElem != e.ValueElem || message != e.Message {
-			c := *e
-			c.Value, c.ValueElem, c.Message = value, valueElem, message
-			shown, cut = &c, true
-		}
-	case *json.UnmarshalTypeError:
-		// at is where the literal starts: after the kind and its space, or at 0 where Value has no
-		// space.
-		at := strings.IndexByte(e.Value, ' ') + 1
-		if literal := ShownBody(e.Value[at:]); literal != e.Value[at:] {
-			c := *e
-			c.Value = e.Value[:at] + literal
-			shown, cut = &c, true
 		}
 	default:
 		text := err.Error()
