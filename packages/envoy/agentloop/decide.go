@@ -192,7 +192,6 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	var unread *tokenFailure
 	switch {
 	case errors.As(err, &unread):
-		// The call never went out: the caller's words for its token alone (tokenFailure).
 		err = unread
 	case err != nil:
 		err = redact.Cause(err, req.Model.Endpoint.BaseURL)
