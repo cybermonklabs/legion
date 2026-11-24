@@ -478,7 +478,7 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	}
 	var payload installationPayload
 	if err := body.Decode(&payload); err != nil {
-		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
+		return Installation{}, fmt.Errorf("decode installation: %w", err)
 	}
 	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
 }
@@ -531,7 +531,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			}
 			var payload []installationPayload
 			if err := body.Decode(&payload); err != nil {
-				return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
+				return nil, fmt.Errorf("decode installations (page %d): %w", page, err)
 			}
 			if len(payload) == 0 {
 				break
@@ -646,7 +646,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 			} `json:"repositories"`
 		}
 		if err := body.Decode(&payload); err != nil {
-			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, ShownErr(err))
+			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, err)
 		}
 		if len(payload.Repositories) == 0 {
 			break
@@ -843,7 +843,7 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		Permissions auth.AppPerms `json:"permissions"`
 	}
 	if err := body.Decode(&payload); err != nil {
-		return cachedToken{}, fmt.Errorf("decode installation token: %w", ShownErr(err))
+		return cachedToken{}, fmt.Errorf("decode installation token: %w", err)
 	}
 	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
 	c.mu.Lock()
@@ -1148,7 +1148,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 		} `json:"object"`
 	}
 	if err := body.Decode(&ref); err != nil {
-		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, ShownErr(err))
+		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, err)
 	}
 	if ref.Ref != "refs/heads/"+branch || !commitSHA.MatchString(ref.Object.SHA) {
 		return "", noBranch
@@ -1214,7 +1214,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		} `json:"tree"`
 	}
 	if err := body.Decode(&tree); err != nil {
-		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, ShownErr(err))
+		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, err)
 	}
 	if tree.Truncated {
 		return Dir{}, fmt.Errorf("%w: %s/%s@%s:%s", ErrTreeTruncated, owner, repo, sha, dir)
@@ -1280,7 +1280,7 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		Encoding string `json:"encoding"`
 	}
 	if err := body.Decode(&payload); err != nil {
-		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), ShownErr(err))
+		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), err)
 	}
 	// The encoding is GitHub's word, or a stand-in's: a blob in any but base64 is named as one,
 	// and its encoding is printed nowhere.

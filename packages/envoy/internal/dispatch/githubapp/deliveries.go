@@ -72,7 +72,7 @@ func (c *Client) Deliveries(ctx context.Context, since time.Time, before func() 
 		}
 		var page []Delivery
 		if err := body.Decode(&page); err != nil {
-			return nil, fmt.Errorf("decode webhook deliveries: %w", ShownErr(err))
+			return nil, fmt.Errorf("decode webhook deliveries: %w", err)
 		}
 		for _, delivery := range page {
 			if delivery.DeliveredAt.Before(since) {
