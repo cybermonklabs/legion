@@ -238,7 +238,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		return workflow.IdleHoldUnownedSandboxGone, false
 	}
 	var decision workflow.IdleDecision
-	var quiet, holding bool
+	var quiet bool
 	var seen pods.IdleView
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
@@ -246,7 +246,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		decision = workflow.UnownedPodRelease(view, now, w.idlePeriod, true)
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
-		holding, seen = view.Holding, view
+		seen = view
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}
@@ -267,7 +267,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
 		// detail, as the teardown's do not.
-		w.recordKeptPod(ctx, issue, decision.Hold, "", quiet, holding, now)
+		w.recordKeptPod(ctx, issue, decision.Hold, "", quiet, seen.Holding, now)
 		return decision.Hold, false
 	}
 	// The line that ends this release is the teardown's, and it is the one Info line of a
