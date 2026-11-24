@@ -115,8 +115,9 @@ func (s *HTTPServer) Start() error {
 	// 308 sends the message again. So the POST follows a redirect only on the endpoint's own origin
 	// (redirects.SameOrigin), as the connect does; any other is the server's answer, which took no
 	// message: an error naming its status, and nothing of its Location or body.
+	poster := redirects.SameOrigin(http.DefaultClient)
 	s.session = newSession(s.cfg.Name, func(data []byte) error {
-		postResp, postErr := redirects.SameOrigin(http.DefaultClient).Post(s.messageURL, "application/json", bytes.NewReader(data))
+		postResp, postErr := poster.Post(s.messageURL, "application/json", bytes.NewReader(data))
 		if postErr != nil {
 			return fmt.Errorf("POST to %s: %w", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL))
 		}
