@@ -1,5 +1,8 @@
 package testcleanup
 
+//ci:reads packages/envoy/internal/dispatch/docs/** TestTheDocumentTestsRegisterEveryCleanupThroughAdd cleanupCalls walks ../../internal/dispatch/docs and parses every Go file under it
+//ci:reads packages/envoy/internal/dispatch/store/storetest/** TestTheDocumentTestsRegisterEveryCleanupThroughAdd cleanupCalls walks ../../internal/dispatch/store/storetest and parses every Go file under it
+
 import (
 	"bytes"
 	"go/ast"
