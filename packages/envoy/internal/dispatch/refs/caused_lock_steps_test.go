@@ -17,13 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// causedLockWait bounds how long a step of the lock order test waits for Caused to finish once
-// nothing holds it; its waits for the pass's backend to queue behind a holder end on the queue
-// itself (storetest.WaitForQueuedBehind). It is far above what a pass over three blocks takes, so
-// a step that runs out of it is the order being wrong, not a slow machine.
-const causedLockWait = 20 * time.Second
 
 // The two versions every document of the lock order test is indexed at. The first holds three
 // paragraphs. The second keeps a's text, changes b's and drops c, so its pass writes the nodes of
@@ -64,7 +59,6 @@ var causedWriter = model.Actor{Kind: "user", ID: "alice"}
 // docs/block_index_fence_test.go runs Caused after the fenced writers it races, but holds no row
 // Caused takes and reads no step of it, so it proves nothing about which rows Caused locks.
 func TestCausedTakesTheStoreLockOrder(t *testing.T) {
-	ctx := context.Background()
 	database := storetest.Open(t)
 
 	t.Run("it stamps only node rows its pass took before the event", func(t *testing.T) {
@@ -86,7 +80,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 		if !slices.Contains(held, untouched) {
 			t.Fatalf("the holder does not hold %s, the block the pass left alone (it holds %v)", untouched, held)
 		}
-		done := pass.causeInBackground(ctx)
+		done := pass.causeInBackground(t)
 		requireCausedUnblocked(t, database, holder, pass.pid, done)
 		release()
 
@@ -121,7 +115,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 
 		holder, release := beginCausedHolder(t, database)
 		insertCausedTuple(t, holder, tuple)
-		done := pass.causeInBackground(ctx)
+		done := pass.causeInBackground(t)
 		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done); early {
 			t.Fatalf("Caused finished without waiting on the held copy of its %s tuple of %s: %v", tuple.Kind, tuple.FromID, answer)
 		}
@@ -144,13 +138,8 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 			}
 		}
 		release()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Caused after the holder let go: %v", err)
-			}
-		case <-time.After(causedLockWait):
-			t.Fatalf("Caused did not finish within %s after the holder let go", causedLockWait)
+		if err := testwait.Receive(t, "Caused to finish once the holder let go", done); err != nil {
+			t.Fatalf("Caused after the holder let go: %v", err)
 		}
 	})
 	storetest.RequireNoMarkedCause(t, database, "the passes Caused committed")
@@ -258,7 +247,13 @@ func beginCausedPass(t *testing.T, database *store.Store, document parentDocumen
 
 // causeInBackground runs Caused and the commit on the pass's own transaction, off the test's
 // goroutine so the test can watch where it waits, and answers the channel its result arrives on.
-func (p *causedPass) causeInBackground(ctx context.Context) chan error {
+// Both run under testwait.Context(t), which ends at the test binary's deadline less testwait's
+// margin, or when t ends. Each subtest waits for Caused's answer before it returns, so only a
+// subtest that has already failed ends with Caused still running: that failure reported the
+// cause, and the end of t stops Caused without a failure of its own, so close finds the
+// connection free.
+func (p *causedPass) causeInBackground(t *testing.T) chan error {
+	ctx := testwait.Context(t)
 	done := make(chan error, 1)
 	p.finished = make(chan struct{})
 	go func() {
@@ -272,15 +267,14 @@ func (p *causedPass) causeInBackground(ctx context.Context) chan error {
 	return done
 }
 
-// close ends the pass and hands its connection back. A Caused still running is waited for
-// first: it runs on that connection, and the holders it may be queued behind are let go by
-// cleanups that run before this one.
+// close ends the pass and hands its connection back. Caused runs on that connection, and a pgx
+// connection serves one caller at a time, so a Caused started in the background is waited for
+// first, and the wait ends only when it returns. It needs no bound of its own: Caused's context
+// (causeInBackground) ends in a cleanup that t registered after this one and so runs before it,
+// and pgx then closes the connection under any statement still running, so Caused returns.
 func (p *causedPass) close() {
 	if p.finished != nil {
-		select {
-		case <-p.finished:
-		case <-time.After(causedLockWait):
-		}
+		<-p.finished
 	}
 	_ = p.tx.Rollback(context.Background())
 	p.conn.Release()
@@ -363,29 +357,13 @@ func insertCausedTuple(t *testing.T, holder pgx.Tx, tuple graphstore.Tuple) {
 // taken, and fails naming the statement it waits at.
 func requireCausedUnblocked(t *testing.T, database *store.Store, holder pgx.Tx, pid uint32, done chan error) {
 	t.Helper()
-	ctx := context.Background()
-	deadline := time.Now().Add(causedLockWait)
-	for {
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Caused while another transaction holds every other node row: %v", err)
-			}
-			return
-		default:
-		}
-		queued, err := storetest.QueuedBehind(ctx, holder, pid)
-		if err != nil {
-			t.Fatalf("inspect the locks Caused waits on: %v", err)
-		}
-		if queued {
-			t.Fatalf("Caused queued behind the holder of the node rows its pass did not take, waiting on %q: it takes a node row after the project of the event that its pass did not take before its projection rows",
-				causedStatement(t, database, pid))
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Caused did not finish within %s while another transaction holds every other node row", causedLockWait)
-		}
-		time.Sleep(2 * time.Millisecond)
+	answer, answered := storetest.WaitForQueuedBehind(t, holder, pid, done)
+	if !answered {
+		t.Fatalf("Caused queued behind the holder of the node rows its pass did not take, waiting on %q: it takes a node row after the project of the event that its pass did not take before its projection rows",
+			causedStatement(t, database, pid))
+	}
+	if answer != nil {
+		t.Fatalf("Caused while another transaction holds every other node row: %v", answer)
 	}
 }
 

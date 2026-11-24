@@ -227,10 +227,6 @@ const (
 // 0.000001, with one issue, its issue links index past the issues it has.
 const seedScale = "0.0002"
 
-// seedWait bounds the wait for the seed to exit once it is let go; its waits to queue behind a
-// hold end on the queue itself (queuedAt).
-const seedWait = 2 * time.Minute
-
 // seedStatementSpace is a run of whitespace in a statement, which the seed's waits fold.
 var seedStatementSpace = regexp.MustCompile(`\s+`)
 
@@ -341,11 +337,15 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			if err := comments.Rollback(ctx); err != nil {
 				t.Fatalf("let go of the hold on comments: %v", err)
 			}
-			select {
-			case <-process.Exited:
-			case <-time.After(seedWait):
-				t.Fatalf("the seed was still running %s after it was let go; it wrote:\n%s", seedWait, process.Output.String())
-			}
+			// The reading is what the seed wrote, so a seed that never exits fails with its output.
+			testwait.Until(t, "the seed to exit once it is let go (what it wrote, last read)", func() (string, bool) {
+				select {
+				case <-process.Exited:
+					return "", true
+				default:
+					return process.Output.String(), false
+				}
+			})
 			if code := process.Cmd.ProcessState.ExitCode(); code != 0 {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
