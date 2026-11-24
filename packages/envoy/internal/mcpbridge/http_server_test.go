@@ -403,22 +403,46 @@ func TestReadEndpointEvent_SkipsOtherEvents(t *testing.T) {
 
 // A relative endpoint resolves against the SSE URL as RFC 3986 section 5.2 reads a reference: a
 // path takes the SSE URL's origin and user information, and drops its query, and a reference that
-// names a host of its own takes the SSE URL's scheme alone.
+// names a host of its own takes the SSE URL's scheme alone. An endpoint on the SSE URL's origin
+// (its scheme, and its host and port, the host in any case) that names no user information takes
+// the SSE URL's, as a relative one does; one that names its own keeps it; one on another scheme,
+// host or port takes none.
 func TestReadEndpointEvent_ResolvesAgainstTheSSEURL(t *testing.T) {
 	const origin = "http://" + redacttest.User + ":" + redacttest.Password + "@mcp.example:3456"
 	const base = origin + "/bridge/sse?key=k"
+	// own is the SSE URL's origin with user information of the endpoint's own, in parts so no line
+	// reads as a credential to a scanner.
+	const own = "http://" + "own" + ":" + "word" + "@mcp.example:3456"
 	for _, c := range []struct{ endpoint, want string }{
 		{"/messages?session_id=abc", origin + "/messages?session_id=abc"},
 		{"messages?session_id=abc", origin + "/bridge/messages?session_id=abc"},
 		{"../messages", origin + "/messages"},
 		{"//other.example/messages", "http://other.example/messages"},
 		{"https://other.example/messages", "https://other.example/messages"},
-		{"http://mcp.example:3456/messages", "http://mcp.example:3456/messages"},
+		{"http://mcp.example:3456/messages", origin + "/messages"},
+		{"//mcp.example:3456/messages", origin + "/messages"},
+		{"http://MCP.example:3456/messages", "http://" + redacttest.User + ":" + redacttest.Password + "@MCP.example:3456/messages"},
+		{own + "/messages", own + "/messages"},
+		{"https://mcp.example:3456/messages", "https://mcp.example:3456/messages"},
+		{"http://mcp.example:3457/messages", "http://mcp.example:3457/messages"},
+		{"http://mcp.example/messages", "http://mcp.example/messages"},
 	} {
 		scanner := bufio.NewScanner(strings.NewReader("event: endpoint\ndata: " + c.endpoint + "\n\n"))
 		got, err := readEndpointEvent(scanner, sseBase(t, base))
 		if err != nil || got != c.want {
 			t.Errorf("readEndpointEvent(%q) = %q, %v; want %q", c.endpoint, got, err, c.want)
+		}
+	}
+}
+
+// An endpoint that resolves to no http or https URL with a host (another scheme, an opaque URL, a
+// URL with no host) is refused in the bridge's own words.
+func TestReadEndpointEvent_RefusesWhatIsNoHTTPURL(t *testing.T) {
+	for _, endpoint := range []string{"x:message?a=b", "http:/message?a=b", "http:message?a=b", "http:///message", "ftp://mcp.example/messages", "mailto:a@mcp.example"} {
+		scanner := bufio.NewScanner(strings.NewReader("event: endpoint\ndata: " + endpoint + "\n\n"))
+		got, err := readEndpointEvent(scanner, sseBase(t, "http://mcp.example:3456/sse"))
+		if want := "endpoint URL in SSE event is not an http or https URL with a host"; err == nil || err.Error() != want {
+			t.Errorf("readEndpointEvent(%q) = %q, %v; want the refusal %q", endpoint, got, err, want)
 		}
 	}
 }
