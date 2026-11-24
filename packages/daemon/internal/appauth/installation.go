@@ -130,8 +130,8 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	if err != nil {
 		return false, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		m.baseURL+"/repos/"+url.PathEscape(repo.Owner())+"/"+url.PathEscape(repo.Name())+"/installation", nil)
+	request, err := m.newRequest(ctx, http.MethodGet,
+		"/repos/"+url.PathEscape(repo.Owner())+"/"+url.PathEscape(repo.Name())+"/installation", nil)
 	if err != nil {
 		return false, err
 	}

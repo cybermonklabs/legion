@@ -610,7 +610,7 @@ func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token
 func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (string, error) {
 	what := fmt.Sprintf("the %s App's bot login (GraphQL viewer)", role)
 	reading := "read " + what
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/graphql", strings.NewReader(`{"query":"{viewer{login}}"}`))
+	request, err := m.newRequest(ctx, http.MethodPost, "/graphql", strings.NewReader(`{"query":"{viewer{login}}"}`))
 	if err != nil {
 		return "", err
 	}
@@ -646,7 +646,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 	shown, _ := slugOfBotLogin(githubrest.ShownLogin(botLogin(slug)))
 	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
 	reading := "read " + what
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)
+	request, err := m.newRequest(ctx, http.MethodGet, "/apps/"+url.PathEscape(slug), nil)
 	if err != nil {
 		return err
 	}
@@ -729,8 +729,8 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 		return false, false, fmt.Errorf("%s: %w", what, err)
 	}
 	for page := 1; ; page++ {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			m.baseURL+"/installation/repositories?per_page=100&page="+strconv.Itoa(page), nil)
+		request, err := m.newRequest(ctx, http.MethodGet,
+			"/installation/repositories?per_page=100&page="+strconv.Itoa(page), nil)
 		if err != nil {
 			return false, false, err
 		}

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/urljoin"
 )
 
 // refreshWindow is how long before a lease's expiry Token stops serving it from the cache and
@@ -122,6 +123,24 @@ func (m *Manager) transient(request *http.Request, response *http.Response, read
 		return &TransientError{Err: refused}
 	}
 	return refused
+}
+
+// newRequest is one request of the Manager to path, a path of GitHub's API with its own query
+// where it has one, under the base URL the daemon is configured with (Options.BaseURL): path is
+// joined onto the base's own path, and the base's query is kept ahead of path's own
+// (urljoin.Join). path appended to the base's text would sit inside the base's query where it
+// has one, so the request would go to the base's own path with the call's path written into that
+// query value, and GitHub would be asked something else entirely.
+//
+// A base that cannot be read as an absolute URL with a host is the join's one failure here, and
+// it is refused naming the setting alone: neither the base nor the path prints, since url.Parse's
+// error quotes the URL whole, user information and query and all.
+func (m *Manager) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	target, err := urljoin.Join(m.baseURL, path)
+	if err != nil {
+		return nil, fmt.Errorf("read the GitHub API base URL the daemon is configured with: %w", err)
+	}
+	return http.NewRequestWithContext(ctx, method, target.String(), body)
 }
 
 // send sends request, the GitHub read what names in a message, through the Manager's client and
@@ -331,6 +350,10 @@ var (
 // New makes an App token manager. Config.Load resolves command and secret key sources before
 // constructing this manager; callers using LoadForValidation must resolve them themselves.
 func New(apps config.GitHubApps, options Options) *Manager {
+	// The trailing slashes come off the configured base so that the path of a call under it is
+	// cut off a failed call's URL by the base's own path (githubrest.ShownPath, answered). The
+	// join of a call's path onto it needs no trim: it joins the two paths and cleans the
+	// repeated slashes (newRequest, urljoin.Join).
 	baseURL := strings.TrimRight(options.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
@@ -871,17 +894,13 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 	}
 	installations := map[string]string{}
 	for page := 1; ; page++ {
-		endpoint, err := url.Parse(m.baseURL + "/app/installations")
+		// The page is asked in the read's own query, which the join puts after the base URL's
+		// where the daemon is configured with one (newRequest). Its two values are written in
+		// the order url.Values.Encode wrote them before, so a base with no query of its own is
+		// asked the URL it was asked before, character for character.
+		request, err := m.newRequest(ctx, http.MethodGet, "/app/installations?page="+strconv.Itoa(page)+"&per_page=100", nil)
 		if err != nil {
-			return nil, fmt.Errorf("GitHub App installation URL: %w", err)
-		}
-		query := endpoint.Query()
-		query.Set("per_page", "100")
-		query.Set("page", strconv.Itoa(page))
-		endpoint.RawQuery = query.Encode()
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("GitHub App installation discovery: %w", err)
 		}
 		m.appHeaders(request, jwt)
 		response, err := m.send(request, "GitHub App installation discovery", "")
@@ -997,7 +1016,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 // for login as it came, path-escaped, which keeps a token's letters, so its failure names the read
 // by the login as a message may print it (githubrest.ShownLogin; send).
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
+	request, err := m.newRequest(ctx, http.MethodGet, "/users/"+url.PathEscape(login), nil)
 	if err != nil {
 		return GitIdentity{}, err
 	}
@@ -1031,7 +1050,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 // appSlug is the slug of the App jwt signs for, read from GET /app: its bot login is the slug's,
 // "<slug>[bot]".
 func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/app", nil)
+	request, err := m.newRequest(ctx, http.MethodGet, "/app", nil)
 	if err != nil {
 		return "", err
 	}

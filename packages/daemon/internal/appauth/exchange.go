@@ -126,8 +126,8 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	if err != nil {
 		return Lease{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		m.baseURL+"/app/installations/"+url.PathEscape(installation)+"/access_tokens", bytes.NewReader(encoded))
+	request, err := m.newRequest(ctx, http.MethodPost,
+		"/app/installations/"+url.PathEscape(installation)+"/access_tokens", bytes.NewReader(encoded))
 	if err != nil {
 		return Lease{}, err
 	}

@@ -316,7 +316,7 @@ var errInstallationSuspended = errors.New("the installation is suspended")
 // the next mint rather than at the next daemon restart, which a cache no approval invalidates
 // would make it wait for.
 func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation string) (map[string]string, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/app/installations/"+url.PathEscape(installation), nil)
+	request, err := m.newRequest(ctx, http.MethodGet, "/app/installations/"+url.PathEscape(installation), nil)
 	if err != nil {
 		return nil, err
 	}
