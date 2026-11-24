@@ -23,6 +23,7 @@ import {
   roleToken,
 } from "@legion/contracts";
 import {
+  LegionActivityRequest,
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
 } from "@legion/contracts/legion-api";
@@ -910,6 +911,13 @@ interface ClaimPane {
   readonly start: () => Promise<unknown>;
 }
 
+/** The session manager's `hasPersistenceFailure` and `getPersistenceFailure`, which Oh My Pi's
+ * own carries undeclared on the object it hands an extension. */
+interface PanePersistence {
+  readonly hasPersistenceFailure: () => boolean;
+  readonly getPersistenceFailure: () => Error | undefined;
+}
+
 /** A pane the daemon launched for a claim (a root architect, or a phase worker): the identity
  * variables the tmux runtime sets (`packages/daemon/internal/runtime/tmux/spawn.go`'s
  * `panePairs`) and the boot token as a 0600 file behind `LEGION_BOOT_TOKEN_FILE`, under a state
@@ -961,6 +969,9 @@ async function claimPane(options: {
   /** What `ctx.getAsyncJobSnapshot()` answers; absent leaves the host without the member, as a
    * build that predates it is. */
   readonly asyncJobs?: () => AsyncJobSnapshot | null;
+  /** The session manager's persistence-failure members; absent leaves the manager without them,
+   * as a build that predates them is. */
+  readonly persistence?: PanePersistence;
 }): Promise<ClaimPane> {
   resetEnvoyPluginInterfaceForTests();
   const tree = options.tree ?? "REPO-42";
@@ -1078,6 +1089,7 @@ async function claimPane(options: {
       // What the session was resumed with, then the `model_change` every accepted `pi.setModel`
       // appended, in the order the host's branch holds them.
       getBranch: () => [...(options.branch ?? []), ...fixture.models.changes],
+      ...options.persistence,
     },
     models: {
       list: () => [],
@@ -1996,6 +2008,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       readonly recordAnswer?: () => Response;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
+      /** The session manager's persistence-failure members (`claimPane`'s `persistence`). */
+      readonly persistence?: PanePersistence;
     }) => {
       // Nothing in these panes reaches the architect: the notice a run of reminders earns is the
       // real binary's case (extensions/legion-phase-stall-omp.test.ts), so the threshold is put
@@ -2045,6 +2059,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         workspace,
         branch: options.branch,
         asyncJobs: options.asyncJobs,
+        persistence: options.persistence,
         extraRoutes: (url) => {
           if (url.pathname === "/legion/v1/issues/REPO-43/record") {
             return options.recordAnswer?.() ?? Response.json(state.issues["REPO-43"]);
@@ -2185,6 +2200,103 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       };
       expect(Date.parse(String(wake.activity.phase.nextReminderAt))).toBeGreaterThanOrEqual(
         Date.now() + DEFAULT_STALL_LIMITS.reminderMs - 1_000
+      );
+    });
+
+    // INFRA-5660: a session whose store stops taking its transcript says so on the report, with
+    // when it first read the failure and the store's error, so the daemon can show it and tell
+    // the architect. The failure is part of what the report says: its start makes a tick send,
+    // and the start stays the first reading's while it stands.
+    test("reports the session manager's persistence failure on claims/activity", async () => {
+      let failure: Error | undefined;
+      const worker = await bootStalling({
+        persistence: {
+          hasPersistenceFailure: () => failure !== undefined,
+          getPersistenceFailure: () => failure,
+        },
+      });
+      await worker.arrives(assignment);
+      await worker.settles("Pushed.");
+      expect(activityReports(worker)).toHaveLength(1);
+      expect(activityReports(worker)[0]).not.toHaveProperty("activity.storeFailure");
+
+      const before = Date.now();
+      failure = new Error("Session file changed before rewrite: expected 2048 bytes, found 4096");
+      await ticks(worker);
+      expect(activityReports(worker)).toHaveLength(2);
+      const reported = LegionActivityRequest.parse(activityReports(worker).at(-1));
+      expect(reported.activity.storeFailure?.error).toBe(
+        "Session file changed before rewrite: expected 2048 bytes, found 4096"
+      );
+      const since = Date.parse(String(reported.activity.storeFailure?.since));
+      expect(since).toBeGreaterThanOrEqual(before - 1_000);
+      expect(since).toBeLessThanOrEqual(Date.now());
+
+      // It stands: a tick sends nothing new, and the next settle reports the same start.
+      await ticks(worker);
+      expect(activityReports(worker)).toHaveLength(2);
+      await worker.settles("Still pushing.");
+      const settled = LegionActivityRequest.parse(activityReports(worker).at(-1));
+      expect(settled.activity.storeFailure).toEqual(reported.activity.storeFailure);
+    });
+
+    // A report that reads no failure is what clears the daemon's: the tick after the store takes
+    // the transcript again sends one without it.
+    test("reports a cleared failure once hasPersistenceFailure answers false", async () => {
+      let failure: Error | undefined = new Error("SQLITE_BUSY: database is locked");
+      const worker = await bootStalling({
+        persistence: {
+          hasPersistenceFailure: () => failure !== undefined,
+          getPersistenceFailure: () => failure,
+        },
+      });
+      await worker.arrives(assignment);
+      await worker.settles("Pushed.");
+      const failing = LegionActivityRequest.parse(activityReports(worker).at(-1));
+      expect(failing.activity.storeFailure?.error).toBe("SQLITE_BUSY: database is locked");
+
+      failure = undefined;
+      await ticks(worker);
+      expect(activityReports(worker)).toHaveLength(2);
+      const cleared = LegionActivityRequest.parse(activityReports(worker).at(-1));
+      expect(cleared.activity).not.toHaveProperty("storeFailure");
+
+      // A failure after it is a new one, with a start of its own.
+      failure = new Error("SQLITE_BUSY: database is locked");
+      await ticks(worker);
+      const again = LegionActivityRequest.parse(activityReports(worker).at(-1));
+      expect(activityReports(worker)).toHaveLength(3);
+      expect(Date.parse(String(again.activity.storeFailure?.since))).toBeGreaterThanOrEqual(
+        Date.parse(String(failing.activity.storeFailure?.since))
+      );
+    });
+
+    // The control: a host whose session manager has neither member, or one whose member throws,
+    // reports what it reported before, and the throw goes nowhere.
+    test("a session manager without hasPersistenceFailure reports nothing and throws nothing", async () => {
+      const bare = await bootStalling({});
+      await bare.arrives(assignment);
+      await bare.settles("Pushed.");
+      await ticks(bare);
+      expect(activityReports(bare)).toHaveLength(1);
+      expect(LegionActivityRequest.parse(activityReports(bare)[0]).activity).not.toHaveProperty(
+        "storeFailure"
+      );
+
+      const throwing = await bootStalling({
+        persistence: {
+          hasPersistenceFailure: () => {
+            throw new Error("the session manager is closed");
+          },
+          getPersistenceFailure: () => undefined,
+        },
+      });
+      await throwing.arrives(assignment);
+      await throwing.settles("Pushed.");
+      await ticks(throwing);
+      expect(activityReports(throwing)).toHaveLength(1);
+      expect(LegionActivityRequest.parse(activityReports(throwing)[0]).activity).not.toHaveProperty(
+        "storeFailure"
       );
     });
 

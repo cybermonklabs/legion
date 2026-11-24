@@ -227,12 +227,31 @@ type ActivityRequest struct {
 }
 
 // SessionActivity is one reading of what a session is doing: when it read it, the background work
-// of its own that was running, and its phase reminder's armed wake.
+// of its own that was running, its phase reminder's armed wake, and, while its session store
+// refuses its writes, that failure (StoreFailure, nil while the store takes the transcript).
 type SessionActivity struct {
 	At             time.Time      `json:"at"`
 	BackgroundWork BackgroundWork `json:"backgroundWork"`
 	Phase          PhaseActivity  `json:"phase"`
+	StoreFailure   *StoreFailure  `json:"storeFailure,omitempty"`
 }
+
+// StoreFailure is a session's Oh My Pi session store refusing its writes, as the session read it
+// from its session manager (pi-legion reads hasPersistenceFailure and getPersistenceFailure on
+// its activity tick, dispatch://INFRA-5660/spec#b-r2): Since is when the session first read the
+// failure, Error the store's error message. A reading without it says the store takes the
+// transcript, and clears whatever failure the daemon holds for the claim's launch. The daemon
+// keeps Error to its first StoreFailureErrorRunes runes and Since no later than its own clock
+// (store's PutClaimActivity), and refuses a zero Since or an empty Error (api's activity).
+type StoreFailure struct {
+	Since time.Time `json:"since"`
+	Error string    `json:"error"`
+}
+
+// StoreFailureErrorRunes is how much of a store's error the daemon keeps: its first 500 runes,
+// enough for the store to name its failure and the file it failed on, and a bound on what a
+// session can make the daemon store, show in the state and write into a notice.
+const StoreFailureErrorRunes = 500
 
 // BackgroundWork is whether work of the session's own was running and what kinds the session
 // found (`async-job`, `subagent`, `claude-background-task`), sorted and de-duplicated by the

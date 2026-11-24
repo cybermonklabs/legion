@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -39,7 +40,9 @@ var _ supervise.Store = (*Store)(nil)
 // leaves them alone, but for a launch's, which clears the four activity columns. Reading them is
 // what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
-// tellSilentPhaseWorkers).
+// tellSilentPhaseWorkers). The two columns of the session store's failure are the activity
+// report's and held as it is, and the two of who was told of it are the workflow's alone, which
+// no claim write names (supervise.Claim's StoreFailedSince and the three beside it).
 //
 // Whether the delivery is a task of news alone (supervise.Delivery.NewsOnly) is the delivery's own
 // column (news_only), written and read beside the news it carries, so no writer of that news can
@@ -64,6 +67,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
+	c.store_failed_since, c.store_failed_error, c.store_failure_told_at, c.store_failure_told_to,
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
@@ -99,9 +103,10 @@ func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) er
 	return s.putClaim(ctx, tx, c)
 }
 
-// PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
-// that claim's session last reported of what it is doing (INFRA-945). The report is no part of
-// the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
+// PutClaimActivity writes the four activity columns of token's claim row, and the two of its
+// session store's failure, and nothing else: what that claim's session last reported of what it
+// is doing (INFRA-945) and of its store (INFRA-5660). The report is no part of the
+// claim's machine state — it arrives between a machine's writes, and the machine's in-memory
 // claim does not carry it — so one write of the whole row would erase every report sent since
 // that machine read its claim; the claim's own writes carry no report and leave these columns
 // alone but for a launch's, which clears them (putClaim), and the idle rule reads them through
@@ -130,7 +135,12 @@ func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) er
 // the session chooses every field of what it sends, and one reading dated ahead of the daemon's
 // clock — a session whose host stepped its clock forward, corrected back afterwards — would
 // drop every honest report after it under that same ordering guard, while the stale reading it
-// left behind went on counting as current, background work and all.
+// left behind went on counting as current, background work and all. The start of a store failure
+// is bounded the same way, so a failure dated ahead never reads as one that has not stood yet,
+// and the store's error is kept to its first claim.StoreFailureErrorRunes runes, made storable and
+// its URL credentials taken out (storetext.FarSideText), since the session's host chooses it too
+// and it reaches the state, a notice and the daemon's log. A report with no failure clears the
+// one the row holds: the store takes the session's transcript again.
 func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
 	if generation > math.MaxInt64 {
 		// No row holds it (putClaim refuses one), so no launch of the claim is this.
@@ -142,20 +152,31 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 		reminder = &at
 	}
 	at := a.At.UTC()
-	if received := time.Now().UTC(); at.After(received) {
+	received := time.Now().UTC()
+	if at.After(received) {
 		at = received
+	}
+	var failedSince *time.Time
+	var failedError string
+	if failure := a.StoreFailure; failure != nil && !failure.Since.IsZero() {
+		since := failure.Since.UTC()
+		if since.After(received) {
+			since = received
+		}
+		failedSince, failedError = &since, firstRunes(storetext.FarSideText(failure.Error), claim.StoreFailureErrorRunes)
 	}
 	var known bool
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx, `with reported as (
 			update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
-				activity_next_reminder_at = $5, updated_at = now()
+				activity_next_reminder_at = $5, store_failed_since = $7, store_failed_error = $8, updated_at = now()
 			where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
 			select exists (select 1 from claims where token = $1 and generation = $6)`,
 			// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
 			// architect's worker-background-stalled notice and the daemon's log.
 			string(token), at, a.BackgroundWork.Running,
 			strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
+			failedSince, failedError,
 		).Scan(&known)
 	})
 	if err != nil {
@@ -493,12 +514,15 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		handshake_queued_at = excluded.handshake_queued_at,
 		handshake_confirmed_at = excluded.handshake_confirmed_at,
 		-- The four activity columns (activity_at, activity_background, activity_kinds,
-		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
+		-- activity_next_reminder_at), the two of the session store's failure (store_failed_since,
+		-- store_failed_error) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
 		-- step_ended_at) are no part of a claim's write: PutClaimActivity and PutClaimStep own
 		-- them, and a machine's write carries whatever its in-memory claim last read, so a
 		-- report the session sent, or a step the stream reported, since that read would be
-		-- erased by the next state it persists.
+		-- erased by the next state it persists. The two of who was told of the store's failure
+		-- (store_failure_told_at, store_failure_told_to) are the workflow's alone, and no claim
+		-- write names them, a launch's included.
 		--
 		-- The one exception: a write that moves the generation is a launch (supervise's
 		-- launchNow), and it clears the report. The report describes the process that made it,
@@ -517,6 +541,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 			then '' else claims.activity_kinds end,
 		activity_next_reminder_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_next_reminder_at end,
+		store_failed_since = case when claims.generation <> excluded.generation
+			then null else claims.store_failed_since end,
+		store_failed_error = case when claims.generation <> excluded.generation
+			then '' else claims.store_failed_error end,
 		updated_at = now()`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
@@ -922,6 +950,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		stepStarted, stepEnded      *time.Time
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
+		storeFailed, storeToldAt    *time.Time
+		storeToldTo                 string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
 		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
@@ -941,6 +971,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
+		&storeFailed, &c.StoreFailedError, &storeToldAt, &storeToldTo,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &ran, &newsOnly,
@@ -1010,6 +1041,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if kinds != "" {
 		c.ActivityKinds = strings.Split(kinds, ",")
 	}
+	// The failure's start and the told mark's moment are nullable
+	// (20261124124012_claim_session_store_failure): a session whose store takes its transcript has
+	// no start, and a claim nobody was told of no moment, each of which the claim holds as the
+	// zero time.
+	c.StoreFailedSince, c.StoreFailureToldAt = orZero(storeFailed), orZero(storeToldAt)
+	c.StoreFailureToldTo = supervise.StoreFailureTold(storeToldTo)
 	if locator != nil {
 		var loc runtime.Locator
 		if err := json.Unmarshal(locator, &loc); err != nil {
@@ -1065,6 +1102,18 @@ func instant(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// firstRunes is s cut to its first n runes, and s itself when it holds no more. It counts runes
+// rather than bytes, so the cut never ends inside a character and leaves the text unstorable.
+func firstRunes(s string, n int) string {
+	for at := range s {
+		if n == 0 {
+			return s[:at]
+		}
+		n--
+	}
+	return s
 }
 
 // keptDecisions is a delivery's kept-decision record as the column holds it and as the delivery

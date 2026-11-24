@@ -253,6 +253,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (podContracts counts no such claim), and a caller that states a contract below
 		// intakeGiveUpsContract is not (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
 		giveUps bool
+		// stores is whether the caller is served each claim view's `storeFailure`
+		// (storeFailureContract, the contract that added it), held back as `intakeGiveUps` is:
+		// from a pod whose claims record a contract below shapedAnswersContract, and from a caller
+		// that states a contract below storeFailureContract
+		// (TestAnOlderPluginContractGetsTheStateWithoutStoreFailure).
+		stores bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},
 		{name: "a pod below PodUpdateContract, below every narrowing", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1), contract: supervise.PodUpdateContract - 1},
@@ -343,9 +349,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// its top alike.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true, contract: DaemonAPIVersion},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true, contract: DaemonAPIVersion},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true, contract: DaemonAPIVersion},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -431,6 +437,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if leak := strings.Contains(string(body), `"leakCheckCause"`); leak != tc.leak {
 				t.Errorf("the state %s carries a claim view's leakCheckCause = %v, want %v", body, leak, tc.leak)
+			}
+			if stores := strings.Contains(string(body), `"storeFailure"`); stores != tc.stores {
+				t.Errorf("the state %s carries a claim view's storeFailure = %v, want %v", body, stores, tc.stores)
 			}
 			for _, key := range recordFieldKeys {
 				if carries := strings.Contains(string(body), `"`+key+`"`); carries != tc.failure {
@@ -603,6 +612,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 					}
 					if !tc.leak {
 						delete(view, "leakCheckCause")
+					}
+					if !tc.stores {
+						delete(view, "storeFailure")
 					}
 				}
 			}

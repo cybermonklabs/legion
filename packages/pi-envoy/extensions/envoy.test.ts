@@ -23775,6 +23775,10 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /** The session manager's `flush()`, which Oh My Pi's own resolves once the session store
+       *  holds every entry appended so far and rejects while the store refuses its writes. Each
+       *  call is in `events` as `flush`. None: a session manager with no `flush`. */
+      readonly flush?: () => Promise<void>;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -23883,6 +23887,12 @@ describe("consumer delivery", () => {
         getBranch: () => [...prior, ...fixture.entries, ...written],
         getEntries: () => [...prior, ...fixture.entries, ...written],
         ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
+        ...(options.flush !== undefined && {
+          flush: async () => {
+            events.push("flush");
+            await options.flush?.();
+          },
+        }),
       },
       setInterval: (callback) => {
         intervals.push(callback);
@@ -24055,6 +24065,110 @@ describe("consumer delivery", () => {
         session.events.indexOf(`${inbox} done`)
       );
     }
+  });
+
+  // A frame is answered `done`, which the listener acknowledges, only once the session store has
+  // written the card: `message_end` says the host holds the message in memory and queued its
+  // write, and the session manager's `flush()` is what says the store took it (INFRA-5660).
+  test("settles a frame only after flush resolves", async () => {
+    const flushes: PromiseWithResolvers<void>[] = [];
+    const session = await bootConsumer("consumer-flush-resolves", {
+      flush: () => {
+        const flush = Promise.withResolvers<void>();
+        flushes.push(flush);
+        return flush.promise;
+      },
+    });
+
+    const inbox = session.relay(1, peer("flush-resolves"));
+    await until(
+      () => flushes.length > 0 || session.replies(inbox).includes("done"),
+      "the written card's flush, or its done"
+    );
+    await settle();
+    expect(session.replies(inbox)).toEqual(["received"]);
+
+    for (const flush of flushes) flush.resolve();
+    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+    expect(session.replies(inbox)).toEqual(["received", "done"]);
+    const written = session.events.indexOf("written evt-flush-resolves");
+    const flushed = session.events.indexOf("flush");
+    expect(written).toBeGreaterThan(-1);
+    expect(flushed).toBeGreaterThan(written);
+    expect(session.events.indexOf(`${inbox} done`)).toBeGreaterThan(flushed);
+  });
+
+  // A store that refuses the write leaves the frame unsettled: no `done` and no `nak`, so the
+  // listener offers it to no other process while this one lives, and the resume point the next
+  // registration carries stays below it, so the session's next process is offered it again.
+  test("leaves a frame unsettled when flush throws", async () => {
+    let flushed = 0;
+    const session = await bootConsumer("consumer-flush-throws", {
+      flush: async () => {
+        flushed += 1;
+        throw new Error("Session persistence failed: the store refused the write");
+      },
+    });
+
+    const inbox = session.relay(1, peer("flush-throws"));
+    await until(
+      () => flushed > 0 || session.replies(inbox).includes("done"),
+      "the written card's flush, or its done"
+    );
+    await settle();
+
+    expect(session.events).toContain("written evt-flush-throws");
+    expect(session.replies(inbox)).toEqual(["received"]);
+    await session.tick();
+    expect(session.registrations.at(-1)?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 0 });
+    expect(session.replies(inbox)).toEqual(["received"]);
+  });
+
+  // Every frame a refused flush left unsettled settles at the next flush that resolves, whichever
+  // frame's flush that is: the store holds everything appended before that flush began.
+  test("settles a frame whose flush threw once a later flush resolves", async () => {
+    let refusing = true;
+    let flushed = 0;
+    const session = await bootConsumer("consumer-flush-recovers", {
+      flush: async () => {
+        flushed += 1;
+        if (refusing) throw new Error("Session persistence failed: the store refused the write");
+      },
+    });
+
+    const first = session.relay(1, peer("flush-first"));
+    await until(
+      () => flushed > 0 || session.replies(first).includes("done"),
+      "the first card's flush, or its done"
+    );
+    await settle();
+    expect(session.replies(first)).toEqual(["received"]);
+
+    refusing = false;
+    const second = session.relay(2, peer("flush-second"));
+    await until(
+      () => session.replies(first).includes("done") && session.replies(second).includes("done"),
+      "both frames' done"
+    );
+    expect(session.replies(first)).toEqual(["received", "done"]);
+    expect(session.replies(second)).toEqual(["received", "done"]);
+    await session.tick();
+    expect(session.registrations.at(-1)?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 2 });
+  });
+
+  // The control: a session manager with no `flush()` settles the frame at `message_end`, as
+  // before, since nothing else can say the store took it.
+  test("settles at message_end when the session manager has no flush", async () => {
+    const session = await bootConsumer("consumer-no-flush");
+
+    const inbox = session.relay(1, peer("no-flush"));
+    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+
+    expect(session.replies(inbox)).toEqual(["received", "done"]);
+    expect(session.events).not.toContain("flush");
+    expect(session.events.indexOf(`${inbox} done`)).toBeGreaterThan(
+      session.events.indexOf("written evt-no-flush")
+    );
   });
 
   test("a frame written before a restart and relayed again after it is answered done and not shown again", async () => {

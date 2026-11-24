@@ -1170,6 +1170,30 @@ type ClaimView struct {
 	// cause word the launch chooses, and this key says which check refused it, from the first
 	// refused try on.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// StoreFailure is the claim's session store refusing its transcript, as the claim's session
+	// last reported it on `claims/activity` (supervise.Claim.StoreFailedSince and
+	// StoreFailedError): when the session first read the failure and the store's error. It is
+	// absent while the session's last report carries no failure, and from a claim whose launch has
+	// not reported, since a launch clears it with the rest of the report (contract 264). A caller
+	// below that contract is served no such key (shaping.go's withoutStoreFailure).
+	StoreFailure *StoreFailureView `json:"storeFailure,omitempty"`
+}
+
+// StoreFailureView is a claim's session store failure as a claim view shows it: Since, when the
+// session first read its store refusing its writes, bounded to the daemon's clock, and Error, the
+// store's error, its first claim.StoreFailureErrorRunes runes (store's PutClaimActivity).
+type StoreFailureView struct {
+	Since time.Time `json:"since"`
+	Error string    `json:"error"`
+}
+
+// StoreFailureViewOf is c's session store failure as a claim view shows it, and nil for a claim
+// whose session's last report carries none, so no such claim carries the key.
+func StoreFailureViewOf(c supervise.Claim) *StoreFailureView {
+	if c.StoreFailedSince.IsZero() {
+		return nil
+	}
+	return &StoreFailureView{Since: c.StoreFailedSince, Error: c.StoreFailedError}
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -1287,6 +1311,9 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		Failure:        FailureViewOf(c),
 		PendingCause:   c.PendingCause,
 		LeakCheckCause: c.LeakCheckCause,
+		// The session store's failure the claim's session last reported, absent while its
+		// store takes the transcript (StoreFailureViewOf).
+		StoreFailure: StoreFailureViewOf(c),
 	}
 }
 

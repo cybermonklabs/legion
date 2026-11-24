@@ -446,6 +446,35 @@ func withoutIntakeGiveUpsKey(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutStoreFailureKeys is a state body with no claim view carrying `storeFailure`, which is
+// what a caller below storeFailureContract is served of a state that carries one (api's
+// withoutStoreFailure). It serves the table below as withoutQuietKeys does: a row's baseline is
+// the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutStoreFailureKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		issue := issue.(map[string]any)
+		views := []any{issue["architect"]}
+		for _, worker := range issue["workers"].(map[string]any) {
+			views = append(views, worker.(map[string]any)["claim"])
+		}
+		for _, view := range views {
+			if view, ok := view.(map[string]any); ok {
+				delete(view, "storeFailure")
+			}
+		}
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its store failures: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutEntryKeys is a state body with no issue carrying `phaseEntry` or `givenEntry`, which is
 // what a caller below phaseEntriesContract is served of a state that carries them (api's
 // withoutPhaseEntries). It serves the table below as withoutQuietKeys does: a row's baseline is
@@ -714,6 +743,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// (podContracts counts no such claim), and a caller that states a contract below
 		// intakeGiveUpsContract is not (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
 		giveUps bool
+		// stores is whether the caller is served each claim view's `storeFailure`
+		// (storeFailureContract, the contract that added it): as with `intakeGiveUps`, a pod whose
+		// claims record a contract below shapedAnswersContract is not served the key and a pod at
+		// or above it is, and a caller that states a contract below storeFailureContract is not
+		// (TestAnOlderPluginContractGetsTheStateWithoutStoreFailure).
+		stores bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -812,9 +847,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract has landed, so the two are no longer equal. A caller at 193 is
 		// served the state without `intakeGiveUps` where it states its contract in the header
 		// (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true},
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, stores: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -918,6 +953,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if tc.contract < podHoldContract {
 					want = withoutPodHoldKey(t, want)
+				}
+				if !tc.stores {
+					want = withoutStoreFailureKeys(t, want)
 				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
@@ -1030,13 +1068,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 						delete(view, "step")
 					}
 					// Every row that reaches here is below shapedAnswersContract, below
-					// leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the two keys contract 193 added to a claim view, the
-					// `leakCheckCause` contract 87 added or the six the decided record added.
+					// leakCheckCauseContract, below storeFailureContract and below
+					// recordFieldsContract too, so none of its callers is served the two keys
+					// contract 193 added to a claim view, the `leakCheckCause` contract 87 added,
+					// the `storeFailure` contract 264 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)
 					}
 					delete(view, "leakCheckCause")
+					delete(view, "storeFailure")
 					for _, key := range recordFieldClaimKeys {
 						delete(view, key)
 					}

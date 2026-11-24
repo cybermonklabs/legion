@@ -465,6 +465,13 @@ func populatedState(t *testing.T) State {
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
+							// Its session's store has refused its transcript since a moment before
+							// that call, and its last activity report says so: the moment the session
+							// first read the failure and the store's error (contract 264).
+							StoreFailure: &StoreFailureView{
+								Since: time.Date(2026, 9, 22, 9, 12, 40, 0, time.UTC),
+								Error: "Session file changed before rewrite: /home/legion/.omp/agent/sessions/ses_implementer_208.jsonl",
+							},
 						},
 						HandoffCommit: "",
 						// Three passes through the stretch, two of them ended by a review that

@@ -150,6 +150,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		},
 		ActivityAt: at.Add(-3 * time.Minute), ActivityBackground: true,
 		ActivityKinds: []string{"async-job"}, ActivityNextReminderAt: at.Add(10 * time.Minute),
+		StoreFailedSince: at.Add(-5 * time.Minute), StoreFailedError: "Session file changed before rewrite: /home/legion/.omp/agent/sessions/ses_implementer_499.jsonl",
+		StoreFailureToldAt: at.Add(-4 * time.Minute), StoreFailureToldTo: supervise.StoreFailureToldArchitect,
 	}
 	fields := reflect.ValueOf(current)
 	for i := range fields.NumField() {

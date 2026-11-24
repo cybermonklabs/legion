@@ -366,6 +366,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.workerSilent(ctx, tx, fact)
 	case intake.WorkerBackgroundStalled:
 		return e.workerBackgroundStalled(ctx, tx, fact)
+	case intake.SessionStoreFailed:
+		return e.sessionStoreFailed(ctx, tx, fact)
 	case intake.ControllerTick:
 		return e.statusRepairTick(ctx, tx)
 	default:

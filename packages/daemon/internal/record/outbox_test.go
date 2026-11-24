@@ -62,6 +62,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
 			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
 			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}},
+		ControllerNotice{Kind: SessionStoreBurstNotice,
+			Reason: "6 claims of legion began failing to write their session stores within five minutes of each other: LEGION-208's implementer (session ses_1, failing since 2026-11-23T02:13:29Z)"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleReviewer, Generation: 3, Phase: phase.Reviewing, News: true},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 3, News: true},
@@ -1141,6 +1143,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "the pod's launcher could not look this claim's session up by its id, and Oh My Pi did not resume it by that id, so its agent starts afresh"},
 		{Kind: "session-store-fault", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store did not answer, so this claim's agent is not started again yet"},
+		{Kind: SessionStoreFailedNotice, Role: claim.RoleArchitect,
+			Reason: "LEGION-208's implementer, session ses_1, reports that its session store has refused its transcript since 2026-11-23T02:16:45Z"},
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
 		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
 		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},

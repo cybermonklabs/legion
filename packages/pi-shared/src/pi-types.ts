@@ -85,6 +85,19 @@ export interface SessionContext {
      * is in it at once, before the transcript reaches disk.
      */
     readonly getEntries: () => readonly unknown[];
+    /**
+     * Resolves once the session store holds every entry appended so far, and rejects with the
+     * store's latched failure while it does not (`SessionManager.flush`). Public on the object
+     * Oh My Pi hands an extension, though its declared `ReadonlySessionManager` names it not,
+     * so a reader probes it by `typeof` and calls it as a method.
+     */
+    readonly flush?: () => Promise<void>;
+    /** Whether the session store refuses this session's writes now: the manager holds a latched
+     *  failure (`SessionManager.hasPersistenceFailure`, public and undeclared as `flush` is). */
+    readonly hasPersistenceFailure?: () => boolean;
+    /** The store's latched failure while `hasPersistenceFailure` answers true
+     *  (`SessionManager.getPersistenceFailure`, public and undeclared as `flush` is). */
+    readonly getPersistenceFailure?: () => Error | undefined;
   };
   readonly setInterval: (callback: () => void, intervalMs: number) => void;
   /** The host's managed one-shot timer: a throw or rejection is contained, cleared on shutdown. */

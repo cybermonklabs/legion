@@ -354,6 +354,13 @@ const legionClaimView = z.object({
    * declares a contract below 75 is served the state with no such key at all (the daemon's
    * `withoutRecordFields`), so every reader takes it as optional. */
   failure: legionClaimFailureView.optional(),
+  /** The session store refusing the claim's transcript, as the claim's session last reported it:
+   * when the failure began and the store's error; absent while the last report carries none. No
+   * plugin code reads either field, so both are optional here. A caller below contract 264 is
+   * served the state with no such key, so every reader takes it as optional. */
+  storeFailure: z
+    .object({ since: timestamp.optional(), error: nonEmptyString.optional() })
+    .optional(),
   /** What failed the process whose relaunch is in flight, and absent for a claim relaunching
    * after no failure: a claim that died and whose relaunch the runtime then refused reads
    * `died` here, which is what an architect deciding a retry or an escalation acts on while
@@ -1627,16 +1634,23 @@ export const LegionReadyForUpdateRequest = z.strictObject({
 
 export type LegionReadyForUpdateRequestBody = z.output<typeof LegionReadyForUpdateRequest>;
 
+/** `claim.StoreFailure` — the session store refusing a session's transcript (contract 264): `since`,
+ * when the session first read the failure, and `error`, the store's own error, which the daemon
+ * keeps the first 500 characters of. */
+const legionStoreFailure = z.strictObject({ since: timestamp, error: nonEmptyString });
+
 /** `claim.SessionActivity` — what a live role's session is doing, read at `at`: whether work of
  * its own is running in the background and of what kinds (`async-job`, `subagent`,
  * `claude-background-task`; sorted and de-duplicated, so a hold's reason reads the same every
  * time), and when the phase reminder armed in it is due, null when no armed reminder is still
  * live. Whether the phase is open is the daemon's own reading of the record, not the session's
- * to state. */
+ * to state. `storeFailure` is present while the session's store refuses its transcript, and a
+ * report without it clears the failure the daemon holds for the claim (contract 264). */
 export const LegionSessionActivity = z.strictObject({
   at: timestamp,
   backgroundWork: z.strictObject({ running: z.boolean(), kinds: z.array(nonEmptyString) }),
   phase: z.strictObject({ nextReminderAt: timestamp.nullable() }),
+  storeFailure: legionStoreFailure.optional(),
 });
 
 export type LegionSessionActivityBody = z.output<typeof LegionSessionActivity>;

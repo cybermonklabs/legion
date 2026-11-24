@@ -42,9 +42,11 @@ import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import {
   asyncJobKinds,
   type SessionActivityReport,
+  type SessionStoreFailure,
   sameSessionActivity,
   sessionActivity,
   sessionActivityRequest,
+  sessionStoreFailure,
 } from "@legion/pi-shared/session-activity";
 import { stallLimits, stallSweepMs } from "@legion/pi-shared/stall-limits";
 import {
@@ -334,17 +336,23 @@ export default function legionExtension(pi: PiApi): void {
    */
   const SESSION_ACTIVITY_PERIOD_MS = 5_000;
   let lastActivity: SessionActivityReport | undefined;
+  // INFRA-5660: the session store's failure as the last reading found it, so one that still
+  // stands keeps the start it was first read at. Read at every reading, sent or not.
+  let storeFailure: SessionStoreFailure | undefined;
   const reportActivity = async (
     context: SessionContext,
     options: { readonly onlyWhenChanged: boolean }
   ): Promise<void> => {
     const claim = claimSession.capability(context.sessionManager.getSessionId());
     if (claim === undefined) return;
+    storeFailure = sessionStoreFailure(context.sessionManager, storeFailure);
     // An architect arms no phase reminder, so it waits on no reminder of its own; what it
     // reports is its background work.
     const report = sessionActivity(
       asyncJobKinds(context.getAsyncJobSnapshot?.() ?? null),
-      phaseWorkerSession(context) ? phaseReminder.phaseWake() : { nextReminderAt: null }
+      phaseWorkerSession(context) ? phaseReminder.phaseWake() : { nextReminderAt: null },
+      new Date(),
+      storeFailure
     );
     if (
       options.onlyWhenChanged &&

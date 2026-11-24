@@ -3649,4 +3649,80 @@ package api
 // 256, so this entry kept 256, and the list ends priorityContract, causeTimesContract. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 256
+//
+// 264: INFRA-5660 -- a session whose Oh My Pi session store stops taking its transcript is
+// reported (dispatch://INFRA-5660/spec#b-r2). `POST /legion/v1/claims/activity` takes, in its
+// `activity` (`claim.SessionActivity`), an optional `storeFailure`, `{since, error}`
+// (`claim.StoreFailure`), present while the session's store refuses its writes: `since` is when
+// the session first read the failure, `error` the store's error. pi-legion reads its session
+// manager's `hasPersistenceFailure()` and `getPersistenceFailure()` on its five-second activity
+// tick and sends it; a reading without the key says the store takes the transcript, and clears
+// the failure the daemon holds for that claim's launch. The route refuses a zero `since` and an
+// empty `error` 400, naming the field, as it refuses `activity.at`; the store keeps `error` to its
+// first 500 runes (`claim.StoreFailureErrorRunes`) and `since` no later than the daemon's clock,
+// writes both onto the launch the report authenticated for and nowhere else, and a launch clears
+// them, as it clears the rest of the report (store's PutClaimActivity and putClaim).
+// `GET /legion/v1/state` gains one key on each claim view, `storeFailure`, `{since, error}`
+// (`api.StoreFailureView`), present while the claim's last report carries a failure and absent
+// otherwise. The daemon's minute sweep tells the issue's architect of a failure that has stood a
+// minute, in a notice of the new kind `session-store-failed` (`record.SessionStoreFailedNotice`),
+// at most once a claim an hour, whatever clears and comes back and across a relaunch; and where
+// more than five claims of one project began failing within five minutes of each other, the
+// project's controller is told once, in a controller notice of the new kind `session-store-burst`
+// (`record.SessionStoreBurstNotice`), naming each, and none of their architects, a claim that
+// begins failing within five minutes of one told in the burst joining it with no notice of its
+// own (workflow's sessionStoreFailed, internal/daemon's tellSessionStoreFailures). Each notice
+// written, and each a bound held, writes one line under `session store failing: `
+// (`workflow.SessionStoreLinePrefix`), naming the issue, the role, the session and the bound.
+//
+// An older daemon refuses the mix with a plugin of this contract: its `readBody` refuses a field it
+// does not know, so every report such a plugin sends while its store fails would be answered 400
+// and the session's activity, its idle hold included, not recorded at all; the boot gate and
+// `legion probe-image` refuse the pair instead. An older plugin sends no `storeFailure` and loses
+// nothing on this daemon but the report.
+//
+// The change is served down by the tables 193 put in place, one row each:
+//
+//   - The state's one new key is one band, the row of `storeFailureContract` in shaping.go's
+//     `stateNarrowings` (`withoutStoreFailure`), after 256's: a caller that states a contract
+//     below 264, or that states none from a pod whose claims record one below 193
+//     (`podContracts` counts no claim at `shapedAnswersContract` or above), is served every claim
+//     view without the key, with every band below it, which is why
+//     `packages/contracts/src/legion-api.ts` declares it optional. A plugin from 256 to 263
+//     states its contract and is served 256's keys. The band reports a move only for a view that
+//     carries a failure, since the key is `omitempty`.
+//   - The request field is the claims/activity row of the request gate's table (`pluginRequests`
+//     in request_shapes_test.go), whose record of 264 holds `activity.storeFailure.since` and
+//     `activity.storeFailure.error`.
+//   - No answer a plugin parses gains a value of an enumerated field: the two notice kinds are
+//     outbox payloads, which no answer carries.
+//
+// So `contract-shapes.json` gains the records of 264, which are 256's with the key paths of each
+// claim view's `storeFailure` on the state's record and the issue record's, and
+// `request-shapes.json` gains the records of 264, which are 256's with the activity report's
+// `storeFailure`.
+//
+// The change carries store migration `20261124124012_claim_session_store_failure`, which adds the
+// four claim columns `store_failed_since`, `store_failed_error`, `store_failure_told_at` and
+// `store_failure_told_to`. An older daemon binary put back on this schema never names them, so its
+// launches leave a failure this release recorded standing, and it decodes an outbox payload
+// strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so an unsent
+// `session-store-failed` or `session-store-burst` notice row is refused at every attempt and logged
+// `outbox row failed` each time. The way back is the migration header's last paragraph
+// (`migrations.WayBack`): with the daemon stopped, delete the unsent notices of the two kinds, drop
+// the four columns and delete the migration's version row, so a roll forward runs it again.
+// (This entry took 249 when main declared 228, the number dispatch://INFRA-3118's architect
+// assigned it, above the 229 to 248 that open pull requests held on 2026-11-24 over main's 228 at
+// 9688b2b232. The rebase of 2026-11-24 onto 7e75126fae6, then 69fcd649a6, brought main's 246 (the
+// pod hold's entry above, after INFRA-4508's 232). A reading of main's 246 and of the head of
+// every one of the 475 open pull requests on 2026-11-24, which ended about 16:50Z, found 247
+// (#5384), 248 (#3993, #4049, #4065 and #4392), 249 (#4173 and #4592), 250 (#5365), 251
+// (#5307), 252 (#4540), 254 (#4432), 255 (#5164), 256 (#5349), 257 (#4580 and #5285) and 261
+// (#5332) declared, so 249 was taken; INFRA-3118's architect, who allocates its tree's numbers,
+// gave this entry 264, above 253, 258, 259 and 260, which it holds for other work, 262, and
+// #5165's 263. A reading of the 487 open heads, which ended about 17:55Z, found none declaring
+// 264. The rebase of 2026-11-24 onto b113b8d3d4 brought main's 250 (#5365, the entry above),
+// below 264, so this entry kept 264. The rebase of 2026-11-24 onto bcc5d7e66d brought main's 256
+// (#5349, the entry above), below 264, so this entry kept 264. Read main's own number and every
+// open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 264

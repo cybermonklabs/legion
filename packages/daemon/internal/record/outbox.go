@@ -1004,22 +1004,32 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // while no publish has taken it, and one that finds it leased or given back to retry opens the
 // next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
 // and the controller replays or discards it (dispatch://INFRA-1575).
+//
+// A session-store-burst notice names the claims of the project whose Oh My Pi session stores began
+// refusing their transcripts within five minutes of each other, more than five of them, each by
+// its issue, its role, its session and when its failure began, with the stores' error (workflow's
+// sessionStoreFailed). Its issue is the project key, as a tick's is, and it carries no role.
+// Nobody inside a tree is told: a fault so many stores share is the store's, which no architect
+// can fix, so the burst tells the controller in place of each claim's architect, once, and a claim
+// that begins failing within five minutes of one the burst named joins it with no notice of its
+// own (dispatch://INFRA-5660/spec#b-r2).
 const (
-	TriageNotice           NoticeKind = "triage"
-	SlotFreeNotice         NoticeKind = "slot-free"
-	TodoNotice             NoticeKind = "todo"
-	TickNotice             NoticeKind = "tick"
-	UnslottedNotice        NoticeKind = "unslotted"
-	AwaitingPersonNotice   NoticeKind = "awaiting-person"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
-	UpdateStalledNotice    NoticeKind = "update-stalled"
-	ProviderErrorsNotice   NoticeKind = "provider-errors"
-	TreeStalledNotice      NoticeKind = "tree-stalled"
-	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
-	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
+	TriageNotice            NoticeKind = "triage"
+	SlotFreeNotice          NoticeKind = "slot-free"
+	TodoNotice              NoticeKind = "todo"
+	TickNotice              NoticeKind = "tick"
+	UnslottedNotice         NoticeKind = "unslotted"
+	AwaitingPersonNotice    NoticeKind = "awaiting-person"
+	ParkedDecisionNotice    NoticeKind = "parked-decision"
+	UpdateStalledNotice     NoticeKind = "update-stalled"
+	ProviderErrorsNotice    NoticeKind = "provider-errors"
+	TreeStalledNotice       NoticeKind = "tree-stalled"
+	ArchitectStalledNotice  NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice   NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice     NoticeKind = "project-paused"
+	ProjectResumedNotice    NoticeKind = "project-resumed"
+	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
+	SessionStoreBurstNotice NoticeKind = "session-store-burst"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2485,6 +2495,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Kind == ArchitectStalledNotice && value.Reason == "" {
 			return fmt.Errorf("an architect-stalled notice carries the reason that names its arm, the root and what the record says")
 		}
+		if value.Kind == SessionStoreBurstNotice && (value.Reason == "" || value.Role != "") {
+			return fmt.Errorf("a session-store-burst notice carries the reason that names its claims and their stores' error, and no role: it is the controller's alone")
+		}
 		if err := validateNoticeGiveUps(value.Kind, value.Role, value.Count, value.GiveUps); err != nil {
 			return err
 		}
@@ -2776,6 +2789,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `session-store-failed` is the claim whose session reported its Oh My Pi session store refusing
+// its transcript, a failure that has stood a minute (workflow's sessionStoreFailed): the issue,
+// the role, the session, when the failure began and the store's error. It is not
+// `session-store-fault`, which is the daemon's own read of the store refused at a launch. One
+// claim's architect is told of it at most once an hour, and none is told of a claim a burst of
+// failures across the project names, which the controller is told of instead
+// (SessionStoreBurstNotice). No earlier release decodes it, so the way back of migration
+// 20261124124012 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2783,7 +2805,12 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	SessionStoreFailedNotice,
 }
+
+// SessionStoreFailedNotice is the architect's notice of a claim of its issue whose session store
+// has refused the session's transcript for a minute (validNoticeKinds says what it carries).
+const SessionStoreFailedNotice NoticeKind = "session-store-failed"
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
 // that volume still above its low mark, or of the trimmer having switched itself off: the one
@@ -2885,7 +2912,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
 		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
-		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice, SessionStoreBurstNotice:
 		return true
 	default:
 		return false

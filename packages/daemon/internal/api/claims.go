@@ -403,6 +403,20 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, "activity.at is required")
 		return
 	}
+	// A store failure is the moment the session first read it and the store's error, or no
+	// failure at all (claim.StoreFailure): half of one is a malformed report, refused by the field
+	// it leaves out as `activity.at` is, since a failure with no start could never be told as one
+	// that has stood a minute and one with no error would tell nobody why.
+	if failure := req.Activity.StoreFailure; failure != nil {
+		if failure.Since.IsZero() {
+			s.refuse(w, r, http.StatusBadRequest, "activity.storeFailure.since is required")
+			return
+		}
+		if failure.Error == "" {
+			s.refuse(w, r, http.StatusBadRequest, "activity.storeFailure.error is required")
+			return
+		}
+	}
 	m, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)

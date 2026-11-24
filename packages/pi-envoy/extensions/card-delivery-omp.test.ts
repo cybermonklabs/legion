@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -73,6 +74,33 @@ function text(reply: string): Block {
   return { type: "text", text: reply };
 }
 
+/** The SQLite file a session started with `sqliteStore` keeps its transcript in. */
+function sqliteStorePath(root: string): string {
+  return path.join(root, "sessions.db");
+}
+
+/**
+ * Whether any row of any table of the session store holds `text`, read through `store`, the
+ * row's own connection: the store's tables and their columns are Oh My Pi's, so every value is
+ * read, a blob as UTF-8.
+ */
+function storeHolds(store: Database, text: string): boolean {
+  const tables = store
+    .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all();
+  return tables.some(({ name }) =>
+    store
+      .query<Record<string, unknown>, []>(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+      .all()
+      .some((row) =>
+        Object.values(row).some((value) =>
+          (value instanceof Uint8Array ? new TextDecoder().decode(value) : String(value)).includes(
+            text
+          )
+        )
+      )
+  );
+}
 /**
  * A role-lane card as the listener forwards it to the role holder's agent subject, which is the
  * subject its frame carries: the envelope keeps the role topic, and the session is not the one
@@ -170,6 +198,13 @@ interface CardSession {
    * with the body it carries once the session has answered the frame `done`: the card is written.
    */
   lateBtw(label: string): Promise<string>;
+  /**
+   * Relays one role card to the session as the listener relays a session's consumer, and
+   * resolves once the session has answered it `received`, with the card's summary and every word
+   * the session has answered on the frame's reply subject so far (`received`, `progress`,
+   * `done`, `nak`), which goes on filling as the session answers.
+   */
+  relayCard(label: string): Promise<{ readonly summary: string; readonly words: string[] }>;
   /** Sends one RPC command and resolves with its response frame. */
   command(command: Record<string, unknown>): Promise<Record<string, unknown>>;
   state(): Promise<z.infer<typeof RpcStateSchema>>;
@@ -230,9 +265,15 @@ async function startSession(
     readonly config?: readonly string[];
     readonly holdStartup?: boolean;
     readonly holdSetup?: boolean;
+    /**
+     * Oh My Pi keeps the session in its SQL store on the SQLite file `sqliteStorePath(root)` rather
+     * than in a session file (`OMP_SESSION_STORAGE=sql`), so a row can refuse the store's writes
+     * by holding that database's write lock, as another writer would.
+     */
+    readonly sqliteStore?: boolean;
   } = {}
 ): Promise<CardSession> {
-  const { config = [], holdStartup = false, holdSetup = false } = options;
+  const { config = [], holdStartup = false, holdSetup = false, sqliteStore = false } = options;
   const { binary, nats } = setup();
   const { root, home, workspace, sessions } = await ompRoot(binary, "card-delivery-omp-", cleanup);
 
@@ -346,6 +387,8 @@ async function startSession(
   /** The body each published Send's message id carries, which the accept answers with. */
   const sends = new Map<string, string>();
   await writeStandinProfile(home, base, config);
+  const storeDsn = path.join(root, "session-store.dsn");
+  if (sqliteStore) await writeFile(storeDsn, `sqlite://${sqliteStorePath(root)}\n`);
 
   const frames: object[] = [];
   const responses = new Map<string, HeldAnswer<Record<string, unknown>>>();
@@ -365,6 +408,7 @@ async function startSession(
         // A held startup's registration pass gets the row's time left as its deadline, so the
         // pass never ends the hold, only the bounds `startupEnded` names.
         ...(holdStartup ? { ENVOY_PASS_DEADLINE_MS: String(Math.floor(timeLeft())) } : {}),
+        ...(sqliteStore ? { OMP_SESSION_STORAGE: "sql", OMP_SESSION_SQL_DSN_FILE: storeDsn } : {}),
       },
       onFrame: (frame) => {
         frames.push(frame);
@@ -519,6 +563,45 @@ async function startSession(
       );
       answers.unsubscribe();
       return body;
+    },
+    async relayCard(label) {
+      const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
+      await until(
+        "the registration that asks for consumer delivery",
+        () =>
+          requests.some(
+            (request) =>
+              request.path === "/v1/interests/subscribe" && request.body.delivery !== undefined
+          )
+            ? true
+            : undefined,
+        closed
+      );
+      const frame = headers();
+      frame.set(RelayHeader.subject, stored);
+      streamSeq += 1;
+      frame.set(RelayHeader.streamSeq, String(streamSeq));
+      frame.set(RelayHeader.streamID, RELAY_STREAM);
+      frame.set(RelayHeader.delivered, "1");
+      frame.set(RelayHeader.storedAt, new Date().toISOString());
+      const inbox = createInbox();
+      const answers = connection.subscribe(inbox);
+      cleanup.push(async () => answers.unsubscribe());
+      const words: string[] = [];
+      void (async () => {
+        for await (const word of answers) words.push(codec.decode(word.data));
+      })();
+      connection.publish(
+        deliverSubject(sid),
+        codec.encode(forwardedRoleEnvelope(summary, `${label}-${randomUUID()}`)),
+        { headers: frame, reply: inbox }
+      );
+      await until(
+        `the session's received for card ${label}`,
+        () => (words.includes("received") ? true : undefined),
+        closed
+      );
+      return { summary, words };
     },
     async command(command) {
       const id = randomUUID();
@@ -980,3 +1063,58 @@ test.skipIf(skip)("a card that arrives while the session starts holds no RPC inp
   woken.reply([text("Read the startup cards.")]);
   await probe(session, woken.index + 1);
 });
+
+// A card is acknowledged (`done`, which the listener acks) only once the session store has written
+// it, as the real host's session manager tells by its `flush()` (INFRA-5660). The session is kept
+// in Oh My Pi's SQL store on a SQLite file, and the row refuses the store's writes by holding that
+// database's write lock, as another writer would: each write's `BEGIN IMMEDIATE` waits the
+// store's busy timeout and fails, so the manager latches the failure and its `flush()` rejects.
+// While it refuses, the card the host holds in memory is unsettled: the session answers
+// `progress` for it, which is what keeps the listener from offering it to another process, and
+// no `done`. Once the lock is let go, the next card's flush resolves, and both frames are
+// answered `done`, each card in the store. The session file the host names stays the same
+// throughout, so the hold is the store's refusal and no move of the session.
+test.skipIf(skip)(
+  "a frame stays unsettled while the session manager's store refuses its writes and settles once it accepts them",
+  async () => {
+    const session = await startSession({ sqliteStore: true });
+    await probe(session, 0);
+    const { sessionFile } = await session.state();
+    const store = new Database(sqliteStorePath(session.root));
+    cleanup.push(async () => store.close());
+    store.exec("PRAGMA busy_timeout = 30000");
+    store.exec("BEGIN EXCLUSIVE");
+    let locked = true;
+    cleanup.push(async () => {
+      if (locked) store.exec("ROLLBACK");
+    });
+
+    const refused = await session.relayCard("refused");
+    const refusedTurn = await session.nextTurn("the turn the card sent while the store refuses");
+    refusedTurn.reply([text("Read the card while the store refused it.")]);
+    // The frame is held, not answered: the first `progress` comes RELAY_PROGRESS_INTERVAL_MS
+    // after the frame was taken, and a `done` before it would end this wait at once.
+    await session.until("the held card's progress, or its done", () =>
+      refused.words.includes("progress") || refused.words.includes("done") ? true : undefined
+    );
+    expect(refused.words).not.toContain("done");
+    expect(refused.words).not.toContain("nak");
+    expect(refused.words).toContain("progress");
+    expect(storeHolds(store, refused.summary)).toBe(false);
+
+    store.exec("COMMIT");
+    locked = false;
+    const accepted = await session.relayCard("accepted");
+    const acceptedTurn = await session.nextTurn("the turn the card sent once the store accepts");
+    acceptedTurn.reply([text("Read the card once the store accepted it.")]);
+    await session.until("both frames' done", () =>
+      refused.words.includes("done") && accepted.words.includes("done") ? true : undefined
+    );
+    expect(refused.words).not.toContain("nak");
+    expect(accepted.words).not.toContain("nak");
+    await session.settled();
+    expect((await session.state()).sessionFile).toBe(sessionFile);
+    expect(storeHolds(store, refused.summary)).toBe(true);
+    expect(storeHolds(store, accepted.summary)).toBe(true);
+  }
+);

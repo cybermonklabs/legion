@@ -2107,6 +2107,18 @@ type Store interface {
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
+	// ProjectSessionStoreFailures is every claim of the project token's claim is of whose
+	// session's last report says its Oh My Pi session store refuses its writes
+	// (claims.store_failed_since set), with what the daemon last told of it, oldest failure first
+	// and by token within a moment: what the workflow decides a notice of token's claim from, the
+	// bounds and the burst among them (workflow's sessionStoreFailed). A token no claim holds
+	// reads none.
+	ProjectSessionStoreFailures(ctx context.Context, tx pgx.Tx, token claim.Token) ([]StoreFailingClaim, error)
+	// TellSessionStoreFailures writes, onto each claim of tokens, that the daemon told of its
+	// session store failing at at, to told: the mark the bounds read (claims.store_failure_told_at
+	// and store_failure_told_to), written in the transaction of the notice that tells, so a
+	// notice that rolls back has marked nobody told.
+	TellSessionStoreFailures(ctx context.Context, tx pgx.Tx, tokens []claim.Token, told supervise.StoreFailureTold, at time.Time) error
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the

@@ -8,7 +8,8 @@ import type { ClaimCapability } from "./legion-phase-ops";
 /**
  * What a live role's session reports of what it is doing (INFRA-945), so the daemon can decide
  * whether the session's pod may be released: work of the session's own still running in the
- * background, and the phase reminder's armed wake.
+ * background, the phase reminder's armed wake, and a session store that refuses its transcript
+ * (INFRA-5660), which the daemon shows and tells the architect of.
  *
  * The module is pure. It builds a report, compares two of them and renders the request that
  * carries one; the hosts — `packages/pi-legion/extensions/legion.ts` at `session_stop` and on a
@@ -46,6 +47,54 @@ export type SessionActivityReport = LegionSessionActivityBody;
  * is the daemon's own reading of its record, not the session's to state. */
 export type SessionActivityPhase = SessionActivityReport["phase"];
 
+/** The store half of a report: the session store refusing the session's transcript, when the
+ * session first read it and the store's error (`storeFailure` on `LegionSessionActivity`,
+ * INFRA-5660). Absent from a report while the store takes the transcript. */
+export type SessionStoreFailure = NonNullable<SessionActivityReport["storeFailure"]>;
+
+/**
+ * What `sessionStoreFailure` reads of an Oh My Pi session manager: the two members it carries
+ * on the object it hands an extension, though its declared `ReadonlySessionManager` names
+ * neither (`SessionManager.hasPersistenceFailure` and `getPersistenceFailure`). Declared
+ * structurally here, as `RunningAsyncJobs` is, so a host without them passes as one.
+ */
+export interface PersistenceFailureReader {
+  readonly hasPersistenceFailure?: () => boolean;
+  readonly getPersistenceFailure?: () => Error | undefined;
+}
+
+/**
+ * The failure the session store holds against this session now, or undefined while it takes the
+ * transcript. `previous` is the last reading: a failure that still stands keeps the start it was
+ * first read at, and one read after a reading of none starts at `now`. A session manager without
+ * the two members, or whose member throws, reads as none, so a host that cannot say reports
+ * nothing and throws nothing. Each member is called on the manager, as the methods they are.
+ */
+export function sessionStoreFailure(
+  manager: PersistenceFailureReader,
+  previous: SessionStoreFailure | undefined,
+  now: Date = new Date()
+): SessionStoreFailure | undefined {
+  if (
+    typeof manager.hasPersistenceFailure !== "function" ||
+    typeof manager.getPersistenceFailure !== "function"
+  ) {
+    return undefined;
+  }
+  let error: Error | undefined;
+  try {
+    if (!manager.hasPersistenceFailure()) return undefined;
+    error = manager.getPersistenceFailure();
+  } catch {
+    return undefined;
+  }
+  const message = error?.message.trim() ?? "";
+  return {
+    since: previous?.since ?? now.toISOString(),
+    error: message === "" ? "the session store refused a write and named no error" : message,
+  };
+}
+
 /**
  * What `asyncJobKinds` reads of a host's async-job snapshot: the jobs running now, and what
  * registered each. Oh My Pi's `AsyncJobSnapshot` (`src/pi-types.ts`,
@@ -69,20 +118,23 @@ export function asyncJobKinds(snapshot: RunningAsyncJobs | null | undefined): st
 }
 
 /**
- * One report: the kinds of background work found, the phase reminder's wake, and the moment the
- * session read them. The kinds are sorted and de-duplicated here, so two readings of the same
- * work compare equal and the reason the daemon records for a hold reads the same every time.
+ * One report: the kinds of background work found, the phase reminder's wake, the moment the
+ * session read them, and the store's failure while it refuses the transcript. The kinds are
+ * sorted and de-duplicated here, so two readings of the same work compare equal and the reason
+ * the daemon records for a hold reads the same every time.
  */
 export function sessionActivity(
   kinds: readonly string[],
   phase: SessionActivityPhase,
-  at: Date = new Date()
+  at: Date = new Date(),
+  storeFailure?: SessionStoreFailure
 ): SessionActivityReport {
   const found = [...new Set(kinds)].sort();
   return {
     at: at.toISOString(),
     backgroundWork: { running: found.length > 0, kinds: found },
     phase,
+    ...(storeFailure === undefined ? {} : { storeFailure }),
   };
 }
 
@@ -99,8 +151,19 @@ export function sameSessionActivity(
     one.backgroundWork.running === other.backgroundWork.running &&
     one.backgroundWork.kinds.length === other.backgroundWork.kinds.length &&
     one.backgroundWork.kinds.every((kind, index) => kind === other.backgroundWork.kinds[index]) &&
-    one.phase.nextReminderAt === other.phase.nextReminderAt
+    one.phase.nextReminderAt === other.phase.nextReminderAt &&
+    sameStoreFailure(one.storeFailure, other.storeFailure)
   );
+}
+
+/** Whether two readings of the store say the same: both none, or one failure with one start
+ * and one error. */
+function sameStoreFailure(
+  one: SessionStoreFailure | undefined,
+  other: SessionStoreFailure | undefined
+): boolean {
+  if (one === undefined || other === undefined) return one === other;
+  return one.since === other.since && one.error === other.error;
 }
 
 /**

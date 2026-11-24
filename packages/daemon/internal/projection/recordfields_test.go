@@ -288,6 +288,12 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
 			StartedAt: projectedAt.Add(-time.Minute), EndedAt: projectedAt.Add(-30 * time.Second),
 		},
+		// The session store's failure its session last reported, which the view carries, and the
+		// mark of who was told of it, which no surface carries.
+		StoreFailedSince:   projectedAt.Add(-5 * time.Minute),
+		StoreFailedError:   "Session file changed before rewrite: /home/legion/.omp/agent/sessions/ses_implementer_499.jsonl",
+		StoreFailureToldAt: projectedAt.Add(-4 * time.Minute),
+		StoreFailureToldTo: supervise.StoreFailureToldArchitect,
 	}
 
 	store := projectionStore{
@@ -360,6 +366,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			},
 			"pendingCause":   current.PendingCause,
 			"leakCheckCause": current.LeakCheckCause,
+			"storeFailure": map[string]any{
+				"since": current.StoreFailedSince, "error": current.StoreFailedError,
+			},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the claim view is %s, want the record's own values, %s", got, wanted)

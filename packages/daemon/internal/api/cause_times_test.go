@@ -291,9 +291,23 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	}
 
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
-	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 1 || narrowings[0].Dropped != dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q",
-			narrowings, causeTimesContract-1, dropped)
+	// A caller below causeTimesContract is a caller below storeFailureContract too, so both bands
+	// above it drop their keys and write one line each (shaping.go's stateNarrowings).
+	wantDropped := map[string]bool{
+		"the claim views' lastDeathAt and lastStartFailureAt": false,
+		"the claim views' storeFailure":                       false,
+	}
+	for _, line := range narrowings {
+		if _, want := wantDropped[line.Dropped]; !want {
+			t.Errorf("the daemon wrote an unexpected narrowing line %+v", line)
+			continue
+		}
+		wantDropped[line.Dropped] = true
+	}
+	for dropped, saw := range wantDropped {
+		if !saw {
+			t.Errorf("the daemon wrote no narrowing line saying it dropped %q for a caller stating %d: %+v",
+				dropped, causeTimesContract-1, narrowings)
+		}
 	}
 }

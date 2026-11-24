@@ -1,0 +1,66 @@
+-- 20261124124012_claim_session_store_failure.up.sql -- a claim keeps its session store's failure
+-- and the mark of who was told of it (dispatch://INFRA-5660/spec#b-r2).
+--
+-- claims.store_failed_since and claims.store_failed_error are supervise.Claim.StoreFailedSince and
+-- StoreFailedError: the failure the claim's session last reported of its Oh My Pi session store
+-- (POST /legion/v1/claims/activity, `activity.storeFailure`), when the session first read it and
+-- the store's error, null and '' while the store takes the transcript. The store's
+-- PutClaimActivity writes them with the activity columns, onto the launch the report
+-- authenticated for alone and under the same order, and a launch's write clears them with the
+-- activity columns (putClaim), since the report describes the process the launch replaces.
+--
+-- claims.store_failure_told_at and claims.store_failure_told_to are supervise.Claim.StoreFailureToldAt
+-- and StoreFailureToldTo: when the daemon last told anybody of this claim's failure, and whom, the
+-- issue's architect ('architect') or, for a burst of failures across the project, the project's
+-- controller ('controller'), null and '' for a claim nobody was told of. The workflow writes them
+-- with the notice, in the fact's own transaction (workflow's sessionStoreFailed), and nothing else
+-- writes them: a launch keeps them, so the hour that bounds the notices of one claim outlives a
+-- relaunch and a failure that clears and comes back.
+--
+-- Every row the table already holds takes the defaults: no failure reported, nobody told.
+--
+-- The release before this one names each column it reads and writes (the claim store's
+-- claimSelect and upsertClaim), so it neither reads nor writes these, and every row it inserts
+-- takes the defaults. So after a rollback a failure this release recorded is never cleared by that
+-- release's launches: at the roll-forward such a row would show a failure of a process that is
+-- gone until its session's next report, and the sweep could tell its architect of it.
+--
+-- Nor does that release decode the two notice kinds this release adds: session-store-failed, the
+-- notice the issue's architect is told, outbox kind 'notice', and session-store-burst, the notice
+-- the project's controller is told, outbox kind 'controller_notice'. It decodes an outbox row
+-- strictly and refuses a notice kind it does not know (record.DecodeOutboxPayload, "unknown notice
+-- kind" and "unknown controller notice kind"), so such a row left queued fails on every attempt
+-- and never finishes, as 20261120042902_claim_agent_resume_generation.up.sql says of the
+-- session-forgotten notices.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
+--
+-- The outbox delete takes the notices of the two kinds this release queued and had not sent when
+-- the daemon stopped. A sent notice leaves no row, since the outbox deletes a row once it is
+-- delivered, so these are the only ones standing. What the delete costs is those tellings: the
+-- architects and the controller are not told of a failure this release read before it stopped.
+--
+-- The drops and the delete of this migration's row go together. The release before needs neither
+-- to run, since it never names the columns: the delete is what makes the version the store
+-- reports, its highest recorded row (store.SchemaVersionTx), that release's own again. Both are
+-- owed to the roll-forward. With the columns dropped and the row deleted, store.apply finds no row
+-- of this version and runs this file again, which adds the columns again at their defaults. The
+-- drops are also what let this file run again at all, since an add of a column that stands fails,
+-- and they take with the columns every failure the release before could not clear. What they cost
+-- is the told marks: after the roll-forward a claim whose store still fails is told of again,
+-- though less than an hour may have passed since it was last told.
+--
+-- begin;
+-- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('session-store-failed', 'session-store-burst');
+-- alter table claims drop column if exists store_failed_since, drop column if exists store_failed_error, drop column if exists store_failure_told_at, drop column if exists store_failure_told_to;
+-- delete from schema_version where version = 20261124124012;
+-- commit;
+alter table claims
+  add column store_failed_since timestamptz,
+  add column store_failed_error text not null default '',
+  add column store_failure_told_at timestamptz,
+  add column store_failure_told_to text not null default ''
+    check (store_failure_told_to in ('', 'architect', 'controller'));

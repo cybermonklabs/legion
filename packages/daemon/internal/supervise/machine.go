@@ -577,7 +577,35 @@ type Claim struct {
 	ActivityBackground     bool
 	ActivityKinds          []string
 	ActivityNextReminderAt time.Time
+	// StoreFailedSince and StoreFailedError are the failure the process this claim runs now last
+	// reported of its Oh My Pi session store (claim.StoreFailure, POST /legion/v1/claims/activity):
+	// when its session first read the store refusing its writes, and the store's error; the zero
+	// time and "" while the store takes the transcript. They are written with the activity report
+	// above and held as it is: by the store's PutClaimActivity alone, onto the launch the report
+	// authenticated for, cleared by a launch's write, and carried by no write a machine makes. The
+	// state shows them (api.ClaimView's StoreFailure), and the daemon's minute sweep tells of a
+	// failure that has stood a minute (internal/daemon's tellSessionStoreFailures).
+	StoreFailedSince time.Time
+	StoreFailedError string
+	// StoreFailureToldAt and StoreFailureToldTo are when the daemon last told anybody of this
+	// claim's session store failing, and whom (StoreFailureTold): the zero time and "" for a claim
+	// nobody was told of. The workflow writes them with its notice (workflow's sessionStoreFailed),
+	// and nothing else writes them: a launch keeps them, so the hour that bounds one claim's
+	// notices outlives a relaunch and a failure that clears and comes back.
+	StoreFailureToldAt time.Time
+	StoreFailureToldTo StoreFailureTold
 }
+
+// StoreFailureTold is whom the daemon told of a claim's session store failing: the issue's
+// architect, or the project's controller, which a burst of failures across the project tells in
+// place of each claim's architect. It is the column claims.store_failure_told_to, which holds one
+// of these two or nothing.
+type StoreFailureTold string
+
+const (
+	StoreFailureToldArchitect  StoreFailureTold = "architect"
+	StoreFailureToldController StoreFailureTold = "controller"
+)
 
 // EntryHandshake is the handshake between the daemon and a claim's worker over one phase entry:
 // the entry, the issue generation the entry's task was of (Delivery.Generation), when a task of

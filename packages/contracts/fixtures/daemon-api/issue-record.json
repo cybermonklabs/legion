@@ -92,6 +92,10 @@
           "argsBytes": 128,
           "argsHash": "9b2e45c0d1f8a673",
           "startedAt": "2026-09-22T09:17:12Z"
+        },
+        "storeFailure": {
+          "since": "2026-09-22T09:12:40Z",
+          "error": "Session file changed before rewrite: /home/legion/.omp/agent/sessions/ses_implementer_208.jsonl"
         }
       },
       "pass": 3,

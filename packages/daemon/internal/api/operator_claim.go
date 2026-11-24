@@ -123,6 +123,11 @@ type OperatorClaim struct {
 	// its process or failed for another reason. The controller's claim is on no claim view of the
 	// state, so these routes are where its cause is read.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// StoreFailure is the claim's session store refusing its transcript, as its session last
+	// reported it (StoreFailureViewOf, ClaimView.StoreFailure), absent while the store takes the
+	// transcript. The controller's claim is on no claim view of the state, so these routes are
+	// where its failure is read.
+	StoreFailure *StoreFailureView `json:"storeFailure,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -286,6 +291,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		Step:               StepViewOf(step),
 		Failure:            FailureViewOf(c),
 		LeakCheckCause:     c.LeakCheckCause,
+		StoreFailure:       StoreFailureViewOf(c),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{

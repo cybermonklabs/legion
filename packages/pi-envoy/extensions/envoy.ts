@@ -112,11 +112,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -211,7 +207,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -249,6 +245,7 @@ import {
   withSessionAnswers,
 } from "../src/session-answers-context";
 import { type SessionInbound, sessionInbound } from "../src/session-inbound";
+import { SettleAfterFlush } from "../src/settle-after-flush";
 import { sideTurn } from "../src/side-turn";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
@@ -2052,6 +2049,34 @@ export default function envoyExtension(hostApi: PiApi): void {
       },
     });
 
+  // A frame is acknowledged only once the session store wrote it (`../src/settle-after-flush`).
+  // The session manager's `flush()` is public on the object Oh My Pi hands an extension and
+  // undeclared on its `ReadonlySessionManager`, so it is probed by `typeof` and called as a
+  // method of the manager it is read from.
+  const storeWrites = new SettleAfterFlush({
+    // The host's live id, read at each flush: `hostSessionID` is declared further down.
+    sessionID: () => hostSessionID(),
+    flush: () => {
+      const manager = activeSessionContext?.sessionManager;
+      if (manager === undefined || typeof manager.flush !== "function") return undefined;
+      return async () => {
+        await manager.flush?.();
+      };
+    },
+    refused: (error, waiting) => {
+      logger.warn(
+        "envoy: the session store refuses the transcript's writes; the messages delivered since stay unacknowledged until it takes them",
+        { error: messageFor(error), waiting }
+      );
+    },
+    accepted: (settled) => {
+      logger.warn(
+        "envoy: the session store takes the transcript's writes again; the messages held were acknowledged",
+        { settled }
+      );
+    },
+  });
+
   // `session` is the session the frame is addressed to, which every answer to it names and is
   // signed as: the relay reads it off its owner, before anything here awaits, since every frame
   // reaches the session through its own consumer's relay. `subject` is the subject the frame
@@ -2102,9 +2127,10 @@ export default function envoyExtension(hostApi: PiApi): void {
       return;
     }
     // A relay frame's claim answers the listener as the claim ends: `done` once it settles (the
-    // host wrote the frame, or handled it with nothing to write, the ledger recording it first),
-    // `nak` once it is released with nothing recorded (the host dropped the frame unwritten: a
-    // session change, an interrupt that withdrew a person's turn), so the listener sends it again.
+    // host wrote the frame, or handled it with nothing to write, the ledger recording it first)
+    // and the session store holds what was written (`storeWrites`), `nak` once it is released
+    // with nothing recorded (the host dropped the frame unwritten: a session change, an
+    // interrupt that withdrew a person's turn), so the listener sends it again.
     // A release while this call still runs answers only once the call returns: a throw is the
     // relay's own to count (its failure notice comes from `createConsumerDelivery`).
     let handing = true;
@@ -2112,8 +2138,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     const claim: DeliveryClaim = {
       settle: () => {
         held.settle();
-        relayed.done();
-        relay?.delivery.persist();
+        storeWrites.settle(session, () => {
+          relayed.done();
+          relay?.delivery.persist();
+        });
       },
       release: () => {
         held.release();

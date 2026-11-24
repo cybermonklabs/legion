@@ -2803,15 +2803,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Six bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
   // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
-  // `waitingLine`; and contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; so the golden's issues, rows and claim views are compared without them. One value
-  // strip stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived
-  // at contract 213, so that row is served here without its `source`, every other field of it and
-  // every other row as the state golden holds them.
+  // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; and the session store failure's at 264, which takes `storeFailure` off each claim
+  // view (`withoutStoreFailure`); so the golden's issues, rows and claim views are compared
+  // without them. One value strip stands above 199 as well: `caches`, the source of the
+  // repository-cache-room row, arrived at contract 213, so that row is served here without its
+  // `source`, every other field of it and every other row as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2835,11 +2836,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
-  const withoutCauseTimes = (view: unknown): unknown => {
+  const withoutClaimNarrowings = (view: unknown): unknown => {
     if (!isJsonObject(view)) {
       return view;
     }
-    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    const {
+      lastDeathAt: _deathAt,
+      lastStartFailureAt: _startFailureAt,
+      storeFailure: _storeFailure,
+      ...kept
+    } = view;
     return kept;
   };
   const issues = Object.fromEntries(
@@ -2857,14 +2863,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         );
       }
       if (kept.architect !== undefined) {
-        narrowed.architect = withoutCauseTimes(kept.architect);
+        narrowed.architect = withoutClaimNarrowings(kept.architect);
       }
       if (isJsonObject(kept.workers)) {
         narrowed.workers = Object.fromEntries(
           Object.entries(kept.workers).map(([role, worker]) => [
             role,
             isJsonObject(worker) && worker.claim !== undefined
-              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              ? { ...worker, claim: withoutClaimNarrowings(worker.claim) }
               : worker,
           ])
         );

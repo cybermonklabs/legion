@@ -1726,6 +1726,23 @@ type WorkerBackgroundStalled struct {
 
 func (f WorkerBackgroundStalled) namedIssue() (string, bool) { return f.Issue, true }
 
+// SessionStoreFailed is one claim the daemon's minute sweep read as a session whose Oh My Pi
+// session store has refused its writes for a minute or more (supervise.Claim.StoreFailedSince at
+// Since, on launch Generation) and of whose failure nobody has been told. The sweep applies it from
+// the live claims, never from an event, and its handler decides in the fact's own transaction who
+// is told, the issue's architect, the project's controller for a burst, or nobody for a claim a
+// bound holds (workflow's sessionStoreFailed; internal/daemon's sessionStoreFailedEventID says
+// what its id is).
+type SessionStoreFailed struct {
+	Token      claim.Token
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	Since      time.Time
+}
+
+func (f SessionStoreFailed) namedIssue() (string, bool) { return f.Issue, true }
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)

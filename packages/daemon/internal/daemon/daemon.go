@@ -2599,10 +2599,11 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
 // (refreshStalePlugins) could not complete needs — carries every update round a step
 // (reconcilePodUpdates), ends the turn of every claim whose agent has stopped stepping
-// (backstopStalledTurns), and tells the workflow of every phase worker that nothing will prompt
-// (tellSilentPhaseWorkers). All four ride the sweep because it is the one periodic pass that
-// already reads every claim, rather than running a timer of their own; its minute is far below
-// the smallest backstop bound a configuration can hold, and far below the floor under
+// (backstopStalledTurns), tells the workflow of every phase worker that nothing will prompt
+// (tellSilentPhaseWorkers), and of every session whose store has refused its transcript for a
+// minute (tellSessionStoreFailures). All of them ride the sweep because it is the one periodic
+// pass that already reads every claim, rather than running a timer of their own; its minute is
+// far below the smallest backstop bound a configuration can hold, and far below the floor under
 // `worker_silence_minutes`.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
@@ -2627,6 +2628,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
+		s.tellSessionStoreFailures(ctx, claims)
 	}
 }
 
