@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/steprecord"
 )
 
 // yet ends each refusal of something a later release carries out.
@@ -428,6 +430,7 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 		if i <= MostReasons {
 			ringWords = append(ringWords, shown{task: id, item: word})
 		}
+		return ring, needs
 	}
 	// selves is 21 tasks s01 to s21, each needing itself: 21 sets of one task, the reason of each
 	// of the first 20 holding `needs itself: s01 needs s01`, which only the reason of a set holds.
@@ -506,13 +509,15 @@ func TestARefusalNamesTheFirstReasonsOfEachKindAndCountsTheRest(t *testing.T) {
 	}
 }
 
-// A reason quotes a word of the plan, a need, a need into another issue, a role or a key, to at
-// most MostQuotedBytes, cut at the start of a character and marked with the word's length, and a
-// word at the bound whole. And FromBlocks takes a task id at MostTaskIDBytes and refuses one
-// outside Dispatch's task form with one reason, which states the form and quotes the id the same
-// way. The fault is a reason that quotes a word whole; the control is quoted with its cut taken
-// out, under which the long needs, role and key are quoted whole and the 900 KB id's refusal grows
-// with it.
+// Every place that quotes a word of the plan quotes it to at most MostQuotedBytes, cut at the
+// start of a character and marked with the length of the word, and a word at the bound whole:
+// a need, a role nobody defines, a role block's id, a key, a role at two steps and a step that
+// reads a pull request with no implementer before it, each a reason whose task the case holds;
+// one id on two blocks and a step outside the grammar, each an error of the read. And FromBlocks
+// takes a task id at steprecord.TaskIDMax and refuses one outside Dispatch's task form with one
+// reason, which states the form and quotes the id the same way. The fault is a reason that quotes
+// a word whole; the control is quoted with its cut taken out, under which each long word is
+// quoted whole and the 900 KB id's refusal grows with it.
 func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
 	atBound := strings.Repeat("x", MostQuotedBytes)
@@ -521,22 +526,54 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 	wide := "a" + strings.Repeat("é", 100)
 	role := "r" + strings.Repeat("o", 300)
 	into := "dispatch://ACME-2/artifact/plan-md#b-" + long
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word))
+	}
 	for _, tc := range []struct {
-		name  string
-		got   []Refusal
-		quote string // the word as the one reason quotes it
+		name   string
+		got    []Refusal
+		at     int    // the reason that quotes the word, among the reasons the plan gets
+		task   string // that reason's task
+		quote  string // the word as that reason quotes it
+		quotes int    // how many times the reason names that quote
 	}{
-		{"a need of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", long)), d), long[:MostQuotedBytes] + "… (cut from 1048576 bytes),"},
-		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), "needs " + atBound + ","},
-		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), wide[:127] + "… (cut from 201 bytes),"},
-		{"a need into another issue of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", into)), d), into[:MostQuotedBytes] + fmt.Sprintf("… (cut from %d bytes),", len(into))},
-		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), role[:MostQuotedBytes] + "… (cut from 301 bytes),"},
-		// A key on acceptance but owner is refused; a key on another role is taken.
-		{"a key of 301 bytes", Supported(oneTask("a", "implementer acceptance:"+role)), role[:MostQuotedBytes] + "… (cut from 301 bytes)."},
+		{"a need of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", long)), d), 0, "a", cut(long) + ",", 1},
+		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), 0, "a", "needs " + atBound + ",", 1},
+		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), 0, "a", wide[:127] + "… (cut from 201 bytes),", 1},
+		{"a need into another issue of 1 MiB", Validate(planOf(t, 1, taskNeeding("a", into)), d), 0, "a", cut(into) + ",", 1},
+		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), 0, "a", cut(role) + ",", 1},
+		{"a key of 301 bytes", Supported(oneTask("a", "implementer acceptance:"+role)), 0, "a", cut(role) + ".", 1},
+		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
+		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
+		// The key's reason comes first, then the step's. stepReasons (validate.go:499-501)
+		// names the whole word `tester:<key>` twice, so its size includes two quotes.
+		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if len(tc.got) != 1 || !strings.Contains(tc.got[0].Reason, tc.quote) || len(tc.got[0].Reason) > 300+len(tc.quote) {
-				t.Fatalf("the reasons %.400q, want one quoting %.200q", tc.got, tc.quote)
+			if len(tc.got) <= tc.at {
+				t.Fatalf("the reasons %.400q hold no reason %d", tc.got, tc.at+1)
+			}
+			reason := tc.got[tc.at]
+			if reason.Task != tc.task || !strings.Contains(reason.Reason, tc.quote) || len(reason.Reason) > 300+tc.quotes*len(tc.quote) {
+				t.Fatalf("reason %d is %.400q of task %q, want one of task %q quoting %.200q within 300 bytes of it", tc.at+1, reason.Reason, reason.Task, tc.task, tc.quote)
+			}
+			if count := strings.Count(reason.Reason, strings.TrimSuffix(tc.quote, ",")); count != tc.quotes {
+				t.Errorf("reason %d names the quote %d times, want %d: %.600q", tc.at+1, count, tc.quotes, reason.Reason)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		blocks []Block
+		quote  string
+	}{
+		{"one id of 301 bytes on two blocks", []Block{{ID: role, Type: RoleBlockType}, taskNeeding(role)}, cut(role)},
+		{"a step of 301 bytes outside the grammar", []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer " + strings.ToUpper(role)}}}, cut(strings.ToUpper(role))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := FromBlocks("plan-md", 1, tc.blocks)
+			if err == nil || !strings.Contains(err.Error(), tc.quote) || len(err.Error()) > 300+len(tc.quote) {
+				t.Fatalf("FromBlocks = %.600v, want one error within 300 bytes of the quote %.200q", err, tc.quote)
 			}
 		})
 	}
@@ -545,8 +582,8 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		id    string
 		taken bool
 	}{
-		{"an id of MostTaskIDBytes", "a" + strings.Repeat("0", MostTaskIDBytes-1), true},
-		{"an id one byte past it", "a" + strings.Repeat("0", MostTaskIDBytes), false},
+		{"an id of TaskIDMax", "a" + strings.Repeat("0", steprecord.TaskIDMax-1), true},
+		{"an id one byte past it", "a" + strings.Repeat("0", steprecord.TaskIDMax), false},
 		{"an id with a dot", "a.b", false},
 		{"an id with a capital", "A", false},
 		{"an id of 900 KB", strings.Repeat("a", 900<<10), false},
@@ -556,6 +593,118 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 			if tc.taken != (err == nil) || err != nil && (len(err.Error()) > 500 ||
 				!strings.Contains(err.Error(), "the task "+quoted(tc.id)+" has an id") || !strings.Contains(err.Error(), "lowercase letters, digits and hyphens")) {
 				t.Fatalf("FromBlocks(an id of %d bytes) = %.600v, want taken %v, or one reason within 500 bytes stating the form", len(tc.id), err, tc.taken)
+			}
+		})
+	}
+}
+
+// The daemon holds a task block's id to Dispatch's own form, and to no form of its own: the one
+// generated from packages/contracts, which Dispatch's step write and plan write hold a task to and
+// which the daemon reads through steprecord (steprecord.TaskIDHolds). Over the ids below,
+// FromBlocks takes the block if and only if steprecord.TaskIDHolds takes its id, and the reason of
+// an id it refuses states the rule's words as Dispatch's refusal states them
+// (steprecord.TaskIDRule). The fault is a second form in the daemon, which a change of Dispatch's
+// leaves behind with no test failing; the control is this comparison, which fails for any id the
+// two read apart.
+func TestFromBlocksHoldsATaskIDToDispatchsForm(t *testing.T) {
+	for _, id := range []string{"a", "0", "default", "a-b", "01a1edce-23dd-726e-b804-626dd5bb3957",
+		strings.Repeat("a", steprecord.TaskIDMax), strings.Repeat("a", steprecord.TaskIDMax+1),
+		"a.b", "A", "-a", "a b", "a_b", ""} {
+		t.Run(fmt.Sprintf("%.32q of %d bytes", id, len(id)), func(t *testing.T) {
+			_, err := FromBlocks("plan-md", 1, []Block{taskNeeding(id)})
+			if want := steprecord.TaskIDHolds(id); want != (err == nil) {
+				t.Fatalf("FromBlocks(%.64q) = %.300v, and steprecord.TaskIDHolds says %t", id, err, want)
+			}
+			if err != nil && id != "" && !strings.Contains(err.Error(), steprecord.TaskIDRule) {
+				t.Errorf("the reason %.300q does not state the rule %q", err.Error(), steprecord.TaskIDRule)
+			}
+		})
+	}
+}
+
+// plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
+// redact package's tests write theirs: a user name with no password, which a secret scanner takes
+// for no credential, and which redact.URLCredentials removes as it removes a password or a token.
+var plantedUser = strings.Repeat("planted-reader-", 20)
+
+// plantedURL is a URL whose userinfo is plantedUser, and redactedURL is what the URL rule leaves of
+// it: its path is long enough that the URL without its userinfo is still past MostQuotedBytes, so
+// a reason quotes it cut.
+var (
+	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
+	redactedURL = "https://h.example/" + strings.Repeat("p", 200)
+)
+
+// credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds
+// none.
+func credentialIn(text string) string {
+	for at := 0; at+6 <= len(plantedUser); at++ {
+		if part := plantedUser[at : at+6]; strings.Contains(text, part) {
+			return part
+		}
+	}
+	return ""
+}
+
+// No byte of a URL's credential that a word of the plan carries reaches a reason or an error that
+// quotes the word, however long the word is: the word is read whole through the URL rule
+// (redact.URLCredentials) before it is cut to MostQuotedBytes, so the cut, and the length its mark
+// gives, are of what the rule left. Each place that quotes a word is given plantedURL: a need, a
+// role nobody defines, a role block's id, a key, a role at two steps and a step read before the
+// implementer, each a reason of its task or of the whole plan, and one id on two blocks, a task id
+// outside the form and a step outside the grammar, each an error of the read, which the route
+// answers as a reason of the whole plan. Each case holds the reason's task, the quote of
+// redactedURL cut and marked, and no run of six bytes of plantedUser. The fault is a cut made
+// before the rule, which can end inside the userinfo, before its "@", where the rule then finds no
+// userinfo; the control is quoted cutting first, under which each quote keeps 120 bytes of
+// plantedUser.
+func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	implementer := Step{Role: "implementer"}
+	withSteps := func(steps ...Step) Plan { return Plan{Tasks: []Task{{ID: "a", Steps: steps}}} }
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:MostQuotedBytes], len(word))
+	}
+	quote := cut(redactedURL)
+	for _, tc := range []struct {
+		name  string
+		got   []Refusal
+		task  string // the task of the reason that quotes the word
+		quote string
+	}{
+		{"a need", Validate(planOf(t, 1, taskNeeding("a", plantedURL)), d), "a", quote},
+		{"a role nobody defines", Validate(withSteps(implementer, Step{Role: plantedURL}), d), "a", quote},
+		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}), "", quote},
+		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL})), "a", quote},
+		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL})), "a", quote},
+		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer)), "a", cut("tester:" + redactedURL)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.got) == 0 || !slices.ContainsFunc(tc.got, func(r Refusal) bool { return r.Task == tc.task && strings.Contains(r.Reason, tc.quote) }) {
+				t.Fatalf("the reasons %.1000q, want one of task %q quoting %.300q", tc.got, tc.task, tc.quote)
+			}
+			for _, reason := range tc.got {
+				if part := credentialIn(reason.Reason); part != "" {
+					t.Errorf("the reason %.1000q holds %q of the URL's credential", reason.Reason, part)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name   string
+		blocks []Block
+	}{
+		{"one id on two blocks", []Block{{ID: plantedURL, Type: RoleBlockType}, {ID: plantedURL, Type: TaskBlockType}}},
+		{"a task id outside the form", []Block{taskNeeding(plantedURL)}},
+		{"a step outside the grammar", []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": plantedURL}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := FromBlocks("plan-md", 1, tc.blocks)
+			if err == nil || !strings.Contains(err.Error(), quote) {
+				t.Fatalf("FromBlocks = %.1000v, want an error quoting %.300q", err, quote)
+			}
+			if part := credentialIn(err.Error()); part != "" {
+				t.Errorf("the error %.1000q holds %q of the URL's credential", err.Error(), part)
 			}
 		})
 	}

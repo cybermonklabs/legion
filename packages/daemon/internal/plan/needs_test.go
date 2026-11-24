@@ -29,8 +29,8 @@ func planOfTasksAToE(t *testing.T) Plan {
 }
 
 // FromBlocks gives each task's Needs as the ids of the tasks they name, in the order the block
-// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2E`
-// is a `.`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
+// writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2D`
+// is a `-`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
 // needed once. Each word that names no task stays in Unresolved. So no caller holds a plan whose
 // needs are words. The fault is a plan read with the words of its needs, which no reader of a task
 // id can read, and which Validate takes; the control is a FromBlocks that keeps each word whole,

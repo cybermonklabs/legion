@@ -2,10 +2,11 @@ package plan
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives a
@@ -13,11 +14,14 @@ import (
 // reasons, and the owner reads every cause at once rather than one for each try. Each reason names
 // its task where it has one. One refusal names at most MostReasons causes of each kind and counts
 // the rest (reasons), and each reason quotes the plan within a bound of bytes: a task id of at
-// most MostTaskIDBytes (FromBlocks refuses a longer one), a word of at most MostQuotedBytes
-// (quoted), and a list of at most MostReasons ids (listed, chainOf).
+// most steprecord.TaskIDMax (FromBlocks refuses one outside Dispatch's task form), a word of at
+// most MostQuotedBytes (quoted), a list of at most MostReasons ids (listed) and a chain of at most
+// MostReasons needs, of two ids each (chainOf).
 
-// MostReasons is the most reasons of one kind of cause that one refusal of a plan names; one more
-// reason counts the rest of that kind (reasons). The owner fixes what the refusal names and gives
+// MostReasons is the most causes of one kind that one refusal of a plan names; one more reason
+// counts the rest of that kind (reasons). It bounds a list and a chain as well: a reason lists at
+// most MostReasons task ids and counts the rest (listed), and a cycle's chain names at most
+// MostReasons needs, of two ids each (chainOf). The owner fixes what the refusal names and gives
 // the plan again, and the next refusal names what is left. Twenty is about one screen of sentences
 // of 50 to 170 bytes, a few kilobytes in an answer that writes each reason twice, which a terminal
 // and an agent's tool result both hold, and enough causes to show a slip the plan makes at each of
@@ -25,31 +29,25 @@ import (
 // step.
 const MostReasons = 20
 
-// MostTaskIDBytes is the longest task id a plan gives. Dispatch records a step only of a task whose
-// id matches its task form, `^[a-z0-9][a-z0-9-]{0,63}$` (taskForm in
-// packages/envoy/internal/dispatch/workflowstore/write.go), so no step of a task with any other id
-// can ever be recorded, and FromBlocks refuses such an id (taskIDForm).
-const MostTaskIDBytes = 64
-
-// taskIDForm is Dispatch's task form, which a step record's write holds its task to.
-var taskIDForm = regexp.MustCompile(fmt.Sprintf(`^[a-z0-9][a-z0-9-]{0,%d}$`, MostTaskIDBytes-1))
-
 // MostQuotedBytes is the most bytes of one word of the plan that a reason quotes: a need, a role, a
 // key, a step, or a block id outside the task form. Twice the longest task id holds a reference
 // to a task of another document (`dispatch://KEY/artifact/<slug>#b-<id>@v2`).
 const MostQuotedBytes = 128
 
-// quoted is word as a reason quotes it: whole within MostQuotedBytes, else its first bytes up to
-// that bound, cut at the start of a character, and a mark that it was cut, with its length.
+// quoted is word as a reason quotes it, with the credentials of every URL it writes removed
+// (redact.URLCredentials): what the rule leaves, whole within MostQuotedBytes, else its first
+// bytes up to that bound, cut at the start of a character, and a mark that it was cut, with the
+// length of what the rule left (redact.Bytes). The rule reads the word whole before the cut,
+// because a cut made first can end inside a URL's userinfo, before its "@", where the rule then
+// finds no userinfo and the start of a user name or a password stays in the reason, which the
+// route writes into `reasons` as it came and into `error` through the same rule (api's
+// writeRefusal).
 func quoted(word string) string {
-	if len(word) <= MostQuotedBytes {
-		return word
+	kept, cut := redact.Bytes(word, MostQuotedBytes)
+	if !cut {
+		return kept
 	}
-	cut := MostQuotedBytes
-	for cut > 0 && !utf8.RuneStart(word[cut]) {
-		cut--
-	}
-	return fmt.Sprintf("%s… (cut from %d bytes)", word[:cut], len(word))
+	return fmt.Sprintf("%s… (cut from %d bytes)", kept, len(redact.URLCredentials(word)))
 }
 
 // listed is ids as a reason lists them: the first MostReasons, joined by ", ", and past them a
@@ -233,15 +231,20 @@ func Validate(p Plan, d Deployment) []Refusal {
 
 // chainOf is a cycle's chain as its reason names it, each task needing the next and the last the
 // first: every need of a cycle of at most MostReasons tasks, and of a longer one its first
-// MostReasons - 1 needs, a count of the needs between, and the need that closes it.
+// MostReasons - 1 needs, a count of the needs between, and the need that closes it. So a chain
+// names at most MostReasons needs, of two task ids each.
 func chainOf(cycle []string) string {
 	link := func(i int) string { return cycle[i] + " needs " + cycle[(i+1)%len(cycle)] }
 	chain := make([]string, 0, MostReasons+1)
 	for i := range min(len(cycle), MostReasons) - 1 {
 		chain = append(chain, link(i))
 	}
-	if len(cycle) > MostReasons {
-		chain = append(chain, fmt.Sprintf("%d more needs", len(cycle)-MostReasons))
+	if left := len(cycle) - MostReasons; left > 0 {
+		word := " more needs"
+		if left == 1 {
+			word = " more need"
+		}
+		chain = append(chain, strconv.Itoa(left)+word)
 	}
 	return strings.Join(append(chain, link(len(cycle)-1)), ", ")
 }

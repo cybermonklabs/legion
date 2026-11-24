@@ -874,6 +874,22 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
 
+/** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
+ *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
+export const STEP_TASK_MAX = 64;
+
+/** The form of the id of a task a step record names, which is also the id of a `plan_task` block
+ *  of an owner's plan: lowercase letters, digits and hyphens, the first a letter or a digit, at
+ *  most `STEP_TASK_MAX` bytes. Generated into Go as `contracts.StepTaskPattern`: Dispatch refuses
+ *  a step write and a plan write that names a task outside it, and the Legion daemon, through
+ *  `github.com/sjawhar/envoy/steprecord`, refuses a plan whose task block has such an id, whose
+ *  steps Dispatch could record none of. */
+export const STEP_TASK_PATTERN = new RegExp(`^[a-z0-9][a-z0-9-]{0,${STEP_TASK_MAX - 1}}$`);
+
+/** STEP_TASK_PATTERN's rule in words, which the refusal of either side gives: generated into Go as
+ *  `contracts.StepTaskRule`. */
+export const STEP_TASK_RULE_WORDS = `lowercase letters, digits and hyphens, starting with a letter or a digit, at most ${STEP_TASK_MAX} bytes`;
+
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
  *  which the server compiles; the `handoffs.phase` check constraint holds the same rule. */

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -32,7 +33,7 @@ type Block struct {
 // issue (resolveNeeds), so no plan holds a need as a word. A document with no task block is read as
 // a plan with no task, which Validate refuses. It answers an error only for a block it cannot read
 // at all: a task or a role with no id, one id on two such blocks, a task whose id is outside
-// Dispatch's task form (taskIDForm), whose steps Dispatch could never record, and a task whose
+// Dispatch's task form (steprecord.TaskIDHolds), whose steps Dispatch could never record, and a task whose
 // `steps` is outside the grammar (ParseSteps); the error names the block, its id or word quoted
 // (quoted).
 func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, error) {
@@ -53,9 +54,9 @@ func FromBlocks(issue, artifactID string, version int, blocks []Block) (Plan, er
 			p.RoleBlocks = append(p.RoleBlocks, block.ID)
 			continue
 		}
-		if !taskIDForm.MatchString(block.ID) {
-			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, lowercase letters, digits and hyphens, starting with a letter or a digit, at most %d bytes, so Dispatch could record none of its steps",
-				quoted(block.ID), len(block.ID), MostTaskIDBytes)
+		if !steprecord.TaskIDHolds(block.ID) {
+			return Plan{}, fmt.Errorf("the task %s has an id of %d bytes outside the form of a task id, %s, so Dispatch could record none of its steps",
+				quoted(block.ID), len(block.ID), steprecord.TaskIDRule)
 		}
 		task, err := taskOf(block)
 		if err != nil {

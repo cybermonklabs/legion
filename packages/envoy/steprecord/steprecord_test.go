@@ -1,6 +1,7 @@
 package steprecord
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,36 @@ func TestPlaceHoldsTheStepFromOneAndTheRetroAndTheMergeAtZero(t *testing.T) {
 		if got := PlaceHolds(tc.kind, tc.place); got != tc.want {
 			t.Errorf("PlaceHolds(%q, %d) = %t, want %t", tc.kind, tc.place, got, tc.want)
 		}
+	}
+}
+
+// TaskIDHolds takes the id of a task a step record names, as Dispatch's step write and its plan
+// write hold it and as the Legion daemon reads a plan's task block: lowercase letters, digits and
+// hyphens, the first a letter or a digit, at most TaskIDMax bytes. It refuses an id at the bound
+// plus one byte, a capital, a dot, a leading hyphen, a space and the empty id. The rule's words
+// (TaskIDRule) state the bound, so a refusal of either side says it.
+func TestTaskIDHoldsTakesTheTaskIDsOfAStepRecord(t *testing.T) {
+	bound := strings.Repeat("a", TaskIDMax)
+	for id, want := range map[string]bool{
+		"default":                   true,
+		"a":                         true,
+		"0":                         true,
+		"tasks-needs-2":             true,
+		"01a1edce-23dd-726e-b804-6": true,
+		bound:                       true,
+		bound + "a":                 false,
+		"":                          false,
+		"-a":                        false,
+		"a.b":                       false,
+		"A":                         false,
+		"a b":                       false,
+		"a_b":                       false,
+	} {
+		if got := TaskIDHolds(id); got != want {
+			t.Errorf("TaskIDHolds(%q), of %d bytes, = %t, want %t", id, len(id), got, want)
+		}
+	}
+	if !strings.Contains(TaskIDRule, strconv.Itoa(TaskIDMax)) {
+		t.Errorf("TaskIDRule %q does not state the bound %d", TaskIDRule, TaskIDMax)
 	}
 }
