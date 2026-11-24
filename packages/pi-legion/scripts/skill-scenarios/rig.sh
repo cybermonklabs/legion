@@ -2141,12 +2141,13 @@ EOF
 # scored_session runs the owner of owner-walk's world, seeded by seed.ts owner-walk into
 # $R/fixture.json, on the label's own texts (the header's "An owner's run", steps 2 to 6).
 scored_session() {
-  local fixture=$R/fixture.json texts=$R/texts owner root phase port guidance='' file i
+  local fixture=$R/fixture.json texts=$R/texts owner tree_root phase port guidance='' file i
   mkdir -p "$texts" "$R/state" "$R/secrets"
   chmod 0700 "$R/secrets"
   (umask 077 && openssl rand -hex 16 >"$R/secrets/boot")
   owner=$(jq -r .owner "$fixture")
-  root=$(jq -r '.issues[] | select(.part == "root") | .key' "$fixture")
+  # The world's root issue; never `root`, which names this checkout for every helper below.
+  tree_root=$(jq -r '.issues[] | select(.part == "root") | .key' "$fixture")
   # The world, through the label's engine.
   world_request "$fixture" >"$texts/world-request.json"
   label_texts world "$texts/world-request.json" "$texts/world-answer.json"
@@ -2156,7 +2157,7 @@ scored_session() {
   # register_plan, which reads the run's Dispatch itself, not through the proxy. Its project is the
   # project's token, lower case, as the daemon's claim.ProjectToken makes it from the Dispatch project.
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$R/secrets/boot" "${owner_walk_project,,}" "$owner" architect "$phase" \
-    --tree "$root" --issues "$texts/issues.json" --label "$co" --dispatch "http://127.0.0.1:$dispatch_port" "$work/services/dispatch-token"
+    --tree "$tree_root" --issues "$texts/issues.json" --label "$co" --dispatch "http://127.0.0.1:$dispatch_port" "$work/services/dispatch-token"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   # The agent's Dispatch: the proxy, which answers the plans read with the recorded answer.
