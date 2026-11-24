@@ -1387,6 +1387,17 @@ func envGetter(values map[string]string) settingValues {
 // under the `memory` tag) drive a real Dispatch process and read its own resident memory.
 const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 
+// dispatchTestParallelism is how many of this package's parallel tests run at once when the
+// command line names no -parallel (TestMain). Most of them wait - on a Dispatch process they
+// started, on Postgres, on a product timer - rather than compute: serially the test binary and its
+// processes kept about a tenth of a core busy (41 CPU-s over 376 s, 4 CPUs, build pod). go test's
+// default, GOMAXPROCS, is four on CI's runner; eight lets the tests that start no process run
+// beside the ones that hold the four process slots (dispatchSlots).
+//
+// The memory build sets it to zero, which keeps go test's default (parallelism_memory_test.go):
+// its tests measure processes' memory against a runner's 16 GB and were sized at that default.
+var dispatchTestParallelism = 8
+
 // TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
 // test's Dispatch server. It sets the package's default -parallel (dispatchTestParallelism); go
 // test parses its flags inside m.Run, so a -parallel on the command line still wins.

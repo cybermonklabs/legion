@@ -2,6 +2,7 @@
 
 package main
 
-// dispatchTestParallelism is zero in the memory build, which leaves go test's default -parallel
-// (parallelism_untagged_test.go says why).
-const dispatchTestParallelism = 0
+// The memory build keeps go test's default -parallel, so it sets dispatchTestParallelism, which
+// TestMain reads, to zero (main_test.go says why). It does so in an init function, so that this
+// file's constraint is the bare tag, which go-tagged-tests.sh reads.
+func init() { dispatchTestParallelism = 0 }
