@@ -8829,13 +8829,27 @@
       "requirement": "r3-each-site",
       "package": "./internal/cipher/wake",
       "test": "TestANoticeRedirectLogsNoLocationOfIt/unparsed",
-      "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (redact.Cause)",
+      "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (configaddr.Address.Cause)",
       "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
       "capture": "wake.redirect/unparsed",
       "mutation": {
         "file": "packages/envoy/internal/cipher/wake/envoy.go",
-        "preimage": "redact.Cause(err, e.URL)",
-        "replacement": "func() error { _ = redact.Cause; return err }()"
+        "preimage": "\"wake envoy: send\", \"session\", sessionID, \"request\", requestID, \"error\", e.URL.Cause(err)",
+        "replacement": "\"wake envoy: send\", \"session\", sessionID, \"request\", requestID, \"error\", err"
+      }
+    },
+    {
+      "id": "wake-build",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeTheBrokerCannotBuildLogsNoCredentialTheEnvoyURLCarries",
+      "production": "wake Envoy.Notify: a notice that cannot be built from BROKER_ENVOY_URL is logged as the address allows (configaddr.Address.Cause), never net/http's error, which quotes the URL whole",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
+      "capture": "wake.build",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "\"wake envoy: build request\", \"session\", sessionID, \"request\", requestID, \"error\", e.URL.Cause(err)",
+        "replacement": "\"wake envoy: build request\", \"session\", sessionID, \"request\", requestID, \"error\", err"
       }
     },
     {
@@ -11347,6 +11361,11 @@
       "site": "internal/ciphertoken/introspect.go Verifier.introspect: an introspection that could not be built from the broker's URL handed on net/http's error, which quotes the URL whole",
       "source": "the second pull request's site census",
       "guard": "brokertoken-introspect-build"
+    },
+    {
+      "site": "internal/cipher/wake/envoy.go Envoy.Notify: a notice that could not be built from BROKER_ENVOY_URL logged net/http's error, which quotes the URL whole",
+      "source": "the second pull request's site census",
+      "guard": "wake-build"
     }
   ]
 }

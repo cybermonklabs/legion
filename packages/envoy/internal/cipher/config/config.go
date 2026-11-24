@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
@@ -823,9 +824,10 @@ type Config struct {
 	// or blank, no project is private.
 	PrivateProjects exchange.PrivateProjects
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
-	// pending request expires undecided. Unset, the broker sends nothing. Needs
-	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
-	EnvoyURL string
+	// pending request expires undecided, held as a configaddr.Address from its read to the
+	// notice (wake.Envoy) so no warning prints a credential it carries. Unset, the broker sends
+	// nothing. Needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
+	EnvoyURL configaddr.Address
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE: the broker's own projected Kubernetes ServiceAccount
 	// token, read afresh at each call (ciphertoken.AccountToken), which the broker presents to
 	// BROKER_ENVOY_URL as its bearer: the listener admits it as the account it names, as it
@@ -2162,7 +2164,7 @@ func Load(getenv func(string) string) (Config, error) {
 		K8sOIDCAudience:           getenv("BROKER_K8S_OIDC_AUDIENCE"),
 		GoogleOIDCIssuer:          orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
-		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
+		EnvoyURL:                  configaddr.New("BROKER_ENVOY_URL", getenv("BROKER_ENVOY_URL")),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
 		SignInOff:                 signInOff,
 	}
@@ -2571,7 +2573,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.PrivateProjects, err = exchange.ParsePrivateProjects(getenv("BROKER_PRIVATE_PROJECTS")); err != nil {
 		return Config{}, fmt.Errorf("BROKER_PRIVATE_PROJECTS: %w", err)
 	}
-	if cfg.EnvoyURL != "" {
+	if !cfg.EnvoyURL.Empty() {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
 			return Config{}, errors.New("BROKER_ENVOY_URL needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the broker's own projected ServiceAccount token, which it presents to the listener")
 		}
