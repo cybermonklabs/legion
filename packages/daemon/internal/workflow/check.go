@@ -319,7 +319,10 @@ func (e *Engine) failedLookRetry(check record.ProductionCheck) time.Time {
 // as a failure inside a look names it, unless the wake standing falls later still — a pending
 // report's own time — which stays, so the failure only ever puts the next look later. A moved wake
 // is a new check_wake row (nameWake), and the row the look's end queued comes due to find the
-// check no longer records its wake and starts nothing (checkWakeDue). No wake standing stays no
+// check no longer records its wake and starts nothing (checkWakeDue). A row a release before
+// check_wake rows carried their wake queued names none and cannot be fenced so, and would start the
+// next look at the time the moved wake replaced: it is dropped with the move
+// (record.Store.DropUnfencedCheckWakes). No wake standing stays no
 // wake: the bound's own row starts the last look. The look the wake starts retries the claim with
 // one attempt left (the daemon's outbox), so the next failure is named a longer backoff out.
 func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck) error {
@@ -335,6 +338,9 @@ func (e *Engine) failedBetweenLooks(ctx context.Context, tx pgx.Tx, check *recor
 		"look", check.Looks, "role", check.Role, "failedLooks", check.FailedLooks, "wake", check.WakeAt, "moved", moved)
 	if !moved {
 		return nil
+	}
+	if err := e.store.DropUnfencedCheckWakes(ctx, tx, check.Issue); err != nil {
+		return err
 	}
 	return e.nameWake(ctx, tx, check, "the retry of a look nobody reported: "+failedLookCause(check.FailedLooks)+" after the look ended")
 }
