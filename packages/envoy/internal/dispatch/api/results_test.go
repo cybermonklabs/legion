@@ -1489,15 +1489,14 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 // read 404 for a commit that repository does not hold, and the result would read unknown for
 // good. The record stores the repository it found the commit in beside the result, and only
 // for such a result: a result at a commit of the issue's own repository stores none and is
-// compared there, at the one compare read it always cost.
+// compared there only where Dispatch holds an own merge of the work.
 //
 // The first issue's linked pull request merged into the second repository's default branch, so
 // its `after_merge` result is asked about that branch alone, in one compare read, and stands at
 // it, and its `default_branch` result at the same commit stands at it from the same answer. The
 // second issue's merged into an integration branch, so its `after_merge` result is asked about
 // that branch first and stands at it, while its `default_branch` result is asked about the trunk
-// alone and stands at another commit. The checks name their own repository's branches as their
-// bases throughout.
+// alone and stands at another commit. Each check names its own bases and its linked bases.
 func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository(t *testing.T) {
 	t.Parallel()
 	const (
@@ -1514,6 +1513,12 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 			"acme/tools":   {toolsMerge, integrationMerge},
 		},
 		pulls: map[string]string{"acme/tools#9": "merged", "acme/tools#10": "merged"},
+		merged: map[string]linkedMerge{
+			"acme/tools#9": {title: "The work", headRef: "work", headSHA: headCommit, base: "main",
+				mergeCommit: toolsMerge, mergedAt: "2026-11-20T12:00:00Z"},
+			"acme/tools#10": {title: "The integration work", headRef: "integration", headSHA: newHeadCommit, base: "integration/x",
+				mergeCommit: integrationMerge, mergedAt: "2026-11-21T12:00:00Z"},
+		},
 		branches: map[string][]string{
 			"acme/widgets:main":        {ownMerge},
 			"acme/tools:main":          {toolsMerge},
@@ -1559,25 +1564,25 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	standsAt(t, read, "k5", linkedDefault.ID,
 		"a default_branch result at the merge commit of the linked pull request", model.CommitAtBasis, false)
 	ownStands := standsAt(t, read, "k4", own.ID,
-		"an after_merge result at a commit of the issue's own trunk", model.CommitAtBasis, false)
-	if basis := ownStands.Basis; basis == nil || basis.Branch != "main" || basis.Repo != "" {
-		t.Fatalf("the after_merge result at the issue's own trunk stands at %+v, want the branch main of no other repository", basis)
+		"an after_merge result at a commit of the issue's own trunk with no own merge", model.CommitOtherCommit, false)
+	if ownStands.Basis != nil {
+		t.Fatalf("the own result stands at %+v, want no basis without an own merge", ownStands)
 	}
-	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" ||
-		compared[0].Repo != "" {
-		t.Fatalf("the after_merge check compared with %+v, want its own repository's main alone", compared)
+	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 2 || compared[0].Branch != "main" ||
+		compared[0].Repo != "" || compared[0].MergeCommit != "" || compared[1].Repo != "acme/tools" ||
+		compared[1].Branch != "main" || compared[1].MergeCommit != toolsMerge {
+		t.Fatalf("the after_merge check compared with %+v, want own main without a merge and linked main at its merge", compared)
 	}
 	if stood := checkOf(t, read, "k5").PassStands; stood.Answer != model.PassStandsYes {
 		t.Fatalf("the default_branch check answers pass_stands %+v, want yes", stood)
 	}
-	// One compare read of each repository: acme/tools for the linked commit, whose answer the
-	// default_branch check's question about the same branch shares, and acme/widgets for the
-	// issue's own commit alone. The linked commit is never asked of acme/widgets.
+	// The linked commit is compared once in acme/tools, shared by both checks. The issue has no
+	// own merge, so no compare read of acme/widgets can make its own result count.
 	if got := linked.compareReads("acme/tools") - toolsBefore; got != 1 {
 		t.Errorf("the read made %d compare reads of acme/tools, want 1", got)
 	}
-	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 1 {
-		t.Errorf("the read made %d compare reads of acme/widgets, want 1", got)
+	if got := linked.compareReads("acme/widgets") - widgetsBefore; got != 0 {
+		t.Errorf("the read made %d compare reads of acme/widgets, want 0", got)
 	}
 
 	onIntegration := recordStored(t, handler, integration, "k4", integrationMerge)
