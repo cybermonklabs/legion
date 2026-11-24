@@ -1591,37 +1591,44 @@ meaning_ask_candidates as (
 // before. Each kept window carries its id, its covers, its similarity r and item, an expression
 // over e that gives the key the arm joins its item by.
 //
-// The test is a scalar subquery in the walk's where clause, and the walk has embeddings for its one
-// table, so no plan can read the item side first and the windows again for each item, whatever the
-// planner estimates of a join: the test runs once for each window the scan hands up. An EXISTS
-// would not hold that: the planner turns an EXISTS of the where clause into a semi-join, a join
-// whose order is its own again. LIMIT 1 holds the test to one row, which its keys already do.
+// The walk is two levels. The inner one reads the kind's windows with their cheap filters alone,
+// nearest first; OFFSET 0 keeps it a subquery of its own, so the planner pushes no outer test into
+// it. The outer one tests each window the walk hands up and stops at limit. So the test runs only
+// on the windows the walk reaches before limit of them pass, whichever way the planner reads the
+// kind: through embeddings_cosine, or, for a kind of few windows, by reading them all through
+// embeddings_kind_project and sorting them by distance. With the test beside the scan in one
+// level, a plan of the second kind tested every window of the kind before it sorted them. On
+// TestAsOfMeaningCostOnASyntheticCorpus's corpus at production's counts, with jit off as Cloud
+// SQL runs, at its newest event, where nearly every window was embedded before the cut, the
+// search with meaning so took 6.1 s and its first run after a restart of PostgreSQL ended at
+// searchMeaningStatementBound; walked so, 0.86 s, and 1.1 s on its first run, against 1.9 s for
+// the same search at the present. At the two earlier cuts, where few windows were embedded before
+// the cut, the walk planned for its first rows reads more of the kind: 0.95 s and 1.5 s against
+// 0.43 s and 0.58 s with the test beside the scan, and 3.7 s at most on a first run, inside the
+// bound. The outer level has the one subquery for its table and no ORDER BY, so the planner
+// passes its LIMIT down and plans the walk for its first rows.
 //
-// The ORDER BY and the LIMIT stand beside the scan, at the level of the one table, because only
-// there does the planner price a walk by embeddings_cosine knowing that the LIMIT ends it early.
-// A walk fenced in a subquery of its own (OFFSET 0), with the tests joined above it and the LIMIT
-// outside, is planned for every row of the subquery: on the synthetic corpus at scale 0.01 the
-// comment arm so fenced was planned to read all 2,796 comment windows and sort them. Here, where
-// embeddings_cosine is the cheaper walk, the plan is a Limit over an Index Scan of
-// embeddings_cosine whose filter is the test, and the walk stops once limit windows have passed;
-// where the kind holds few windows against the limit, the planner reads them all through
-// embeddings_kind_project, tests each once and sorts those that pass, which is linear in the
-// kind's windows too. At scale 0.01, at the newest cut, the document arm (12,807 windows against
-// a limit of 1,000) walks embeddings_cosine and stops at 1,000; the issue arm (135 windows
-// against 100), the comment arm (2,796 against 1,000), the ask arm (177) and the message arm
-// (562) read their kind's windows, and no arm of the present statement takes embeddings_cosine at
-// that scale either. Priced out of sorting (enable_sort off), every arm there walks
-// embeddings_cosine, and the issue arm's walk takes 3,156 ms on a first run and 258 ms on a
-// second to find its 100 windows among the corpus's 16,477, where the read of its 135 takes 72 ms
-// and 12 ms.
+// The test is a scalar subquery in the outer where clause, so no plan can read the item side first
+// and the windows again for each item, whatever the planner estimates of a join: the test runs
+// once for each window the walk hands up. An EXISTS would not hold that: the planner turns an
+// EXISTS of the where clause into a semi-join, a join whose order is its own again, and a join
+// above the walk would have the planner plan the walk for every row. LIMIT 1 holds the test to
+// one row, which its keys already do. On the corpus at scale 0.01, with the test joined inside
+// the ordered, limited select, the planner read the comments first, expecting 1 and getting
+// 1,478, and read all 2,796 comment windows again for each of them, so every search with meaning
+// at the corpus's newest event ended at searchMeaningStatementBound and answered 500.
 func searchAsOfWindows(kind, cut, item, check, limit string) string {
 	return `(
-      select e.id as window_id, e.covers, ` + item + ` as item, 1 - (e.embedding <=> $9::vector) as r
-        from embeddings e
-       where e.kind = '` + kind + `' and e.embedding is not null and e.model = $11 and e.embedded_at <= ` + cut + `
-         and (select true` + check + `
+      select e.id as window_id, e.covers, ` + item + ` as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = '` + kind + `' and x.embedding is not null and x.model = $11 and x.embedded_at <= ` + cut + `
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true` + check + `
                limit 1)
-       order by e.embedding <=> $9::vector
        ` + limit + `
     ) w`
 }
