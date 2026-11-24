@@ -2447,6 +2447,18 @@
         "capture": "judge.model-words/grant/reason"
       },
       {
+        "row": "judge-model-words-split-deny",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/split-deny/refusal"
+      },
+      {
+        "row": "judge-model-words-split-malformed",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/cipher/judge/model_words_test.go"],
+        "capture": "judge.model-words/split-malformed/raw-answer"
+      },
+      {
         "row": "api-judge-model-words-deny",
         "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
         "files": ["packages/envoy/internal/cipher/api/judge_model_words_test.go"],
@@ -6466,8 +6478,8 @@
       "capture": "judge.model-words/malformed/raw-answer",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.WithoutTokens(text)",
-        "replacement": "text"
+        "preimage": "result.WithoutTokens(unrefused(text))",
+        "replacement": "unrefused(text)"
       }
     },
     {
@@ -6494,8 +6506,8 @@
       "capture": "judge.model-words/deny/refusal",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.Words(answer.Reason)",
-        "replacement": "answer.Reason"
+        "preimage": "result.Words(unrefused(answer.Reason))",
+        "replacement": "unrefused(answer.Reason)"
       }
     },
     {
@@ -6508,8 +6520,36 @@
       "capture": "judge.model-words/grant/reason",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.Words(answer.Reason)",
-        "replacement": "answer.Reason"
+        "preimage": "result.Words(unrefused(answer.Reason))",
+        "replacement": "unrefused(answer.Reason)"
+      }
+    },
+    {
+      "id": "judge-model-words-split-deny",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/split-deny",
+      "production": "judge Model.Ask: a deny's reason that splits the judge's bearer with runes no reason may carry is read once they are dropped (unrefused), so the agent's refusal, the row and the log line hold no run of it",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Model).Ask",
+      "capture": "judge.model-words/split-deny/refusal",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.Words(unrefused(answer.Reason))",
+        "replacement": "unrefused(result.Words(answer.Reason))"
+      }
+    },
+    {
+      "id": "judge-model-words-split-malformed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestTheJudgeKeepsNoBearerItsModelEchoed/split-malformed",
+      "production": "judge rawAnswer: a raw answer that splits the judge's bearer with runes no reason may carry is redacted once they are dropped (unrefused), so it holds no run of the bearer",
+      "function": "github.com/sjawhar/envoy/internal/cipher/judge.rawAnswer",
+      "capture": "judge.model-words/split-malformed/raw-answer",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/model.go",
+        "preimage": "result.WithoutTokens(unrefused(text))",
+        "replacement": "unrefused(result.WithoutTokens(text))"
       }
     },
     {
@@ -6529,8 +6569,8 @@
       "capture": "api.judge-model-words/deny/status",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.Words(answer.Reason)",
-        "replacement": "answer.Reason"
+        "preimage": "result.Words(unrefused(answer.Reason))",
+        "replacement": "unrefused(answer.Reason)"
       }
     },
     {
@@ -6543,8 +6583,8 @@
       "capture": "api.judge-model-words/grant/grant-log",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.Words(answer.Reason)",
-        "replacement": "answer.Reason"
+        "preimage": "result.Words(unrefused(answer.Reason))",
+        "replacement": "unrefused(answer.Reason)"
       }
     },
     {
@@ -6557,8 +6597,8 @@
       "capture": "api.judge-model-words/malformed/grant-log",
       "mutation": {
         "file": "packages/envoy/internal/cipher/judge/model.go",
-        "preimage": "result.WithoutTokens(text)",
-        "replacement": "text"
+        "preimage": "result.WithoutTokens(unrefused(text))",
+        "replacement": "unrefused(text)"
       }
     },
     {

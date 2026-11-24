@@ -213,16 +213,25 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 	}
 	if answer.Verdict != Grant && answer.Verdict != Deny {
 		return Verdict{Word: Deny}, result.Usage, rawAnswer(result, string(result.Value)),
-			fmt.Errorf("the model answered the verdict %q, which is neither grant nor deny", record.ClampRunes(result.Words(answer.Verdict), 20))
+			fmt.Errorf("the model answered the verdict %q, which is neither grant nor deny", record.ClampRunes(result.Words(unrefused(answer.Verdict)), 20))
 	}
-	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(result.Words(answer.Reason), maxReasonRunes)}, result.Usage, "", nil
+	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(result.Words(unrefused(answer.Reason)), maxReasonRunes)}, result.Usage, "", nil
 }
 
 // rawAnswer is text, the model's reply as it came, as the row keeps it for a reader rather than
 // for anything to read (D12): the answer's data, so a URL the model wrote stays as it came, with
 // every credential the run itself put on its requests redacted (agentloop.Result.WithoutTokens),
 // since whatever answers in the model's place can echo the identity token the judge presented,
-// then clamped and filtered.
+// then clamped.
 func rawAnswer(result agentloop.Result, text string) string {
-	return record.Sanitize(result.WithoutTokens(text), maxRawAnswer)
+	return record.Sanitize(result.WithoutTokens(unrefused(text)), maxRawAnswer)
+}
+
+// unrefused is text with every rune no reason may carry dropped (record.ReasonRefuses) and
+// nothing cut. The judge drops them before it reads the model's words, not after: the rule for
+// remote text quotes a field that holds a control character (redact.OneLine), whose escapes no
+// later filter can take out again, and a credential the model split with such runes into pieces
+// too short for redact.Tokens is whole again once they are gone.
+func unrefused(text string) string {
+	return record.Sanitize(text, len(text))
 }

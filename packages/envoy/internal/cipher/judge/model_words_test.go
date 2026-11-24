@@ -197,25 +197,31 @@ func requireNoRunOfTheBearer(t *testing.T, capture, text string) {
 // URL as it came, holds no run of the bearer. A well-formed deny whose reason echoes it (deny) is
 // refused: the agent's refusal text, the row's reason and the log line's reason and refusal hold
 // no secret. A well-formed grant whose reason echoes it (grant) is approved: the row's reason and
-// the log line hold none. Captures judge.model-words/<case>/<place>.
+// the log line hold none. A deny (split-deny) and a malformed reply (split-malformed) whose reason
+// is the bearer with a zero-width space after every 6 of its characters, which no reason may carry
+// and record.Sanitize drops, keep no run of it either: the judge drops those runes before it reads
+// the words, so the bearer is whole when the run's credentials are redacted from it. Captures
+// judge.model-words/<case>/<place>.
 func TestTheJudgeKeepsNoBearerItsModelEchoed(t *testing.T) {
 	usage := chatTokens{prompt: 20, completion: 4}
-	answer := func(verdict string) string {
-		return chatStream(`{"verdict":"`+verdict+`","reason":`+quoted(judgeEcho)+`}`, usage)
+	answer := func(verdict, reason string) string {
+		return chatStream(`{"verdict":"`+verdict+`","reason":`+quoted(reason)+`}`, usage)
 	}
 	for _, c := range []struct {
 		name, body string
 	}{
 		{"refusal", refusalStream(judgeEcho)},
-		{"malformed", answer("maybe")},
+		{"malformed", answer("maybe", judgeEcho)},
 		{"forbidden-key", chatStream(`{"verdict":"grant","reason":`+quoted("the issuer at "+judgePasswordURL+", then a run "+judgeRun)+`,`+quoted(judgeBearer)+`:1}`, usage)},
-		{"deny", answer(Deny)},
-		{"grant", answer(Grant)},
+		{"deny", answer(Deny, judgeEcho)},
+		{"grant", answer(Grant, judgeEcho)},
+		{"split-deny", answer(Deny, "echo "+splitBearer)},
+		{"split-malformed", answer("maybe", "echo "+splitBearer)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := judgeWords(t, c.body)
 			capture := "judge.model-words/" + c.name + "/"
-			switch c.name {
+			switch strings.TrimPrefix(c.name, "split-") {
 			case "deny":
 				redacttest.RequireNoPiece(t, capture+"refusal", got.refusal, judgeBearer)
 				redacttest.RequireNoPiece(t, capture+"reason", rowText(t, got.row, "reason"), judgeBearer)
@@ -243,6 +249,21 @@ func TestTheJudgeKeepsNoBearerItsModelEchoed(t *testing.T) {
 		})
 	}
 }
+
+// splitBearer is judgeBearer with a zero-width space (U+200B, which record.ReasonRefuses) after
+// every 6 of its characters: no run of 8 of the bearer stands in it, so redacting the bearer's runs
+// from it as it came would leave every piece, which dropping the zero-width spaces would then join
+// into the whole bearer.
+var splitBearer = func() string {
+	var split strings.Builder
+	for i, r := range judgeBearer {
+		if i > 0 && i%6 == 0 {
+			split.WriteRune('\u200b')
+		}
+		split.WriteRune(r)
+	}
+	return split.String()
+}()
 
 // quoted is s as a JSON string.
 func quoted(s string) string {
