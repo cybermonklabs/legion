@@ -3514,7 +3514,7 @@ package api
 // lowest number above main's 220 that no other open pull request declares. Read main's own number
 // and every open pull request again at the next merge rather than from this line.)
 //
-// 245: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
 // body) carries `podHold`, the standing hold of the issue's pod: why the
 // idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
 // is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
@@ -3523,10 +3523,10 @@ package api
 // none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
 // whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
 // stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
-// carry none. A plugin below 245 reads each issue with a strict schema that names no `podHold`,
-// so a caller below 245 is served every issue without it (shaping.go's podHoldContract and
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
 // withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
-// the state: a plugin from 228 to 244 states its contract and is served 228's keys. No enumerated
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
 // field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
 // rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
 // takes each of its four members as optional, since no plugin code reads them
@@ -3548,6 +3548,9 @@ package api
 // #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
 // 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
 // been named for another change before it declared it, so this entry moved to 245, above every
-// number an open pull request declares or a change had been named for. Read the base's own
-// number and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 245
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line.)
+const DaemonAPIVersion = 246

@@ -734,7 +734,7 @@ const legionAssignment = z.object({
   plan: nonEmptyString.optional(),
 });
 
-/** `api.PodHoldView` — the standing hold of an issue's pod (contract 245): why the daemon's idle
+/** `api.PodHoldView` — the standing hold of an issue's pod (contract 246): why the daemon's idle
  * rule keeps that pod running past the idle period. `reason` is the rule's own word for the hold
  * (`workflow.IdleHold`'s name, as the daemon's hold records spell it: `background_work`, `image`,
  * `delivery_waiting` and the rest), a string and not an enum, so a hold a later daemon adds is
@@ -933,10 +933,10 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
-  /** The standing hold of the issue's pod (contract 245, `legionPodHold`): present only while a
+  /** The standing hold of the issue's pod (contract 246, `legionPodHold`): present only while a
    * hold of the idle rule stands on that pod, and absent for a pod the rule has not held, one it
-   * released and one whose streak a later pass ended. A daemon before contract 245 writes none,
-   * and a caller whose plugin declares a contract below 245 is served every issue without it
+   * released and one whose streak a later pass ended. A daemon before contract 246 writes none,
+   * and a caller whose plugin declares a contract below 246 is served every issue without it
    * (the daemon's `withoutPodHold`), which is why a reader takes it as optional. */
   podHold: legionPodHold.optional(),
 });

@@ -1056,16 +1056,16 @@ const assignmentPlanContract = 220
 const intakeGiveUpsContract = 228
 
 // podHoldContract is the daemon contract that added each issue's `podHold` to the state
-// (version.go's 245): the standing hold of the issue's pod, which the idle rule wrote only to its
+// (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its
 // own table before. A plugin before it reads each issue with a
 // strict schema that names no `podHold` and refuses the whole body for it, so every caller below
 // it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
-// it with no row of stateNarrowings between the two, so a caller from that contract to 244 is
+// it with no row of stateNarrowings between the two, so a caller from that contract to 245 is
 // served 228's keys.
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
 // is, and it is the last number of answers.go's SupportedContracts, which names the constant.
-const podHoldContract = 245
+const podHoldContract = 246
 
 // withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
 // nothing else of that contract is on the route. The key is written only for an issue whose pod

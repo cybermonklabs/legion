@@ -1127,10 +1127,10 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
 });
 
-// Contract 245: the state golden carries LEGION-219, whose quiet pod the idle rule has held for
+// Contract 246: the state golden carries LEGION-219, whose quiet pod the idle rule has held for
 // background work since the evening before: the reason in the rule's own word, the first and the
 // newest pass of the streak, and the kind the session reported. An issue whose pod no hold stands
-// on carries no key at all, as does every issue of the body served a caller before 245, so the
+// on carries no key at all, as does every issue of the body served a caller before 246, so the
 // field is optional; a daemon before this contract sent none, and its state must still parse.
 test("the state golden carries a held pod's standing hold", () => {
   const state = fixture("state.json") as {
@@ -1151,7 +1151,7 @@ test("the state golden carries a held pod's standing hold", () => {
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
 
-  // A state from a daemon before contract 245, and one served to a caller below it.
+  // A state from a daemon before contract 246, and one served to a caller below it.
   const held = kept.podHold;
   delete kept.podHold;
   expect(parses()).toBeTrue();
@@ -2805,7 +2805,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
   // Four bands stand above 199: the repositories block's at 202, contract 220's, which takes
   // `plan` off each assignment, so the golden's rows are compared without it, the intake's
-  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the pod hold's at 245,
+  // give-ups' at 228, so the narrowing leaves `intakeGiveUps` off, and the pod hold's at 246,
   // which leaves `podHold` off every issue (`withoutPodHold`). One value strip stands above 199 as
   // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
   // row is served here without its `source`, every other field of it and every other row as the

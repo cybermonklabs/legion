@@ -8059,7 +8059,7 @@ It is `{reason, firstAt, at, detail}`: the rule's name for the hold, as the hold
 A streak stands until a later pass of its pod ends it, so a hold whose `at` is long past is one that no pass has read since.
 The key is absent when no hold stands on the pod: a pod the rule has not held, a pod it released, a pod whose streak a later pass ended, and a pod held for a reason the daemon writes to no record.
 The daemon reads the holds from `pod_holds` in the state's own transaction, in one statement for the whole project.
-A caller whose plugin declares a contract below 245 is served every issue without the key (`withoutPodHold` in `internal/api/shaping.go`).
+A caller whose plugin declares a contract below 246 is served every issue without the key (`withoutPodHold` in `internal/api/shaping.go`).
 
 #### Rolling back idle release
 
