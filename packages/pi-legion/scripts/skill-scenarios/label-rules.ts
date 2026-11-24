@@ -93,11 +93,6 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     keep: "The merger's push and its read of the pull request's head, not a Dispatch check.",
   },
   {
-    file: "packages/daemon/internal/prompts/go/worker-common.md",
-    has: "The plan a planner step writes is the exception",
-    keep: "The roles that work from a plan, not a Dispatch check.",
-  },
-  {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "from the implementer and, where a tester worked the change, from the tester",
     cut: "Remove the two-role requirement.",
@@ -106,6 +101,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "results from CI stand for both roles",
     cut: "Remove the two-role comparison from the CI sentence.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/mechanics/headless.md",
+    has: "A clear defect in code this tree touches or depends on is fixed in this tree's own pull request",
+    keep: "Who fixes a defect a role finds, and who it is sent to, not the roles a check's pass needs.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/mechanics/headless.md",
@@ -119,8 +119,13 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/references/acceptance.md",
-    has: "Where the task has a tester step, `envoy_publish` to its tester's role topic",
+    has: "The tester sizes that round like any other",
     keep: "Who runs a parent's last round, not the roles a check's pass needs.",
+  },
+  {
+    file: "skills/legion-architect/references/plan.md",
+    has: "A `planner` step may stand at any place",
+    keep: "The places the steps may stand in, not the roles a check's pass needs.",
   },
   {
     file: "skills/legion-architect/references/decomposition.md",
@@ -134,7 +139,7 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/references/plan.md",
-    has: "Only the implementer records results against the checks, and nobody runs them again",
+    has: "Only the implementer records results against the checks, and no other step runs them again",
     keep: "Who records results in a plan the architect writes without a tester step, not the roles the reviewer's gate needs for a pass.",
   },
   {
@@ -194,7 +199,7 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
-    has: "With no tester step, the implementer's evidence for each is what you read",
+    has: "With no earlier tester step, the implementer's evidence for each is what you read",
     cut: "Delete the reviewer's read of the implementer's evidence alone on a task with no tester step, the other half of the two-role requirement.",
   },
   {
@@ -475,12 +480,17 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/SKILL.md",
-    has: "Accept only when a pass stands for every `before_merge` check at the last step's head",
+    has: "Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed",
     cut: "Remove each check's pass at the last step's head from the acceptance.",
   },
   {
+    file: "skills/legion-architect/references/plan.md",
+    has: "A reviewer step approves only once a pass stands for every `before_merge` check at the head",
+    keep: "What leaving a step out of a plan means, with the gate's own facts in the reviewer's role part.",
+  },
+  {
     file: "skills/legion-architect/references/acceptance.md",
-    has: "whether a pass stands for each check at the last step's head",
+    has: "whether a pass stands for each `before_merge` check at the head the step before your acceptance passed",
     cut: "Delete item 2 of the acceptance's list.",
   },
   {

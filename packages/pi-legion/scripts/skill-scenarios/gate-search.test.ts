@@ -60,12 +60,17 @@ const MAIN_GUIDE_EXEMPTIONS: readonly Entry[] = [
   },
   {
     file: "skills/legion-architect/references/acceptance.md",
-    has: "`dispatch results --issue <issue>`: whether a pass stands for each check at the last step's head",
+    has: "`dispatch results --issue <issue>`: whether a pass stands for each `before_merge` check at the head the step before your acceptance passed",
     keep: "Owned by the guide pull request.",
   },
   {
     file: "skills/legion-architect/references/acceptance.md",
     has: "Each check needs a pass at that head",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-architect/references/plan.md",
+    has: "A reviewer step approves only once a pass stands for every",
     keep: "Owned by the guide pull request.",
   },
   {

@@ -2134,6 +2134,14 @@ const REVIEWED_WAIT_SITES: readonly {
       "a person sign-in's default fetch (:102), called only at :112 under openid-client's timeout",
   },
   {
+    file: "packages/cipher-client/src/github-actions.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "a GitHub Actions job's default fetch (:32), called only at :51 under AbortSignal.any of AbortSignal.timeout(TIMEOUT_MS) and the caller's signal",
+  },
+  {
     file: "packages/cipher-client/src/pool-identity.ts",
     text: "fetch",
     kind: "fetch handed on as a value",
