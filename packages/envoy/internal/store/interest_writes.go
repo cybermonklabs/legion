@@ -182,7 +182,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // this build cannot decode (ErrMalformedInterest) is replaced by item and topics alone, and the
 // registry logs that at WARN naming the session.
 //
-// The row it merges into is the one the bucket holds, read with its revision (getWithRevision)
+// The row it merges into is the one the bucket holds, read with its revision and layout (readRow)
 // and never from the cache, and the write is one compare-and-swap at that revision
 // (putInterestAt), as an unsubscribe's is (removeInterestTopics). A role claim - the one
 // production caller, through SetRoleWithPrevious - built from a cached row a write on another
@@ -220,7 +220,7 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 		if attempt > 0 {
 			read = readLeader
 		}
-		cur, revision, getErr := r.readStored(ctx, item.SessionID, read)
+		cur, revision, getErr := r.readRow(ctx, item.SessionID, read)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -331,7 +331,7 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 	if plan.read == readLeader {
 		read = readLeader
 	}
-	cur, revision, getErr := r.readStored(ctx, item.SessionID, read)
+	cur, revision, getErr := r.readRow(ctx, item.SessionID, read)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -743,7 +743,7 @@ var ErrInterestTopicsNotMerged = errors.New("the interest record changed under e
 // stale row's topics, dropping from the record a topic the other listener's registration was
 // answered 200 for, and no later write puts it back. The first attempt reads the cache, the row
 // the bucket holds in every pass but the raced one; a refused write reads the bucket itself and
-// builds the row again (readStored), up to interestWriteAttempts times, past which the
+// builds the row again (readRow), up to interestWriteAttempts times, past which the
 // caller sees ErrInterestTopicsNotRemoved and nothing is stored. The delete of a record the
 // removal empties is fenced on that same revision (deleteInterestAt) for the same reason, and a
 // delete the bucket did not take - a row written since, or a cache hit that named no revision -
@@ -766,7 +766,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		if attempt > 0 {
 			from = readLeader
 		}
-		read, revision, err := r.readStored(ctx, sessionID, from)
+		read, revision, err := r.readRow(ctx, sessionID, from)
 		if errors.Is(err, ErrMalformedInterest) {
 			r.logger().Warn("registry left an interest record it cannot decode unchanged",
 				slog.String("session_id", sessionID),

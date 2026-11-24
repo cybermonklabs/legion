@@ -693,9 +693,13 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 // revision a direct get reported is followed by one read of the key from the stream's leader: a
 // record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get can report at
 // another stream's sequence however its value reads, is deleted at the sequence it is stored at,
-// and is the entry returned, at that sequence and with no value, since a message no writer stored
-// names nothing a caller removes; any other answer leaves the refusal standing, a write that
-// landed in between being kept.
+// and is the entry returned, at that sequence and with no value; any other answer leaves the
+// refusal standing, a write that landed in between being kept. The leader read ReadStored falls
+// back to where readable refuses the direct get's value cannot tell a message the server wrote
+// from a writer's, so that path can return a server-written copy, another key's manifest among
+// them, with its value: what protects a caller from acting on it is the caller's own guard
+// (store's deleteInterest deletes chunks only for a cached row of the same generation, and
+// session's Delete reads only the entry's revision).
 //
 // A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
 // sends no expected-last-subject-sequence header for revision 0, so that delete would take

@@ -402,6 +402,81 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	}
 }
 
+// A write over a copy of another session's manifest deletes none of the chunks the copy names, also
+// where this listener's cache is behind the owner's record. The copy joins into the owner's record,
+// which names the owner (ErrInterestUnbound), and the layout of a record that names another session
+// is never its key's own. Here the writer's watcher is stopped while a second listener rewrites the
+// owner's record to a new generation, so the writer's cache still holds the owner's older row and no
+// row of it names the generation the copy names (ownLayout finds none). The write took the copy's
+// joined layout as the one it replaced and, once its head landed, deleted the owner's live chunks,
+// after which every read of the owner answered a damaged record. The control is the owner's record
+// read whole, and every chunk its manifest names in the bucket, before the copy is written over.
+func TestAWriteOverACopyOfANewerManifestThanTheCacheHoldsLeavesTheOwnerWhole(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	writer := openRegistry(t, conn)
+	other := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	first := kvchunktest.Topics("owner", 400)
+	if _, err := writer.Upsert(Interest{SessionID: "ses_owner", MachineID: "m1"}, first); err != nil {
+		t.Fatalf("store the owner's record: %v", err)
+	}
+	cachedOwner := func() (storedRow, bool) {
+		writer.mu.RLock()
+		defer writer.mu.RUnlock()
+		return writer.cache.Get("ses_owner")
+	}
+	older, ok := cachedOwner()
+	if !ok || !older.layout.Chunked() {
+		t.Fatalf("the writer's cache holds %+v for the owner (%t), want a chunked row", older.layout, ok)
+	}
+	writer.watcher.Stop()
+	second := kvchunktest.Topics("rewritten", 400)
+	if _, err := other.Upsert(Interest{SessionID: "ses_owner", MachineID: "m2"}, second); err != nil {
+		t.Fatalf("rewrite the owner's record through the second listener: %v", err)
+	}
+	head, err := kv.Get("ses_owner")
+	if err != nil {
+		t.Fatalf("read the owner's manifest: %v", err)
+	}
+	newer, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !newer.Chunked() {
+		t.Fatalf("the owner's key holds %.60q (%v), want a manifest", head.Value(), err)
+	}
+	if lagging, _ := cachedOwner(); lagging.layout.Generation == newer.Generation {
+		t.Fatalf("the writer's cache already holds the owner's generation %s, so the case is not the lagging one", newer.Generation)
+	}
+	want := sortedTopics(first, second)
+	requireOwnerWhole := func(when string) {
+		t.Helper()
+		live := kvchunktest.LiveChunkKeys(t, kv)
+		for _, key := range newer.Keys() {
+			if !slices.Contains(live, key) {
+				t.Fatalf("%s the bucket no longer holds %s, a chunk of the owner's live record (it holds %d chunks)", when, key, len(live))
+			}
+		}
+		row, _, err := other.RefreshAt(t.Context(), "ses_owner")
+		if err != nil {
+			t.Fatalf("%s a bucket read of the owner answers %v, want its record whole", when, err)
+		}
+		requireTopics(t, "the owner's record "+when, row, want)
+	}
+	requireOwnerWhole("before the write over the copy")
+
+	if _, err := kv.Put("ses_copy", head.Value()); err != nil {
+		t.Fatalf("copy the owner's manifest under ses_copy: %v", err)
+	}
+	row, err := writer.Upsert(Interest{SessionID: "ses_copy", MachineID: "m1"}, []string{"notifications.team.copy"})
+	if err != nil {
+		t.Fatalf("the write over the copy: %v", err)
+	}
+	if row.SessionID != "ses_copy" || !slices.Equal(row.Topics, []string{"notifications.team.copy"}) {
+		t.Fatalf("the write over the copy stored %+v, want ses_copy's own row holding its one topic", row)
+	}
+	requireOwnerWhole("after the write over the copy")
+	t.Logf("the writer's cache held generation %s of the owner, the bucket %s; the write over the copy left all %d of the owner's chunks",
+		older.layout.Generation, newer.Generation, len(newer.Keys()))
+}
+
 // A delete that reads nothing - a copy of the stream behind the leader answering its direct get -
 // deletes nothing, so the row the cache holds stays, even when the watcher has not yet delivered
 // that row's chunks: a write-through stored it, and the read-back finds its own revision. Evicting it

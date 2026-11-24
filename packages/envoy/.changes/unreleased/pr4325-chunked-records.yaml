@@ -13,8 +13,9 @@ body: |-
   a record of the store's type that carries the topics which cover the session's list, so a listener
   of an earlier build sharing the buckets keeps serving, counting and sending to the session. The
   known-session store purges the delete markers of its replaced chunks every five minutes, which needs
-  a new grant, publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, now in every listener, host
-  and Dispatch user set; a user without it keeps those markers for the bucket's 30 days, logs one
-  WARN and serves on. A rollback to an earlier build leaves the chunks in `envoy_interests` and
+  a new grant, publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, now in every listener, host,
+  Dispatch and edge user set and in the auth service's edge answers; a user without it keeps those
+  markers for the bucket's 30 days, logs one WARN and serves on. A rollback to an earlier build
+  leaves the chunks in `envoy_interests` and
   `envoy_known_sessions`, where that build removes none of them and they hold the interest bucket's
   marker collection back: delete each `=chunk.` key with `nats kv del` after it.

@@ -48,7 +48,7 @@ func requireMatchesEvery(t *testing.T, what string, view, registered []string) {
 
 // While builds share the interest bucket, a listener of an earlier build reads a chunked record's
 // manifest as a record of its own type: every earlier build decodes a value with encoding/json into
-// Interest and ignores a member it does not know (origin/main's decodeInterest). So the manifest
+// Interest and ignores a member it does not know (boundInterest, since #4858). So the manifest
 // carries the session's id, machine and directory, and the covering topics, which match every
 // subject the full list does: that listener keeps serving and counting the session rather than
 // evicting it as a record it cannot decode. This build reads the same manifest as the full record.

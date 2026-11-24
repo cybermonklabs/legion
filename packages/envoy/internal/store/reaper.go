@@ -110,7 +110,7 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 // A copy that holds no revision for the key, because a watch moved the epoch since its read
 // began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that
 // window is a recreated bucket, whose rows a registration on another listener is writing. So the
-// row and its revision are read from the bucket (readStored) and the delete is fenced on
+// row and its revision are read from the bucket (readRow) and the delete is fenced on
 // that revision, and only the row this pass judged is deleted: a row the bucket answers with
 // another UpdatedAt is a row no pass has judged past its allowance, and deleting it would take a
 // session's live registration away and count it reaped. A key the bucket holds no row for is
@@ -124,7 +124,7 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 	r.mu.RUnlock()
 	layout := cached.layout
 	if revision == 0 {
-		item, read, err := r.readStored(ctx, sessionID, readBucket)
+		item, read, err := r.readRow(ctx, sessionID, readBucket)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
 			return false, nil

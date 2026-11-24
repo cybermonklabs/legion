@@ -248,8 +248,9 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // ensureSpentProofBucket), so a full listener starts before an edge listener. The rest of
 // Listener's publish list stays as it is: the stream's info and stored-message get, its durable's
 // calls, JetStream's account info, the KV calls of every bucket of bus.ListenerBuckets but its
-// stream's create, its update and its direct get, the interest bucket's purge and the session
-// consumers' calls.
+// stream's create, its update and its direct get, the purges of the interest bucket and of the
+// known-session bucket (the edge's known-session store runs the chunk-marker pass too), and the
+// session consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
