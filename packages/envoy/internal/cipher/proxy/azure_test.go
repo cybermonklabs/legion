@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -44,7 +45,7 @@ const (
 	azureLifetime      = 3599
 )
 
-var azureFederatedPlaceholder = requests.PlaceholderPrefix + "azureFederatedazureFederated0001"
+var azureFederatedPlaceholder = placeholder.Prefix + "azureFederatedazureFederated0001"
 
 // azureRules is the rules file of an azure-login secret: one entry of kind azure, bound to the
 // one host, whose access token travels in Authorization as every other token does.
@@ -136,7 +137,7 @@ func placeholderTokenOf(t *testing.T, body string) string {
 		t.Fatalf("the answer to the exchange is no JSON object: %q", body)
 	}
 	token, _ := answer["access_token"].(string)
-	if !strings.HasPrefix(token, requests.PlaceholderPrefix) {
+	if !strings.HasPrefix(token, placeholder.Prefix) {
 		t.Fatalf("the answer's access_token = %q; want a placeholder", token)
 	}
 	if answer["token_type"] != "Bearer" || answer["expires_in"] != float64(azureLifetime) {
@@ -349,8 +350,8 @@ func TestAnExchangeAnswersTheCommandEveryMemberTheEndpointWrote(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("the answer to the exchange is no JSON object: %q", body)
 	}
-	var placeholder string
-	if err := json.Unmarshal(got["access_token"], &placeholder); err != nil || !strings.HasPrefix(placeholder, requests.PlaceholderPrefix) {
+	var access string
+	if err := json.Unmarshal(got["access_token"], &access); err != nil || !strings.HasPrefix(access, placeholder.Prefix) {
 		t.Fatalf("the answer's access_token = %s; want a placeholder", got["access_token"])
 	}
 	for name, want := range forwarded {
@@ -369,7 +370,7 @@ func TestAnExchangeAnswersTheCommandEveryMemberTheEndpointWrote(t *testing.T) {
 		t.Errorf("the answer = %q; want the endpoint's members with the placeholder for its access token and nothing else", body)
 	}
 
-	r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+placeholder)
+	r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+access)
 	seen := r.requests()
 	if got, want := seen[len(seen)-1].Header.Get("Authorization"), "Bearer "+azureRealAccess; got != want {
 		t.Fatalf("the service saw Authorization %q; want %q, the access token the endpoint answered", got, want)
@@ -481,7 +482,7 @@ func TestAnAccessSlotCarriesTheExchangeItWasMadeFor(t *testing.T) {
 func TestAnAccessPlaceholderTheBrokerDoesNotKnowIsRefused(t *testing.T) {
 	r, stand := newAzureRig(t, Options{})
 	brokenSlot := requests.SlotAzureAccessPrefix + "not-the-encoding"
-	strange := requests.PlaceholderPrefix + "strangeAccessStrangeAccess000001"
+	strange := placeholder.Prefix + "strangeAccessStrangeAccess000001"
 	r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[brokenSlot] = strange
 	answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+strange)
 	if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, "names no exchange this broker made") {

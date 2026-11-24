@@ -746,6 +746,7 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 // again behind it, so the read answers the title the writer wrote rather than the one before it.
 // With no process of that build registered it does not wait, and reads the title as it stood.
 func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *testing.T) {
+	t.Parallel()
 	for _, state := range []fleetState{fleetStateNamed(t, "no process registered"), fleetStateNamed(t, "a live process of an earlier build")} {
 		t.Run(state.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
@@ -799,6 +800,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 // that build holds, as `for no key update skip locked` left it out, and takes the rows of the
 // others; beside none, the row is not looked at and the owner is taken.
 func TestTryLockOwnersSkipsAnOwnerWhoseRowAWriterOfAnEarlierBuildHolds(t *testing.T) {
+	t.Parallel()
 	for _, state := range []fleetState{fleetStateNamed(t, "no process registered"), fleetStateNamed(t, "a live process of an earlier build")} {
 		t.Run(state.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)

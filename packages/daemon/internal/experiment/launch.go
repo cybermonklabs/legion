@@ -24,10 +24,11 @@ type Arms struct {
 // whether any arm names a file at all, and whether any experiment draws for the issue rather than
 // the tree — are answered once here rather than per spawn.
 //
-// stateDir is the daemon's own state directory, under which each arm's instructions file was
-// copied at boot (config.VariantInstructionsFile, written by config.WriteVariantInstructions). An
-// arm carries that copy and never the operator's path: a pod cannot read the daemon's
-// configuration, and the operator's file may change under a running daemon.
+// stateDir is the daemon's own state directory, under which the daemon keeps its copy of each
+// arm's instructions file (config.VariantInstructionsFile, written by
+// config.WriteVariantInstructions at boot and again whenever a launch reads an edited file). An
+// arm carries that copy and never the operator's path, since a pod cannot read the daemon's
+// configuration.
 type Launch struct {
 	declared  []config.Experiment
 	stateDir  string

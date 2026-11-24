@@ -63,13 +63,14 @@ func (d *awaitingDispatch) EventsAfter(_ context.Context, _ string, after int64)
 
 // servedEvents is log, an event log as Dispatch's events route serves it, as EventsAfter answers
 // it: each event decoded in the shape the durable stream carries (dispatch.DecodeEvent), and a log
-// with an event that does not decode refused.
+// with an event that does not decode refused with the *dispatch.EventLogError the client gives,
+// naming the event's place in the log and the decoder's fixed text.
 func servedEvents(log []json.RawMessage) ([]dispatch.Event, error) {
 	events := make([]dispatch.Event, 0, len(log))
 	for i, raw := range log {
 		event, err := dispatch.DecodeEvent(raw)
 		if err != nil {
-			return nil, fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(log), err)
+			return nil, &dispatch.EventLogError{Event: i + 1, Err: fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(log), err)}
 		}
 		events = append(events, event)
 	}

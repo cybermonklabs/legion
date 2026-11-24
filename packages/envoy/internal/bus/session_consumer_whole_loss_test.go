@@ -34,6 +34,7 @@ import (
 // The loss is made as the partial cut's test makes it, with the whole first message block cut
 // instead of half of it.
 func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMessagesAgain(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {
