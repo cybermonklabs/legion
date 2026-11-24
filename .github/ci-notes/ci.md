@@ -269,15 +269,15 @@ tests every package of packages/daemon but the five concurrent ones, and the rac
 step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
-for internal/daemon/outbox_scratch_dispatch_test.go:356, and what their tests read
+for internal/daemon/outbox_scratch_dispatch_test.go:454, and what their tests read
 outside the daemon: contracts' fixtures
-(internal/api/state_golden_test.go:1393, internal/intake/intake_test.go:858,962), the
-agents internal/prompts/roles_test.go:264 stats, the tools skill its :692 holds
-roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:434
+(internal/api/state_golden_test.go:42,1511, internal/intake/intake_test.go:984,990,1088), the
+agents internal/prompts/roles_test.go:268 stats, the tools skill its :755-756 holds
+roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:412
 holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:117 sources, and the examples and
-docs its tests hold to the code (cmd/legion/config_example_test.go:166,
-internal/config/controller_test.go:216, internal/config/kubernetes_test.go:1476).
+docs its tests hold to the code (cmd/legion/config_example_test.go:455,
+internal/config/controller_test.go:216, internal/config/kubernetes_test.go:1803).
 It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
 and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
 patches nats-server with.
