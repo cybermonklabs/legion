@@ -56,10 +56,12 @@ type Source struct {
 	// Client makes the read; nil is http.DefaultClient. Unlike the daemon's other clients
 	// (redirects.Refused), the read follows redirects, ten at most as Go's own policy counts
 	// them: GitHub answers the tarball route with a redirect to its download host, whose URL
-	// carries the download's own token. The read sends no redirect its token (tokenless, which
-	// sets the CheckRedirect of a copy of Client, so Client's own is never asked). A read that got
-	// no answer names its failure through oauth2call.Unanswered, which prints none of net/http's
-	// own words for it, nor any part of a redirect's target on another host.
+	// carries the download's own token, and a renamed repository's route with a 301 to
+	// /repositories/<id> on the API's own origin. The read sends its token on only to a redirect
+	// on the origin it asked (originToken, which sets the CheckRedirect of a copy of Client, so
+	// Client's own is never asked). A read that got no answer names its failure through
+	// oauth2call.Unanswered, which prints none of net/http's own words for it, nor any part of a
+	// redirect's target on another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -158,7 +160,8 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	// GitHub answers the tarball route with a redirect to its download host
 	// (https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar), which
-	// the read follows with no Authorization (tokenless).
+	// the read follows with no Authorization, and a renamed repository's with a 301 on the API's
+	// own origin, which it follows with its token (originToken).
 	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -167,7 +170,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	response, err := tokenless(cmp.Or(s.Client, http.DefaultClient)).Do(request)
+	response, err := originToken(cmp.Or(s.Client, http.DefaultClient)).Do(request)
 	if err != nil {
 		return Served{}, s.readFailure(ctx, tag, bound, oauth2call.Unanswered(err, request, ""))
 	}
@@ -220,27 +223,33 @@ func (s *Source) readFailure(ctx context.Context, tag string, bound time.Duratio
 	return errors.New(Cause(fmt.Sprintf("the daemon could not read %s at %s", s.Repository, tag), err))
 }
 
-// tokenless is client following redirects as Go's own policy does, with the read's token dropped
-// from each redirect's request (dropToken). net/http copies the read's Authorization onto a
-// redirect's request wherever its host name is the API's or a name under it, whatever its port
-// (shouldCopyHeaderOnRedirect, net/http/client.go of go1.27.3, lines 700-705 and 1017-1039), so a
-// redirect to another port of the API's host was sent the token. No hop needs it: GitHub's
-// redirect names its download host with a URL that carries the download's own token. A copy, as
-// redirects.Refused makes: the caller's client is its own.
-func tokenless(client *http.Client) *http.Client {
-	dropping := *client
-	dropping.CheckRedirect = dropToken
-	return &dropping
+// originToken is client following redirects as Go's own policy does, with the read's token sent
+// on only to a redirect on the read's own origin (keepTokenOnOrigin). net/http copies the read's
+// Authorization onto a redirect's request wherever its host name is the API's or a name under it,
+// whatever its scheme and port (shouldCopyHeaderOnRedirect, net/http/client.go of go1.27.3, lines
+// 700-705 and 1017-1039), so a redirect to another port of the API's host, or to plain http on
+// it, was sent the token. GitHub's redirect to its download host needs none: its URL carries the
+// download's own token. A renamed repository's 301 to /repositories/<id> on the API's origin
+// needs it to read a private repository. A copy, as redirects.Refused makes: the caller's client
+// is its own.
+func originToken(client *http.Client) *http.Client {
+	copied := *client
+	copied.CheckRedirect = keepTokenOnOrigin
+	return &copied
 }
 
-// dropToken is the CheckRedirect of a client tokenless made: next, a redirect's request, is sent
-// without the Authorization net/http copied onto it from the read, the one credential the read
-// sets, and only within ten requests, as Go's own policy (net/http's defaultCheckRedirect) counts
-// them.
-func dropToken(next *http.Request, via []*http.Request) error {
+// keepTokenOnOrigin is the CheckRedirect of a client originToken made: next, a redirect's
+// request, keeps the Authorization net/http copied onto it from the read, the one credential the
+// read sets, only where its origin is the read's (via[0]'s scheme, and its host and port as
+// redirects.SameOrigin compares them), and is sent without it otherwise; and only within ten
+// requests, as Go's own policy (net/http's defaultCheckRedirect) counts them.
+func keepTokenOnOrigin(next *http.Request, via []*http.Request) error {
 	if len(via) >= 10 {
 		return errors.New("stopped after 10 redirects")
 	}
-	next.Header.Del("Authorization")
+	first := via[0].URL
+	if next.URL.Scheme != first.Scheme || !strings.EqualFold(next.URL.Host, first.Host) {
+		next.Header.Del("Authorization")
+	}
 	return nil
 }
