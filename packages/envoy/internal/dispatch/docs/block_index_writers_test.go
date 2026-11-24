@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -324,7 +325,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		}
 		// The holder is rolled back however the step ends: a wait below that fails the test leaves
 		// the tick queued behind it otherwise. A rollback after the step's own is a no-op.
-		t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+		testcleanup.Add(t, func() { _ = holder.Rollback(context.Background()) })
 		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
