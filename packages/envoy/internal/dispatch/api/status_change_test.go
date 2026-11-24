@@ -2018,23 +2018,19 @@ func (rig repeatRig) stopAfterStep(t *testing.T, write ruleWrite, key string, st
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.keyedStatusChange(t, write, key) }()
+	// The run reaching its step, or answering first, which fails the row. Each wait's one bound is
+	// the test binary's deadline (testwait.Context, testwait.Receive), and each fails naming it.
 	select {
 	case <-stopped:
 	case response := <-answered:
 		t.Fatalf("%s answered %d before its step %d committed: %s", write, response.Code, step, response.Body.String())
-	case <-time.After(30 * time.Second):
-		t.Fatalf("%s never reached its step %d", write, step)
+	case <-testwait.Context(t).Done():
+		t.Fatalf("%s never reached its step %d, by the test binary's deadline", write, step)
 	}
 	return func() *httptest.ResponseRecorder {
 		t.Helper()
 		releaseOnce()
-		select {
-		case response := <-answered:
-			return response
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the stopped run of %s never answered once it went on", write)
-			return nil
-		}
+		return testwait.Receive(t, fmt.Sprintf("the answer of the stopped run of %s once it went on", write), answered)
 	}
 }
 
@@ -2726,11 +2722,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		t.Cleanup(func() { rig.served.repeatFoundInFlight = nil })
 		awaitFound := func(t *testing.T) {
 			t.Helper()
-			select {
-			case <-found:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the repeat never found its key in flight")
-			}
+			testwait.Receive(t, "the repeat finding its key in flight", found)
 		}
 		sendRepeat := func(t *testing.T, write ruleWrite, key string) (*heldBackBody, []byte) {
 			t.Helper()
@@ -2767,25 +2759,18 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The first run is posted under the test's own context, which carries no client bound:
+			// its answer is waited for below, until the test binary's deadline (testwait.Receive).
 			firstAnswer := make(chan keyedAnswered, 1)
 			go func() {
-				status, body, _, err := keyedPost(server, write.path, string(encoded), key, 30*time.Second)
+				status, body, _, err := keyedPostContext(t.Context(), server, write.path, string(encoded), key)
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
-			select {
-			case <-reached:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the first run never reached its first step")
-			}
+			testwait.Receive(t, "the first run reaching its first step", reached)
 			repeat, body := sendRepeat(t, write, key)
 			awaitFound(t)
 			releaseOnce()
-			var first keyedAnswered
-			select {
-			case first = <-firstAnswer:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the first run never answered once it went on")
-			}
+			first := testwait.Receive(t, "the first run's answer once it went on", firstAnswer)
 			if first.err != nil || first.status != http.StatusConflict {
 				t.Fatalf("the first run answered %d %s (%v), want its 409 refusal", first.status, first.body, first.err)
 			}

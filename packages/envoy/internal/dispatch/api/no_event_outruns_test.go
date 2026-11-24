@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // commentCommitHold is the comment write's test seam (server.beforeCommentCommit). It hands the
@@ -140,14 +141,16 @@ func TestNoEventOutrunsItsNode(t *testing.T) {
 			answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
 				map[string]string{"body": "The write c-read-cost holds open, ending in a " + ending + "."}, "alice")
 		}()
+		// The write reaching its hold, or answering without it, which fails the row; the wait's one
+		// bound is the test binary's deadline (testwait.Context), and it fails naming the write.
 		var held []model.Event
 		select {
 		case held = <-hold.held:
 		case response := <-answered:
 			t.Fatalf("%s: the comment write answered %d %s without reaching its hold before the commit",
 				ending, response.Code, response.Body.String())
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s: the comment write never reached its hold before the commit", ending)
+		case <-testwait.Context(t).Done():
+			t.Fatalf("%s: the comment write never reached its hold before the commit, by the test binary's deadline", ending)
 		}
 		created, comment := heldCommentCreated(t, held)
 		node := "dispatch://" + issue.Key + "/comment/" + comment

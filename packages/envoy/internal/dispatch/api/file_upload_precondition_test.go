@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A file's or a picture's version carries a token, `sha256:` and the hash of its bytes, which an
@@ -169,18 +170,15 @@ func takenAndRefused(t *testing.T, answers <-chan *httptest.ResponseRecorder) (*
 	t.Helper()
 	var taken, refused []*httptest.ResponseRecorder
 	for range 2 {
-		select {
-		case answer := <-answers:
-			switch answer.Code {
-			case http.StatusCreated:
-				taken = append(taken, answer)
-			case http.StatusConflict:
-				refused = append(refused, answer)
-			default:
-				t.Fatalf("an upload answered %d, want 201 or 409: %s", answer.Code, answer.Body.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("an upload never answered")
+		// Each upload's answer; the wait's one bound is the test binary's deadline (testwait.Receive).
+		answer := testwait.Receive(t, "an upload's answer", answers)
+		switch answer.Code {
+		case http.StatusCreated:
+			taken = append(taken, answer)
+		case http.StatusConflict:
+			refused = append(refused, answer)
+		default:
+			t.Fatalf("an upload answered %d, want 201 or 409: %s", answer.Code, answer.Body.String())
 		}
 	}
 	if len(taken) != 1 || len(refused) != 1 {

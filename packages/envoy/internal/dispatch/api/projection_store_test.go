@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -1850,11 +1851,10 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 		t.Fatalf("move the paragraph out of the quote: status=%d body=%s", moved.Code, moved.Body.String())
 	}
 	// The edit's version settles after the edit answers. The tuple its block index appends is
-	// read once it has committed, and the row after it, so both are the reparent's.
-	var asserted []string
-	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		var err error
-		asserted, err = readStrings(ctx, run.database.Pool, `
+	// read once it has committed, and the row after it, so both are the reparent's. The wait's one
+	// bound is the test binary's deadline (testwait.UntilPolling).
+	asserted := testwait.UntilPolling(t, 20*time.Millisecond, "the store to hold a part_of tuple from "+moving.address+" to its document (the tuples read last)", func() ([]string, bool) {
+		tuples, err := readStrings(ctx, run.database.Pool, `
 			select xmin::text from graph_tuples
 			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = 'artifact' and asserted
 			order by seq
@@ -1862,13 +1862,8 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 		if err != nil {
 			t.Fatalf("read the moved block's part_of tuple to its document: %v", err)
 		}
-		if len(asserted) != 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("15s after the move the store holds no part_of tuple from %s to its document", moving.address)
-		}
-	}
+		return tuples, len(tuples) != 0
+	})
 	if len(asserted) != 1 {
 		t.Fatalf("the store holds %d part_of tuples from %s to its document, want the one its reparent appended", len(asserted), moving.address)
 	}
@@ -1981,13 +1976,9 @@ func requireTwoWritersOverOneNodeCommitInTurn(t *testing.T, ctx context.Context,
 	if err := first.Commit(ctx); err != nil {
 		t.Fatalf("commit the first write: %v", err)
 	}
-	select {
-	case err := <-second:
-		if err != nil {
-			t.Fatalf("the second write: %v", err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the second write never finished after the first committed")
+	// The second write's answer; its one bound is the test binary's deadline (testwait.Receive).
+	if err := testwait.Receive(t, "the second write's answer once the first committed", second); err != nil {
+		t.Fatalf("the second write: %v", err)
 	}
 	after, err := projectionCensus(ctx, run.database)
 	if err != nil {

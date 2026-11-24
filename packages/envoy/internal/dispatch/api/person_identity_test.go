@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The identities of TestAPersonAndTheirProvedSessionAreOneNodeAndSeeOnlyTheirOwn: the role the
@@ -447,22 +448,17 @@ func (r *identityRig) publish(t *testing.T, issue string) {
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	// The wait ends when the outbox has published every event of issue; its one bound is the test
+	// binary's deadline (testwait.UntilPolling), and its failure prints the count it read last.
+	testwait.UntilPolling(t, 10*time.Millisecond, "the outbox to publish every event of "+issue+" (events left unpublished)", func() (int, bool) {
 		var unpublished int
 		if err := r.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events where issue_key = $1 and published_at is null
 		`, issue).Scan(&unpublished); err != nil {
 			t.Fatalf("count the unpublished events of %s: %v", issue, err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events of %s unpublished", unpublished, issue)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // provedSessionHoldsTheRole is the roles claim store and session lookup the outbox resolves a

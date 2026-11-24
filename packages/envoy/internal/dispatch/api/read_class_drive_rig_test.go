@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // drivenStatement is one statement the traced pool ran: its SQL, the writes it makes as
@@ -121,10 +122,29 @@ const (
 // the pool ran while it was open.
 func (p *poolStatements) window(t *testing.T, what string, send func()) []drivenStatement {
 	t.Helper()
+	return p.windowUntil(t, what, send, nil)
+}
+
+// windowUntil is window whose close also waits for done to hold of the statements the window has
+// seen, when done is given: work the request starts and does not wait on that the row asserts
+// (a read's tree store), which a loaded machine can run later than driveWindowAfterAnswer. That
+// wait ends on the statement itself, and its one bound is the test binary's deadline
+// (testwait.UntilPolling); the pool must then still run no write for driveWindowQuiet before the
+// window closes, so a second such write lands inside it too, and driveWindowLimit counts from the
+// moment done held.
+func (p *poolStatements) windowUntil(t *testing.T, what string, send func(), done func([]drivenStatement) bool) []drivenStatement {
+	t.Helper()
 	opened := time.Now()
 	from := p.count()
 	send()
 	answered := time.Now()
+	if done != nil {
+		testwait.UntilPolling(t, 20*time.Millisecond, what+": the work the request started, on the pool (the writes it had run)", func() ([]string, bool) {
+			statements := p.since(from)
+			return writesIn(statements), done(statements)
+		})
+		opened = time.Now()
+	}
 	for {
 		now := time.Now()
 		if now.Sub(answered) >= driveWindowAfterAnswer && now.Sub(p.lastWriteAt()) >= driveWindowQuiet {

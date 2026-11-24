@@ -17,12 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// storeStepWait bounds how long a run waits for the write under test to queue behind a hold, and
-// how long a write that was let go is given to commit. Both are far above what the work takes; a
-// run that passes either is the write waiting on something it should not, not a slow machine.
-const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
@@ -892,13 +888,10 @@ func requireEachStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *sto
 			}
 		}
 		release()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("%s, once let go at %s: %v", writer.name, step.name, err)
-			}
-		case <-time.After(storeStepWait):
-			t.Fatalf("%s did not commit within %s of being let go at %s", writer.name, storeStepWait, step.name)
+		// The write's commit once let go; the wait's one bound is the test binary's deadline
+		// (testwait.Receive).
+		if err := testwait.Receive(t, fmt.Sprintf("the commit of %s once let go at %s", writer.name, step.name), done); err != nil {
+			t.Fatalf("%s, once let go at %s: %v", writer.name, step.name, err)
 		}
 		storetest.RequireNoMarkedCause(t, rig.database, writer.name+" let go at "+step.name)
 	}
@@ -1059,14 +1052,18 @@ func (r *storeWriterRig) beginHolder(t *testing.T, ctx context.Context) (pgx.Tx,
 
 // waitQueued waits for the write's backend to queue behind holder, polling through holder's own
 // connection (storetest.QueuedBehind). A write that answers first never waited at the step, and
-// one that never queues is waiting somewhere the step is not; each fails naming the step.
+// one that never queues is waiting somewhere the step is not; each fails naming the step. The
+// wait's one bound is the test binary's deadline (testwait.Context), and its failure names the
+// statement the write runs then.
 func (r *storeWriterRig) waitQueued(t *testing.T, ctx context.Context, holder pgx.Tx, backend uint32, done <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(storeStepWait)
+	deadline := testwait.Context(t)
 	for {
 		select {
 		case err := <-done:
 			t.Fatalf("%s finished without waiting there: %v", what, err)
+		case <-deadline.Done():
+			t.Fatalf("%s never queued there by the test binary's deadline; it runs %q", what, r.runningStatement(t, ctx, backend))
 		default:
 		}
 		queued, err := storetest.QueuedBehind(ctx, holder, backend)
@@ -1075,9 +1072,6 @@ func (r *storeWriterRig) waitQueued(t *testing.T, ctx context.Context, holder pg
 		}
 		if queued {
 			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s never queued there within %s; it runs %q", what, storeStepWait, r.runningStatement(t, ctx, backend))
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

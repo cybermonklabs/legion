@@ -575,11 +575,13 @@ func (w *driveWorld) calibrate(t *testing.T) {
 func (w *driveWorld) precheck(t *testing.T) {
 	t.Helper()
 	readOnly := w.brokerSend("the machine login's narrowed token", w.readOnly)
-	send := func(what, target string) []drivenStatement {
+	// send drives target in a window; done, when given, is work the read starts and does not wait
+	// on that the window must also hold (windowUntil).
+	send := func(what, target string, done func([]drivenStatement) bool) []drivenStatement {
 		t.Helper()
 		w.tracer.quiet(t, "before "+what)
 		var response *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
+		statements := w.tracer.windowUntil(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) }, done)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
@@ -598,22 +600,39 @@ func (w *driveWorld) precheck(t *testing.T) {
 		return all, unmarked
 	}
 
-	trees := send("the pre-check's read of a version no other test has shown", "/api/v1/artifacts/$prose/versions/1")
-	if stored, _ := count(trees, statementOf(`^\s*insert\s+into\s+text_trees\b`)); stored != 1 {
+	// The read's tree store is work it starts and does not wait on, so the window waits for its
+	// insert on the pool, however late a loaded machine runs it, and then for the pool's quiet.
+	insertTree := statementOf(`^\s*insert\s+into\s+text_trees\b`)
+	trees := send("the pre-check's read of a version no other test has shown", "/api/v1/artifacts/$prose/versions/1", func(statements []drivenStatement) bool {
+		stored, _ := count(statements, insertTree)
+		return stored > 0
+	})
+	if stored, _ := count(trees, insertTree); stored != 1 {
 		t.Fatalf("the pre-check's read of a version no other test has shown made %d inserts into text_trees, want one: %v", stored, writesIn(trees))
 	}
 
+	// The roster's upsert and the term statistics' refresh run on the server's own context, which
+	// the read does not wait on either, so their windows wait for their writes the same way.
 	w.staleRoster(t)
-	roster := send("the pre-check's read of a stale roster", "/api/v1/agents")
-	upserts, unmarked := count(roster, statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`))
+	upsertRoster := statementOf(`^\s*insert\s+into\s+route_roster\b.*\bon\s+conflict\b`)
+	roster := send("the pre-check's read of a stale roster", "/api/v1/agents", func(statements []drivenStatement) bool {
+		upserts, _ := count(statements, upsertRoster)
+		return upserts > 0
+	})
+	upserts, unmarked := count(roster, upsertRoster)
 	if upserts != 1 || unmarked != 1 {
 		t.Fatalf("the pre-check's read of a stale roster made %d upserts of route_roster, %d of them on the server's own context, want one there: %v",
 			upserts, unmarked, writesIn(roster))
 	}
 
+	writeTotals := statementOf(`\b(insert\s+into|update)\s+search_term_totals\b`)
 	related := send("the pre-check's related read of a project with no term statistics",
-		"/api/v1/projects/$precheckProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask")
-	totals, unmarked := count(related, statementOf(`\b(insert\s+into|update)\s+search_term_totals\b`))
+		"/api/v1/projects/$precheckProject/related?title=Drive+every+row&text=The+issue+page+lists+every+open+ask",
+		func(statements []drivenStatement) bool {
+			totals, _ := count(statements, writeTotals)
+			return totals > 0
+		})
+	totals, unmarked := count(related, writeTotals)
 	if totals == 0 || unmarked != totals {
 		t.Fatalf("the pre-check's related read made %d writes of search_term_totals, %d of them on the server's own context, want the refresh's, all there: %v",
 			totals, unmarked, writesIn(related))
