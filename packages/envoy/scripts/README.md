@@ -214,7 +214,21 @@ broker mints at the IAM and token exchange stands (`BROKER_AIRLOCK_TEST_IAM_CRED
 Options: `--keep-values` and `--no-kind`, the two negative controls
 (`BROKER_AIRLOCK_TEST_KEEP_VALUES` and `BROKER_AIRLOCK_TEST_NO_KIND`),
 `--idle-seconds N` (`BROKER_AIRLOCK_IDLE_SECONDS`; check k9's control sets 60),
-`--one-broker`, and `--help`. A usage error exits 2.
+`--one-broker`, `--judge-skip-checks` (`BROKER_JUDGE_TEST_SKIP_CHECKS`, the model
+judge's negative control), `--slack-limit`, and `--help`. A usage error exits 2.
+
+`--slack-limit` is the stack `airlock-check.sh slack-limit` runs on. Both brokers ask
+the Dispatch stand about projects (`BROKER_PROJECT_ACCESS_URL` and
+`BROKER_PROJECT_ACCESS_TOKEN_FILE`); its project-access file holds `PRIV`, a private
+project whose owner lets it post to one Slack channel, `C0ALLOWED1`. The Slack stand
+listens on `slack.airlock.test` (127.0.0.7:443), and `AIRLOCK_SLACK_TOKEN`, a shared
+agent-tier secret tagged `project-channels=slack`, is served behind the proxy there by its
+`proxy` tag, which names the `slack` kind, a header swap on that host. A
+second pod, a person's (`BROKER_POD_OPERATORS` maps
+`system:serviceaccount:airlock:person-pod` to `person@airlock.test`, a full member `PRIV`
+lists), enrols itself naming `PRIV` under a token the issuer mints for its own account,
+which the stack mints again before it lapses, and is renewed as the stack's pod is. The
+exports add `AIRLOCK_SLACK_URL`, `AIRLOCK_SLACK_RECORDS` and `AIRLOCK_PERSON_POD_KEY_DIR`.
 
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
@@ -223,9 +237,9 @@ policy given before the brokers start, the file of both roots, the profiles file
 with every secret but the plain App behind a kind of it by its `proxy` tag, the `anthropic` kind as
 the spec writes it and its two secrets tagged and bound, one front over each pair of ports, the
 options reaching the brokers, the enrolment written beside the session key, the session's renewer,
-the usage error, and the cleanup stopping everything it started — with no real Postgres, no network
-and no Go build; CI runs it in the `envoy-go-checks` job
-(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+what `--slack-limit` adds and that a run without it adds none of it, the usage error, and the
+cleanup stopping everything it started — with no real Postgres, no network and no Go build; CI runs
+it in the `envoy-go-checks` job (`.github/workflows/ci-job-envoy-go-checks.yaml`).
 
 `dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
 the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
@@ -307,7 +321,7 @@ head does not build (no pass), and last `check <id>: passed`, `check <id>: faile
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/airlock-check.sh k3
 ```
 
-`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8`, `k9`, `k15` or `k47`.
+`<id>` is `k1`, `k2`, `k3`, `k4`, `k5`, `k6`, `k7`, `k8`, `k9`, `k15`, `k47` or `slack-limit`.
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
 with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run — ten
 minutes of connections and two stacks, about twenty-five minutes in all; `k47` builds
@@ -342,6 +356,15 @@ decision and the minter's lifetime bound out, started beside the stack's with it
 fronts pointed at them. The `ANTHROPIC_ADMIN_TOKEN` variable is the variables slice's
 and prints as `DEFERRED:`. Every call names the stand's loopback address with curl's
 `--resolve`, so no call reaches Anthropic.
+
+`slack-limit` is no check of that document: it drives the header swap's Slack limit
+through the built broker, on `dev-airlock.sh --slack-limit`. The person's pod, whose
+credential names the private `PRIV`, posts under `agent-secrets AIRLOCK_SLACK_TOKEN --`
+to `C0ALLOWED1`, which the Slack stand records with the stored value in
+`Authorization`, and to `C0OTHER001`, which is refused 403 `CHANNEL_NOT_ALLOWED` and
+reaches no Slack. Its control is the same post to `C0OTHER001` from the stack's
+service pod, whose credential names no project: it reaches the stand, so the refusal
+is the channel limit's and no other.
 
 No line it prints is a credential: a value is compared by its SHA-256 (the first 16
 hex digits) and its length, and every line that compares one says so, which is a rule

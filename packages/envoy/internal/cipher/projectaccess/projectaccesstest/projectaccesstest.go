@@ -6,7 +6,8 @@
 // mints, counts the calls it answers, and can be made to fail, stall or answer bytes of a test's
 // choosing, so a test can show what the broker does when Dispatch cannot be reached or gives no
 // whole answer. It is an ordinary package rather than a _test.go file so every broker package's
-// tests, and the real binary's, can serve it.
+// tests, and the real binary's, can serve it, and the local stack's Dispatch stand serves its
+// routes through NewHandler.
 //
 // It spells the wire on its own, field by field, rather than encoding the clients' own types: a
 // client that read a field under a name Dispatch does not send would then disagree with this
@@ -112,7 +113,24 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	if _, err := rand.Read(bearer[:]); err != nil {
 		t.Fatalf("mint the stand-in's bearer: %v", err)
 	}
-	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}, held: map[string]bool{}, until: map[string]time.Time{}}
+	s := newServer(rows, people, "dispatch-access-"+hex.EncodeToString(bearer[:]))
+	server := httptest.NewServer(http.HandlerFunc(s.serve))
+	t.Cleanup(server.Close)
+	s.URL = server.URL
+	return s
+}
+
+// NewHandler is the stand-in's routes as a handler, for a process that serves them on a listener
+// of its own (cmd/dev-proxy-stands, the local stack's Dispatch stand): the rows and people
+// NewServer takes, and token, the one bearer it answers. The maps are copied as NewServer copies
+// them.
+func NewHandler(rows map[string]Row, people map[string]string, token string) http.Handler {
+	return http.HandlerFunc(newServer(rows, people, token).serve)
+}
+
+// newServer is the stand-in's state, holding copies of rows and people and taking token alone.
+func newServer(rows map[string]Row, people map[string]string, token string) *Server {
+	s := &Server{Token: token, rows: map[string]Row{}, people: map[string]string{}, held: map[string]bool{}, until: map[string]time.Time{}}
 	for key, row := range rows {
 		row.Listed, row.Repositories, row.Resolved = slices.Clone(row.Listed), slices.Clone(row.Repositories), slices.Clone(row.Resolved)
 		row.SlackChannels = slices.Clone(row.SlackChannels)
@@ -122,9 +140,6 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 		s.people[login] = kind
 	}
 	s.Account = StaticAccount(s.Token)
-	server := httptest.NewServer(http.HandlerFunc(s.serve))
-	t.Cleanup(server.Close)
-	s.URL = server.URL
 	return s
 }
 

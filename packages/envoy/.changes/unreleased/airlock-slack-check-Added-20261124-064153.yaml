@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `scripts/airlock-check.sh slack-limit` drives the airlock's Slack limit through the built broker on `scripts/dev-airlock.sh --slack-limit`, a local stack with a private project's Dispatch, a stand-in Slack, a `project-channels=slack` token and a person's pod that names the project: that pod's post to the project's channel reaches Slack, its post to another channel is refused `CHANNEL_NOT_ALLOWED`, and the stack's service pod, which names no project, is the control. `dev-airlock-stands` gains the `slack` stand, `--project-access-file` for the Dispatch stand's project-access routes, and `enroll-pod --projects`.
+time: 2026-11-24T06:41:53Z
+custom:
+    Issue: airlock-slack-check

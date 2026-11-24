@@ -37,10 +37,14 @@
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
 # one; that the pod session's enrolment id is written beside its key where
 # AGENT_SECRETS_KEY_DIR names it; that the session's renewer runs against the API front with that
-# key directory and the pod's token file; that a usage error exits 2; that the cleanup stops
-# every process the run started, the renewer among them, and drops the database it created; and
-# that the password DEV_BROKER_POSTGRES_URL carries reaches every psql call in PGPASSWORD alone,
-# in no argument, and no banner line.
+# key directory and the pod's token file; that --slack-limit gives both brokers the Dispatch
+# stand's project-access settings and the person's pod operator, serves the stands the
+# project-access file and the Slack stand and the store the Slack token, enrols and renews the
+# person's pod naming PRIV, and leaves no process of its own behind, while a run without it
+# does none of that; that a usage error exits 2; that the cleanup stops every process the run
+# started, the renewer among them, and drops the database it created; and that the password
+# DEV_BROKER_POSTGRES_URL carries reaches every psql call in PGPASSWORD alone, in no argument,
+# and no banner line.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -97,10 +101,14 @@ chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake curl: dev-broker.sh registers its exchange pod and polls its own /healthz, and
 # dev-airlock.sh polls the API front's. Record each URL and answer at once, so no readiness loop
-# ever opens a socket. ---
+# ever opens a socket. The issuer's mint route, which --slack-limit asks for the person's pod
+# token, answers a token as the real one does. ---
 cat >"${fake_bin_dir}/curl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${DEV_AIRLOCK_TEST_CURL_CALLS:?}"
+if [[ "$*" == */_dev/mint* ]]; then
+  printf '{"token": "fake-token-for-the-person-pod"}\n'
+fi
 exit 0
 EOF
 chmod +x "${fake_bin_dir}/curl"
@@ -211,6 +219,7 @@ echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL
 echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} anthropic=${BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL:-} iam=${BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL:-} service_accounts=[${BROKER_SERVICE_ACCOUNT_SECRETS:-}] upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 echo "fake broker proxy: pid=$$ profiles=${BROKER_PROFILES_FILE:-} pool=${BROKER_PROXY_CA_POOL:-} test_ca_url=${BROKER_PROXY_TEST_CA_URL:-} clock_file=${BROKER_PROXY_TEST_CLOCK_OFFSET_FILE:-} margin=${BROKER_PROXY_TEST_RENEWAL_MARGIN-unset} release_roots=${BROKER_PROXY_RELEASE_ROOTS_FILE-unset}" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
+echo "fake broker projects: pid=$$ profiles=${BROKER_PROFILES_FILE:-} project_access_url=[${BROKER_PROJECT_ACCESS_URL-unset}] project_access_token_file=[${BROKER_PROJECT_ACCESS_TOKEN_FILE-unset}] pod_operators=[${BROKER_POD_OPERATORS-unset}] logins=[${BROKER_SERVICE_LOGINS-}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_PROFILES_FILE:-}" ]]; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
@@ -236,7 +245,9 @@ case "${1:-}" in
     ;;
   enroll-pod)
     printf '%s\n' "enroll-pod $*" >>"${DEV_AIRLOCK_TEST_STANDS_CALLS:?}"
-    printf '{"credential_id": "the-launcher-credential", "enrollment_id": "the-pod-enrollment", "lease_expires_at": "2100-01-01T00:00:00Z"}\n'
+    enrollment="the-pod-enrollment"
+    if [[ "$*" == *"--service airlock-person "* ]]; then enrollment="the-person-pod-enrollment"; fi
+    printf '{"credential_id": "the-launcher-credential", "enrollment_id": "%s", "lease_expires_at": "2100-01-01T00:00:00Z"}\n' "$enrollment"
     exit 0
     ;;
 esac
@@ -782,6 +793,29 @@ fi
 printf 'PASS: the session'"'"'s lease is renewed by one agent-secrets renew against the API front, with its key directory and the pod'"'"'s token file (%s)\n' \
   "$dev_broker_dir/pod-token"
 
+# Without --slack-limit the stack asks no Dispatch about projects and maps no pod to a person:
+# neither setting reaches a broker, no Slack secret is served, and no person's pod is enrolled.
+mapfile -t project_lines < <(grep -o 'fake broker projects: .*' "$log" | grep -F "profiles=$profiles_file ")
+if [[ "${#project_lines[@]}" -ne 2 ]]; then
+  echo "FAIL: ${#project_lines[@]} airlock broker(s) logged their project settings; want 2" >&2
+  exit 1
+fi
+for line in "${project_lines[@]}"; do
+  if [[ "$line" != *"project_access_url=[unset]"* || "$line" != *"project_access_token_file=[unset]"* ||
+    "$line" != *"pod_operators=[unset]"* || "$line" == *"airlock-person="* ]]; then
+    echo "FAIL: a run without --slack-limit gave a broker a project or person setting: $line" >&2
+    exit 1
+  fi
+done
+if jq -e '.kinds[] | select(.name == "slack")' "$profiles_file" >/dev/null ||
+  jq -e '.secrets[] | select(.name | endswith("airlock-slack-token"))' "$(exported AIRLOCK_FAKE_SECRETS_FILE)" >/dev/null ||
+  grep -q -- '--service airlock-person' "$stands_calls" || grep -q -- '--project-access-file' "$stands_calls" ||
+  [[ -n "$(exported AIRLOCK_PERSON_POD_KEY_DIR)" ]]; then
+  echo "FAIL: a run without --slack-limit served the Slack token, the project-access file or a person's pod" >&2
+  exit 1
+fi
+printf 'PASS: a run without --slack-limit sets neither BROKER_PROJECT_ACCESS_URL nor BROKER_POD_OPERATORS on its brokers, serves no Slack token and enrols no person'"'"'s pod\n'
+
 # The cleanup: every process this run started is gone, and the database it created is dropped.
 mapfile -t started_pids <"$pids_file"
 if [[ "${#started_pids[@]}" -lt 4 ]]; then
@@ -872,6 +906,123 @@ if [[ -z "$failed_db" ]] || grep -q "dropped this instance's database" "$log" \
   exit 1
 fi
 printf 'PASS: a run whose drop database fails says so and names the database left behind (%s)\n' "$failed_db"
+
+# --- --slack-limit: the stack the Slack limit's check runs on. Both brokers ask the Dispatch
+# stand about projects with a token of their own and map the person's pod account to its person;
+# the stands serve the project-access file and the Slack stand; the Slack token is served behind
+# the proxy; and the person's pod is enrolled naming PRIV and renewed. ---
+run_stack --slack-limit
+wait_for_ready
+profiles_file="$(exported AIRLOCK_PROFILES_FILE)"
+dispatch_url="$(exported AIRLOCK_DISPATCH_URL)"
+airlock_dir="$(exported AIRLOCK_DIR)"
+dev_broker_dir="$(exported DEV_BROKER_DIR)"
+api_front_url="$(exported AGENT_SECRETS_URL)"
+records_url="$(exported AIRLOCK_RECORDS_URL)"
+readonly person_account="system:serviceaccount:airlock:person-pod"
+mapfile -t project_lines < <(grep -o 'fake broker projects: .*' "$log" | grep -F "profiles=$profiles_file ")
+if [[ "${#project_lines[@]}" -ne 2 ]]; then
+  echo "FAIL: ${#project_lines[@]} airlock broker(s) logged their project settings under --slack-limit; want 2" >&2
+  exit 1
+fi
+access_file="$(grep -o -- '--project-access-file [^ ]*' "$stands_calls" | head -n 1 | cut -d' ' -f2)"
+access_bearer="$(jq -r '.token // ""' "$access_file" 2>/dev/null || true)"
+for line in "${project_lines[@]}"; do
+  token_file="$(printf '%s' "$line" | sed -n 's/.*project_access_token_file=\[\([^]]*\)\].*/\1/p')"
+  if [[ "$line" != *"project_access_url=[$dispatch_url]"* || "$line" != *"pod_operators=[person@airlock.test=$person_account]"* ||
+    "$line" != *"airlock-person=$person_account"* || -z "$access_bearer" || "$(cat "$token_file" 2>/dev/null)" != "$access_bearer" ]]; then
+    echo "FAIL: under --slack-limit a broker was not given the Dispatch stand ($dispatch_url), the project-access token file, the person's pod operator and its login: $line" >&2
+    exit 1
+  fi
+done
+printf 'PASS: --slack-limit gives both brokers BROKER_PROJECT_ACCESS_URL (the Dispatch stand), a token file holding the bearer the stand takes, and BROKER_POD_OPERATORS mapping %s, which BROKER_SERVICE_LOGINS logs in as airlock-person\n' "$person_account"
+
+# The airlock stack's own stands, not dev-broker.sh's, which bind no S.
+stands_call="$(grep -m1 '^stands .*--address s=' "$stands_calls" || true)"
+rows="$(jq -r '.rows.PRIV | "\(.visibility) \(.owner) \(.listed | join(",")) \(.slack_channels | join(","))"' "$access_file" 2>/dev/null || true)"
+if [[ "$stands_call" != *"--address slack=127.0.0.7:443"* || "$stands_call" != *"--host slack=slack.airlock.test"* ||
+  "$rows" != "private owner@airlock.test person@airlock.test C0ALLOWED1" ||
+  "$(jq -r '.people["person@airlock.test"] // ""' "$access_file")" != full ]]; then
+  echo "FAIL: under --slack-limit the stands were started as '$stands_call' with PRIV '$rows'; want the Slack stand on 127.0.0.7:443 under slack.airlock.test and PRIV private, owned by owner@airlock.test, listing person@airlock.test, a full member, with one channel" >&2
+  exit 1
+fi
+# Each bound stand takes port 443 of an address no other stand of the run takes: two on one would
+# leave the second unable to bind, and the stack would not start.
+mapfile -t bound_addresses < <(grep -oE -- '--address [a-z-]+=[0-9.]+:[0-9]+' <<<"$stands_call" | cut -d= -f2)
+if [[ "${#bound_addresses[@]}" -lt 6 || "$(printf '%s\n' "${bound_addresses[@]}" | sort | uniq -d)" != "" ]]; then
+  echo "FAIL: under --slack-limit the stands bind ${bound_addresses[*]:-nothing}; want six or more addresses, no two the same" >&2
+  exit 1
+fi
+mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -F "profiles=$profiles_file ")
+for line in "${airlock_lines[@]}"; do
+  if [[ "$line" != *"dial_allow=["*"slack.airlock.test:443"*"]"* || "$line" != *"resolve=["*"slack.airlock.test=127.0.0.7"*"]"* ]]; then
+    echo "FAIL: under --slack-limit a broker may not reach the Slack stand: $line" >&2
+    exit 1
+  fi
+done
+slack_kind="$(jq -r '.kinds[] | select(.name == "slack") | "\(.hosts | join(",")) \(.ways | join(","))"' "$profiles_file")"
+slack_tags="$(jq -r '.secrets[] | select(.name | endswith("airlock-slack-token")) | "\(.tags.owner) \(.tags.tier) \(.tags.proxy) \(.tags["project-channels"])"' "$(exported AIRLOCK_FAKE_SECRETS_FILE)")"
+if [[ "$slack_kind" != "slack.airlock.test swap" || "$slack_tags" != "shared agent slack slack" ]]; then
+  echo "FAIL: under --slack-limit the slack kind is '$slack_kind' and AIRLOCK_SLACK_TOKEN's store tags are '$slack_tags'; want slack.airlock.test swap, and shared agent, proxy slack, project-channels slack" >&2
+  exit 1
+fi
+printf 'PASS: --slack-limit serves the stands PRIV'"'"'s project-access file, the Slack stand on 127.0.0.7:443 the brokers may dial, and AIRLOCK_SLACK_TOKEN, tagged project-channels=slack, behind the proxy on slack.airlock.test by the slack kind its proxy tag names\n'
+
+person_key_dir="$(exported AIRLOCK_PERSON_POD_KEY_DIR)"
+person_token_file="$airlock_dir/person-pod-token"
+person_enroll="$(grep '^enroll-pod ' "$stands_calls" | grep -F -- '--service airlock-person ' || true)"
+mint_call="$(grep -F '/_dev/mint' "$curl_calls" || true)"
+for want in "--url $api_front_url" "--token-file $person_token_file" "--pod-token-file $person_token_file" "--pod-uid " "--projects PRIV"; do
+  if [[ "$person_enroll" != *"$want"* ]]; then
+    echo "FAIL: the person's pod was enrolled without $want: ${person_enroll:-no enrolment}" >&2
+    exit 1
+  fi
+done
+if [[ "$mint_call" != *"$person_account"* || "$(cat "$person_token_file" 2>/dev/null)" != fake-token-for-the-person-pod ||
+  "$(cat "$person_key_dir/enrollment" 2>/dev/null)" != the-person-pod-enrollment || ! -s "$person_key_dir/key.pem" || "$person_key_dir" != "$airlock_dir"/* ]]; then
+  echo "FAIL: the person's pod token was minted as '$mint_call', or $person_key_dir holds no key.pem and its enrollment" >&2
+  exit 1
+fi
+mapfile -t renewals <"$renew_calls"
+if [[ "${#renewals[@]}" -ne 2 || "${renewals[1]}" != "renew --pod-token-file $person_token_file url=$api_front_url key_dir=$person_key_dir" ]]; then
+  echo "FAIL: under --slack-limit the run started the renewers ${renewals[*]:-none}; want the person's pod's second, with its own token file and key directory" >&2
+  exit 1
+fi
+for want in "AIRLOCK_SLACK_URL=https://slack.airlock.test" "AIRLOCK_SLACK_RECORDS=$records_url/records/slack"; do
+  if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
+    echo "FAIL: under --slack-limit the banner does not export $want" >&2
+    exit 1
+  fi
+done
+printf 'PASS: --slack-limit enrols the person'"'"'s pod naming PRIV under a token the issuer minted for its own account, renews its lease, and exports the Slack stand, its records and the pod'"'"'s key directory (%s)\n' "$person_key_dir"
+
+# Stopping the run stops what --slack-limit adds too: the person's pod's renewer, and its token
+# minter with the sleep it waits in, which are the driver's child and grandchild and write no pid
+# of their own. Every descendant of the driver is read before the stop, and none may outlive it.
+descendants() {
+  local child
+  for child in $(cat /proc/"$1"/task/*/children 2>/dev/null); do
+    printf '%s\n' "$child"
+    descendants "$child"
+  done
+}
+mapfile -t before_stop < <(descendants "$driver_pid")
+if [[ "${#before_stop[@]}" -lt 2 ]]; then
+  echo "FAIL: UNKNOWN: read ${#before_stop[@]} descendants of the driver (pid $driver_pid) from /proc; want its processes, to show none outlives it" >&2
+  exit 1
+fi
+stop_stack
+still_running=()
+for pid in "${before_stop[@]}"; do
+  if kill -0 "$pid" 2>/dev/null; then
+    still_running+=("$pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)")
+  fi
+done
+if [[ "${#still_running[@]}" -ne 0 ]]; then
+  printf 'FAIL: under --slack-limit these outlived the run: %s\n' "${still_running[*]}" >&2
+  exit 1
+fi
+printf 'PASS: stopping a --slack-limit run stops each of the %d processes it started, the person'"'"'s pod'"'"'s renewer and token minter among them\n' "${#before_stop[@]}"
 
 # --- A usage error exits 2 and starts nothing. ---
 for args in "--nope" "--idle-seconds" "--idle-seconds five" "--idle-seconds 5"; do

@@ -66,6 +66,7 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	thumbprint := fs.String("thumbprint", "", "the `<thumbprint>` of the session's signing key, as agent-secrets keygen printed it")
 	session := fs.String("session", "", "the Envoy `<session id>` the broker notifies about this session's requests")
 	slot := fs.String("slot", "", "which of the pod's independent enrolments this is, for a pod that holds several")
+	projectsFlag := fs.String("projects", "", "the Dispatch `<keys>` a person's pod works on, separated by spaces (\"PRIV CORE\"), sent as agent-secrets enroll --pod --projects sends them")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -74,6 +75,13 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: unexpected argument %q\n", fs.Arg(0))
+		return exitUsageError
+	}
+	// Read in agent-secrets' own grammar before anything is asked, so a list that is no list is
+	// refused naming the flag, never sent and never cut short.
+	projects, err := cipherclient.ParseProjectsSetting("--projects", *projectsFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "dev-airlock-stands enroll-pod: %v\n", err)
 		return exitUsageError
 	}
 	for _, required := range []struct{ flag, value string }{
@@ -134,6 +142,11 @@ func runEnrollPod(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	if *session != "" {
 		body["session_id"] = *session
+	}
+	// The broker takes projects from a person's pod alone, checked against its person, and
+	// refuses them from any other (PROJECTS_NEED_A_PERSON), so none is sent unless asked for.
+	if len(projects) > 0 {
+		body["projects"] = projects
 	}
 	signed, err := proof.SignLauncher(key, login.CredentialID, http.MethodPost, base+"/v1/enrollments", time.Now())
 	if err != nil {

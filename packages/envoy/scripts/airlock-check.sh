@@ -44,9 +44,14 @@
 # setting changed, or a binary built from a copy of this module with one defect put in.
 #
 # Usage: packages/envoy/scripts/airlock-check.sh <id> [--keep-stack]
-#        <id> is k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 or k47. --keep-stack leaves the stack and
-#        the work directory up for a person to look at a failure with. --help prints this usage.
-#        A usage error exits 2.
+#        <id> is k1, k2, k3, k4, k5, k6, k7, k8, k9, k15, k47 or slack-limit. --keep-stack leaves
+#        the stack and the work directory up for a person to look at a failure with. --help prints
+#        this usage. A usage error exits 2.
+#
+# slack-limit is no check of the verification document: it drives the header swap's Slack limit
+# through the built broker on dev-airlock.sh --slack-limit's stack, a person's pod that names a
+# private project posting only to the channel that project's owner named, with the stack's
+# service pod, which names no project, as its control.
 #
 # Needs bash, curl, jq, go, python3, openssl, node and psql; k2 and k7 also need gh (k2's
 # own step and the negative controls of k2 and k7 run the agent-secrets of the pinned release
@@ -88,7 +93,7 @@ usage: airlock-check.sh <id> [--keep-stack]
 Runs one before_merge check of the airlock's verification document and prints, for each
 property the check's outcome sentence names, what it expected beside what it got.
 
-  <id>           k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 or k47
+  <id>           k1, k2, k3, k4, k5, k6, k7, k8, k9, k15, k47 or slack-limit
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
 
@@ -141,9 +146,9 @@ if [ -z "$CHECK_ID" ]; then
 fi
 
 case "$CHECK_ID" in
-k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | k15 | k47) ;;
+k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | k15 | k47 | slack-limit) ;;
 *)
-	echo "airlock-check: $CHECK_ID is no check of this document; it holds k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 and k47" >&2
+	echo "airlock-check: $CHECK_ID is no check of this document; it holds k1, k2, k3, k4, k5, k6, k7, k8, k9, k15 and k47, and this script also runs slack-limit" >&2
 	usage >&2
 	exit 2
 	;;
@@ -3164,6 +3169,101 @@ k47_read_out() { # <label>
 }
 
 ###############################################################################################
+# slack-limit
+###############################################################################################
+
+# slack_posts runs one `agent-secrets AIRLOCK_SLACK_TOKEN --` command in the session whose key
+# directory it names, which posts {"channel":"<channel>","text":"t"} under the grant's placeholder
+# to the Slack stand for each channel named, and leaves each post's status in
+# $WORK_DIR/slack-<label>.out (<channel>=<status> lines) and its answer's body in
+# $WORK_DIR/slack-<label>-<channel>.body. No value reaches a file: the command holds the
+# placeholder, and the proxy swaps the value in on its way to the stand.
+slack_posts() { # <label> <key dir> <channel>...
+	local label="$1" key_dir="$2"
+	shift 2
+	cat >"$WORK_DIR/slack-$label.sh" <<EOF
+set -u
+out="$WORK_DIR/slack-$label.out"
+: >"\$out"
+for channel in $*; do
+	status="\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_SLACK_TOKEN" | curl -sS -o "$WORK_DIR/slack-$label-\$channel.body" -w %{http_code} -H @- \
+		-H 'Content-Type: application/json' --data "{\"channel\":\"\$channel\",\"text\":\"t\"}" $AIRLOCK_SLACK_URL/api/chat.postMessage)"
+	printf '%s=%s\n' "\$channel" "\$status" >>"\$out"
+done
+EOF
+	AGENT_SECRETS_KEY_DIR="$key_dir" agent-secrets AIRLOCK_SLACK_TOKEN -- bash "$WORK_DIR/slack-$label.sh" >"$WORK_DIR/slack-$label-cli.log" 2>&1 || true
+}
+
+# slack_status is one post's status as slack_posts left it, and "" for a post it made none of.
+slack_status() { sed -n "s/^$2=//p" "$WORK_DIR/slack-$1.out" 2>/dev/null; }
+
+# channel_refusals counts the brokers' refusal records coded CHANNEL_NOT_ALLOWED so far.
+channel_refusals() {
+	bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "broker: answer refused" and .code == "CHANNEL_NOT_ALLOWED")] | length'
+}
+
+# slack_records are the Slack stand's records from the index named on, as the channel each post
+# named and the digest of its Authorization, one line each: "<channel> <digest>".
+slack_records() { # <from>
+	records slack | jq -r --argjson n "$1" '.[$n:][] | "\((.body | fromjson? | .channel) // "-") \(.header.Authorization[0] // "")"' |
+		while read -r channel authorization; do printf '%s %s\n' "$channel" "$(digest "$authorization")"; done
+}
+
+check_slack_limit() {
+	expect "the person's pod, whose credential names the private project PRIV, posts to PRIV's channel C0ALLOWED1: curl answers 200 and the Slack stand records one post, carrying the stored value in Authorization (by SHA-256 and length)"
+	expect "the same pod's post to C0OTHER001 answers 403 with a body opening 'airlock: a private project's grant of this secret posts only with POST /api/chat.postMessage', the broker's refusal record is coded CHANNEL_NOT_ALLOWED, and the Slack stand records nothing new"
+	expect "the negative control, the stack's service pod, whose credential names no project, posts to C0OTHER001: 200 and one new record, so the 403 above is the channel limit and no other refusal"
+
+	start_stack --slack-limit
+	stack_facts
+	local slack_value want_auth before refused_before
+	slack_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-slack-token")"
+	want_auth="$(digest "Bearer $slack_value")"
+	before="$(records_count slack)"
+	refused_before="$(channel_refusals)"
+
+	slack_posts person "$AIRLOCK_PERSON_POD_KEY_DIR" C0ALLOWED1 C0OTHER001
+	local allowed other other_body person_records refusals allowed_posts allowed_carrying other_posts words
+	allowed="$(slack_status person C0ALLOWED1)"
+	other="$(slack_status person C0OTHER001)"
+	other_body="$(cat "$WORK_DIR/slack-person-C0OTHER001.body" 2>/dev/null)"
+	person_records="$(slack_records "$before")"
+	refusals="$(($(channel_refusals) - refused_before))"
+	allowed_posts="$(grep -c '^C0ALLOWED1 ' <<<"$person_records")"
+	allowed_carrying="$(grep -cx "C0ALLOWED1 $want_auth" <<<"$person_records")"
+	other_posts="$(grep -c '^C0OTHER001 ' <<<"$person_records")"
+	words="did not open"
+	if [[ "$other_body" == "airlock: a private project's grant of this secret posts only with POST /api/chat.postMessage"* ]]; then
+		words="opened"
+	fi
+	observe "the person's pod posted to C0ALLOWED1 and C0OTHER001 under one grant of AIRLOCK_SLACK_TOKEN: statuses $allowed and $other"
+	observe "the Slack stand recorded these new posts, each its channel and the SHA-256 of its Authorization (the stored value's 'Bearer <value>' is $want_auth; the value is $(shape "$slack_value")): $(printf '%s' "$person_records" | tr '\n' ';')"
+	observe "the refused post's body: $other_body"
+	observe "the brokers wrote $refusals refusal record(s) coded CHANNEL_NOT_ALLOWED during these posts"
+	judge "$([ "$allowed" = 200 ] && [ "$allowed_posts" = 1 ] && [ "$allowed_carrying" = 1 ] && echo 0 || echo 1)" \
+		"the person's pod posts to C0ALLOWED1 with the stored value in Authorization" \
+		"curl answered $allowed; the stand recorded $allowed_posts post(s) to C0ALLOWED1, $allowed_carrying of them carrying the stored value (by SHA-256)"
+	judge "$([ "$other" = 403 ] && [ "$words" = opened ] && [ "$refusals" = 1 ] && [ "$other_posts" = 0 ] && echo 0 || echo 1)" \
+		"the person's pod's post to C0OTHER001 is refused CHANNEL_NOT_ALLOWED and reaches no Slack" \
+		"curl answered $other and its body $words with the Slack limit's words; the brokers recorded $refusals CHANNEL_NOT_ALLOWED refusal(s); the stand recorded $other_posts post(s) to C0OTHER001"
+
+	# The negative control: the stack's own service pod names no project, so its grant of the
+	# same secret is not Limited, and the same post reaches the stand. Without it the 403 above
+	# could be any refusal of a post to that channel.
+	local mark control control_records
+	mark="$(records_count slack)"
+	slack_posts control "$AGENT_SECRETS_KEY_DIR" C0OTHER001
+	control="$(slack_status control C0OTHER001)"
+	control_records="$(slack_records "$mark")"
+	control "the stack's service pod, whose credential names no project, posted to C0OTHER001: status $control, and the stand recorded $(printf '%s' "$control_records" | tr '\n' ';')"
+	judge "$([ "$control" = 200 ] && [ "$control_records" = "C0OTHER001 $want_auth" ] && echo 0 || echo 1)" \
+		"negative control: the service pod, whose grant no project limits, posts to C0OTHER001" \
+		"curl answered $control; the stand recorded '$(printf '%s' "$control_records" | tr '\n' ';')', where one post to C0OTHER001 carrying the stored value is 'C0OTHER001 $want_auth'"
+
+	stop_stack
+}
+
+###############################################################################################
 
 # From here on a step that answers non-zero is a property that did not pass, not the end of the
 # run: a check must report every one of its properties, and a refused request, a command that
@@ -3189,6 +3289,7 @@ k8) check_k8 ;;
 k9) check_k9 ;;
 k15) check_k15 ;;
 k47) check_k47 ;;
+slack-limit) check_slack_limit ;;
 esac
 
 report
