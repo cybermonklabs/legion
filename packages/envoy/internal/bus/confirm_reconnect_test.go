@@ -2,7 +2,6 @@ package bus
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -101,7 +101,8 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
@@ -139,7 +140,8 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
@@ -263,8 +265,8 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)

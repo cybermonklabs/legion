@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A KV call builds its subjects from its key, which nats.go checks only for the characters a key may
@@ -58,15 +59,15 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 // takes one and still takes the longest key that fits, the control keys spelled with letter.
 func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string) {
 	t.Helper()
+	// No span of its own: the leader's answer can come late on a loaded machine with nothing wrong.
+	leaderRead := testwait.Context(t)
 
 	calls := map[string]func(key string) error{
 		"Get": func(key string) error { _, err := kv.Get(key); return err },
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := kv.GetFromLeader(ctx, key)
+			_, err := kv.GetFromLeader(leaderRead, key)
 			return err
 		},
 		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },

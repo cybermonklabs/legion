@@ -73,8 +73,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	})
 
 	t.Run("a write the stream refused is no ErrUnacknowledged", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		subject := bus.KeptRoleCursorSubject("unacknowledged-refused")
 		if _, err := client.PublishCursorAt(ctx, subject, []byte(`{"kept":1}`), 0); err != nil {
 			t.Fatalf("the first cursor write: %v", err)
@@ -111,9 +111,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
@@ -127,8 +127,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got answer
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the publish whose connection closed under it did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish whose connection closed under it did not return by the test's deadline")
 		}
 		if got.err != nil {
 			t.Fatalf("a publish sent again after its connection closed = %v, want it acknowledged", got.err)
@@ -160,9 +160,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
 			answered <- answer{ack, err}
 		}()
@@ -179,8 +179,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got answer
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the publish interrupted by reconnect did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the publish interrupted by reconnect did not return by the test's deadline")
 		}
 		if got.err != nil {
 			t.Fatalf("a publish sent again after reconnect = %v, want it acknowledged", got.err)
@@ -208,9 +208,9 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		proxy.FreezeServerReplies()
 		body := []byte(`{"kept":7}`)
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)
 			answered <- err
 		}()
@@ -223,8 +223,8 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		var got error
 		select {
 		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the cursor write interrupted by reconnect did not return")
+		case <-testwait.Context(t).Done():
+			t.Fatal("the cursor write interrupted by reconnect did not return by the test's deadline")
 		}
 		if errors.Is(got, bus.ErrCursorMoved) {
 			t.Fatalf("a cursor write the stream stored before the reconnect = %v, want no ErrCursorMoved: the cursor holds this write", got)

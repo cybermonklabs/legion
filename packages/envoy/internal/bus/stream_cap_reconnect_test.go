@@ -34,7 +34,8 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

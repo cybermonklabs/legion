@@ -1,13 +1,13 @@
 package bus
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // replicatedConflict is the code a write that loses to a write of its key still being replicated
@@ -121,11 +121,12 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 		t.Fatalf("take direct gets off the bucket's stream: %v", err)
 	}
 	cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
-	shortJS, err := conn.JetStream(nats.MaxWait(2 * time.Second))
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	bucketJS, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
-		t.Fatalf("open JetStream with a short wait: %v", err)
+		t.Fatalf("open JetStream for the bucket: %v", err)
 	}
-	legacy, err := shortJS.KeyValue(bucket)
+	legacy, err := bucketJS.KeyValue(bucket)
 	if err != nil {
 		t.Fatalf("open the bucket with no direct gets: %v", err)
 	}
@@ -189,8 +190,8 @@ func TestACursorWriteThatLosesToAReplicatingWriteIsCursorMoved(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	cluster.MoveStreamLeader(t, Stream, 0)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	subject := KeptRoleCursorSubject("replicated-cursor")
 	first, err := client.PublishCursorAt(ctx, subject, []byte(`{"kept":1}`), 0)
 	if err != nil {

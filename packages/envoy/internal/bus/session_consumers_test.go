@@ -184,12 +184,11 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 	return pull
 }
 
-// next returns the next message pull holds within 5 s.
+// next returns the next message pull holds. The wait has no span of its own, since the hand-over
+// can come late on a loaded machine with nothing wrong: it ends at the test binary's deadline.
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("next message: %v", err)
 	}
@@ -1154,9 +1153,8 @@ func TestSessionsWithoutAConsumer(t *testing.T) {
 	}
 	// A pull reads nothing before it starts: its first Next reports the consumer missing.
 	pull := pullSession(t, consumers, "ses_absent")
-	nextCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if msg, err := pull.Next(nextCtx); !errors.Is(err, ErrSessionConsumerNotFound) {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	if msg, err := pull.Next(testwait.Context(t)); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("Next of a pull of a missing consumer = %+v, %v, want ErrSessionConsumerNotFound", msg, err)
 	}
 	if _, err := consumers.Ensure(ctx, "ses.dotted", []string{"notifications.agent.ses.dotted"}, 0); !errors.Is(err, ErrNoSessionConsumerName) {

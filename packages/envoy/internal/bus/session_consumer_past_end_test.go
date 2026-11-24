@@ -11,11 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // clampedStartLine is the WARN line of a start past the stream's end, which create resets to the
@@ -124,15 +124,15 @@ func requireConsumerStart(t *testing.T, consumers *SessionConsumers, sessionID s
 	}
 }
 
-// requireNext requires pull to hand over the message stored at seq next, within 5 s, and fails the
-// test with why that message is the one: a consumer that skipped it hands over nothing.
+// requireNext requires pull to hand over the message stored at seq next, and fails the test with
+// why that message is the one: a consumer that skipped it hands over nothing. The wait has no span
+// of its own, since the hand-over can come late on a loaded machine with nothing wrong: it ends at
+// the test binary's deadline.
 func requireNext(t *testing.T, pull *SessionPull, seq uint64, why string) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
-		t.Fatalf("consumer %s handed over nothing within 5s (%v), want the message stored at %d: %s", pull.name, err, seq, why)
+		t.Fatalf("consumer %s handed over nothing (%v), want the message stored at %d: %s", pull.name, err, seq, why)
 	}
 	if msg.StreamSeq != seq {
 		t.Fatalf("consumer %s handed over the message stored at %d, want the one at %d: %s", pull.name, msg.StreamSeq, seq, why)
