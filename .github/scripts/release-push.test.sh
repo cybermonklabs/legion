@@ -123,6 +123,10 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 release_push="$script_dir/release-push.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# Where the script under test, and gh-read.sh, keep gh's words and answers (a CI job's
+# RUNNER_TEMP), so the files the cases read are $work's and go with it.
+mkdir -p "$work/runner-temp"
+export RUNNER_TEMP="$work/runner-temp"
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -850,10 +854,13 @@ echo "Case 11: release creates a missing release, publishes a draft, and reuses 
 # release's body as the case left it, for the release-section cases below, and
 # `--json name,body` prints $GH_TEST_DIR/name.md and that same body, the draft
 # the lane reads back before it publishes it. An upload, edit or create fails
-# when $GH_TEST_FAIL names it, and the file an
+# when $GH_TEST_FAIL names it, saying $GH_TEST_SAYS on stderr (an HTTP 502 line
+# by default), and the file an
 # edit's --notes-file names is copied to $GH_TEST_DIR/edited.md, the body that
-# edit would write. Any other call fails as unexpected, so a call the command
-# should not make shows up as an error.
+# edit would write. The write $GH_TEST_ANSWER_TO names (upload, edit or create)
+# answers $GH_TEST_ANSWERS on stdout, and the isDraft view answers it for
+# $GH_TEST_RELEASE answers. Any other call fails as unexpected, so a call the
+# command should not make shows up as an error.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -870,6 +877,7 @@ case "$1 $2" in
         draft) echo true ;;
         published) echo false ;;
         odd) echo null ;;
+        answers) printf '%s\n' "$GH_TEST_ANSWERS" ;;
         *) echo "unknown GH_TEST_RELEASE $GH_TEST_RELEASE" >&2; exit 3 ;;
       esac
     else
@@ -878,9 +886,10 @@ case "$1 $2" in
     fi ;;
   "release upload" | "release edit" | "release create")
     if [ "$GH_TEST_FAIL" = "$2" ]; then
-      echo "HTTP 502: the test failed this $2" >&2
+      echo "${GH_TEST_SAYS:-HTTP 502: the test failed this $2}" >&2
       exit 1
     fi
+    [ "$GH_TEST_ANSWER_TO" != "$2" ] || printf '%s\n' "$GH_TEST_ANSWERS"
     while [ $# -gt 1 ]; do
       [ "$1" != --notes-file ] || cp "$2" "$GH_TEST_DIR/edited.md"
       shift
@@ -890,21 +899,44 @@ esac
 GH
 chmod +x "$work/bin/gh"
 # release_run <state> <fail> <args...>: runs `release-push.sh release <args...>`
-# against the stub; leaves its exit code in rc, its combined output in out and
-# the stub's call log in calls.
+# against the stub, with $gh_says, $gh_answer_to and $gh_answers in the stub's
+# GH_TEST_SAYS, GH_TEST_ANSWER_TO and GH_TEST_ANSWERS (empty unless a case sets
+# them); leaves its exit code in rc, its combined output in out and the stub's
+# call log in calls.
+gh_says='' gh_answer_to='' gh_answers=''
 release_run() {
   local state=$1 fail=$2
   shift 2
   : > "$work/calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE="$state" \
-    GH_TEST_FAIL="$fail" LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
+    GH_TEST_FAIL="$fail" GH_TEST_SAYS="$gh_says" GH_TEST_ANSWER_TO="$gh_answer_to" GH_TEST_ANSWERS="$gh_answers" \
+    LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release "$@" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
 }
 # argv <arg>...: one call as the stub logs it.
 argv() { printf '[%s]' "$@"; }
+# kept_in <pattern>: the path after <pattern>, a sed pattern, on the last line of out that holds
+# it: the file a line of the script's, or of gh-read.sh's, names for gh's words or answer. The path
+# runs to the first blank, `)` or `,` (a mktemp name holds none).
+kept_in() { sed -n "s/^.*$1\([^ ),]*\).*\$/\1/p" <<<"$out" | tail -n 1; }
+# kept_words <file>: what that file holds, or nothing when there is none.
+kept_words() { [ -n "$1" ] && cat -- "$1" 2>/dev/null || true; }
+# The marker the cases below put in gh's words and answers, as whatever answers gh's call in
+# GitHub's place could, holding gh's token: no run of eight of its characters (the run the
+# redaction rule's gate reads) may be in what the script prints.
+marker=not-a-secret-token
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+prints_no_marker() { holds_marker "$1" && echo false || echo true; }
+holds() { holds_marker "$1" && echo true || echo false; }
 view=$(argv release view pkg-v1.0.1 --repo example/repo --json isDraft -q .isDraft)
 upload=$(argv release upload pkg-v1.0.1 a.tgz b.tgz --repo example/repo --clobber)
 publish=$(argv release edit pkg-v1.0.1 --repo example/repo --draft=false)
@@ -947,13 +979,18 @@ check "draft, edit fails: uploaded, read the draft back, then tried to publish" 
 check "draft, edit fails: says it is still a draft" "$(contains "$out" "^::error::Publishing the draft release pkg-v1\.0\.1 failed; it holds this run's assets and is still a draft\.$")"
 release_run none create pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "none, create fails: exits non-zero" "$([ "$rc" != 0 ] && echo true || echo false)"
-check "none, create fails: gh's own error is shown" "$(contains "$out" '^HTTP 502: the test failed this create$')"
+check "none, create fails: the log names the file that keeps gh's own error, which holds it" \
+  "$(contains "$(kept_words "$(kept_in 'gh-read\.sh: the command exited 1; its own words are in ')")" '^HTTP 502: the test failed this create$')"
+check "none, create fails: and prints none of it" "$(is "$(contains "$out" 'the test failed this create')" false)"
 release_run published upload --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "published, --upload-to-published, upload fails: exits 1" "$(is "$rc" 1)"
 check "published, --upload-to-published, upload fails: says so" "$(contains "$out" "^::error::Uploading this run's assets to the published release pkg-v1\.0\.1 failed\.$")"
 release_run odd "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz b.tgz
 check "a view answer that is neither true nor false: exits 1, uploading and creating nothing" "$(is "$rc|$calls" "1|$view")"
-check "a view answer that is neither true nor false: the error names it" "$(contains "$out" '^::error::gh release view pkg-v1\.0\.1 printed null for isDraft, not true or false$')"
+check "a view answer that is neither true nor false: the error says so and names the file that keeps it" \
+  "$(contains "$out" '^::error::gh release view pkg-v1\.0\.1 answered neither true nor false for isDraft; gh answered the isDraft view with words this script does not print; they are in ')"
+check "a view answer that is neither true nor false: that file holds it" \
+  "$(is "$(kept_words "$(kept_in 'they are in ')")" null)"
 release_run none "" pkg-v1.0.1 "Pkg v1.0.1"
 check "no asset: exits 2, calling no gh" "$(is "$rc|$calls" "2|")"
 release_run none "" --draft pkg-v1.0.1 "Pkg v1.0.1" a.tgz
@@ -976,7 +1013,8 @@ section_run() {
   : > "$work/calls"
   set +e
   out=$(cd "$work" && GITHUB_REPOSITORY=example/repo GH_TEST_DIR="$work" GH_TEST_RELEASE=published \
-    GH_TEST_FAIL='' LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release-section pkg-v1.0.1 "$@" \
+    GH_TEST_FAIL='' GH_TEST_ANSWER_TO="$gh_answer_to" GH_TEST_ANSWERS="$gh_answers" \
+    LEAK_REFUSE="$leak_refuse" PATH="$work/bin:$PATH" "$release_push" release-section pkg-v1.0.1 "$@" \
     < "$work/section-stdin.md" 2>&1)
   rc=$?
   set -e
@@ -1131,21 +1169,73 @@ check "with the checkout: the body keeps its notes and gets the digest under ## 
   "$(is "$(<"$work/edited.md")" "$(printf 'Generated notes\n\n## Worker image\n\n`%s`' "$ref")")"
 
 echo
+echo "Case 11c: release and release-section print no word gh said or answered but the ones they expect"
+# Whatever answers gh's call in GitHub's place holds $GH_TOKEN, and writes gh's stderr and gh's
+# answer. Each row puts the marker in one of those, through the stub's knobs: the words of a
+# failed write, the answer of a write (gh prints the release's URL), the isDraft view's answer.
+# marker_row <what> <call> <named>: no run of the marker in what the run printed; the twin, the
+# file the line ending `<named><file>` names holds it; the control, the stub was asked the call,
+# a pattern over its log.
+marker_row() {
+  check "$1: prints no run of the marker" "$(prints_no_marker "$out")"
+  check "$1: twin: the file its line names holds the marker" "$(holds "$(kept_words "$(kept_in "$3")")")"
+  check "$1: control: the stub was asked for that call" "$(contains "$calls" "$2")"
+}
+url=https://github.com/example/repo/releases/tag/pkg-v1.0.1
+gh_says="HTTP 502: $marker (https://api.github.com/repos/example/repo/releases)"
+release_run none create pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "a create that fails saying the marker: exits non-zero" "$([ "$rc" != 0 ] && echo true || echo false)"
+marker_row "a create that fails saying the marker" '^\[release\]\[create\]' 'its own words are in '
+gh_says='' gh_answer_to=create gh_answers="$url"
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "control: a create answered with the release's own URL prints it" "$(is "$rc|$(contains "$out" "^$url\$")" '0|true')"
+gh_answers="$url $marker"
+release_run none "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "a create answered with the marker: exits 0, as it did" "$(is "$rc" 0)"
+marker_row "a create answered with the marker" '^\[release\]\[create\]' 'they are in '
+gh_answer_to=upload gh_answers=$marker
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "a draft's upload answered with the marker: publishes it, as it did" \
+  "$(is "$rc|$(contains "$out" '^Published the draft release pkg-v1\.0\.1 with this run.s assets$')" '0|true')"
+marker_row "a draft's upload answered with the marker" '^\[release\]\[upload\]' 'they are in '
+gh_answer_to=edit gh_answers="$url $marker"
+release_run draft "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "a draft's publish answered with the marker: published, as it was" \
+  "$(is "$rc|$(contains "$out" '^Published the draft release pkg-v1\.0\.1 with this run.s assets$')" '0|true')"
+marker_row "a draft's publish answered with the marker" '^\[release\]\[edit\]' 'they are in '
+gh_answer_to=upload gh_answers=$marker
+release_run published "" --upload-to-published pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "a published release's upload answered with the marker: exits 0, as it did" "$(is "$rc" 0)"
+marker_row "a published release's upload answered with the marker" '^\[release\]\[upload\]' 'they are in '
+gh_answer_to='' gh_answers=$marker
+release_run answers "" pkg-v1.0.1 "Pkg v1.0.1" a.tgz
+check "an isDraft view answered with the marker: exits 1, writing nothing, as it did" "$(is "$rc|$calls" "1|$(argv release view pkg-v1.0.1 --repo example/repo --json isDraft -q .isDraft)")"
+marker_row "an isDraft view answered with the marker" '^\[release\]\[view\]' 'they are in '
+printf 'Pkg v1.0.1, built from the tag.\n' > "$work/body.md"
+gh_answer_to=edit gh_answers="$url $marker"
+section_run '## Changelog' "$entries"
+check "a release-section edit answered with the marker: writes the section, as it did" \
+  "$(is "$rc|$(contains "$out" '^Wrote the ## Changelog section into the body of release pkg-v1\.0\.1$')" '0|true')"
+marker_row "a release-section edit answered with the marker" '^\[release\]\[edit\]' 'they are in '
+gh_answer_to='' gh_answers=''
+
+echo
 echo "Case 11b: restart leaves the release to a later unfinished run that holds this commit, else starts one"
 # The stub gh, first on PATH in a directory of its own. It logs each call to $GH_TEST_DIR/calls
 # as one line, each argument in brackets. `gh run list` prints $GH_TEST_RUNS, as `gh run list
 # --json databaseId,number,headSha,status` does; with $GH_TEST_LAND naming a clone, it first
 # lands a merge on origin's main from that clone, as a merge landing while the runs are listed
 # does, and lists that merge's queued run, number 101. `gh workflow run` prints a run URL, as gh
-# 2.102.0 does (nothing when $GH_TEST_QUIET is set). Either fails when $GH_TEST_FAIL names it
-# (list or run). Any other call fails as unexpected.
+# 2.102.0 does ($GH_TEST_URL, or run 7's; nothing when $GH_TEST_QUIET is set). Either fails when
+# $GH_TEST_FAIL names it (list or run), saying $GH_TEST_SAYS on stderr when it is set. Any other
+# call fails as unexpected.
 mkdir -p "$work/restart-bin"
 cat > "$work/restart-bin/gh" <<'GH'
 #!/usr/bin/env bash
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
   "run list")
-    [ "$GH_TEST_FAIL" != list ] || { echo "HTTP 502: the test failed this list" >&2; exit 1; }
+    [ "$GH_TEST_FAIL" != list ] || { echo "${GH_TEST_SAYS:-HTTP 502: the test failed this list}" >&2; exit 1; }
     if [ -n "$GH_TEST_LAND" ]; then
       git -C "$GH_TEST_LAND" commit -q --allow-empty -m "fix: a merge landing while the runs are listed"
       git -C "$GH_TEST_LAND" push -q origin HEAD:main
@@ -1154,8 +1244,8 @@ case "$1 $2" in
       printf '%s\n' "$GH_TEST_RUNS"
     fi ;;
   "workflow run")
-    [ "$GH_TEST_FAIL" != run ] || { echo "HTTP 403: Resource not accessible by integration" >&2; exit 1; }
-    [ -n "$GH_TEST_QUIET" ] || echo "https://github.com/example/repo/actions/runs/7" ;;
+    [ "$GH_TEST_FAIL" != run ] || { echo "${GH_TEST_SAYS:-HTTP 403: Resource not accessible by integration}" >&2; exit 1; }
+    [ -n "$GH_TEST_QUIET" ] || echo "${GH_TEST_URL:-https://github.com/example/repo/actions/runs/7}" ;;
   *) echo "unexpected gh call: $*" >&2; exit 3 ;;
 esac
 GH
@@ -1198,7 +1288,8 @@ restart_run() {
   set +e
   out=$(cd "$ra" && env GITHUB_REPOSITORY=example/repo GITHUB_REF_NAME=main GITHUB_RUN_NUMBER=100 \
     GITHUB_SERVER_URL=https://github.com GH_TEST_DIR="$work" GH_TEST_RUNS='[]' GH_TEST_FAIL='' \
-    GH_TEST_QUIET='' GH_TEST_LAND='' PATH="$work/restart-bin:$PATH" "$@" "$release_push" restart release.yaml "$lost" 2>&1)
+    GH_TEST_QUIET='' GH_TEST_LAND='' GH_TEST_SAYS='' GH_TEST_URL='' PATH="$work/restart-bin:$PATH" "$@" \
+    "$release_push" restart release.yaml "$lost" 2>&1)
   rc=$?
   set -e
   calls=$(<"$work/calls")
@@ -1246,8 +1337,9 @@ check "gh prints no URL: the notice says where to look" "$(contains "$out" 'so a
 restart_run 0 GH_TEST_FAIL=list
 check "gh run list fails: exits non-zero, starting nothing" "$([ "$rc" != 0 ] && [ "$calls" = "$list" ] && echo true || echo false)"
 restart_run 0 GH_TEST_FAIL=run
-check "gh workflow run fails: exits non-zero, gh's own error shown" \
-  "$(is "$([ "$rc" != 0 ] && echo failed || echo passed)|$(contains "$out" '^HTTP 403: Resource not accessible by integration$')" 'failed|true')"
+check "gh workflow run fails: exits non-zero, the log naming the file that keeps gh's own error" \
+  "$(is "$([ "$rc" != 0 ] && echo failed || echo passed)|$(contains "$(kept_words "$(kept_in 'gh-read\.sh: the command exited 1; its own words are in ')")" '^HTTP 403: Resource not accessible by integration$')" 'failed|true')"
+check "gh workflow run fails: and printing none of it" "$(is "$(contains "$out" 'Resource not accessible')" false)"
 # shellcheck disable=SC2016 # literal $(…), the forged count under test
 for lost in 'a[$(touch pwned)]' 1e3 100 01 ''; do
   restart_run "$lost"
@@ -1267,6 +1359,28 @@ restart_run 0 GH_TEST_LAND="$work/rs/b"
 landed=$(git -C "$work/rs/b" rev-parse HEAD)
 check "a merge that lands while the runs are listed: fetched after the list, so its run is waited for, not doubled" \
   "$(is "$rc|$calls|$(contains "$out" "is on main at $landed, which holds this commit")" "0|$list|true")"
+# Whatever answers gh's calls in GitHub's place holds $GH_TOKEN and writes the runs list, the run
+# URL gh prints and gh's words on a failure; each row puts the marker in one (marker_row, Case 11c).
+restart_run 0 GH_TEST_RUNS="\"$marker\""
+check "twin: jq's own words over that runs list quote the marker" \
+  "$(holds "$(jq -r '.[] | select(.status != "completed")' <<<"\"$marker\"" 2>&1 || true)")"
+check "a runs list jq cannot read, holding the marker: fails as jq does, starting nothing" \
+  "$(is "$rc|$calls" "5|$list")"
+check "a runs list jq cannot read: says so, naming jq's exit and the file that keeps the answer and jq's words" \
+  "$(contains "$out" "^::error title=No release run started::release-push\.sh restart: jq could not read gh run list's answer as a list of runs (jq exited 5); gh's answer, then jq's words, are in ")"
+marker_row "a runs list jq cannot read, holding the marker" '^\[run\]\[list\]' "gh's answer, then jq's words, are in "
+restart_run 0 GH_TEST_URL="https://github.com/example/repo/actions/runs/$marker"
+check "a run URL that is no run id, holding the marker: starts the run, as it did" "$(is "$rc|$calls" "0|$list"$'\n'"$(dispatch 1)")"
+check "a run URL that is no run id: the notice names the newest run and the file that keeps the URL" \
+  "$(contains "$out" '^::notice title=Release run started::another run took this run.s version first, so a new run on main, the newest run of release\.yaml (gh answered the run start with words this script does not print; they are in ')"
+marker_row "a run URL that is no run id, holding the marker" '^\[workflow\]\[run\]' 'they are in '
+restart_run 0 GH_TEST_FAIL=run GH_TEST_SAYS="HTTP 403: $marker (https://api.github.com/repos/example/repo/actions/workflows)"
+check "a run start that fails saying the marker: exits non-zero" "$([ "$rc" != 0 ] && echo true || echo false)"
+marker_row "a run start that fails saying the marker" '^\[workflow\]\[run\]' 'its own words are in '
+restart_run 0 GH_TEST_FAIL=list GH_TEST_SAYS="HTTP 502: $marker (https://api.github.com/repos/example/repo/actions/runs)"
+check "a runs list that fails saying the marker: exits non-zero, starting nothing" \
+  "$([ "$rc" != 0 ] && [ "$calls" = "$list" ] && echo true || echo false)"
+marker_row "a runs list that fails saying the marker" '^\[run\]\[list\]' 'its own words are in '
 
 echo
 echo "Case: push-tag pushes a tag with the deploy key and leaves no key behind"
