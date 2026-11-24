@@ -3168,13 +3168,4 @@ package api
 // The state's `workers` and `architect` name only the claim record.WorkerClaim gives for the
 // issue and role, and every other claim is under `otherClaims`; the keys and shapes are
 // unchanged, so every contract is served this correction.
-// (This entry took 245, above the base's 222 (the entry above), at a reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 514 open pull requests, made between
-// 2026-11-24T07:08:28Z and 07:09:16Z, which read all 514 and found 242 the highest number
-// declared, by #4596 and #4948, then 241 by #4771 and #5307 and 240 by #3831 and #5271; #5164 was
-// to take 243 and #5156 a number above it, neither declared at its head at that reading. A later
-// reading, of 492 open pull requests between 2026-11-24T11:07:24Z and 11:08:45Z, all read, found
-// #4960 at 245 too, so 245 is not this entry's alone: the merge of the base reads the base's own
-// number and every open pull request again and gives this entry the number it takes. Read them
-// again at that merge rather than from this line.)
 const DaemonAPIVersion = 245
