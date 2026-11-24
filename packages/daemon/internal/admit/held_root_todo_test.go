@@ -238,8 +238,9 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	// workflow as a parked root does (releaseUnslotted, workflow's LeaveUnslotted), done and
 	// lingering, with one unslotted notice for the controller and nothing started. The person's todo
 	// with the label then queues it again (readmit), so it never reaches the release of a hold
-	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The
-	// re-admission starts a new generation with no carry, which the hand-over's owner called no defect.
+	// (workflow's releaseHeldRoot) and no worker starts in a tree that has not opened. The leave
+	// already set the phase to done and cleared the hold, and a person's todo is no hand-over, so it
+	// is a readmit with no carry: a new generation at admitted, holding nothing the hand-over carried.
 	t.Run("a carried held root a person moves out of the line leaves the workflow, and its todo starts no worker", func(t *testing.T) {
 		const other = "LEGION-9"
 		pool := migratedPool(t)
