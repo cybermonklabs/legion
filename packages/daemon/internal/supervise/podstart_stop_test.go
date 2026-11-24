@@ -256,6 +256,9 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	h.wantGrantedStart(third, 1)
 	h.wantStartLine(third.token, podIssue, &podWait{claim: second.token, waited: podLoadSettle, endedBy: "failed launch"})
 	h.wantStarts(second.token, 0)
+	// The second's decision writes its cut-short line after it gives the pod on, so the third can
+	// start before the line is written.
+	h.postsReturned()
 	if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
 		t.Fatalf("cut-short lines of the stopped role = %d, want 1", len(lines))
 	}
@@ -302,7 +305,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.insideDecision(r.m, func() error {
 				now := h.clock.Now()
 				return r.m.parkWake(h.ctx, &wake{at: now.Add(time.Hour), reserved: now, kind: WakeLaunch, state: StateLaunching,
-					run: func(context.Context) error { return nil }}, time.Hour)
+					run: func(context.Context) error { return nil }})
 			})
 		}},
 		// A path added later that drops the parked wake and takes nothing out of the gate: the
@@ -440,14 +443,17 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 
 // pausedPodWithAWaitingStart is a pod whose first role has started and loads, and whose second
 // role's start waits at the gate for that load, in a project that has just paused (pause 7): the
-// first role's load ending grants the second's start during the pause.
-func pausedPodWithAWaitingStart(t *testing.T) (h *harness, first, second *podRole, flag *pauseFlag, stops *stopTransaction) {
+// first role's load ending grants the second's start during the pause. secondWorker, when not nil,
+// is the second machine's Deps.Worker, through which each of its timers and its grant run (fire).
+func pausedPodWithAWaitingStart(t *testing.T, secondWorker func(context.Context) context.Context) (h *harness, first, second *podRole, flag *pauseFlag, stops *stopTransaction) {
 	t.Helper()
 	h = podHarness(t, "")
 	flag, stops = &pauseFlag{}, &stopTransaction{store: h.store}
 	h.deps.Paused, h.deps.PauseStopped = flag.Paused, stops.PauseStopped
 	first = h.podRole(claim.RoleArchitect, StateSuspended)
+	h.deps.Worker = secondWorker
 	second = h.podRole(claim.RoleImplementer, StateSuspended)
+	h.deps.Worker = nil
 	h.mustPostTo(first.m, RequestResume{Claim: first.token})
 	h.wantStarts(first.token, 1)
 	h.parks(second, RequestResume{Claim: second.token}, 0)
@@ -471,7 +477,7 @@ func pauseStopPosted(r *podRole) bool {
 // pauseGate; decision 7 of dispatch://INFRA-3759), which the harness's clock fires when it moves.
 func grantedDuringAPause(t *testing.T) (h *harness, second *podRole, flag *pauseFlag, stops *stopTransaction) {
 	t.Helper()
-	h, first, second, flag, stops := pausedPodWithAWaitingStart(t)
+	h, first, second, flag, stops := pausedPodWithAWaitingStart(t, nil)
 	h.loadEnds(first)
 	testwait.Eventually(t, "the second's grant, during the pause, to start its process or to post its stop for the pause", func() bool {
 		return h.starts(second.token) > 0 || pauseStopPosted(second)

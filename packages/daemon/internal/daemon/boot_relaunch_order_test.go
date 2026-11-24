@@ -52,6 +52,13 @@ type bootRig struct {
 
 func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervise.Claim) *bootRig {
 	t.Helper()
+	return newBootRigEdited(t, n, store, nil, restored...)
+}
+
+// newBootRigEdited is newBootRig with edit, when not nil, changing its n unfinished launches before
+// the boot restores them.
+func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]supervise.Claim), restored ...supervise.Claim) *bootRig {
+	t.Helper()
 	project, _ := claim.ProjectToken("legion")
 	clock := newWaveClock()
 	r := &bootRig{t: t, rt: fake.NewRuntime(), limiter: wakepace.New(testWakeRate, testWakeBurst, nil), clock: clock, start: clock.Now()}
@@ -64,6 +71,9 @@ func newBootRig(t *testing.T, n int, store supervise.Store, restored ...supervis
 		r.claims = append(r.claims, supervise.Claim{Token: token, Project: project, Tree: issue, Issue: issue, Role: claim.RoleTester,
 			Generation: 1, State: supervise.StateLaunching, PluginContract: api.DaemonAPIVersion,
 			Pending: &supervise.Delivery{ID: fmt.Sprintf("row-%d", i+1), Task: "test the change", QueuedAt: r.start.Add(-time.Duration(i+1) * time.Minute)}})
+	}
+	if edit != nil {
+		edit(r.claims)
 	}
 	r.claims = append(r.claims, restored...)
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
@@ -223,6 +233,26 @@ func recordedDeathOwed(t *testing.T, owed time.Time) supervise.Claim {
 	c.DeathCharged, c.Budgets.Deaths, c.LastDeathCause = true, 1, "gone: pane %90 is gone"
 	c.Pending = &supervise.Delivery{ID: "row-90", Task: "implement the change", QueuedAt: owed, ConfirmedAt: owed, Interrupted: true}
 	return c
+}
+
+// A claim that holds only the daemon's own notice of its relaunch (queueRelaunch) owes no work, so
+// it goes behind every claim owed a task, however long ago its notice was queued: the notice is
+// the daemon's sentence of what the last process ended, not work a person waits on.
+func TestABootRelaunchOfAClaimHoldingOnlyItsRelaunchNoticeGoesBehindOwedWork(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	r := newBootRigEdited(t, n, &outboxClaimStore{}, func(claims []supervise.Claim) {
+		claims[n-1].Pending.ID = "relaunch:the-last-process-ended"
+	})
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims))); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 2)
+	r.wantWaitingAt(n-3, 1)
+	r.wantWaitingAt(n-4, 2)
+	r.wantWaitingAt(n-1, 3)
 }
 
 // A claim whose release the store refuses at the boot keeps the turn the boot reserved it in the
