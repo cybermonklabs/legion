@@ -240,7 +240,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
-/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
+/** `dispatch issue-update`: change one issue's fields, posting a closing reason first. `--labels-add`
+ *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
   const issueKey = issue();
@@ -256,6 +257,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const priority = optionalPriority(args, "priority");
   const assignee = optionalNullableString(args, "assignee");
   const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
+  const labelsAdd = optionalStringArray(args, "labels_add");
   const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
   const advances = optionalStringArray(args, "advances");
   const advancesRevision = optionalNumber(args, "advances_revision");
@@ -340,6 +342,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(status === undefined ? {} : { status }),
       ...(title === undefined ? {} : { title }),
       ...(labels === undefined ? {} : { labels }),
+      ...(labelsAdd === undefined ? {} : { labels_add: labelsAdd }),
       ...(priority === undefined ? {} : { priority }),
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
@@ -400,12 +403,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       : [`reason posted as message ${closingNote.id} (${closingNote.ref})`]),
     ...(status === undefined ? [] : [`status ${before.status} -> ${after.status}`]),
     ...(title === undefined ? [] : [`title "${after.title}"`]),
-    ...(labels === undefined
+    ...(labels === undefined && labelsAdd === undefined
       ? []
       : [
-          (after.labels ?? []).length === 0
-            ? "labels cleared"
-            : `labels ${(after.labels ?? []).join(", ")}`,
+          (after.labels ?? []).length > 0
+            ? `labels ${(after.labels ?? []).join(", ")}`
+            : labels === undefined
+              ? "labels none"
+              : "labels cleared",
         ]),
     ...(priority === undefined
       ? []

@@ -180,6 +180,9 @@ type overrides struct {
 	environ []string
 	// orphanSweep is how often orphans are reconciled; zero is orphanSweepInterval.
 	orphanSweep time.Duration
+	// outboxSweep is how often the outbox sweeps its lanes (outbox.sweepEvery, which attach hands
+	// it); zero is outboxLease.
+	outboxSweep time.Duration
 	// controllerRetry is the first wait before a failed daemon-launched controller is retried; zero
 	// is controllerRetryFirst.
 	controllerRetry time.Duration
@@ -205,9 +208,10 @@ type overrides struct {
 	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
 	catchUpRetry time.Duration
 	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
-	// between attempts that failed transiently, and the rate-limit policy; nil is
-	// productionAppCalls. A test of the boot's App calls shortens them for the daemons it boots
-	// alone, so it runs beside every other test.
+	// between attempts that failed transiently, the rate-limit policy, and the clock every wait of
+	// theirs reads and waits on; nil is productionAppCalls. A test of the boot's App calls shortens
+	// them, or puts their waits on a clock of its own, for the daemons it boots alone, so it runs
+	// beside every other test.
 	appCalls *appCallBounds
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
@@ -235,6 +239,11 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// streamListen takes the worker stream's listener for the address the stream binds
+	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
+	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
+	// between its pick and a bind (controllerSandboxRig).
+	streamListen func(network, address string) (net.Listener, error)
 	// strandedReported runs once the boot's report of the claims nothing will wake has finished,
 	// whether it logged or not (reportStranded); nil, in production, is nothing. The report runs
 	// beside the API, so a test that asserts on its line waits for this rather than for /healthz.
@@ -459,7 +468,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// App's JWT mints no token for an owner (proveAppKeys); every other step of the boot that reads
 	// GitHub or writes a cache's credential mints the token that step needs. The fill of a record
 	// that lacks its repository columns (backfillRepositories) makes one read per such record,
-	// bounded by installReadAttempt, and a read that fails leaves the record for the refresher
+	// bounded by the read attempt bound (repositoryReadBounds.attempt), and a read that fails leaves the record for the refresher
 	// rather than refusing the boot. The one-time rename pass (renameAtBoot, below) reads GitHub for
 	// a configured pair only while a stored row still names the pair's `from` (renamePass.run). The
 	// refresher prepares the records' repositories once the API serves (prepareAtStart), beside
@@ -483,6 +492,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
@@ -1038,6 +1048,8 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
+	// streamListen is overrides.streamListen; nil binds the worker stream's address.
+	streamListen func(network, address string) (net.Listener, error)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1161,7 +1173,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1779,7 +1791,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
 	sup.beforeDecision = p.beforeDecision
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log, Listen: p.streamListen})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1841,6 +1853,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
 		Worker: store.ForConcurrentWorker,
+		// A claim write's bound counts from its connection: a boot relaunches every unfinished
+		// claim at once through the one pool, and a bound that counted the queue for it cut the
+		// last writes for the writes ahead of them (supervise.Deps.BoundWrite).
+		BoundWrite: store.BoundAfterAcquire,
 		Limits: supervise.Limits{
 			LaunchFailures: cfg.LaunchFailureLimit,
 			PromptFailures: cfg.PromptFailureLimit,
@@ -3035,10 +3051,11 @@ type source struct {
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
-// close among them — asks for one read of the live records once its transaction commits (live,
-// the workflow's wakeLive, which holds one request at most), so the repository caches and legion
-// state follow the records without a timer. live is nil where no refresher runs.
+// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
+// tree's close and its root's re-admission among them — asks for one read of the live records once
+// its transaction commits (live, the workflow's wakeLive, which holds one request at most), so the
+// repository caches and legion state follow the records without a timer. live is nil where no
+// refresher runs.
 type projectRecords struct {
 	record.Store
 	project string
@@ -3071,6 +3088,15 @@ func (s projectRecords) ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue
 	}
 	s.liveOnCommit(ctx)
 	return nil
+}
+
+func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
+	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
+	if err != nil {
+		return nil, err
+	}
+	s.liveOnCommit(ctx)
+	return released, nil
 }
 
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
@@ -3409,6 +3435,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 				view.ArchitectStalls = arms
 				state.Issues[key] = view
 			}
+		}
+	}
+	// The standing hold of each issue's pod, read from pod_holds in the same snapshot, one
+	// statement for the whole project. The idle rule writes it to that table alone, so this is the
+	// one surface that says why a quiet pod still runs. pod_holds is
+	// keyed on the claim token's spelling of the project, as the idle pass writes it
+	// (releaseUnownedPods says why the two spellings differ).
+	holds, err := s.store.StandingPodHoldsTx(ctx, tx, s.projectToken)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	for key, hold := range holds {
+		if view, shown := state.Issues[key]; shown {
+			view.PodHold = api.PodHoldViewOf(hold)
+			state.Issues[key] = view
 		}
 	}
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)

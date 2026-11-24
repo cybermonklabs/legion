@@ -18,7 +18,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("skills/**", f"scripts/pi-plugin-prepack.sh:103 stages the plugin's skills, run by {at('pi-legion-build', 'Pack pi-legion')}"),
     ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion-build', 'Pack pi-legion')})"),
     ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:100 writes dist/THIRD_PARTY_NOTICES with it"),
-    ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
+    ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:19 imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + bun_job("pi-legion-build"))

@@ -270,6 +270,18 @@ const MaxIssueBlockers = 20
 // one number.
 const MaxIssueAdvances = 20
 
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = 20
+const IssueLabelMax = 40
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = 50
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -551,7 +563,8 @@ const DispatchLoginChanged = "LOGIN_CHANGED"
 const IDAmbiguous = "ID_AMBIGUOUS"
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"

@@ -81,6 +81,14 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ProjectScope is a broker-issued token's project scope as the broker answered it
+	// (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry mapped, `person`
+	// for one acting as its person or for a machine nobody signed in on, `none` for a read-only
+	// token. It is what tells a token that names a service and no person apart: a `named` one is
+	// an account entry's that names no person, whose writes are recorded under its account
+	// (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in on,
+	// which writes nothing. Empty for every other credential.
+	ProjectScope string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -872,6 +880,11 @@ type SearchResult struct {
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
+	// Author is who wrote a comment, a message or an ask hit, read from the item's row once
+	// GET /api/v1/search ran (api.attachAskStates, api.attachItemAuthors), so a reader of the hit
+	// alone can say who said it. It is nil on an issue hit and a document hit, and on an item
+	// removed after the search ran.
+	Author *Actor `json:"author,omitempty"`
 }
 
 // SearchQueryReading is how GET /api/v1/search read the words it was given: Operators names the
@@ -1830,6 +1843,37 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
+	// that version names as its precondition's document token, and what `dispatch doc-read`
+	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
+	// carries none here, since a document's token is its live tree's (GET
+	// /api/v1/artifacts/{id}/text).
+	Token *string `json:"token,omitempty"`
+}
+
+// FileVersionToken is the token of a file's or an image's version whose bytes have the SHA-256
+// sha (hex), written as a document token is. It is the one place the token is made, for the
+// reads that state it and the upload that checks it, so what `dispatch doc-read` prints is what
+// the upload compares.
+func FileVersionToken(sha string) string {
+	return "sha256:" + sha
+}
+
+// StateFileTokens sets each version's Token from its SHA256 where kind, the artifact's, is a
+// file or an image, for versions read from their rows. A document's versions get none whatever
+// their rows hold: a document's token is its live tree's, and a hash its row held would be no
+// token an upload of it takes. A file's version stored with no hash gets none either, so an
+// upload naming a token for it is refused.
+func StateFileTokens(kind string, versions []Version) {
+	if kind != "file" && kind != "image" {
+		return
+	}
+	for index := range versions {
+		if sha := versions[index].SHA256; sha != nil {
+			token := FileVersionToken(*sha)
+			versions[index].Token = &token
+		}
+	}
 }
 
 // VersionSize is the SQL a version's Size is selected with, over artifact_versions aliased v. A

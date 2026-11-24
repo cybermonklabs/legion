@@ -35,6 +35,7 @@ func queuedAcrossProcesses(t *testing.T, database *store.Store, artifactID strin
 // (task B's first holds its own turn). The 33rd is refused on either process, though neither
 // process's own queue is near 32. Once every edit has left, no row remains.
 func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	pair.runRoomSync(t)
 	database, artifactID, taskA, taskB := pair.database, pair.artifactID, pair.taskA, pair.taskB
@@ -110,6 +111,7 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 // down - counts for nothing: a full queue written by such a process does not refuse an edit, and
 // the admission deletes its row. A member's row counts.
 func TestANonMembersConditionalEditsCountForNothingAndAreDeleted(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	pair.runRoomSync(t)
 	database, artifactID, taskA, taskB := pair.database, pair.artifactID, pair.taskA, pair.taskB
@@ -146,6 +148,7 @@ func TestANonMembersConditionalEditsCountForNothingAndAreDeleted(t *testing.T) {
 // process wait for it through one connection, the rest waiting in memory, and an admission whose
 // context ends while it waits there leaves. Once the lock is released every admission completes.
 func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnection(t *testing.T) {
+	t.Parallel()
 	const storm = 20
 	// pileUpWindow is how long the test leaves the admissions to pile onto the lock: far longer
 	// than twenty goroutines take to reach Begin, and it is only the passing case that waits it out.

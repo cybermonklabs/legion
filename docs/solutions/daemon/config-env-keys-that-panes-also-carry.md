@@ -1,4 +1,4 @@
-> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." The rig this entry describes no longer exists; keep the learning, not the procedure.
+> **Suspended 2026-09-13.** Sami: "Please shutdown the goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554) The rig this entry describes no longer exists; keep the learning, not the procedure.
 
 ---
 title: "Config env keys the daemon also exports to its panes: LEGION_DAEMON_URL, LEGION_STATE_DIR, and the tmux daemon_url guard"

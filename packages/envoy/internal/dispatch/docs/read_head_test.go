@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A read is never older than the stored head, nor than the room (plan D8): a resident room whose
@@ -116,7 +117,7 @@ func newReadPair(t *testing.T) readPair {
 	runRoomSync(t, newRoomSync(reader))
 	// Runs before the room sync stops and the services shut down: a catch-up held then would
 	// keep the lane, and so both, from returning.
-	t.Cleanup(gate.open)
+	testcleanup.Add(t, gate.open)
 	waitFor(t, roomWait(t), "the reader's room to stand at the head", func() bool {
 		return !roomBehind(t, reader, artifactID)
 	})
@@ -165,7 +166,7 @@ func (pair readPair) typeIntoTheRoomBehindTheHead(t *testing.T, text string) (la
 	}
 	var once sync.Once
 	release := func() { once.Do(func() { _ = locked.Rollback(ctx) }) }
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	if err := lockDocumentRoom(ctx, locked, pair.artifactID); err != nil {
 		t.Fatalf("hold the document's lock: %v", err)
 	}
@@ -188,6 +189,7 @@ func (pair readPair) typeIntoTheRoomBehindTheHead(t *testing.T, text string) (la
 // do (readDocument through heldTree, and docTree), inside a joined transaction as well as outside
 // one. Once the catch-up lands, the same reads come from the room, with no decode of the store.
 func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoom(t *testing.T) {
+	t.Parallel()
 	pair := newReadPair(t)
 	ctx := context.Background()
 	room := pair.reader.srv.GetDoc(pair.artifactID)
@@ -270,6 +272,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 // answer without text this process has already sent the browser that typed it. Once the room's own
 // append has landed, the store holds both and the read is the stored document itself.
 func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(t *testing.T) {
+	t.Parallel()
 	pair := newReadPair(t)
 	ctx := context.Background()
 	const written = "Second, written on the other process."
@@ -322,6 +325,7 @@ func TestAReadOfARoomBehindTheHeadHoldingItsOwnUpdateReadsTheStoreAndThatUpdate(
 // A mark stored while VerifyMark waits wakes it through the reader's room once the catch-up
 // applies it.
 func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
+	t.Parallel()
 	pair := newReadPair(t)
 	pair.reader.markWait = roomWait(t)
 
@@ -387,6 +391,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 // the catch-up landed, so the look would wait out its whole MarkWait and answer ErrAnchorMissing,
 // while the mark has been durable all along (the comment at VerifyMark).
 func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *testing.T) {
+	t.Parallel()
 	pair := newReadPair(t)
 	pair.reader.markWait = roomWait(t)
 	const typed = "Typed into the room behind the head."
@@ -425,6 +430,7 @@ func TestVerifyMarkOnARoomBehindTheHeadHoldingItsOwnUpdateFindsTheStoredMark(t *
 // token of a document that never stood - one without the committed write - and would refuse that
 // edit.
 func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *testing.T) {
+	t.Parallel()
 	pair := newReadPair(t)
 	ctx := context.Background()
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
