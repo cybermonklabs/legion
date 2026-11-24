@@ -3858,6 +3858,30 @@
         "base": "701c38c846185fcd8f82a9cfef7ee822c04c05c9",
         "files": ["packages/envoy-client/src/__tests__/dispatch-url-join.test.ts"],
         "capture": "dispatch-http.url/unparsed-query/JSON.stringify"
+      },
+      {
+        "row": "dispatchread-dispatch-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/dispatchread/url_join_test.go"],
+        "capture": "dispatchread.dispatch-url/unparsed"
+      },
+      {
+        "row": "wake-envoy-url-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/wake/url_join_test.go"],
+        "capture": "wake.envoy-url/unparsed"
+      },
+      {
+        "row": "secrets-github-api-base-unparsed",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/secrets/githubapp_url_join_test.go"],
+        "capture": "secrets.github-api-base/unparsed"
+      },
+      {
+        "row": "approval-public-url-refused",
+        "base": "ec7bd4500aa4a318f0382f6456ece138f32f27f5",
+        "files": ["packages/envoy/internal/cipher/approval/public_url_words_internal_test.go"],
+        "capture": "approval.public-url/refused"
       }
     ],
     "boundary_fields": {
@@ -4067,7 +4091,7 @@
           "why": "a test's own words, for the value a client would have decoded from an answer: Said is a maker (gate.answers.makers), so the census holds every call of it outside a test file to the record rule, and only test files call it"
         }
       ],
-      "functions": ["Holds"],
+      "functions": ["Holds", "Unmarshal"],
       "decoders": [
         "encoding/json.Unmarshal",
         "(*encoding/json.Decoder).Decode",
@@ -10358,10 +10382,10 @@
     },
     {
       "id": "dispatchread-redirect-unparsed",
-      "requirement": "r3-each-site",
+      "requirement": "r1-remote-text",
       "package": "./internal/cipher/dispatchread",
       "test": "TestADispatchReadRedirectPrintsNoLocationOfIt/unparsed",
-      "production": "dispatchread Reader.Get: a read whose Location does not parse is ErrNoAnswer named by its class (redact.Class)",
+      "production": "dispatchread Reader.Get: a read whose Location net/http could not parse is ErrNoAnswer naming the path and the failure's class (redact.Class), never net/http's text, which quotes the Location",
       "function": "(github.com/sjawhar/envoy/internal/cipher/dispatchread.Reader).Get",
       "capture": "dispatchread.redirect/unparsed",
       "mutation": {
@@ -14565,6 +14589,321 @@
         "preimage": "\t_, _ = io.WriteString(w, body.Words().String())",
         "replacement": "\tredact.Holds(body, func(b []byte) bool { _, _ = io.WriteString(w, string(b)); return true })"
       }
+    },
+    {
+      "id": "dispatchread-dispatch-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadGoesToThePathJoinedOntoTheDispatchURL/query",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL with a path and a query (http://host/dispatch?sig=...) asks that path joined with the route, the configured query kept ahead of the read's own parameters (urljoin.Join: /dispatch/api/v1/access/projects/PRIV?sig=...&project=PRIV), where the route appended to the URL's text sat inside the query and Dispatch was asked /dispatch with a second \"?\" in it"
+    },
+    {
+      "id": "dispatchread-dispatch-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadGoesToThePathJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL whose path ends in a slash and that has a query (http://host/dispatch/?sig=...) asks /dispatch/api/v1/...?sig=...&project=PRIV, where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "dispatchread-dispatch-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadGoesToThePathJoinedOntoTheDispatchURL/fragment",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL with a fragment (http://host/dispatch#pane) asks /dispatch/api/v1/... and the read's URL holds no fragment, which no request sends, where the route appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "dispatchread-dispatch-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadGoesToThePathJoinedOntoTheDispatchURL/no-query",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL with a path and no query (http://host/dispatch) asks /dispatch/api/v1/... with the read's parameters alone, as before the join"
+    },
+    {
+      "id": "dispatchread-dispatch-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestAProjectAccessURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed project-access URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "dispatchread-dispatch-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestAProjectAccessURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL that url.Parse refuses fails the read in this package's own words naming the setting, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included"
+    },
+    {
+      "id": "dispatchread-dispatch-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestAProjectAccessURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed project-access URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "dispatchread-dispatch-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestAProjectAccessURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "dispatchread Reader.Get: a BROKER_PROJECT_ACCESS_URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) fails the read in this package's own words, never http.NewRequest's error, which quotes that URL whole"
+    },
+    {
+      "id": "wake-envoy-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeGoesToThePathJoinedOntoTheEnvoyURL/query",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL with a path and a query (http://host/envoy?sig=...) posts the notice to that path joined with /v1/messages/send, the query kept (urljoin.Join: /envoy/v1/messages/send?sig=...), where the route appended to the URL's text sat inside the query and the listener was asked /envoy"
+    },
+    {
+      "id": "wake-envoy-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeGoesToThePathJoinedOntoTheEnvoyURL/query-trailing-slash",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL whose path ends in a slash and that has a query (http://host/envoy/?sig=...) posts to /envoy/v1/messages/send?sig=..., where the route appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "wake-envoy-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeGoesToThePathJoinedOntoTheEnvoyURL/fragment",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL with a fragment (http://host/envoy#pane) posts to /envoy/v1/messages/send and the notice's URL holds no fragment, which no request sends, where the route appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "wake-envoy-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeGoesToThePathJoinedOntoTheEnvoyURL/no-query",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL with a path and no query (http://host/envoy) posts to /envoy/v1/messages/send, as before the join"
+    },
+    {
+      "id": "wake-envoy-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestAnEnvoyURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed Envoy-URL row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "wake-envoy-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestAnEnvoyURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL that url.Parse refuses is logged in this package's own words naming the setting, with nothing read of the broker's account token and nothing sent, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included"
+    },
+    {
+      "id": "wake-envoy-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestAnEnvoyURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Envoy-URL row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "wake-envoy-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestAnEnvoyURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "wake Envoy.Notify: a BROKER_ENVOY_URL url.Parse takes whose joined URL, as url.URL.String writes it, url.Parse refuses (an IPv6 zone escape) is logged in this package's own words, never http.NewRequest's error, which quotes that URL whole"
+    },
+    {
+      "id": "approval-signin-callback-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestTheSignInCallbackIsJoinedOntoThePublicURL/query",
+      "production": "approval New: a BROKER_PUBLIC_URL with a path and a query (https://host/broker?sig=...) gives the sign-in the redirect URI https://host/broker/signin/callback?sig=..., the query kept as RFC 6749 section 3.1.2 says it must be (urljoin.JoinURL), where the path appended to the URL's text sat inside the query and the provider was given a redirect URI naming /broker"
+    },
+    {
+      "id": "approval-signin-callback-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestTheSignInCallbackIsJoinedOntoThePublicURL/query-trailing-slash",
+      "production": "approval New: a BROKER_PUBLIC_URL whose path ends in a slash and that has a query gives the redirect URI https://host/broker/signin/callback?sig=..., where the path appended to the URL's text sat inside the query"
+    },
+    {
+      "id": "approval-signin-callback-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestTheSignInCallbackIsJoinedOntoThePublicURL/fragment",
+      "production": "approval New: a BROKER_PUBLIC_URL with a fragment gives the redirect URI https://host/broker/signin/callback with no fragment, which RFC 6749 section 3.1.2 forbids in a redirection endpoint, where the path appended to the URL's text sat inside the fragment"
+    },
+    {
+      "id": "approval-signin-callback-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestTheSignInCallbackIsJoinedOntoThePublicURL/no-query",
+      "production": "approval New: a BROKER_PUBLIC_URL with a path and no query gives https://host/broker/signin/callback, as before the join"
+    },
+    {
+      "id": "approval-signin-callback-origin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestTheSignInCallbackIsJoinedOntoThePublicURL/origin",
+      "production": "approval New: a BROKER_PUBLIC_URL with no path at all, which config.Load holds it to, gives https://host/signin/callback, as before the join"
+    },
+    {
+      "id": "approval-public-url-refused-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestAPublicURLThePageRefusesPrintsNoCredentialOfIt/twin",
+      "production": "the probe of the refused public-URL row: the URL as written holds the user name, the password and the token, so the row can see one printed"
+    },
+    {
+      "id": "approval-public-url-refused",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/approval",
+      "test": "TestAPublicURLThePageRefusesPrintsNoCredentialOfIt/refused",
+      "production": "approval New: a BROKER_PUBLIC_URL of another scheme is refused naming the URL as the rule reads it (redact.URL), never as written, as config.Load's own refusal of that variable names it",
+      "function": "github.com/sjawhar/envoy/internal/cipher/approval.New",
+      "capture": "approval.public-url/refused",
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/approval/approval.go",
+        "preimage": "redact.URL(cfg.PublicURL)",
+        "replacement": "func() string { _ = redact.URL; return cfg.PublicURL }()"
+      }
+    },
+    {
+      "id": "api-metadata-endpoints-joined",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheMetadataDocumentJoinsItsEndpointsOntoThePublicURL",
+      "production": "api authorizationServerMetadata: every endpoint of the RFC 8414 document is its path joined onto BROKER_PUBLIC_URL's path with the configured query kept after it (publicURL, urljoin.Join), which RFC 6749 section 3.1 requires of an endpoint URI that carries a query, where the path appended to the URL's text sat inside that query and named /broker with the query's value changed; the issuer is the URL as the deployment set it, the identifier the document is published under"
+    },
+    {
+      "id": "api-proof-htu-joined",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestAProofIsCheckedAgainstThePathJoinedOntoThePublicURL/joined",
+      "production": "api proofSubject: the htu a session's proof is checked against is the request's path joined onto BROKER_PUBLIC_URL's path, the configured query kept (publicURL), the same join agent-secrets makes when it signs the proof, where the path appended to the URL's text sat inside that query"
+    },
+    {
+      "id": "api-proof-htu-appended",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestAProofIsCheckedAgainstThePathJoinedOntoThePublicURL/appended",
+      "production": "api proofSubject: a proof naming the path appended to BROKER_PUBLIC_URL's text, which the broker compared against before the join, is refused PROOF_INVALID: the control that shows the htu comparison can fail"
+    },
+    {
+      "id": "api-approve-url-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/query",
+      "production": "api approveURL: a BROKER_PUBLIC_URL with a path and a query names the record's page https://host/broker/approve/<record>?sig=..., the query kept (publicURL), where /approve/<record> appended to the URL's text sat inside the query and named /broker"
+    },
+    {
+      "id": "api-approve-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/query-trailing-slash",
+      "production": "api approveURL: a BROKER_PUBLIC_URL whose path ends in a slash and that has a query names https://host/broker/approve/<record>?sig=..."
+    },
+    {
+      "id": "api-approve-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/fragment",
+      "production": "api approveURL: a BROKER_PUBLIC_URL with a fragment names https://host/broker/approve/<record> and no fragment, which no request sends"
+    },
+    {
+      "id": "api-approve-url-no-url",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/no-url",
+      "production": "api approveURL: a Deps whose PublicURL is no absolute URL with a host, which config.Load refuses, names no page at all rather than a relative /approve/<record> an answer would carry"
+    },
+    {
+      "id": "api-approve-url-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/no-query",
+      "production": "api approveURL: a BROKER_PUBLIC_URL with a path and no query names https://host/broker/approve/<record>, as before the join"
+    },
+    {
+      "id": "api-approve-url-origin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/origin",
+      "production": "api approveURL: a BROKER_PUBLIC_URL with no path, which config.Load holds it to, names https://host/approve/<record>, as before the join"
+    },
+    {
+      "id": "api-approve-url-no-page",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/api",
+      "test": "TestTheApprovalLinkIsJoinedOntoThePublicURL/no-page",
+      "production": "api approveURL: a broker with BROKER_SIGNIN=off (Deps.Approval nil) names no page, so every answer leaves approve_url out, as before the join"
+    },
+    {
+      "id": "secrets-github-api-base-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAppMintGoesToThePathsJoinedOntoTheAPIBase/query",
+      "production": "secrets GitHubApp.at: a BROKER_AIRLOCK_TEST_GITHUB_API_BASE with a path and a query (http://host/github?sig=...) lists /github/app/installations with the base's query first and per_page=100&page=1 after, and asks for a token at /github/app/installations/1/access_tokens?sig=... (urljoin.Join), where the path appended to the base's text sat inside the query and GitHub was asked /github with a second \"?\" in it"
+    },
+    {
+      "id": "secrets-github-api-base-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAppMintGoesToThePathsJoinedOntoTheAPIBase/query-trailing-slash",
+      "production": "secrets GitHubApp.at: a base whose path ends in a slash and that has a query lists /github/app/installations with the base's query first, where the path appended to its text sat inside the query"
+    },
+    {
+      "id": "secrets-github-api-base-fragment",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAppMintGoesToThePathsJoinedOntoTheAPIBase/fragment",
+      "production": "secrets GitHubApp.at: a base with a fragment lists /github/app/installations and the call's URL holds no fragment, which no request sends, where the path appended to its text sat inside the fragment"
+    },
+    {
+      "id": "secrets-github-api-base-no-query",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAppMintGoesToThePathsJoinedOntoTheAPIBase/no-query",
+      "production": "secrets GitHubApp.at: a base with a path and no query lists /github/app/installations with the listing's own parameters alone, as before the join"
+    },
+    {
+      "id": "secrets-github-api-base-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAPIBaseThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed GitHub-API-base row: http.NewRequest's error for that URL quotes its user information and its access token, so the row can see them printed"
+    },
+    {
+      "id": "secrets-github-api-base-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAPIBaseThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "secrets GitHubApp.at: a BROKER_AIRLOCK_TEST_GITHUB_API_BASE that url.Parse refuses fails the mint in fixed words naming the setting, never url.Parse's error, which http.NewRequest's carried and which quotes the URL whole, its user information and query included"
+    },
+    {
+      "id": "secrets-github-api-base-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAPIBaseThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed GitHub-API-base row: url.Parse takes that URL, and http.NewRequest's error for the URL joined from it quotes its user information and its access token"
+    },
+    {
+      "id": "secrets-github-api-base-reparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/secrets",
+      "test": "TestAGitHubAPIBaseThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "secrets githubRequest: a URL joined from BROKER_AIRLOCK_TEST_GITHUB_API_BASE that url.URL.String writes as text url.Parse refuses again (an IPv6 zone escape) fails the mint in fixed words naming the setting, never http.NewRequest's error, which quotes that URL whole"
+    },
+    {
+      "id": "exchange-workflow-repository-shape",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/exchange",
+      "test": "TestAWorkflowsRepositoryIsHeldToGitHubsOwnShape",
+      "production": "exchange NewSet: a workflow entry's repository is held to githubname.ValidEntry, this broker's one rule for the shape of GitHub's own words, so \"ada/.\" and \"ada/..\", which name no repository in a path and which the package's own grammar took, are refused"
+    },
+    {
+      "id": "redact-unmarshal-answer-data",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalReadsAnAnswerAsItsData",
+      "production": "redact Unmarshal: an answer whose destination takes its text as it came (a json.RawMessage), which Answer.Decode refuses, is read through this one function, which reads the body where it is rather than through a buffer of the caller's"
+    },
+    {
+      "id": "redact-unmarshal-undecodable-body",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestUnmarshalNamesABodyThatDoesNotDecodeWithoutQuotingIt",
+      "production": "redact Unmarshal: a body that is not the JSON the destination holds is DecodeError's fixed text, naming the member at fault and no value of the body"
     }
   ],
   "bun": [
@@ -17604,6 +17943,51 @@
       "site": "an OAuth refusal told apart by the library error's name: device-login.ts refusedCode, person-identity.ts grantRefused and issuerSaid, token-client.ts brokerRefusal (LibraryError.answeredOAuthError)",
       "source": "the round-8 quality review",
       "guard": "broker-refusal-subclass-ts"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/dispatchread/dispatchread.go Reader.Get",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatchread-dispatch-url-query"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/wake/envoy.go Envoy.Notify",
+      "source": "the round-9 decisions of #4368",
+      "guard": "wake-envoy-url-query"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/approval/approval.go New",
+      "source": "the round-9 decisions of #4368",
+      "guard": "approval-signin-callback-query"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/api/handlers_metadata.go authorizationServerMetadata",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-metadata-endpoints-joined"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/api/server.go proofSubject",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-proof-htu-joined"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/api/server.go approveURL",
+      "source": "the round-9 decisions of #4368",
+      "guard": "api-approve-url-query"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/secrets/githubapp.go GitHubApp.at",
+      "source": "the round-9 decisions of #4368",
+      "guard": "secrets-github-api-base-query"
+    },
+    {
+      "site": "packages/envoy/internal/cipher/exchange/exchange.go NewSet",
+      "source": "the round-8 quality review",
+      "guard": "exchange-workflow-repository-shape"
+    },
+    {
+      "site": "packages/envoy/internal/redact/decode_error.go Unmarshal",
+      "source": "the round-8 quality review",
+      "guard": "redact-unmarshal-answer-data"
     }
   ]
 }
