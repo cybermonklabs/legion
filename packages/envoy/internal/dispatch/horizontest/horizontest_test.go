@@ -99,8 +99,8 @@ func heldRead(t *testing.T, database string, since time.Duration) Warning {
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
-	// A foreign holder: another service's transaction on the same Postgres instance, which holds
-	// the horizon back and is no defect of Dispatch's, however long it has stood.
+	// A foreign holder: an event write of another database, which a horizon reading that database
+	// reports, and which is no defect of this test's, however long it has stood.
 	foreign := FromLine(stallWarningLine("legion_daemon", 2*OwnHoldBound))
 	// warnStall's other two arms carry no database= field at all.
 	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
@@ -267,7 +267,7 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 		if failure := pastBoth(NewWatch(t, none, ownDatabase, nil)).Failure(what); !strings.Contains(failure, "never said it was held back") {
 			t.Errorf("a silent horizon past Base: Failure = %q, want the base bound's failure", failure)
 		}
-		if failure := pastBoth(NewWatch(t, none, ownDatabase, noHolder{})).Failure(what); !strings.Contains(failure, "no transaction on the instance holds a transaction id now") {
+		if failure := pastBoth(NewWatch(t, none, ownDatabase, noHolder{})).Failure(what); !strings.Contains(failure, "no event write of the database is open now") {
 			t.Errorf("a silent horizon past Base whose holder the watch read and found none: Failure = %q, want the base bound's failure naming that read", failure)
 		}
 		warned := []Warning{FromLine(stallWarningLine("other_service", time.Second))}
@@ -335,9 +335,16 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 	t.Run("the drain", func(t *testing.T) {
 		held := inProcess(t, heldBy{database: "other_service", since: time.Minute}, true)
 		held.Failure(what)
+		// The read that found the holder was an hour before the drain: the failure says so, and
+		// gives the holder's own age at that read, not the hour.
+		held.heldAt = held.heldAt.Add(-time.Hour)
 		held.drain = time.Now().Add(-time.Millisecond)
-		if failure := held.Failure(what); !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "database=other_service") {
+		failure := held.Failure(what)
+		if !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "database=other_service") {
 			t.Errorf("past the drain after a read found a foreign holder: Failure = %q, want the drain's failure naming %q and that holder", failure, what)
+		}
+		if !strings.Contains(failure, "was read 1h0m0") || !strings.Contains(failure, "held its transaction id for 1m0s") {
+			t.Errorf("past the drain an hour after the read that found a holder of a minute: Failure = %q, want it to say the read was an hour before and the holder had stood a minute", failure)
 		}
 		unread := inProcess(t, refused, true)
 		unread.Failure(what)
@@ -384,7 +391,7 @@ func (h heldBy) Scan(dest ...any) error {
 	return nil
 }
 
-// noHolder is a Querier whose holder read finds no transaction holding an id on the instance.
+// noHolder is a Querier whose holder read finds no event write of the database open.
 type noHolder struct{}
 
 func (noHolder) QueryRow(context.Context, string, ...any) pgx.Row { return failedRow{pgx.ErrNoRows} }

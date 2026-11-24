@@ -12,8 +12,9 @@ import (
 // waitEventsStart waits for subscription sub's events_start frame on conn, which the caller has
 // just subscribed, and returns once it has arrived. events_start is the last thing a new
 // subscription sends: the relay awaits the event horizon and writes the frame only once Await has
-// returned, and the horizon's proof is instance-wide, so no fixed deadline bounds the wait. It is
-// on the server's own account of itself instead (internal/dispatch/horizontest, which carries the
+// returned, and every event write of the process's database holds the horizon back until it ends,
+// so no fixed deadline bounds the wait. It is on the server's own account of itself instead
+// (internal/dispatch/horizontest, which carries the
 // bounds and their measurements): while the process keeps logging events.StallWarning the wait
 // goes on, and it fails - with the process's whole output, naming the newest warning - when the
 // process never said it was held, when it stopped saying so, or when the hold is one in the

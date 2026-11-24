@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A recovery held for the Dispatch consumer now tells its release waits at its hold bound, or as
+    soon as another job of the repository refresher that was running when the bound fell (a read of
+    the live records, say) ends. The refresher's loop came back to a bound already passed, found no
+    time left, and so cut nothing, and the waits were told at the refresher's next backoff instead,
+    up to ten minutes past the bound. A run that begins past the bound and fails to tell the waits
+    still waits the backoff.
+time: 2026-11-23T12:31:55Z
+custom:
+    Issue: INFRA-1075

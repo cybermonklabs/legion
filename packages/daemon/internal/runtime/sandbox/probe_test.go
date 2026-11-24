@@ -438,7 +438,7 @@ func TestProbeImageRefusesAProbePodThatDoesNotStart(t *testing.T) {
 func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
 	g := newProbeRig(t, nil)
 	g.with(func() {
-		g.log = "worker TLS probe failed: curl cannot verify refusal of the AAA chain: unavailable (probe deadline)"
+		g.log = "legion probe-image: capability eval-python is missing: omp setup python --check --json: context deadline exceeded"
 	})
 	phases := make(chan string, 2)
 	probe := probeOptions(t)
@@ -467,7 +467,7 @@ func TestProbeImageCollectsAProbeDeadlineAfterStartup(t *testing.T) {
 			Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
 		}}}
 	})
-	wantContains(t, <-result, "curl cannot verify refusal of the AAA chain", "probe deadline")
+	wantContains(t, <-result, "capability eval-python is missing", "context deadline exceeded")
 }
 
 // A passing probe reports what its OK line said of the image: the model-fallback mark, as the
@@ -750,21 +750,21 @@ func TestProbeImageRetriesAPodTheKubeletFailed(t *testing.T) {
 	}
 }
 
-// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its limits
-// or its deadline stopped short of an answer, and none that failed: that says nothing of the
+// A probe pod whose `legion probe-image` exited 75 with its no-verdict line ran checks its
+// deadline stopped short of an answer, and none that failed: that says nothing of the
 // image, so the attempt is transient, logged naming what had no verdict, and the next attempt's
 // pod, which passes, passes the probe. The exit code and the line are written out, not read from
 // bootprobe, so the test also runs on a daemon that predates them, which refuses the first pod.
 func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
-	const run = "its 40s limit ended it after 40.0s: signal: killed"
+	const noVerdict = "capability browser: not checked"
 	logged := &lockedLog{}
 	g := newProbeRig(t, nil, withOptions(func(o *Options) { o.Log = slogTo(logged) }))
 	var pods atomic.Int32
 	g.finishes(func(p *corev1.Pod) {
 		if pods.Add(1) == 1 {
 			g.with(func() {
-				g.log = "probe-image: TLS client aws emSign: no verdict (" + run + ")\n" +
-					"legion probe-image: worker probe has no verdict: aws emSign: " + run + "\n"
+				g.log = "probe-image: capability browser: unanswered (not checked: context deadline exceeded)\n" +
+					"legion probe-image: worker probe has no verdict: " + noVerdict + "\n"
 			})
 			p.Status = corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 				Name: probeContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 75, Reason: "Error"}},
@@ -785,7 +785,7 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 	if n := g.creates.Load(); n != 2 {
 		t.Errorf("ran the probe %d times, want the attempt with no verdict and the one that passed", n)
 	}
-	want := "pod " + probeSandboxName + " exited 75 with no verdict: aws emSign: " + run
+	want := "pod " + probeSandboxName + " exited 75 with no verdict: " + noVerdict
 	if !strings.Contains(logged.String(), "boot probe failed transiently") || !strings.Contains(logged.String(), want) {
 		t.Errorf("the attempt with no verdict was not logged as a transient failure saying %q:\n%s", want, logged.String())
 	}
@@ -793,17 +793,16 @@ func TestProbeImageRunsAnotherAttemptAfterAProbeThatExits75(t *testing.T) {
 }
 
 // Attempts that each exit 75 (bootprobe.NoVerdictExit) spend the daemon's six (bootprobe.Image),
-// and the probe then ends naming the last attempt's pod and every TLS run and step its no-verdict
+// and the probe then ends naming the last attempt's pod and every step its no-verdict
 // line names, with the log after them: what the operator reads of a probe that never reached a
 // verdict.
 func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(t *testing.T) {
-	const noVerdict = "aws emSign: its 40s limit ended it after 40.0s: signal: killed; " +
-		"chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated; " +
+	const noVerdict = "capability lsp: not checked; capability browser: not checked; " +
 		"role overlays: implementer: signal: terminated"
 	g := newProbeRig(t, nil)
 	g.with(func() {
-		g.log = "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: killed)\n" +
-			"probe-image: TLS client aws emSign: no verdict (its 40s limit ended it after 40.0s: signal: killed)\n" +
+		g.log = "probe-image: capability lsp: unanswered (not checked: context deadline exceeded)\n" +
+			"probe-image: capability browser: unanswered (not checked: context deadline exceeded)\n" +
 			bootprobe.NoVerdictPrefix + noVerdict + "\n"
 	})
 	g.finishes(func(p *corev1.Pod) {
@@ -817,7 +816,7 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 	err := g.probe(p)
 
 	wantContains(t, err, "the worker image probe never completed within its retry budget (6 attempts): pod "+probeSandboxName+
-		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: TLS client aws emSign: no verdict")
+		" exited 75 with no verdict: "+noVerdict+" — log tail: probe-image: capability lsp: unanswered")
 	if n := g.creates.Load(); n != 6 {
 		t.Errorf("ran the probe %d times, want the retry's 6", n)
 	}
@@ -828,13 +827,13 @@ func TestProbeImageEndsAfterSixAttemptsThatEachExit75NamingEachRunWithNoVerdict(
 // attempt. The exit code decides, not the log: a no-verdict line beside the failure leaves it a
 // refusal.
 func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
-	const failed = "legion probe-image: worker TLS probe failed: aws accepts the emSign chain: exit 0"
+	const failed = "legion probe-image: capability browser is missing: chromium is not on PATH, and PUPPETEER_EXECUTABLE_PATH names no executable"
 	for _, testCase := range []struct {
 		name string
 		log  string
 	}{
 		{"a failure", failed},
-		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "chromium AAA: the probe's deadline ended it after 12.3s: signal: terminated\n" + failed},
+		{"a failure beside a no-verdict line", bootprobe.NoVerdictPrefix + "role overlays: implementer: signal: terminated\n" + failed},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			g := newProbeRig(t, nil)

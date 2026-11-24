@@ -62,6 +62,12 @@ export const GOING_ERROR_NO_MODEL_CONFIGURED = "NO_MODEL_CONFIGURED";
  *  `contracts.GoingErrorAnswerFailed`. */
 export const GOING_ERROR_ANSWER_FAILED = "ANSWER_FAILED";
 
+/** The error code of a run that was given a comment or an issue message its author has since
+ *  deleted. The answer may quote that post, so after the delete every read of the run's stream
+ *  gives this frame alone, at the place of the run's ending, and no `text` or `item` frame of
+ *  the run. Generated into Go as `contracts.GoingErrorAnswerWithdrawn`. */
+export const GOING_ERROR_ANSWER_WITHDRAWN = "ANSWER_WITHDRAWN";
+
 /** The name of the one tool the model is given: another search of Dispatch.
  *  Generated into Go as `contracts.GoingSearchTool`. */
 export const GOING_SEARCH_TOOL = "search_dispatch";

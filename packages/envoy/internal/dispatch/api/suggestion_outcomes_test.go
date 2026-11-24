@@ -170,7 +170,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	// (store.Pool.Horizon), so the counter sees the sweep's own statements alone.
 	runSweep(t, func(ctx context.Context) { runSuggestionOutcomeSweep(ctx, counted.Pool, srv.horizon(), wake, schedule) })
 	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
-	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	// an event write of this database open then holds that back, so the wait is the horizon's.
 	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub starts once the boot pass has set the cursor, so the signal it sends after its LISTEN
 	// earns a pass of its own, after the boot pass, rather than being taken while the boot pass is
@@ -570,8 +570,8 @@ func measureTouchedPass(t *testing.T, project string, pending bool) touchedPassC
 		t.Fatalf("vacuum write_suggestions: %v", err)
 	}
 
-	// Read outside the page's transaction: an observation of the horizon waits on every
-	// transaction id open on the instance, this test's own included (events.Horizon.Await).
+	// Read outside the page's transaction: an observation of the horizon waits on every event
+	// write of this database, this test's own included (events.Horizon.Await).
 	safe := safeHorizon(t, srv)
 	counter := &storetest.StatementCounter{}
 	counted := storetest.Traced(t, database.Pool, counter, map[string]string{"enable_seqscan": "off"})

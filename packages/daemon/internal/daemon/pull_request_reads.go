@@ -89,12 +89,13 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 }
 
 // openRecord is pr's issue's pull request record as it stands now, which must still be pr's and
-// open.
+// open. It is the row alone (record.Store.PullRequestRow): the per-issue read builds facts from it
+// and writes nothing of it.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		current, err = w.records.PullRequest(ctx, tx, pr.Issue)
+		current, err = w.records.PullRequestRow(ctx, tx, pr.Issue)
 		return err
 	}); err != nil {
 		return pr, fmt.Errorf("read the pull request record of %s: %w", pr.Issue, err)
@@ -105,11 +106,13 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 	return *current, nil
 }
 
-// applyMergeability applies what GitHub's read of a pull request (pull, one GET /pulls/{number})
-// says about merging its head into its base, for every read of the pull request the daemon makes:
-// the per-issue read (readIssuePullRequest), the merge-state ladder (readMergeState), and the
-// outbox's two reads, the merge-queue read (mergeQueueRead) and the second read of a conflicting
-// head (conflictConfirm), whose outbox attach hands this function. Every read that GitHub answers
+// applyMergeability applies what GitHub's read of a pull request (pull: one GET /pulls/{number},
+// or the same pull request as a base's batch query answers it by number, in the shape of that GET,
+// graphQLPull.githubPullRequest) says about merging its head into its base, for every read of the
+// pull request the daemon makes: the per-issue read (readIssuePullRequest), the merge-state ladder
+// of one pull request (readMergeState), the reads of a base's batch (readChunk), and the outbox's
+// two reads, the merge-queue read (mergeQueueRead) and the second read of a conflicting head
+// (conflictConfirm), whose outbox attach hands this function. Every read that GitHub answers
 // applies an intake.PullRequestMergeability fact: GitHub's lazily computed mergeability, its own
 // merge state for the head, the base it names - this read is the one that records the base, both
 // for a pull request whose record has none and as the answer to a push onto its base, which
@@ -118,11 +121,11 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 //
 // A read GitHub answered `mergeable: false` (record.MergeabilityConflicting) also reads the base's
 // rules for its required status checks (readBaseRules), with github, the implement App's client
-// of the repository the read of the pull request built (readPullRequest), and the fact carries
-// them (intake.PullRequestMergeability.Rules): a conflict the workflow confirms is decided on them
-// (dispatch://INFRA-4374 R0, workflow's mergeability). Any other answer reads no rules, and its
-// fact carries none. The rules are read before the fact is applied, so no transaction waits on
-// GitHub.
+// of the repository the read of the pull request was made with (readPullRequest, or the query of
+// a base's batch, queryChunk), and the fact carries them (intake.PullRequestMergeability.Rules): a
+// conflict the workflow confirms is decided on them (dispatch://INFRA-4374 R0, workflow's
+// mergeability). Any other answer reads no rules, and its fact carries none. The rules are read
+// before the fact is applied, so no transaction waits on GitHub.
 //
 // A read that only confirms what is recorded applies the fact too, and then the read time is the
 // only thing that moves, which is the point of applying it: a head read a minute ago and found
@@ -142,10 +145,11 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // forward once the issue reaches one that does, with no change in GitHub's answer to key off.
 //
 // What a confirming read costs is one fact and one round settlement each time: each climb of the
-// merge-state ladder makes at most mergeStateLadderReads reads, a climb that ends on `unknown` is
-// followed by reads at a wait that doubles to mergeStateFollowWaits of the ladder's waits
-// (followMergeState), and each request for a read starts at most one more climb, whether it
-// arrives during a climb or its follow (mergeStateEnds) or after the ladder has ended
+// merge-state ladder makes at most mergeStateLadderReads reads, of one pull request or of a base's
+// batch, a climb that ends on `unknown` is followed by reads of its base's batch at a wait that
+// doubles to mergeStateFollowWaits of the ladder's waits (followBase), and each request for a read
+// starts at most one more climb, whether it arrives during a climb or a follow (mergeStateEnds,
+// baseLadderNext) or after the ladder has ended
 // (readMergeStates); the review-stuck notice such a settlement would write is deduplicated by the
 // round's own mark (record.ReviewDecision.ToldStuckHead); and a settlement that finds the round
 // mergeable advances the issue, which is the right answer whenever it is true.
@@ -154,8 +158,9 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // records the verdict against only while the record still stands at it: every read that applies
 // this runs outside the record's transaction, so a push can land between GitHub's answer and the
 // apply.
-// An apply that fails is logged and returned: the per-issue read and the ladder go on, and the
-// next read of the pull request applies it again; an outbox row fails its attempt and is retried.
+// An apply that fails is returned, not logged: each caller logs it once, in its own words, with
+// what it does next. The per-issue read and the merge-state reads go on, and their next read of
+// the pull request applies it again; an outbox row fails its attempt and is retried.
 func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
 	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
@@ -167,11 +172,8 @@ func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubre
 		rules := w.readBaseRules(ctx, github, pr, base)
 		fact.Rules = &rules
 	}
-	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
-		w.log.Warn("apply whether a pull request's head can be merged into its base", "repo", pr.Repo, "pullRequest", pr.Number, "error", err)
-		return err
-	}
-	return nil
+	_, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...)
+	return err
 }
 
 // mergeabilityEventID is the event id the per-issue read and the merge-state ladder apply a

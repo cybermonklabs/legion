@@ -16,9 +16,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -382,7 +382,7 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
 			}
 			r, stand := newAzureRig(t, o)
-			access := requests.PlaceholderPrefix + "slotAccessSlotAccessSlotAccess01"
+			access := placeholder.Prefix + "slotAccessSlotAccessSlotAccess01"
 			r.grants.connections[azureFederatedPlaceholder].Names[azureName].Slots[azureAccessSlot(row.exchange)] = access
 			answer, body := r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+access)
 
@@ -418,7 +418,7 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 // kind's is; and one that carries no placeholder, which is how az reads a tenant's OpenID
 // configuration before its first token request, goes on with nothing swapped into it.
 func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
-	access := requests.PlaceholderPrefix + "slotAccessSlotAccessSlotAccess01"
+	access := placeholder.Prefix + "slotAccessSlotAccessSlotAccess01"
 	own := azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID}
 	federated := []string{"Authorization", "Bearer " + azureFederatedPlaceholder}
 	for _, row := range []struct {

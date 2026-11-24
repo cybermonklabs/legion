@@ -377,7 +377,8 @@ func resumedByAgent(call fake.Call) bool {
 //
 // The claim is stored queued at a generation above zero, so the boot restores it launch_uncertain
 // (supervise.Claim.ReleasedLaunch), and it is released to queued before the spawn, as the daemon's
-// own path for an unfinished launch does (launchUnfinishedClaim). That release keeps its session.
+// own path for an unfinished launch does (releaseUnfinishedClaim, launchUnfinished). That release
+// keeps its session.
 func (r *olderLauncherRig) startByAgentLookup() fake.Call {
 	r.t.Helper()
 	if r.claim().State == supervise.StateLaunchUncertain {

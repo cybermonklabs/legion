@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/live/event.json TestAnEventFrameCarriesTheEventsOwnBytes
+
 import (
 	"bytes"
 	"context"
@@ -24,11 +26,11 @@ import (
 
 // The event feed stands behind the event horizon: a subscription's events_start is the last thing
 // it sends, once the relay's first cursor has awaited the horizon (firstRelayCursor), and the relay
-// sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
-// a frame of the feed is as late as the longest transaction open anywhere on the Postgres
-// instance, which CI shares between every package of the module, and no clock bounds the wait for
-// one: it reads the instance's holder itself, and only a hold of the server's own database past
-// horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// sends an event only once the horizon has passed its id. An event write of the server's
+// database holds the horizon back until it ends, so a frame of the feed is as late as the longest
+// event write open there, a test fixture's or a loaded server's own, and no clock bounds the wait
+// for one: it reads the database's oldest event writer itself, and only a hold of the server's own
+// database past horizontest.OwnHoldBound or the drain before the run's deadline ends it
 // (internal/dispatch/horizontest).
 
 // eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
