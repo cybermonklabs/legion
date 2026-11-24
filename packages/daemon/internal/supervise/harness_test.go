@@ -69,7 +69,11 @@ type fakeTimer struct {
 	fired   bool
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: epoch} }
+func newFakeClock() *fakeClock {
+	c := &fakeClock{now: epoch}
+	c.stood = sync.NewCond(&c.mu)
+	return c
+}
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
@@ -102,6 +106,13 @@ func (c *fakeClock) Advance(d time.Duration) {
 	until := c.now.Add(d)
 	c.advancing++
 	c.mu.Unlock()
+	// A callback that ends its goroutine (t.Fatal) still leaves the clock standing.
+	defer func() {
+		c.mu.Lock()
+		c.advancing--
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	}()
 	for {
 		c.mu.Lock()
 		var next *fakeTimer
@@ -115,8 +126,6 @@ func (c *fakeClock) Advance(d time.Duration) {
 		}
 		if next == nil {
 			c.now = until
-			c.advancing--
-			c.stoodCond().Broadcast()
 			c.mu.Unlock()
 			return
 		}
@@ -127,12 +136,8 @@ func (c *fakeClock) Advance(d time.Duration) {
 	}
 }
 
-// whenStill runs f on a goroutine of its own once no Advance is moving the clock: the pod gate's
-// post of a grant in podHarness (PodStarts.post). A grant the clock's own move makes, the settle's
-// or the bound's, then reaches its machine after that move, never inside it, whatever order a
-// scheduler gives the two, so a timer the grant's decision arms for that moment is not fired by
-// the move that made the grant. It drains nothing before a later Advance begins: a test reads the
-// grant's decision before it moves the clock again, as every test of the gate does.
+// whenStill runs f on a goroutine of its own once no Advance is moving the clock: podHarness's
+// post of the gate's grants (PodStarts.post). It drains nothing before a later Advance begins.
 func (c *fakeClock) whenStill(f func()) {
 	c.mu.Lock()
 	c.posted++
@@ -140,20 +145,12 @@ func (c *fakeClock) whenStill(f func()) {
 	go func() {
 		c.mu.Lock()
 		for c.advancing > 0 {
-			c.stoodCond().Wait()
+			c.stood.Wait()
 		}
 		c.posted--
 		c.mu.Unlock()
 		f()
 	}()
-}
-
-// stoodCond is the condition an Advance's end signals, made on first use. Called with mu held.
-func (c *fakeClock) stoodCond() *sync.Cond {
-	if c.stood == nil {
-		c.stood = sync.NewCond(&c.mu)
-	}
-	return c.stood
 }
 
 // waitingPosts is how many functions wait for the clock to stand still (whenStill).

@@ -176,12 +176,7 @@ type PodStarts struct {
 	// registration, and it arms each load's bound and settle.
 	clock Clock
 	// post runs a grant's notify on a goroutine of its own, outside the gate's lock (grant):
-	// `go notify()`, which NewPodStarts sets. A grant is made under the gate's lock, often on the
-	// clock's own goroutine (the bound, the settle), so the machine's decision that the grant
-	// starts runs beside whatever made the grant. The package's harness posts a grant once its
-	// clock stands still instead, so a timer the grant's decision arms at that moment is not fired
-	// by the move of the clock that made the grant, whichever order a scheduler gives the two
-	// (podHarness).
+	// `go notify()`, which NewPodStarts sets. The package's test harness replaces it (podHarness).
 	post func(notify func())
 
 	// mu guards pods, and every field of every hold a queue holds: the machines of every pod
