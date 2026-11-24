@@ -169,7 +169,7 @@ func (n NATSCallout) edgeListenerEntries() (kubernetes, google string) {
 	for _, entry := range n.Services {
 		switch {
 		case entry.Kind != NATSEdgeListener:
-		case entry.Google:
+		case entry.Account.Kind == googleAccountKind:
 			if google == "" {
 				google = entry.Text
 			}

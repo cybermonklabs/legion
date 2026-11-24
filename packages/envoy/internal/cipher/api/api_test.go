@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -208,10 +209,10 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	}
 
 	deps := api.Deps{
-		PublicURL:     srv.URL,
-		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, dispatchCaller)},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: podVerifier},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PublicURL:   srv.URL,
+		APIAccounts: map[identity.Account]api.Account{inCluster(dispatchAccount): ciphertest.Caller(t, dispatchCaller)},
+		Callers:     []identity.CallerVerifier{kubernetesCaller(t, issuer.URL(), keys, podAudience)},
+		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
 		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

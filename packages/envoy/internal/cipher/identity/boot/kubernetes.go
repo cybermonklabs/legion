@@ -11,7 +11,9 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
-func init() { register(entry{kind: kubernetes.Kind, rank: 10, open: openKubernetes}) }
+func init() {
+	register(entry{kind: kubernetes.Kind, rank: 10, open: openKubernetes, accountNoun: "a Kubernetes account", natsAudience: "BROKER_NATS_K8S_AUDIENCE"})
+}
 
 // openKubernetes builds the Kubernetes provider: the cluster BROKER_K8S_OIDC_ISSUER names, the
 // exchange's account entries (BROKER_EXCHANGE_ACCOUNTS, then BROKER_EXCHANGE_JOB_ACCOUNTS, so a

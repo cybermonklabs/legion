@@ -33,6 +33,7 @@ import (
 	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -132,10 +133,10 @@ func newContractRig(t *testing.T) *contractRig {
 	dispatchClaims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	dispatchToken := issuer.Mint(t, issuerKey, dispatchClaims)
 	brokerapi.Register(brokerMux, brokerapi.Deps{
-		PublicURL:     brokerServer.URL,
-		APIAccounts:   map[string]brokerapi.Account{contractDispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: tokenVerifier},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PublicURL:   brokerServer.URL,
+		APIAccounts: map[identity.Account]brokerapi.Account{ciphertest.ClusterAccount(t, contractDispatchAccount): ciphertest.Caller(t, "dispatch")},
+		Callers:     ciphertest.ClusterCallers(t, issuer.URL(), contractTokenAudience),
+		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,

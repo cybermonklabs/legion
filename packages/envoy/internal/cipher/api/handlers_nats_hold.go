@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -39,14 +40,12 @@ type NATSHold struct {
 	Keys []ed25519.PublicKey
 	// OperatorToken verifies a platform identity token for the NATS audiences, as the auth service
 	// verifies a service's (cmd/cipherd passes natscallout.PlatformTokens.Verify), and answers the
-	// account it names, whether that is a Google account, and when the token was issued and
-	// expires. Nil, a broker with no NATS audience, admits no caller.
-	OperatorToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
-	// OperatorAccount and OperatorGoogle are the operator entry's account and whether it is a
-	// Google account: the one caller the routes admit. An empty OperatorAccount, a list with no
-	// operator entry, admits none.
-	OperatorAccount string
-	OperatorGoogle  bool
+	// caller it names: the account, and when the token was issued and expires. Nil, a broker with
+	// no NATS audience, admits no caller.
+	OperatorToken func(ctx context.Context, raw string) (identity.Caller, error)
+	// OperatorAccount is the operator entry's account, of its own kind: the one caller the routes
+	// admit. An empty address, a list with no operator entry, admits none.
+	OperatorAccount identity.Account
 	// RowFloor is this process's one floor of the hold row (signedrecord.Floor): the routes put
 	// every verified row they serve, write or restore through it, and the auth service's hold view
 	// (natscallout.NewHoldView) puts every row it reads through the same one, so neither half of the
@@ -67,26 +66,26 @@ const longestOperatorToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofCl
 // operator's identity from the refusal, and none repeats the token.
 func (s *server) operatorCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	hold := s.deps.NATSHold
-	if hold.OperatorToken == nil || hold.OperatorAccount == "" {
+	if hold.OperatorToken == nil || hold.OperatorAccount.Address == "" {
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "this broker admits no operator: BROKER_NATS_SERVICES lists no operator entry, or no NATS audience verifies its token", nil)
 		return caller{}, false
 	}
-	account, google, issued, expiry, err := hold.OperatorToken(r.Context(), bearer(r))
+	verified, err := hold.OperatorToken(r.Context(), bearer(r))
 	switch {
 	case err != nil:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token does not verify as a platform token of the NATS audiences", nil)
 		return caller{}, false
-	case issued.IsZero() || expiry.Sub(issued) > longestOperatorToken:
+	case verified.IssuedAt.IsZero() || verified.Expiry.Sub(verified.IssuedAt) > longestOperatorToken:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token names no issue time or lives longer than an hour from it", nil)
 		return caller{}, false
-	case !expiry.After(time.Now()):
+	case !verified.Expiry.After(time.Now()):
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token has expired", nil)
 		return caller{}, false
-	case account != hold.OperatorAccount || google != hold.OperatorGoogle:
+	case verified.Account != hold.OperatorAccount:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token names an account other than the operator entry's", nil)
 		return caller{}, false
 	}
-	return caller{operator: account}, true
+	return caller{operator: verified.Account.Address}, true
 }
 
 // holdStore is the store of the hold's tables the routes write.

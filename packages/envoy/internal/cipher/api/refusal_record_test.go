@@ -172,7 +172,7 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 		// One reread an hour from an address, so the second answers writeError's 429.
 		d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
 		// The Envoy listener, a listed caller that holds no decision's power.
-		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
+		d.APIAccounts[inCluster(listenerAccount)] = ciphertest.Caller(t, listenerCaller)
 	})
 	// A server whose page and account routes take one request an hour from an address, so the
 	// second answers the approval page's own 429 (Page.WriteRateLimited).

@@ -22,7 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -31,19 +31,19 @@ import (
 // countingAccountTokens is the test server's own account verifier, counting every token it is
 // asked to verify: the work a request the bucket refuses must never reach.
 type countingAccountTokens struct {
-	enroll.PodVerifier
+	identity.CallerVerifier
 	verified atomic.Int64
 }
 
-func (c *countingAccountTokens) VerifyAccount(ctx context.Context, raw string) (enroll.AccountClaims, error) {
+func (c *countingAccountTokens) VerifyCaller(ctx context.Context, raw string) (identity.Caller, error) {
 	c.verified.Add(1)
-	return c.PodVerifier.VerifyAccount(ctx, raw)
+	return c.CallerVerifier.VerifyCaller(ctx, raw)
 }
 
 // countVerifications wraps the account verifier newTestServerWith wires, for adjust to call.
 func countVerifications(d *api.Deps) *countingAccountTokens {
-	counting := &countingAccountTokens{PodVerifier: d.AccountTokens}
-	d.AccountTokens = counting
+	counting := &countingAccountTokens{CallerVerifier: d.Callers[0]}
+	d.Callers = []identity.CallerVerifier{counting}
 	return counting
 }
 
@@ -254,7 +254,7 @@ func TestAForgedAccountTokenFloodCostsAFetchEachWithoutTheKeyCachesMinimumRefres
 	var counting *countingAccountTokens
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.TrustedProxyHeader = "X-Forwarded-For"
-		d.AccountTokens = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(issuer.URL(), podAudience, keys)}
+		d.Callers = []identity.CallerVerifier{kubernetesCaller(t, issuer.URL(), keys, podAudience)}
 		counting = countVerifications(d)
 	})
 

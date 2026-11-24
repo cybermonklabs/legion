@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -62,7 +63,7 @@ type rig struct {
 // introspect and services with serviceToken, the one service listed being a daemon on
 // daemonAccount.
 func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.Introspection, error),
-	serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
+	serviceToken func(context.Context, string) (identity.Caller, error)) *rig {
 	t.Helper()
 	return startRig(t, "daemon/-/*="+daemonAccount, natscallout.Deps{Introspect: introspect, ServiceToken: serviceToken})
 }
@@ -72,7 +73,7 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 // hold's row reading held: the hold view's read answers a row signed with a key of the rig's own,
 // whose public half it verifies against, so the operator is answered with
 // natsgrant.Operator(OperatorPhaseHeld).
-func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (string, bool, time.Time, time.Time, error)) *rig {
+func newOperatorRig(t *testing.T, serviceToken func(context.Context, string) (identity.Caller, error)) *rig {
 	t.Helper()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -193,22 +194,28 @@ func platformToken(account string, expiry time.Time) string {
 		encode(map[string]any{"sub": account, "iat": time.Now().Unix(), "exp": expiry.Unix()}) + ".unsigned"
 }
 
-// readPlatformToken is a stub ServiceToken: the account, issue and expiry raw names, unverified.
-func readPlatformToken(raw string) (string, bool, time.Time, time.Time, error) {
+// readPlatformToken is a stub ServiceToken: the account, issue and expiry raw names, unverified,
+// the account read as BROKER_NATS_SERVICES writes one (config.ParseAccount), so it carries the
+// kind the rig's daemon entry was listed with.
+func readPlatformToken(raw string) (identity.Caller, error) {
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return "", false, time.Time{}, time.Time{}, errors.New("no JWT")
+		return identity.Caller{}, errors.New("no JWT")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return identity.Caller{}, err
 	}
 	var claims struct {
 		Sub      string `json:"sub"`
 		Iat, Exp int64
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false, time.Time{}, time.Time{}, fmt.Errorf("claims: %w", err)
+		return identity.Caller{}, fmt.Errorf("claims: %w", err)
 	}
-	return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+	account, err := config.ParseAccount("the platform token", claims.Sub, claims.Sub)
+	if err != nil {
+		return identity.Caller{}, err
+	}
+	return identity.Caller{Account: account, IssuedAt: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 }

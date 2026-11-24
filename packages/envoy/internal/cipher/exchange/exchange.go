@@ -201,13 +201,10 @@ type GoogleIdentity struct {
 }
 
 // ReadGoogleIdentity reads a Google identity token's own claims out of the claim map of a token
-// something else has already verified. It is the one reading of those claim shapes: this package
-// decides on them, the broker's own Google token verifier reads the same token
-// (api.GoogleTokens.VerifyGoogle), and
-// a caller authenticated by such a token reads the account off it, so all three read one
-// declaration rather than three spellings of Google's claim names. It refuses nothing: a claim
-// that is absent or of another JSON type reads as empty, and which of those is a refusal is the
-// reader's own rule.
+// something else has already verified, as the google identity provider's ReadIdentity does: the
+// launcher-credential readers of this package (MachineSubject) read it until they move into that
+// provider. It refuses nothing: a claim that is absent or of another JSON type reads as empty,
+// and which of those is a refusal is the reader's own rule.
 func ReadGoogleIdentity(token map[string]any) GoogleIdentity {
 	identity := GoogleIdentity{EmailVerified: isVerified(token["email_verified"])}
 	identity.Account, _ = token["email"].(string)

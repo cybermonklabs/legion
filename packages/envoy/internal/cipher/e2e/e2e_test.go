@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/groups"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -66,7 +67,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -209,10 +209,6 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	// verifies one in production.
 	issuer := oidctest.New(t)
 	issuerKey := issuer.PublishKey(t, "signing-key")
-	accountTokens, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
@@ -221,10 +217,10 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	}
 
 	api.Register(mux, api.Deps{
-		PublicURL:     srv.URL,
-		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accountTokens},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PublicURL:   srv.URL,
+		APIAccounts: map[identity.Account]api.Account{ciphertest.ClusterAccount(t, dispatchAccount): ciphertest.Caller(t, "dispatch")},
+		Callers:     ciphertest.ClusterCallers(t, issuer.URL(), dispatchAudience),
+		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,

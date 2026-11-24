@@ -10,44 +10,10 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/store"
-	"github.com/sjawhar/envoy/internal/oidc"
 )
-
-// natsCalloutBoot is the verifiers of the platform tokens the NATS auth service's services present,
-// for a deployment that runs it (cfg.NATS): one verifier per NATS audience set, on the key set the
-// broker already reads for that issuer. First, RequireAudiences refuses the start when
-// cfg.NATS.Services (which config.Load parsed) names a service, an edge listener among them, whose
-// kind of token has no audience. A deployment that runs no auth service needs no NATS audience and
-// no key set, and reads none.
-func natsCalloutBoot(ctx context.Context, cfg config.Config, discovered verifiers, keysFor keysFunc) (natscallout.PlatformTokens, error) {
-	if !cfg.NATS.Enabled() {
-		return natscallout.PlatformTokens{}, nil
-	}
-	if err := natscallout.RequireAudiences(cfg.NATS.Services, cfg.NATS.K8sAudience, cfg.NATS.GoogleAudience); err != nil {
-		return natscallout.PlatformTokens{}, err
-	}
-	tokens := natscallout.PlatformTokens{K8sIssuer: cfg.K8sOIDCIssuer, GoogleIssuer: cfg.GoogleOIDCIssuer}
-	if cfg.NATS.K8sAudience != "" {
-		tokens.K8s = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.NATS.K8sAudience, discovered.K8sKeys)}
-	}
-	if cfg.NATS.GoogleAudience != "" {
-		keys := discovered.GoogleKeys
-		if keys == nil {
-			// A broker that takes no machine's Google token at its exchange read no Google key
-			// set at discovery; the auth service's audience needs one.
-			var err error
-			if keys, err = keysFor(ctx, cfg.GoogleOIDCIssuer); err != nil {
-				return natscallout.PlatformTokens{}, fmt.Errorf("read the Google issuer's keys for BROKER_NATS_GOOGLE_AUDIENCE: %w", err)
-			}
-		}
-		tokens.Google = api.GoogleTokens{Verifier: oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.NATS.GoogleAudience, keys)}
-	}
-	return tokens, nil
-}
 
 // operatorEntry is the operator entry of services, the one identity that writes the NATS writer
 // hold, and whether services lists one (config.ParseNATSServices admits one at most).
@@ -105,11 +71,11 @@ func migratedSchema(ctx context.Context, st *store.Store) (string, error) {
 // its migrations ran in, the operator's keys, the process's floor of the hold row, which the auth
 // service's hold view shares, and the operator entry's account with the auth service's own
 // verifier of its token. A broker that lists no operator entry, or runs no auth service and so
-// verifies no NATS audience, gets no verifier, and its routes refuse every caller 403 not_operator.
+// holds no NATS verifier, gets no verifier, and its routes refuse every caller 403 not_operator.
 func holdRoutes(cfg config.Config, st *store.Store, schema string, services []config.NATSService, tokens natscallout.PlatformTokens, floor *signedrecord.Floor) api.NATSHold {
 	hold := api.NATSHold{Pool: st.Pool, Schema: schema, Keys: cfg.NATS.HoldSigningKeys, RowFloor: floor}
-	if operator, listed := operatorEntry(services); listed && (tokens.K8s != nil || tokens.Google != nil) {
-		hold.OperatorToken, hold.OperatorAccount, hold.OperatorGoogle = tokens.Verify, operator.Account, operator.Google
+	if operator, listed := operatorEntry(services); listed && len(tokens.Verifiers) > 0 {
+		hold.OperatorToken, hold.OperatorAccount = tokens.Verify, operator.Account
 	}
 	return hold
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -95,20 +96,26 @@ func platformToken(account string, life time.Duration) string {
 		encode(map[string]any{"sub": account, "iat": now.Unix(), "exp": now.Add(life).Unix()}) + ".unsigned"
 }
 
-func serviceToken(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+// serviceToken is a stub ServiceToken: the account, issue and expiry raw names, unverified, the
+// account read as BROKER_NATS_SERVICES writes one (config.ParseAccount).
+func serviceToken(_ context.Context, raw string) (identity.Caller, error) {
 	parts := strings.Split(raw, ".")
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return identity.Caller{}, err
 	}
 	var claims struct {
 		Sub      string
 		Iat, Exp int64
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return identity.Caller{}, err
 	}
-	return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+	account, err := config.ParseAccount("the platform token", claims.Sub, claims.Sub)
+	if err != nil {
+		return identity.Caller{}, err
+	}
+	return identity.Caller{Account: account, IssuedAt: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 }
 
 // The probe says what the hub answered: a session's own channel served, another session's refused

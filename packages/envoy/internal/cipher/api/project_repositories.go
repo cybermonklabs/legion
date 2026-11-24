@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 )
 
 // EdgeListener is one edge listener's entry of BROKER_NATS_SERVICES as the broker's API reads it
-// (config.NATSCallout.EdgeListeners): the platform account its token names, whether that is a Google
-// account, and the projects the entry lists, sorted.
+// (config.NATSCallout.EdgeListeners): the platform account its token names, with its kind, and
+// the projects the entry lists, sorted.
 type EdgeListener struct {
-	Account  string
-	Google   bool
+	Account  identity.Account
 	Projects []string
 }
 
@@ -61,12 +62,12 @@ func (s *server) projectRepositories(w http.ResponseWriter, r *http.Request, edg
 		writeError(w, http.StatusServiceUnavailable, "REPOSITORIES_UNKNOWN", "this broker reads no Dispatch (BROKER_PROJECT_ACCESS_URL is unset), so it cannot say which repositories the project's issues resolve to")
 		return
 	}
-	if !s.repositoryCalls.enter(edge.Account) {
+	if !s.repositoryCalls.enter(edge.Account.Address) {
 		writeError(w, http.StatusServiceUnavailable, "REPOSITORIES_BUSY",
 			fmt.Sprintf("this edge listener already has %d calls waiting on Dispatch; send this one again once one is answered", maxRepositoryCallsInFlight))
 		return
 	}
-	defer s.repositoryCalls.leave(edge.Account)
+	defer s.repositoryCalls.leave(edge.Account.Address)
 	repositories, err := s.deps.ProjectRepositories.Repositories(r.Context(), project)
 	if err != nil {
 		writeUnavailable(w, "REPOSITORIES_UNKNOWN", "read the project's repositories from Dispatch", err)

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -40,33 +41,27 @@ type DeviceLoginFunc func(ctx context.Context, form url.Values, userCode string)
 
 type Deps struct {
 	PublicURL string
-	// APIAccounts is the Kubernetes half of BROKER_API_ACCOUNTS: the ServiceAccount subject of
-	// each listed caller of the routes accountAuth authenticates, answering that caller — its
-	// name and the powers its name carries (AccountFor, which is the only way to build one). A
-	// subject it does not name is refused, so an account taken off it stops calling as soon as
-	// the broker reads it again, and a listed caller reaches only the routes whose power it
-	// holds.
-	APIAccounts map[string]Account
-	// GoogleAPIAccounts is the Google half of the same setting, keyed by the account address a
-	// caller's Google identity token carries in its email claim rather than by a subject. It is
-	// the Envoy listener on a VM, which holds no Kubernetes token at all; everything else about
-	// such a caller — its name, its powers and every refusal — is the Kubernetes caller's.
-	GoogleAPIAccounts map[string]Account
-	// AccountTokens verifies those callers' projected ServiceAccount tokens, against the same
-	// Kubernetes issuer and audience a pod enrolls with (cmd/cipherd passes the one verifier it
-	// builds). Nil is a broker that trusts no Kubernetes issuer, where no Kubernetes caller
-	// authenticates.
-	AccountTokens enroll.PodVerifier
-	// GoogleAccountTokens verifies a Google caller's identity token, against the issuer and
-	// audience BROKER_GOOGLE_OIDC_ISSUER and BROKER_GOOGLE_OIDC_AUDIENCE name — the audience
-	// every machine of the deployment already holds a token for. Nil is a broker with no Google
-	// audience, where no Google caller authenticates; with both nil no caller reaches an
-	// accountAuth route at all (ACCOUNT_TOKENS_OFF).
-	GoogleAccountTokens GoogleVerifier
-	Enroll              *enroll.Service
-	Machine             *requests.Machine
-	MachineLogin        *machine.Service
-	Proof               *proof.Verifier
+	// APIAccounts is BROKER_API_ACCOUNTS: the account of each listed caller of the routes
+	// accountAuth authenticates — a ServiceAccount subject, or the Google account address a
+	// caller's Google identity token carries in its email claim, each with its kind — answering
+	// that caller: its name and the powers its name carries (AccountFor, which is the only way to
+	// build one). An account it does not name is refused, so an account taken off it stops calling
+	// as soon as the broker reads it again, and a listed caller reaches only the routes whose power
+	// it holds. A Google caller is the Envoy listener on a VM, which holds no Kubernetes token at
+	// all; everything else about such a caller — its name, its powers and every refusal — is the
+	// Kubernetes caller's.
+	APIAccounts map[identity.Account]Account
+	// Callers verifies those callers' identity tokens: the identity registry's API verifiers
+	// (identity.UseAPI), in its order, each against its issuer and the audience the broker sets
+	// for its kind's API callers — the cluster's for a Kubernetes token, the one every machine of
+	// the deployment already holds a token for for a Google one. Empty is a broker that trusts no
+	// issuer for its API callers, where no caller reaches an accountAuth route at all
+	// (ACCOUNT_TOKENS_OFF).
+	Callers      []identity.CallerVerifier
+	Enroll       *enroll.Service
+	Machine      *requests.Machine
+	MachineLogin *machine.Service
+	Proof        *proof.Verifier
 	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
 	// /v1/oauth/exchange/pod-sessions admits: a registration whose caller's login account no
 	// entry pairs with the account of the pod it registers is 403 POD_REGISTRAR_NOT_LISTED,
@@ -499,7 +494,7 @@ func (c caller) answerCaller(route routeHandler) (class, id string) {
 	case authOperator:
 		return answer.CallerService, "operator@" + c.operator
 	case authEdgeListener:
-		return answer.CallerEdgeListener, c.edge.Account
+		return answer.CallerEdgeListener, c.edge.Account.Address
 	case authSignIn:
 		if c.signIn.Login == "" {
 			return answer.CallerUnauthenticated, ""
@@ -648,13 +643,6 @@ func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person strin
 	return true
 }
 
-// GoogleVerifier verifies a caller's own Google identity token and reads the identity claims of
-// the verified token (GoogleTokens, the broker's one reading of Google's claim shapes). It is an
-// interface here so a test can wire a verifier of its own, as the Kubernetes one is.
-type GoogleVerifier interface {
-	VerifyGoogle(ctx context.Context, raw string) (GoogleToken, error)
-}
-
 // accountCaller authenticates a listed caller's own identity token for authenticate, the
 // credential accountAuth's routes take, and answers the caller BROKER_API_ACCOUNTS names it:
 // its name and its powers, which authenticate then checks against the route's. The token is
@@ -662,15 +650,11 @@ type GoogleVerifier interface {
 // not name is 403 ACCOUNT_NOT_LISTED, the one refusal that is the broker's list and not the
 // credential.
 func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	account, google, ok := s.identityAccount(w, r)
+	account, ok := s.identityAccount(w, r)
 	if !ok {
 		return caller{}, false
 	}
-	accounts := s.deps.APIAccounts
-	if google {
-		accounts = s.deps.GoogleAPIAccounts
-	}
-	listed, found := accounts[account]
+	listed, found := s.deps.APIAccounts[account]
 	if !found {
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this account is not in BROKER_API_ACCOUNTS")
 		return caller{}, false
@@ -686,12 +670,12 @@ func (s *server) accountCaller(w http.ResponseWriter, r *http.Request) (caller, 
 // Envoy listener's entry of kind listener, or its BROKER_API_ACCOUNTS name, makes it no edge
 // listener.
 func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
-	account, google, ok := s.identityAccount(w, r)
+	account, ok := s.identityAccount(w, r)
 	if !ok {
 		return caller{}, false
 	}
 	for _, edge := range s.deps.EdgeListeners {
-		if edge.Account == account && edge.Google == google {
+		if edge.Account == account {
 			return caller{edge: edge}, true
 		}
 	}
@@ -700,47 +684,44 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 }
 
 // identityAccount verifies r's bearer, a caller's own identity token, and answers the account it
-// names and whether that is a Google account, or writes the refusal: the one verification
-// accountCaller and edgeListenerCaller share.
+// names, with its kind, or writes the refusal: the one verification accountCaller and
+// edgeListenerCaller share.
 //
-// A caller presents one of two tokens: a Kubernetes service account's own projected token, which
-// names the account by its subject, or a machine's Google identity token, which names it by its
-// email claim, which is how the Envoy listener calls from a VM that holds no Kubernetes token.
-// Which verifier judges a token is the token's own issuer: a verifier answers oidc.ErrIssuer for
-// a token of any issuer but its own, which is the one error that means "not mine" rather than a
-// refusal, so a token neither verifier claims is simply invalid and no token is ever judged
-// twice.
+// A caller presents a token of one of the identity providers the registry holds API verifiers
+// for (Deps.Callers): a Kubernetes service account's own projected token, which names the
+// account by its subject, or a machine's Google identity token, which names it by its email
+// claim, which is how the Envoy listener calls from a VM that holds no Kubernetes token. Which
+// verifier judges a token is the token's own issuer: a verifier answers oidc.ErrIssuer for a
+// token of any issuer but its own, which is the one error that means "not mine" rather than a
+// refusal, so a token no verifier claims is simply invalid and no token is ever judged twice.
 //
 // The taxonomy is the one a daemon's token login uses (machine.Service.VerifyServiceToken) and
-// means the same thing for either kind: a broker that trusts no issuer for its callers at all
-// (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
-// token includes one naming no verified account, since the email claim is what names the caller
-// — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied
-// token is spendable for at most an hour. Each is a 401, and no refusal repeats the token.
-func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (account string, google, ok bool) {
-	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
+// means the same thing for every kind: a broker that trusts no issuer for its callers at all
+// (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which includes a
+// sound token naming no account its kind reads one from (*identity.NoAccountError, answered in
+// its provider's words) — and one that lives longer than machine.MaxTokenLoginLifetime from its
+// issue, so a copied token is spendable for at most an hour. Each is a 401, and no refusal
+// repeats the token.
+func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (identity.Account, bool) {
+	if len(s.deps.Callers) == 0 {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
-		return "", false, false
+		return identity.Account{}, false
 	}
 	raw := bearer(r)
-	if s.deps.AccountTokens != nil {
-		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			return claims.Subject, false, s.liveIdentityToken(w, err, claims.IssuedAt, claims.Expiry)
+	for _, verifier := range s.deps.Callers {
+		verified, err := verifier.VerifyCaller(r.Context(), raw)
+		if errors.Is(err, oidc.ErrIssuer) {
+			continue
 		}
-	}
-	if s.deps.GoogleAccountTokens != nil {
-		token, err := s.deps.GoogleAccountTokens.VerifyGoogle(r.Context(), raw)
-		if !errors.Is(err, oidc.ErrIssuer) {
-			if err == nil && (token.Identity.Account == "" || !token.Identity.EmailVerified) {
-				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
-				return "", false, false
-			}
-			return token.Identity.Account, true, s.liveIdentityToken(w, err, token.IssuedAt, token.Expiry)
+		var none *identity.NoAccountError
+		if errors.As(err, &none) {
+			writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", none.Reason)
+			return identity.Account{}, false
 		}
+		return verified.Account, s.liveIdentityToken(w, err, verified.IssuedAt, verified.Expiry)
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
-	return "", false, false
+	return identity.Account{}, false
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever

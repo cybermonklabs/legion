@@ -46,8 +46,12 @@ func (v tokens) verify(ctx context.Context, raw string) (token, error) {
 }
 
 // noVerifiedAccount is the refusal of a sound token that names no verified account: the email
-// claim is what names a Google caller.
-const noVerifiedAccount = "the Google identity token names no verified account, so it names no caller (ask for it with format=full)"
+// claim is what names a Google caller. noVerifiedEmail is the same refusal as the NATS auth
+// service logs it.
+const (
+	noVerifiedAccount = "the Google identity token names no verified account, so it names no caller (ask for it with format=full)"
+	noVerifiedEmail   = "the Google identity token carries no verified email"
+)
 
 // callerVerifier is a machine's Google identity token as an API or NATS caller's: the account is
 // its verified email address.
@@ -73,7 +77,7 @@ func (v callerVerifier) VerifyCaller(ctx context.Context, raw string) (identity.
 		return identity.Caller{}, err
 	}
 	if verified.Identity.Account == "" || !verified.Identity.EmailVerified {
-		return identity.Caller{}, &identity.NoAccountError{Reason: noVerifiedAccount}
+		return identity.Caller{}, &identity.NoAccountError{Reason: noVerifiedAccount, Brief: noVerifiedEmail}
 	}
 	return identity.Caller{
 		Account: identity.Account{Kind: Kind, Address: verified.Identity.Account}, Subject: verified.Subject,

@@ -68,7 +68,7 @@ func newRepositoriesServer(t *testing.T, dispatch *projectaccesstest.Server) *te
 	t.Helper()
 	edges := edgeListeners(t, edgeServices)
 	return newTestServerWith(t, func(d *api.Deps) {
-		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
+		d.APIAccounts[inCluster(listenerAccount)] = ciphertest.Caller(t, listenerCaller)
 		d.EdgeListeners = edges
 		if dispatch != nil {
 			d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
@@ -390,14 +390,14 @@ func googleEdgeServer(t *testing.T, services string) (ts *testServer, dispatch *
 	t.Helper()
 	google := oidctest.New(t)
 	key := google.PublishKey(t, "google-key")
-	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
+	keys, err := oidc.NewKeys(context.Background(), google.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	edges := edgeListeners(t, services)
 	dispatch = repositoriesDispatch(t)
 	ts = newTestServerWith(t, func(d *api.Deps) {
-		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
+		d.Callers = append(d.Callers, googleCaller(t, google.URL(), keys, machineAudience))
 		d.EdgeListeners = edges
 		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 	})

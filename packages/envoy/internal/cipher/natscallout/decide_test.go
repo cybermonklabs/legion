@@ -21,6 +21,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -107,7 +110,7 @@ func introspector(sessions ...*session) func(context.Context, string) (oauthwire
 }
 
 // platformToken is a service's platform identity token as the stub ServiceToken reads it: the
-// account it names and its life.
+// account it names, whether that is a Google account, and its life.
 type platformToken struct {
 	account        string
 	google         bool
@@ -115,13 +118,17 @@ type platformToken struct {
 }
 
 // serviceTokens verifies each raw token tokens names, and refuses every other.
-func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (string, bool, time.Time, time.Time, error) {
-	return func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+func serviceTokens(tokens map[string]platformToken) func(context.Context, string) (identity.Caller, error) {
+	return func(_ context.Context, raw string) (identity.Caller, error) {
 		token, ok := tokens[raw]
 		if !ok {
-			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
+			return identity.Caller{}, errors.New("the token did not verify")
 		}
-		return token.account, token.google, token.issued, token.expiry, nil
+		account := inCluster(token.account)
+		if token.google {
+			account = identity.Account{Kind: google.Kind, Address: token.account}
+		}
+		return identity.Caller{Account: account, IssuedAt: token.issued, Expiry: token.expiry}, nil
 	}
 }
 
@@ -138,11 +145,16 @@ const (
 )
 
 var exampleServices = []config.NATSService{
-	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
-	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: inCluster("system:serviceaccount:dispatch:dispatch"), AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: inCluster(listenerAccount), AllProjects: true},
+	{Kind: config.NATSDaemon, Account: inCluster(daemonAccount), AllProjects: true},
+	{Kind: config.NATSMeasure, Account: identity.Account{Kind: google.Kind, Address: measureAccount}, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: inCluster("system:serviceaccount:example-ns:held-daemon")},
+}
+
+// inCluster is the Kubernetes service account whose subject is address.
+func inCluster(address string) identity.Account {
+	return identity.Account{Kind: kubernetes.Kind, Address: address}
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -252,7 +264,7 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 // have read, a wildcard among them - is answered with no grant, which the guard refuses as an open
 // direction, and never with a grant built of that list.
 func TestAnEdgeEntryWhoseProjectsEdgeRefusesGetsNoGrant(t *testing.T) {
-	grant := serviceGrant(config.NATSService{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"*"}})
+	grant := serviceGrant(config.NATSService{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: inCluster(edgeAccount), Projects: []string{"*"}})
 	require.Equal(t, natsgrant.Permissions{}, grant)
 	refused := guard(grant)
 	require.NotNil(t, refused)
@@ -325,8 +337,8 @@ func TestRefusals(t *testing.T) {
 		Introspect: func(ctx context.Context, _ string) (oauthwire.Introspection, error) {
 			return oauthwire.Introspection{}, ctx.Err()
 		},
-		ServiceToken: func(ctx context.Context, _ string) (string, bool, time.Time, time.Time, error) {
-			return "", false, time.Time{}, time.Time{}, ctx.Err()
+		ServiceToken: func(ctx context.Context, _ string) (identity.Caller, error) {
+			return identity.Caller{}, ctx.Err()
 		},
 	}
 	spent, cancel := context.WithCancel(context.Background())
@@ -550,8 +562,8 @@ const (
 )
 
 var (
-	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: operatorAccount, AllProjects: true}
-	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: probeAccount, AllProjects: true}
+	operatorEntry = config.NATSService{Kind: config.NATSOperator, Account: inCluster(operatorAccount), AllProjects: true}
+	probeEntry    = config.NATSService{Kind: config.NATSProbe, Account: inCluster(probeAccount), AllProjects: true}
 	// holdServices are exampleServices with the operator and the probe listed.
 	holdServices = append(append([]config.NATSService{}, exampleServices...), operatorEntry, probeEntry)
 )

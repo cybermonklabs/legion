@@ -153,7 +153,7 @@ func (v callerVerifier) VerifyCaller(ctx context.Context, raw string) (identity.
 	}
 	path, ok := workflowPath(run.WorkflowRef, run.Repository)
 	if !ok {
-		return identity.Caller{}, &identity.NoAccountError{Reason: "the GitHub token's workflow_ref names no workflow of its repository"}
+		return identity.Caller{}, &identity.NoAccountError{Reason: "the GitHub token's workflow_ref names no workflow of its repository", Brief: "the GitHub token names no workflow"}
 	}
 	return identity.Caller{
 		Account: identity.Account{Kind: Kind, Address: run.Repository + "/" + path + "@" + run.Ref},

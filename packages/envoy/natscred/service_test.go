@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -29,7 +30,7 @@ type presented struct {
 	tokens []string
 }
 
-func (p *presented) serviceToken(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+func (p *presented) serviceToken(_ context.Context, raw string) (identity.Caller, error) {
 	p.mu.Lock()
 	p.tokens = append(p.tokens, raw)
 	p.mu.Unlock()
@@ -265,9 +266,9 @@ func closedNames(t *testing.T, server *testnats.Server) []string {
 // IgnoreAuthErrorAbort, which nats.go closes after the same refusal twice.
 func TestServiceCredentialRetriesAfterRefusals(t *testing.T) {
 	var asked atomic.Int64
-	refuseTwice := func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+	refuseTwice := func(_ context.Context, raw string) (identity.Caller, error) {
 		if asked.Add(1) <= 2 {
-			return "", false, time.Time{}, time.Time{}, errors.New("the broker could not verify the token yet")
+			return identity.Caller{}, errors.New("the broker could not verify the token yet")
 		}
 		return readPlatformToken(raw)
 	}

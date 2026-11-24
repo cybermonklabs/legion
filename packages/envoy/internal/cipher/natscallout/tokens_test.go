@@ -10,32 +10,28 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
-	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/google"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
+	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-type stubK8s struct {
-	claims enroll.AccountClaims
+// stubVerifier is a caller verifier of one kind and one issuer that answers what it is told and
+// counts how often it was asked.
+type stubVerifier struct {
+	kind   identity.Kind
+	issuer string
+	caller identity.Caller
 	err    error
 	asked  int
 }
 
-func (s *stubK8s) VerifyAccount(context.Context, string) (enroll.AccountClaims, error) {
+func (s *stubVerifier) Kind() identity.Kind { return s.kind }
+func (s *stubVerifier) Issuer() string      { return s.issuer }
+func (s *stubVerifier) VerifyCaller(context.Context, string) (identity.Caller, error) {
 	s.asked++
-	return s.claims, s.err
-}
-
-type stubGoogle struct {
-	token api.GoogleToken
-	err   error
-	asked int
-}
-
-func (s *stubGoogle) VerifyGoogle(context.Context, string) (api.GoogleToken, error) {
-	s.asked++
-	return s.token, s.err
+	return s.caller, s.err
 }
 
 // issuedBy is an unsigned token naming issuer, which only the choice of verifier reads.
@@ -50,69 +46,91 @@ func issuedBy(issuer string) string {
 // broker verifies no NATS tokens for, and a token whose verifier refuses it are each refused.
 func TestPlatformTokensVerifyWithTheIssuersVerifier(t *testing.T) {
 	now := time.Now()
-	k8s := &stubK8s{claims: enroll.AccountClaims{Subject: daemonAccount, IssuedAt: now, Expiry: now.Add(time.Hour)}}
-	google := &stubGoogle{token: api.GoogleToken{Identity: exchange.GoogleIdentity{Account: measureAccount, EmailVerified: true}, IssuedAt: now, Expiry: now.Add(time.Hour)}}
-	tokens := PlatformTokens{K8sIssuer: "https://cluster.example", K8s: k8s, GoogleIssuer: "https://accounts.google.com", Google: google}
+	k8s := &stubVerifier{kind: kubernetes.Kind, issuer: "https://cluster.example", caller: identity.Caller{
+		Account: identity.Account{Kind: kubernetes.Kind, Address: daemonAccount}, IssuedAt: now, Expiry: now.Add(time.Hour),
+	}}
+	googleTokens := &stubVerifier{kind: google.Kind, issuer: "https://accounts.google.com", caller: identity.Caller{
+		Account: identity.Account{Kind: google.Kind, Address: measureAccount}, IssuedAt: now, Expiry: now.Add(time.Hour),
+	}}
+	tokens := PlatformTokens{Verifiers: []identity.CallerVerifier{k8s, googleTokens}}
 
-	account, isGoogle, issued, expiry, err := tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
+	caller, err := tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.NoError(t, err)
-	require.Equal(t, daemonAccount, account)
-	require.False(t, isGoogle)
-	require.Equal(t, now, issued)
-	require.Equal(t, now.Add(time.Hour), expiry)
+	require.Equal(t, identity.Account{Kind: kubernetes.Kind, Address: daemonAccount}, caller.Account)
+	require.Equal(t, now, caller.IssuedAt)
+	require.Equal(t, now.Add(time.Hour), caller.Expiry)
 	require.Equal(t, 1, k8s.asked)
-	require.Equal(t, 0, google.asked)
+	require.Equal(t, 0, googleTokens.asked)
 
-	account, isGoogle, _, _, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
+	caller, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
 	require.NoError(t, err)
-	require.Equal(t, measureAccount, account)
-	require.True(t, isGoogle)
+	require.Equal(t, identity.Account{Kind: google.Kind, Address: measureAccount}, caller.Account)
 
-	google.token.Identity.EmailVerified = false
-	_, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
-	require.Error(t, err)
+	googleTokens.err = &identity.NoAccountError{Reason: "names no verified account", Brief: "carries no verified email"}
+	_, err = tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
+	require.EqualError(t, err, "natscallout: carries no verified email")
 
-	_, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://elsewhere.example"))
+	_, err = tokens.Verify(t.Context(), issuedBy("https://elsewhere.example"))
 	require.Error(t, err)
-	_, _, _, _, err = tokens.Verify(t.Context(), "not-a-jwt")
+	_, err = tokens.Verify(t.Context(), "not-a-jwt")
 	require.Error(t, err)
 
 	k8s.err = errors.New("signature")
-	_, _, _, _, err = tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
+	_, err = tokens.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.Error(t, err)
 
-	none := PlatformTokens{K8sIssuer: "https://cluster.example", GoogleIssuer: "https://accounts.google.com"}
-	_, _, _, _, err = none.Verify(t.Context(), issuedBy("https://cluster.example"))
+	none := PlatformTokens{}
+	_, err = none.Verify(t.Context(), issuedBy("https://cluster.example"))
 	require.Error(t, err, "a broker with no NATS Kubernetes audience verifies no Kubernetes token")
 }
 
-// A listed service whose kind of token has no audience could never connect, so the broker's start
-// refuses it, naming the entry and the audience it needs.
-func TestRequireAudiences(t *testing.T) {
-	services, err := config.ParseNATSServices("daemon/-/*=" + daemonAccount + " measure/-/*=google:" + measureAccount)
+// TestNATSPicksTheVerifierByTheTokensExactIssuer: the token's own iss, read before it is verified,
+// picks the one verifier whose issuer is exactly that string. A token naming neither verifier's
+// issuer is refused naming the issuer, and neither verifier is asked, so no token is judged by a
+// verifier of another kind; a Google token is verified by the Google verifier alone (Review focus
+// 1: Google's tokens name accounts.google.com both with and without a scheme, and the auth service
+// takes only the spelling its verifier holds).
+func TestNATSPicksTheVerifierByTheTokensExactIssuer(t *testing.T) {
+	k8s := &stubVerifier{kind: kubernetes.Kind, issuer: "https://cluster.example"}
+	googleTokens := &stubVerifier{kind: google.Kind, issuer: "https://accounts.google.com", caller: identity.Caller{
+		Account: identity.Account{Kind: google.Kind, Address: measureAccount}, Expiry: time.Now().Add(time.Hour),
+	}}
+	tokens := PlatformTokens{Verifiers: []identity.CallerVerifier{k8s, googleTokens}}
+
+	for _, issuer := range []string{"accounts.google.com", "https://cluster.example/", "https://elsewhere.example"} {
+		_, err := tokens.Verify(t.Context(), issuedBy(issuer))
+		require.ErrorContains(t, err, `"`+issuer+`"`, "a token of %s must be refused naming its issuer", issuer)
+	}
+	require.Zero(t, k8s.asked, "the Kubernetes verifier was asked about a token of another issuer")
+	require.Zero(t, googleTokens.asked, "the Google verifier was asked about a token of another issuer")
+
+	caller, err := tokens.Verify(t.Context(), issuedBy("https://accounts.google.com"))
 	require.NoError(t, err)
-	require.NoError(t, RequireAudiences(services, "envoy-nats", "envoy-nats-google"))
-	err = RequireAudiences(services, "", "envoy-nats-google")
-	require.ErrorContains(t, err, "BROKER_NATS_K8S_AUDIENCE")
-	require.ErrorContains(t, err, daemonAccount)
-	err = RequireAudiences(services, "envoy-nats", "")
-	require.ErrorContains(t, err, "BROKER_NATS_GOOGLE_AUDIENCE")
-	require.ErrorContains(t, err, measureAccount)
-	require.NoError(t, RequireAudiences(nil, "", ""))
+	require.Equal(t, measureAccount, caller.Account.Address)
+	require.Equal(t, 1, googleTokens.asked)
+	require.Zero(t, k8s.asked, "the Kubernetes verifier was asked about a Google token")
 }
 
-// An edge listener's entry needs its kind's audience as every service's does: the auth service
-// answers its connection with the edge's grant, so a start that could not verify its token is
-// refused, naming the entry, and with both audiences set none is refused.
-func TestRequireAudiencesHoldsAnEdgeListenerToItsAudience(t *testing.T) {
-	services, err := config.ParseNATSServices("edge-listener/edge-a/PRIV=" + edgeAccount +
-		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com")
+// TestAGoogleTokenNamingNoVerifiedEmailIsRefusedInTodaysWords pins the refusal the auth service
+// logs for a sound Google identity token that names no verified account, byte for byte as it read
+// before the identity registry, through the google provider's own verifier.
+func TestAGoogleTokenNamingNoVerifiedEmailIsRefusedInTodaysWords(t *testing.T) {
+	ctx := context.Background()
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "google-key")
+	keys, err := oidc.NewKeys(ctx, issuer.URL())
 	require.NoError(t, err)
-	require.NoError(t, RequireAudiences(services, "envoy-nats", "envoy-nats-google"))
-	err = RequireAudiences(services, "", "envoy-nats-google")
-	require.ErrorContains(t, err, "BROKER_NATS_K8S_AUDIENCE")
-	require.ErrorContains(t, err, "edge-listener/edge-a")
-	err = RequireAudiences(services, "envoy-nats", "")
-	require.ErrorContains(t, err, "BROKER_NATS_GOOGLE_AUDIENCE")
-	require.ErrorContains(t, err, "edge-listener/edge-g")
+	provider, err := google.New(google.Config{Issuer: issuer.URL(), Keys: keys, Audience: "envoy-nats-google"})
+	require.NoError(t, err)
+	tokens := PlatformTokens{Verifiers: []identity.CallerVerifier{provider.CallerVerifier("envoy-nats-google")}}
+
+	claims := issuer.Claims("1234567890", "envoy-nats-google")
+	claims["email"], claims["email_verified"] = measureAccount, false
+	_, err = tokens.Verify(ctx, issuer.Mint(t, key, claims))
+	require.EqualError(t, err, "natscallout: the Google identity token carries no verified email")
+
+	claims["email_verified"] = true
+	caller, err := tokens.Verify(ctx, issuer.Mint(t, key, claims))
+	require.NoError(t, err)
+	require.Equal(t, identity.Account{Kind: google.Kind, Address: measureAccount}, caller.Account)
 }

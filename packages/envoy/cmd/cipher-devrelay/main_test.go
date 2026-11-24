@@ -12,7 +12,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
@@ -29,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -39,7 +39,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -80,10 +79,6 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 	// ServiceAccount token, verified against a local OIDC issuer standing in for the cluster's.
 	issuer = oidctest.New(t)
 	issuerKey := issuer.PublishKey(t, "signing-key")
-	accountTokens, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -91,10 +86,10 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 		OAuth: provider, Replay: enr.Replay,
 	}
 	api.Register(mux, api.Deps{
-		PublicURL:     srv.URL,
-		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accountTokens},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PublicURL:   srv.URL,
+		APIAccounts: map[identity.Account]api.Account{ciphertest.ClusterAccount(t, dispatchAccount): ciphertest.Caller(t, "dispatch")},
+		Callers:     ciphertest.ClusterCallers(t, issuer.URL(), dispatchAudience),
+		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,

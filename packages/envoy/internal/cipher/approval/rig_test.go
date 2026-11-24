@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/hold"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -38,7 +39,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
-	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -145,10 +145,6 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
 	signInConfig := ciphertest.SignIn(issuer, key)
-	accounts, err := oidc.New(context.Background(), issuer.URL(), dispatchAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
 
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Projects: setup.projects}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
@@ -169,10 +165,10 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	}
 	page := ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, ciphertest.WithApprovalHold(gate))
 	api.Register(mux, api.Deps{
-		PublicURL:     srv.URL,
-		APIAccounts:   map[string]api.Account{dispatchAccount: ciphertest.Caller(t, "dispatch")},
-		AccountTokens: enroll.K8sPodVerifier{Verifier: accounts},
-		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
+		PublicURL:   srv.URL,
+		APIAccounts: map[identity.Account]api.Account{ciphertest.ClusterAccount(t, dispatchAccount): ciphertest.Caller(t, "dispatch")},
+		Callers:     ciphertest.ClusterCallers(t, issuer.URL(), dispatchAudience),
+		Enroll:      enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,

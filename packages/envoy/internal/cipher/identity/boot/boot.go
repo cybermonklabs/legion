@@ -6,8 +6,11 @@
 package boot
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
@@ -41,11 +44,14 @@ type opened struct {
 
 // entry is one provider's registration: its kind, its rank (the order the registry asks the
 // providers in), and how it is built. keys reads an issuer's key set once per Open, however many
-// providers or verifiers read that issuer.
+// providers or verifiers read that issuer. accountNoun and natsAudience are how a refusal names
+// an account of the kind ("a Kubernetes account") and the setting that gives its tokens a NATS
+// audience, for a kind whose services connect to the hub.
 type entry struct {
-	kind identity.Kind
-	rank int
-	open func(cfg config.Config, keys func(issuer string) (*oidc.Keys, error), b *Boot) (opened, error)
+	kind                      identity.Kind
+	rank                      int
+	open                      func(cfg config.Config, keys func(issuer string) (*oidc.Keys, error), b *Boot) (opened, error)
+	accountNoun, natsAudience string
 }
 
 // entries are the providers of this build, in rank order.
@@ -85,6 +91,9 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 	var b Boot
 	providers := make([]identity.Provider, 0, len(entries))
 	callers := map[identity.Use][]identity.CallerVerifier{}
+	if err := servedKinds(cfg); err != nil {
+		return Boot{}, err
+	}
 	for _, e := range entries {
 		built, err := e.open(cfg, keys, &b)
 		if err != nil {
@@ -97,6 +106,9 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 			}
 		}
 	}
+	if err := natsAudiences(cfg, callers[identity.UseNATS]); err != nil {
+		return Boot{}, err
+	}
 	registry, err := identity.NewRegistry(providers, callers)
 	if err != nil {
 		return Boot{}, err
@@ -104,6 +116,59 @@ func Open(ctx context.Context, cfg config.Config, keysFor KeysFunc) (Boot, error
 	b.Registry = registry
 	logExchange(cfg)
 	return b, nil
+}
+
+// servedKinds refuses an account BROKER_API_ACCOUNTS or BROKER_NATS_SERVICES names, an edge
+// listener's among them, whose kind no provider of this build verifies: such a caller could never
+// authenticate, and a start that took it would refuse every one of its calls with nothing naming
+// the cause (a build that left the provider out with -tags cipher_no_<kind>).
+func servedKinds(cfg config.Config) error {
+	built := Kinds()
+	refuse := func(setting string, kind identity.Kind) error {
+		return fmt.Errorf("%s names a %s account, and this build of cipherd holds no %s identity provider", setting, kind, kind)
+	}
+	for _, account := range slices.SortedFunc(maps.Keys(cfg.APIAccounts), func(a, b identity.Account) int {
+		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Address, b.Address))
+	}) {
+		if !slices.Contains(built, account.Kind) {
+			return refuse("BROKER_API_ACCOUNTS", account.Kind)
+		}
+	}
+	for _, service := range cfg.NATS.Services {
+		if !slices.Contains(built, service.Account.Kind) {
+			return refuse(config.NATSServicesVariable, service.Account.Kind)
+		}
+	}
+	return nil
+}
+
+// natsAudiences refuses, on a broker that runs the NATS auth service, a BROKER_NATS_SERVICES
+// entry, an edge listener's among them, whose kind of platform token has no NATS verifier (verifiers):
+// such a service could never connect, since the auth service answers its connection only once its
+// token verifies, so the start refuses it naming the entry and the audience its kind needs. A
+// broker that runs no auth service verifies no NATS token and holds no entry to an audience.
+func natsAudiences(cfg config.Config, verifiers []identity.CallerVerifier) error {
+	if !cfg.NATS.Enabled() {
+		return nil
+	}
+	for _, service := range cfg.NATS.Services {
+		if slices.ContainsFunc(verifiers, func(v identity.CallerVerifier) bool { return v.Kind() == service.Account.Kind }) {
+			continue
+		}
+		e := entryOf(service.Account.Kind)
+		return fmt.Errorf("%s lists %s, %s, and %s is unset, so its token could not be verified", config.NATSServicesVariable, service.Name(), e.accountNoun, e.natsAudience)
+	}
+	return nil
+}
+
+// entryOf is the registered entry of kind, which servedKinds has already found.
+func entryOf(kind identity.Kind) entry {
+	for _, e := range entries {
+		if e.kind == kind {
+			return e
+		}
+	}
+	return entry{kind: kind}
 }
 
 // logExchange says once at boot which subject token issuers the exchange accepts, and how many

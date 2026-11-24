@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 )
 
 // The accounts BROKER_POD_OPERATORS maps in these tests, and the login service each one logs in
@@ -219,7 +221,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				caller, calls := cfg.APIAccounts[adaAccount]
+				caller, calls := cfg.APIAccounts[identity.Account{Kind: kubernetesAccountKind, Address: adaAccount}]
 				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch",
 					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
@@ -370,10 +372,14 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 		t.Fatalf("PodOperators = %v, want %v", cfg.PodOperators, want)
 	}
 	// The other settings loaded as written, so each is beside the mapping and refuses nothing.
-	if len(cfg.APIAccounts) != 1 || len(cfg.GoogleAPIAccounts) != 1 || len(cfg.SessionAccountPairs) != 1 || len(cfg.ExchangeReadAccounts) != 1 || !cfg.NATS.Enabled() ||
+	apiKinds := map[identity.Kind]int{}
+	for account := range cfg.APIAccounts {
+		apiKinds[account.Kind]++
+	}
+	if apiKinds[kubernetesAccountKind] != 1 || apiKinds[googleAccountKind] != 1 || len(cfg.SessionAccountPairs) != 1 || len(cfg.ExchangeReadAccounts) != 1 || !cfg.NATS.Enabled() ||
 		len(cfg.PodRegistrars) != 1 || !cfg.PodRegistrars.Lists("system:serviceaccount:legion-system:legion-daemon", adaAccount) {
-		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v, SessionAccountPairs = %v, ExchangeReadAccounts = %+v, PodRegistrars = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair, one reader, one registrar pairing a daemon with %s as its pod account, and the NATS auth service",
-			cfg.APIAccounts, cfg.GoogleAPIAccounts, cfg.SessionAccountPairs, cfg.ExchangeReadAccounts, cfg.PodRegistrars, cfg.NATS, adaAccount)
+		t.Fatalf("APIAccounts = %v, SessionAccountPairs = %v, ExchangeReadAccounts = %+v, PodRegistrars = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair, one reader, one registrar pairing a daemon with %s as its pod account, and the NATS auth service",
+			cfg.APIAccounts, cfg.SessionAccountPairs, cfg.ExchangeReadAccounts, cfg.PodRegistrars, cfg.NATS, adaAccount)
 	}
 	if people, err := parsePodOperators("BROKER_POD_OPERATORS", " \n\t "); err != nil || people != nil {
 		t.Fatalf("parsePodOperators of white space alone = %v, %v; want nil and no error", people, err)

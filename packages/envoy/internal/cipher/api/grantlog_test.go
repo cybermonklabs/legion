@@ -85,8 +85,8 @@ type wireGrantLog struct {
 func newGrantLogServer(t *testing.T) (ts *testServer, reviewToken, listenerToken string) {
 	t.Helper()
 	ts = newTestServerWith(t, func(d *api.Deps) {
-		d.APIAccounts[reviewAccount] = ciphertest.Caller(t, reviewCaller)
-		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
+		d.APIAccounts[inCluster(reviewAccount)] = ciphertest.Caller(t, reviewCaller)
+		d.APIAccounts[inCluster(listenerAccount)] = ciphertest.Caller(t, listenerCaller)
 	})
 	return ts, ts.accountToken(t, reviewAccount, "", time.Hour), ts.accountToken(t, listenerAccount, "", time.Hour)
 }

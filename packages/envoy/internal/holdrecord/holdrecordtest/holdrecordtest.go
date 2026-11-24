@@ -22,6 +22,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
+	"github.com/sjawhar/envoy/internal/cipher/identity/kubernetes"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -86,7 +88,7 @@ func Start(t testing.TB) *Broker {
 			Schema:          parsed.Query().Get("search_path"),
 			Keys:            []ed25519.PublicKey{pub},
 			OperatorToken:   verifyOperatorToken,
-			OperatorAccount: OperatorAccount,
+			OperatorAccount: operatorAccount(),
 		},
 	}}
 	b.Restart()
@@ -166,12 +168,17 @@ func (b *Broker) HoldView(second bool) *natscallout.HoldView {
 
 // verifyOperatorToken is the routes' platform-token verifier: OperatorToken is the operator
 // entry's account, issued now and living ten minutes, and any other token is refused.
-func verifyOperatorToken(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+func verifyOperatorToken(_ context.Context, raw string) (identity.Caller, error) {
 	if raw != OperatorToken {
-		return "", false, time.Time{}, time.Time{}, errors.New("holdrecordtest: not the operator's token")
+		return identity.Caller{}, errors.New("holdrecordtest: not the operator's token")
 	}
 	now := time.Now()
-	return OperatorAccount, false, now, now.Add(10 * time.Minute), nil
+	return identity.Caller{Account: operatorAccount(), IssuedAt: now, Expiry: now.Add(10 * time.Minute)}, nil
+}
+
+// operatorAccount is OperatorAccount as the routes hold it: a Kubernetes service account.
+func operatorAccount() identity.Account {
+	return identity.Account{Kind: kubernetes.Kind, Address: OperatorAccount}
 }
 
 // Config is the operator's client configuration for b: its URL, OperatorToken and both halves of

@@ -52,8 +52,10 @@ type CallerVerifier interface {
 }
 
 // NoAccountError is a token whose issuer, audience, signature and expiry all hold but which names
-// no account its provider reads one from. Reason says why, in words a caller is told.
-type NoAccountError struct{ Reason string }
+// no account its provider reads one from. Reason says why, in the words an API caller is told
+// (401 ACCOUNT_TOKEN_INVALID); Brief says it in the few words the NATS auth service logs the
+// refused connection with.
+type NoAccountError struct{ Reason, Brief string }
 
 func (e *NoAccountError) Error() string { return e.Reason }
 

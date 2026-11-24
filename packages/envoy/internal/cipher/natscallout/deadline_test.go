@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -38,14 +39,14 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 	// blockingFor is a ServiceToken that takes wait, as a verifier waiting on a key set would,
 	// and answers a live token of the listed account after it.
 	blockingFor := func(wait time.Duration) Deps {
-		return Deps{ServiceToken: func(ctx context.Context, _ string) (string, bool, time.Time, time.Time, error) {
+		return Deps{ServiceToken: func(ctx context.Context, _ string) (identity.Caller, error) {
 			select {
 			case <-ctx.Done():
-				return "", false, time.Time{}, time.Time{}, ctx.Err()
+				return identity.Caller{}, ctx.Err()
 			case <-time.After(wait):
 			}
 			now := time.Now()
-			return account, false, now, now.Add(time.Hour), nil
+			return identity.Caller{Account: inCluster(account), IssuedAt: now, Expiry: now.Add(time.Hour)}, nil
 		}}
 	}
 	// connectService connects as that daemon, as a service with a platform token does, and

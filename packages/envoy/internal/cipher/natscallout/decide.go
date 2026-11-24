@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -39,9 +40,9 @@ type Deps struct {
 	// introspection, in the broker's process.
 	Introspect func(ctx context.Context, token string) (oauthwire.Introspection, error)
 	// ServiceToken verifies a service's platform identity token for the NATS audiences
-	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
-	// whether that is a Google account, and when the token was issued and expires.
-	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
+	// (PlatformTokens, over the identity registry's NATS verifiers) and answers the caller it
+	// names: its account, and when the token was issued and expires.
+	ServiceToken func(ctx context.Context, raw string) (identity.Caller, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
@@ -353,7 +354,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 const longestServiceToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofClockSkew
 
 func decideService(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
-	account, google, issued, expiry, err := deps.ServiceToken(ctx, req.Password)
+	caller, err := deps.ServiceToken(ctx, req.Password)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Decision{}, budgetRefusal("the service token's verification")
@@ -363,28 +364,28 @@ func decideService(ctx context.Context, deps Deps, services []config.NATSService
 		// (internal/oidc), so the cause is safe to log; it is never answered.
 		return Decision{}, refuse(labelServiceToken, "service token not verified").because(err)
 	}
-	if expiry.Sub(issued) > longestServiceToken {
+	if caller.Expiry.Sub(caller.IssuedAt) > longestServiceToken {
 		return Decision{}, refuse(labelTokenTooLong, "token lives longer than an hour")
 	}
-	if !expiry.After(deps.now()) {
+	if !caller.Expiry.After(deps.now()) {
 		return Decision{}, refuse(labelTokenNotLive, "token not live")
 	}
 	var entry *config.NATSService
 	for index := range services {
-		if services[index].Account == account && services[index].Google == google {
+		if services[index].Account == caller.Account {
 			entry = &services[index]
 			break
 		}
 	}
 	if entry == nil {
-		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
+		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+caller.Account.Address)
 	}
 	if entry.Kind == config.NATSOperator {
-		return decideOperator(ctx, deps, *entry, expiry)
+		return decideOperator(ctx, deps, *entry, caller.Expiry)
 	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
-	return outsideTheHold(ctx, deps, Decision{Name: entry.Name(), Grant: grant, Expires: expiry})
+	return outsideTheHold(ctx, deps, Decision{Name: entry.Name(), Grant: grant, Expires: caller.Expiry})
 }

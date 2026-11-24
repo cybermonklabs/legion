@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 )
 
 const (
@@ -16,6 +17,11 @@ const (
 	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
 )
 
+// inCluster is the Kubernetes service account whose subject is address.
+func inCluster(address string) identity.Account {
+	return identity.Account{Kind: kubernetesAccountKind, Address: address}
+}
+
 // Each entry is read as <kind>/<machine id or ->/<* or ->=<account>, the account written as
 // BROKER_API_ACCOUNTS writes one, and keeps its own text for the refusals that name it.
 func TestParseNATSServicesReadsEachEntry(t *testing.T) {
@@ -24,10 +30,10 @@ func TestParseNATSServicesReadsEachEntry(t *testing.T) {
 	services, err := ParseNATSServices(listener + "\n " + daemon + " " + measure + " " + dispatch)
 	require.NoError(t, err)
 	require.Equal(t, []NATSService{
-		{Kind: NATSListener, MachineID: "dev-stack", Account: listenerAccount, AllProjects: true, Text: listener},
-		{Kind: NATSDaemon, Account: daemonAccount, Text: daemon},
-		{Kind: NATSMeasure, Account: measureAccount, Google: true, AllProjects: true, Text: measure},
-		{Kind: NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true, Text: dispatch},
+		{Kind: NATSListener, MachineID: "dev-stack", Account: inCluster(listenerAccount), AllProjects: true, Text: listener},
+		{Kind: NATSDaemon, Account: inCluster(daemonAccount), Text: daemon},
+		{Kind: NATSMeasure, Account: identity.Account{Kind: googleAccountKind, Address: measureAccount}, AllProjects: true, Text: measure},
+		{Kind: NATSDispatch, MachineID: "example-dispatch", Account: inCluster("system:serviceaccount:dispatch:dispatch"), AllProjects: true, Text: dispatch},
 	}, services)
 	none, err := ParseNATSServices("  ")
 	require.NoError(t, err)
@@ -42,8 +48,8 @@ func TestParseNATSServicesReadsAnEdgeListenersProjects(t *testing.T) {
 	services, err := ParseNATSServices(edge + " " + listener)
 	require.NoError(t, err)
 	require.Equal(t, []NATSService{
-		{Kind: NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"OTHER", "PRIV"}, Text: edge},
-		{Kind: NATSListener, MachineID: "host-a", Account: listenerAccount, AllProjects: true, Text: listener},
+		{Kind: NATSEdgeListener, MachineID: "edge-a", Account: inCluster(edgeAccount), Projects: []string{"OTHER", "PRIV"}, Text: edge},
+		{Kind: NATSListener, MachineID: "host-a", Account: inCluster(listenerAccount), AllProjects: true, Text: listener},
 	}, services)
 }
 
@@ -55,8 +61,8 @@ func TestEdgeListenersAreTheEdgeListenerEntries(t *testing.T) {
 		" edge-listener/edge-g/OTHER=google:example-edge@example-project.iam.gserviceaccount.com daemon/-/-=" + daemonAccount)
 	require.NoError(t, err)
 	require.Equal(t, []api.EdgeListener{
-		{Account: edgeAccount, Projects: []string{"PRIV"}},
-		{Account: "example-edge@example-project.iam.gserviceaccount.com", Google: true, Projects: []string{"OTHER"}},
+		{Account: inCluster(edgeAccount), Projects: []string{"PRIV"}},
+		{Account: identity.Account{Kind: googleAccountKind, Address: "example-edge@example-project.iam.gserviceaccount.com"}, Projects: []string{"OTHER"}},
 	}, NATSCallout{Services: services}.EdgeListeners())
 	require.Empty(t, NATSCallout{}.EdgeListeners())
 }
@@ -115,8 +121,8 @@ func TestParseNATSServicesReadsTheOperatorKind(t *testing.T) {
 	services, err := ParseNATSServices(operatorText + " " + probeText)
 	require.NoError(t, err)
 	require.Equal(t, []NATSService{
-		{Kind: NATSOperator, Account: operator, AllProjects: true, Text: operatorText},
-		{Kind: NATSProbe, Account: probe, AllProjects: true, Text: probeText},
+		{Kind: NATSOperator, Account: inCluster(operator), AllProjects: true, Text: operatorText},
+		{Kind: NATSProbe, Account: inCluster(probe), AllProjects: true, Text: probeText},
 	}, services)
 	require.Equal(t, "operator/"+operator, services[0].Name())
 	for raw, names := range map[string]string{

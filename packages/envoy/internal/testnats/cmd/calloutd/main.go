@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
@@ -69,8 +70,8 @@ func run(args []string) error {
 		XKeySeedFile:   filepath.Join(*keys, "xkey.seed"),
 	}, natscallout.Deps{
 		Introspect: introspector(*introspect),
-		ServiceToken: func(context.Context, string) (string, bool, time.Time, time.Time, error) {
-			return "", false, time.Time{}, time.Time{}, errors.New("calloutd admits no service")
+		ServiceToken: func(context.Context, string) (identity.Caller, error) {
+			return identity.Caller{}, errors.New("calloutd admits no service")
 		},
 		Log: slog.New(slog.NewTextHandler(os.Stdout, nil)),
 	})

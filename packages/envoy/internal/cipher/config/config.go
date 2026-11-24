@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -171,10 +172,9 @@ type Config struct {
 	// does not carry is 403 ACCOUNT_LACKS_POWER, which is a different fact from an account that
 	// is not listed at all (403 ACCOUNT_NOT_LISTED). A namespace's default account is refused, as
 	// is an account given twice, since each account names one caller. APIAccounts is keyed by
-	// ServiceAccount subject and GoogleAPIAccounts by Google account address, each answering its
-	// caller and that caller's powers. Unset, no caller reaches those routes.
-	APIAccounts       map[string]api.Account
-	GoogleAPIAccounts map[string]api.Account
+	// account, a ServiceAccount subject or a Google account address with its kind, each answering
+	// its caller and that caller's powers. Unset, no caller reaches those routes.
+	APIAccounts map[identity.Account]api.Account
 	// BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE,
 	// BROKER_SIGNIN_DOMAIN, BROKER_SIGNIN_SESSION_SECONDS: the broker's own OpenID Connect client,
 	// through which a person signs in to the broker's approval page to approve a secret request:
@@ -1561,11 +1561,11 @@ const googleAPIAccountTag = "google:"
 
 // apiAccountEntry is one <caller>=<account> entry of BROKER_API_ACCOUNTS: the caller's name, the
 // account as the broker looks it up (a ServiceAccount subject, or a Google account address with
-// its tag removed), which kind it is, and the entry's text as the setting gave it.
+// its tag removed) with its kind, and the entry's text as the setting gave it.
 type apiAccountEntry struct {
-	caller, account string
-	google          bool
-	text            string
+	caller  string
+	account identity.Account
+	text    string
 }
 
 // parseAPIAccounts reads setting's whitespace-separated <caller>=<account> entries, in order. An
@@ -1591,29 +1591,26 @@ func parseAPIAccounts(setting, value string) ([]apiAccountEntry, error) {
 		if err != nil {
 			return nil, err
 		}
-		entry := apiAccountEntry{caller: caller, account: parsed.Address, google: parsed.Google, text: text}
-		if other, twice := seen[entry.account]; twice {
+		entry := apiAccountEntry{caller: caller, account: parsed, text: text}
+		if other, twice := seen[parsed.Address]; twice {
 			if other == caller {
-				return nil, fmt.Errorf("%s names the account %s twice for %q; each account calls as one caller, so name it once", setting, entry.account, caller)
+				return nil, fmt.Errorf("%s names the account %s twice for %q; each account calls as one caller, so name it once", setting, parsed.Address, caller)
 			}
-			return nil, fmt.Errorf("%s names the account %s for both %q and %q; each account calls as one caller, so name it once", setting, entry.account, other, caller)
+			return nil, fmt.Errorf("%s names the account %s for both %q and %q; each account calls as one caller, so name it once", setting, parsed.Address, other, caller)
 		}
-		seen[entry.account] = caller
+		seen[parsed.Address] = caller
 		entries = append(entries, entry)
 	}
 	return entries, nil
 }
 
-// Account is a platform account as BROKER_API_ACCOUNTS writes one: a Kubernetes service account's
-// subject, or a Google service account's address.
-type Account struct {
-	// Address is the account as the broker looks it up: the subject a projected token carries,
-	// system:serviceaccount:<namespace>:<name>, or the email a Google identity token carries,
-	// without its google: tag.
-	Address string
-	// Google is whether the account is a Google service account.
-	Google bool
-}
+// The kinds of account BROKER_API_ACCOUNTS and BROKER_NATS_SERVICES write, each the kind of the
+// identity provider that verifies such an account's token (identity/boot's
+// TestConfigKindsAreRegistered holds them to the providers' own).
+const (
+	kubernetesAccountKind identity.Kind = "kubernetes"
+	googleAccountKind     identity.Kind = "google"
+)
 
 // ErrAccountForm is ParseAccount's answer for an account written in neither form, which each
 // setting refuses naming its own entry form.
@@ -1621,26 +1618,27 @@ var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<na
 
 // ParseAccount reads account, written as a BROKER_API_ACCOUNTS entry writes one: google:<address>
 // for a Google service account, looked up by the email its identity token carries, and any other
-// a Kubernetes service account, looked up by the subject its projected token carries. It refuses,
-// naming setting and text, the entry it came from: a namespace's default account, as
-// parseServiceAccounts does, and a Google account vmAccountRefusal refuses, which is the rule
-// BROKER_VM_SERVICES holds every Google account to. An account of neither form is ErrAccountForm.
-// Every setting that names a caller's account reads it here (BROKER_API_ACCOUNTS, and
-// BROKER_NATS_SERVICES through ParseNATSServices), so no setting admits an account another
-// refuses.
-func ParseAccount(setting, text, account string) (Account, error) {
+// a Kubernetes service account, looked up by the subject its projected token carries. The account
+// it answers is the address as the broker looks it up (the subject, or the email without its
+// google: tag) and its kind. It refuses, naming setting and text, the entry it came from: a
+// namespace's default account, as parseServiceAccounts does, and a Google account
+// vmAccountRefusal refuses, which is the rule BROKER_VM_SERVICES holds every Google account to.
+// An account of neither form is ErrAccountForm. Every setting that names a caller's account reads
+// it here (BROKER_API_ACCOUNTS, and BROKER_NATS_SERVICES through ParseNATSServices), so no
+// setting admits an account another refuses.
+func ParseAccount(setting, text, account string) (identity.Account, error) {
 	switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
 	case tagged:
 		if err := vmAccountRefusal(setting, text, address); err != nil {
-			return Account{}, err
+			return identity.Account{}, err
 		}
-		return Account{Address: address, Google: true}, nil
+		return identity.Account{Kind: googleAccountKind, Address: address}, nil
 	case !oauthwire.AccountSubject.MatchString(account):
-		return Account{}, ErrAccountForm
+		return identity.Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
-		return Account{}, defaultServiceAccountRefusal(setting, text)
+		return identity.Account{}, defaultServiceAccountRefusal(setting, text)
 	}
-	return Account{Address: account}, nil
+	return identity.Account{Kind: kubernetesAccountKind, Address: account}, nil
 }
 
 // apiAccountForm is the refusal of a BROKER_API_ACCOUNTS entry of neither form, which names both.
@@ -1870,7 +1868,7 @@ func mappedAccountRefusal(cfg *Config) error {
 	for _, entry := range cfg.ExchangeAccounts {
 		exchangePeople[entry.Account] = entry.Person
 	}
-	natsEntries := make(map[string]string)
+	natsEntries := make(map[identity.Account]string)
 	for _, entry := range cfg.NATS.Services {
 		natsEntries[entry.Account] = entry.Text
 	}
@@ -1928,10 +1926,10 @@ func mappedAccountRefusal(cfg *Config) error {
 		if job, runs := jobProjects[account]; runs {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_JOB_ACCOUNTS names it as a job's account for the projects %s; the exchange would mint the person's pod a job's token that names the account as its service and no person, so take the account out of BROKER_EXCHANGE_JOB_ACCOUNTS or out of %s", setting, account, person, job, setting)
 		}
-		if caller, calls := cfg.APIAccounts[account]; calls {
+		if caller, calls := cfg.APIAccounts[identity.Account{Kind: kubernetesAccountKind, Address: account}]; calls {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
-		if entry, names := natsEntries[account]; names {
+		if entry, names := natsEntries[identity.Account{Kind: kubernetesAccountKind, Address: account}]; names {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant and, for an edge-listener entry, also by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
@@ -3285,6 +3283,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// apiCallers is each kind of account BROKER_API_ACCOUNTS names.
+	apiCallers := map[identity.Kind]bool{}
 	for _, entry := range callers {
 		// A caller's name is an authority and not a label — it decides which of the broker's
 		// named-caller routes that account reaches — so a name the broker's own table does not
@@ -3293,25 +3293,19 @@ func Load(getenv func(string) string) (Config, error) {
 		if !known {
 			return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names the caller %q, which this broker does not know, got %q: its callers are %s", entry.caller, entry.text, strings.Join(api.KnownCallers(), ", "))
 		}
-		if entry.google {
-			if cfg.GoogleAPIAccounts == nil {
-				cfg.GoogleAPIAccounts = map[string]api.Account{}
-			}
-			cfg.GoogleAPIAccounts[entry.account] = account
-			continue
-		}
 		if cfg.APIAccounts == nil {
-			cfg.APIAccounts = map[string]api.Account{}
+			cfg.APIAccounts = map[identity.Account]api.Account{}
 		}
 		cfg.APIAccounts[entry.account] = account
+		apiCallers[entry.account.Kind] = true
 	}
 	// Each kind of entry needs the issuer whose tokens its callers present, and only that one: a
 	// deployment whose callers are all Google accounts is told about no cluster, and one whose
 	// callers are all Kubernetes accounts needs no Google audience.
-	if len(cfg.APIAccounts) > 0 && cfg.K8sOIDCIssuer == "" {
+	if apiCallers[kubernetesAccountKind] && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Kubernetes service account, which needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its callers present")
 	}
-	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
+	if apiCallers[googleAccountKind] && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
 	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
@@ -3383,7 +3377,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The audience is for a Google caller of any kind, and needs one: with none, the broker
 	// would read Google's keys at boot and then accept no Google identity token at all.
-	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 && googleEdge == "" {
+	if cfg.GoogleOIDCAudience != "" && !apiCallers[googleAccountKind] && len(cfg.VMServicesByAccount) == 0 && googleEdge == "" {
 		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS, a VM service in BROKER_VM_SERVICES or a google: edge-listener entry in BROKER_NATS_SERVICES; with none, no Google identity token for that audience could ever be accepted")
 	}
 	// The registration route's two settings, read after every other audience of the cluster

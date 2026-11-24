@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -59,23 +60,25 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
 		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed), XKeySeedFile: write("xkey.seed", keys.XKeySeed), Services: services,
 	}, natscallout.Deps{
-		ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+		ServiceToken: func(_ context.Context, raw string) (identity.Caller, error) {
 			mu.Lock()
 			presented = append(presented, raw)
 			mu.Unlock()
 			parts := strings.Split(raw, ".")
 			payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 			if err != nil {
-				return "", false, time.Time{}, time.Time{}, err
+				return identity.Caller{}, err
 			}
 			var claims struct {
 				Sub      string
 				Iat, Exp int64
 			}
 			if err := json.Unmarshal(payload, &claims); err != nil {
-				return "", false, time.Time{}, time.Time{}, err
+				return identity.Caller{}, err
 			}
-			return claims.Sub, false, time.Unix(claims.Iat, 0), time.Unix(claims.Exp, 0), nil
+			// The account as the listener's entry was listed, kind and all.
+			account := identity.Account{Kind: services[0].Account.Kind, Address: claims.Sub}
+			return identity.Caller{Account: account, IssuedAt: time.Unix(claims.Iat, 0), Expiry: time.Unix(claims.Exp, 0)}, nil
 		},
 		Log: slog.New(slog.DiscardHandler),
 	})

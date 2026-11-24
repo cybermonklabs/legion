@@ -47,13 +47,13 @@ func newGoogleCallerServer(t *testing.T) *googleCallers {
 	t.Helper()
 	google := oidctest.New(t)
 	key := google.PublishKey(t, "google-key")
-	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
+	keys, err := oidc.NewKeys(context.Background(), google.URL())
 	if err != nil {
-		t.Fatalf("oidc.New for Google: %v", err)
+		t.Fatalf("oidc.NewKeys for Google: %v", err)
 	}
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.GoogleAPIAccounts = map[string]api.Account{listenerGoogleAccount: ciphertest.Caller(t, "listener")}
-		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
+		d.APIAccounts[ofGoogle(listenerGoogleAccount)] = ciphertest.Caller(t, "listener")
+		d.Callers = append(d.Callers, googleCaller(t, google.URL(), keys, machineAudience))
 	})
 	return &googleCallers{testServer: ts, issuer: google, key: key}
 }
@@ -210,8 +210,7 @@ func TestEveryGoogleCallerRefusalKeepsItsMeaning(t *testing.T) {
 // not about the token.
 func TestWithNoIssuerAtAllEveryAccountCallerIsOff(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		d.AccountTokens = nil
-		d.GoogleAccountTokens = nil
+		d.Callers = nil
 	})
 	status, body := ts.raw(t, http.MethodPost, "/v1/oauth/introspect",
 		map[string]string{"Authorization": "Bearer anything", "Content-Type": "application/x-www-form-urlencoded"},

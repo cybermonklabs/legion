@@ -27,7 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -92,11 +92,11 @@ func newHoldRig(t *testing.T) *holdRig {
 	}
 	issuer := oidctest.New(t)
 	signer := issuer.PublishKey(t, "nats-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), holdNATSAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokens := natscallout.PlatformTokens{K8sIssuer: issuer.URL(), K8s: enroll.K8sPodVerifier{Verifier: verifier}}
+	tokens := natscallout.PlatformTokens{Verifiers: []identity.CallerVerifier{kubernetesCaller(t, issuer.URL(), keys, holdNATSAudience)}}
 	services, err := config.ParseNATSServices(holdServices)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func newHoldRig(t *testing.T) *holdRig {
 	}
 	rig := &holdRig{t: t, pool: pool, key: private, issuer: issuer, signer: signer, deps: api.Deps{NATSHold: api.NATSHold{
 		Pool: pool, Schema: parsed.Query().Get("search_path"), Keys: []ed25519.PublicKey{public},
-		OperatorToken: tokens.Verify, OperatorAccount: operator.Account, OperatorGoogle: operator.Google,
+		OperatorToken: tokens.Verify, OperatorAccount: operator.Account,
 	}}}
 	rig.restart()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { rig.mux.Load().ServeHTTP(w, req) }))

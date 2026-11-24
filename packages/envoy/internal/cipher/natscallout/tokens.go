@@ -7,56 +7,42 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/api"
-	"github.com/sjawhar/envoy/internal/cipher/config"
-	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 )
 
 // PlatformTokens verifies a service's platform identity token for the NATS audiences, as
-// Deps.ServiceToken: a projected Kubernetes ServiceAccount token (K8s, for
-// BROKER_NATS_K8S_AUDIENCE, from K8sIssuer) or a Google identity token (Google, for
-// BROKER_NATS_GOOGLE_AUDIENCE, from GoogleIssuer). The token's own issuer, read before it is
-// verified, picks which verifier verifies it, so a token is verified once; a verifier left nil is
-// an audience this broker sets none for, whose tokens are refused.
+// Deps.ServiceToken, with the identity registry's NATS verifiers (identity.UseNATS): one per
+// kind of token the broker sets a NATS audience for. The token's own issuer, read before it is
+// verified, picks the verifier whose Issuer is exactly that string, so a token is verified once
+// and never by a verifier of another kind; a token of an issuer no verifier holds is refused.
 type PlatformTokens struct {
-	K8sIssuer string
-	K8s       interface {
-		VerifyAccount(ctx context.Context, raw string) (enroll.AccountClaims, error)
-	}
-	GoogleIssuer string
-	Google       interface {
-		VerifyGoogle(ctx context.Context, raw string) (api.GoogleToken, error)
-	}
+	Verifiers []identity.CallerVerifier
 }
 
-// Verify answers the account raw names, whether it is a Google account, and when raw was issued
-// and expires, once the verifier of its issuer has verified it. A Google token must carry a
-// verified email: the account is looked up by it.
-func (p PlatformTokens) Verify(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error) {
+// Verify answers the caller raw names once the verifier of its issuer has verified it: the
+// account, and when the token was issued and expires. A sound token naming no account its kind
+// reads one from (*identity.NoAccountError) is refused in the verifier's brief words.
+func (p PlatformTokens) Verify(ctx context.Context, raw string) (identity.Caller, error) {
 	issuer, err := unverifiedIssuer(raw)
 	if err != nil {
-		return "", false, time.Time{}, time.Time{}, err
+		return identity.Caller{}, err
 	}
-	switch {
-	case issuer == p.K8sIssuer && p.K8s != nil:
-		claims, err := p.K8s.VerifyAccount(ctx, raw)
+	for _, verifier := range p.Verifiers {
+		if verifier.Issuer() != issuer {
+			continue
+		}
+		caller, err := verifier.VerifyCaller(ctx, raw)
+		var none *identity.NoAccountError
+		if errors.As(err, &none) {
+			return identity.Caller{}, fmt.Errorf("natscallout: %s", none.Brief)
+		}
 		if err != nil {
-			return "", false, time.Time{}, time.Time{}, err
+			return identity.Caller{}, err
 		}
-		return claims.Subject, false, claims.IssuedAt, claims.Expiry, nil
-	case issuer == p.GoogleIssuer && p.Google != nil:
-		token, err := p.Google.VerifyGoogle(ctx, raw)
-		if err != nil {
-			return "", false, time.Time{}, time.Time{}, err
-		}
-		if token.Identity.Account == "" || !token.Identity.EmailVerified {
-			return "", false, time.Time{}, time.Time{}, errors.New("natscallout: the Google identity token carries no verified email")
-		}
-		return token.Identity.Account, true, token.IssuedAt, token.Expiry, nil
+		return caller, nil
 	}
-	return "", false, time.Time{}, time.Time{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
+	return identity.Caller{}, fmt.Errorf("natscallout: no NATS audience of this broker takes tokens of the issuer %q", issuer)
 }
 
 // unverifiedIssuer is the 'iss' raw names, read without verifying it: it only picks the verifier.
@@ -76,21 +62,4 @@ func unverifiedIssuer(raw string) (string, error) {
 		return "", errors.New("natscallout: the service token's claims do not decode")
 	}
 	return claims.Issuer, nil
-}
-
-// RequireAudiences refuses a list naming a service whose kind of platform token has no NATS
-// audience (k8sAudience for a Kubernetes account, googleAudience for a Google one): such a
-// service could never connect, so the broker's start refuses it naming the entry. An edge
-// listener's entry is held to its audience as every service's is, since the auth service answers
-// its connection with the edge's grant (scopeGrant).
-func RequireAudiences(services []config.NATSService, k8sAudience, googleAudience string) error {
-	for _, entry := range services {
-		switch {
-		case entry.Google && googleAudience == "":
-			return fmt.Errorf("%s lists %s, a Google account, and BROKER_NATS_GOOGLE_AUDIENCE is unset, so its token could not be verified", config.NATSServicesVariable, entry.Name())
-		case !entry.Google && k8sAudience == "":
-			return fmt.Errorf("%s lists %s, a Kubernetes account, and BROKER_NATS_K8S_AUDIENCE is unset, so its token could not be verified", config.NATSServicesVariable, entry.Name())
-		}
-	}
-	return nil
 }

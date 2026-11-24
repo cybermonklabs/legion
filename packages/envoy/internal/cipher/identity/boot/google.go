@@ -14,7 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
-func init() { register(entry{kind: google.Kind, rank: 20, open: openGoogle}) }
+func init() {
+	register(entry{kind: google.Kind, rank: 20, open: openGoogle, accountNoun: "a Google account", natsAudience: "BROKER_NATS_GOOGLE_AUDIENCE"})
+}
 
 // openGoogle builds the Google provider: the issuer BROKER_GOOGLE_OIDC_ISSUER names, read only
 // where BROKER_GOOGLE_OIDC_AUDIENCE or BROKER_NATS_GOOGLE_AUDIENCE gives it an audience, the

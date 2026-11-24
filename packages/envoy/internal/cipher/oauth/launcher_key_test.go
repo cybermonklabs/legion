@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/identity"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -226,8 +227,8 @@ func newLauncherAPI(t *testing.T, pool *pgxpool.Pool) *launcherAPI {
 	unbounded := ratelimit.Limit{Every: time.Nanosecond, Burst: 1000}
 	api.Register(mux, api.Deps{
 		PublicURL:      srv.URL,
-		APIAccounts:    map[string]api.Account{ciphertest.APIAccount: ciphertest.Caller(t, ciphertest.APICaller)},
-		AccountTokens:  accounts,
+		APIAccounts:    map[identity.Account]api.Account{ciphertest.ClusterAccount(t, ciphertest.APIAccount): ciphertest.Caller(t, ciphertest.APICaller)},
+		Callers:        ciphertest.ClusterCallers(t, issuer.URL(), launcherAPIAudience),
 		Enroll:         enr,
 		Machine:        &requests.Machine{Store: st, Policy: rules, Audience: srv.URL, Skew: time.Minute},
 		MachineLogin:   logins,
