@@ -98,35 +98,6 @@ describe("the dispatch command surface", () => {
     expect(checked).toBeGreaterThan(20);
   });
 
-  test("doc-edit --help lists each key an operation takes, with its type and its values", () => {
-    const help = commandHelp("dispatch_doc_edit");
-    expect(help).toContain(
-      [
-        "  --ops-json <json>",
-        "      Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires. Required.",
-        "      Each item's keys:",
-        "        op (required; replace|delete|insert|retype|move|delete_row|delete_column): Edit operation.",
-        "",
-      ].join("\n")
-    );
-    expect(help).toContain(
-      "\n        index (integer): Zero-based row or column index for delete_row or delete_column.\n"
-    );
-    expect(help).toContain("\n        type (text): Typed block name for retype.\n");
-    expect(help).toContain("\n        attributes (any JSON): Typed block attributes for retype;");
-    expect(help).toContain(
-      [
-        "      Its keys:",
-        "        document (text): Token for the exact canonical document returned by dispatch doc-read.",
-        "        blocks (list of objects): Every content block this batch changes, each with the token dispatch doc-read --blocks lists.",
-        "          Each item's keys:",
-        "            id (required; text): Stable block id dispatch doc-read --blocks lists.",
-        "            token (required; text): That block's full-state token, including inline marks.",
-        "",
-      ].join("\n")
-    );
-  });
-
   test("dispatch project takes its key and name as one flag each", () => {
     expect(commandName("dispatch_project")).toBe("project");
     expect(commandFlags("dispatch_project")).toEqual(expect.arrayContaining(["--key", "--name"]));

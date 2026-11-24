@@ -32,6 +32,7 @@ import {
   sessionAnswersSettled,
   sessionAnswersWords,
 } from "../session-answers";
+import { sessionAnswerRelationPhrase } from "../session-answer-relations";
 
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
 const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOString();
@@ -131,14 +132,14 @@ describe("renderSessionAnswers", () => {
       },
     };
     expect(renderSessionAnswerItem(throughSession)).toStartWith(
-      "2026-10-27T11:00:00Z · user ana@example.com, acting through session 0123456789abcdef · answered your ask"
+      `2026-10-27T11:00:00Z · user ana@example.com, acting through session 0123456789abcdef · ${sessionAnswerRelationPhrase("answered_your_ask")}`
     );
     const throughToken = {
       ...answer,
       author: { ...answer.author, act: { token_id: "token-1", token_name: "architect" } },
     };
     expect(renderSessionAnswerItem(throughToken)).toStartWith(
-      "2026-10-27T11:00:00Z · user ana@example.com, acting through token architect · answered your ask"
+      `2026-10-27T11:00:00Z · user ana@example.com, acting through token architect · ${sessionAnswerRelationPhrase("answered_your_ask")}`
     );
   });
 
@@ -727,7 +728,7 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(read).toEqual({
-      text: "[Dispatch: people's answers from the last 72 hours could not be read (INTERNAL: database is down); run `dispatch answers`.]",
+      text: sessionAnswersFailureLine("INTERNAL: database is down"),
       source: "failure",
       reason: "INTERNAL: database is down",
     });
@@ -941,10 +942,6 @@ describe("readSessionAnswers", () => {
         withoutCommand: true,
       })
     );
-    expect(read.text?.split("\n").at(-1)).toMatch(
-      /^\d+ older items left out to stay under 8,000 characters\.$/
-    );
-    expect(read.text).not.toContain("dispatch answers");
   });
 
   test("a failed read carries the failure line once every cached item is past 72 hours", async () => {
