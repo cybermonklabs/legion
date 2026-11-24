@@ -29,10 +29,12 @@ type Client struct {
 	HTTP  *http.Client
 }
 
-// Refusal is an answer outside 2xx: the URL of the route that refused, the status and what the
-// listener said, as the rule prints it with every credential the request carried redacted
-// (redact.Answer.Words). Its Error names all three, the words cut to their first 300 bytes, so a
-// log line that carries only a session id still says which listener and route refused.
+// Refusal is an answer outside 2xx: the URL of the route that refused, as redact.Call prints it
+// beside the listener's URL (whole for a clean URL, NotPrinted for one with user information or a
+// query, which can carry a credential), the status and what the listener said, as the rule prints
+// it with every credential the request carried redacted (redact.Answer.Words). Its Error names all
+// three, the words cut to their first 300 bytes, so a log line that carries only a session id
+// still says which listener and route refused.
 type Refusal struct {
 	URL    string
 	Status int
@@ -125,7 +127,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer
 	defer response.Body.Close()
 	answer, _ := redact.ReadAnswer(response, answerLimit)
 	if response.StatusCode/100 != 2 {
-		return answer, &Refusal{URL: request.URL.String(), Status: response.StatusCode, Said: answer.Words().String()}
+		return answer, &Refusal{URL: redact.Call(c.URL, request.URL.String()), Status: response.StatusCode, Said: answer.Words().String()}
 	}
 	return answer, nil
 }
