@@ -254,6 +254,51 @@ func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 	}
 }
 
+// A worker the daemon launches again on its own while another role's merge forward of the head is
+// open is held at the ready of that launch, by the rule that holds a worker a move or a retry
+// starts (holdStartedWorker): the launch may run a fresh session - its process died and was
+// relaunched within its budgets, a released pod was woken, or its session could not be resumed
+// (supervise's startFresh) - which holds none of its predecessor's messages, so the hold the ask
+// sent may be in none of them. On the default steps, the implementer is asked in testing and the
+// tester is held; the ready of the tester's launch 2, with no move and no retry, holds it again.
+// The asked implementer's own ready holds nobody, and a ready once the merge landed holds nobody.
+func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
+	why := record.ConflictCheckNotGreen
+	for _, tc := range []struct {
+		name   string
+		landed bool
+		ready  claim.Role
+		want   []string
+	}{
+		{name: "the tester's relaunch is held", ready: claim.RoleTester, want: []string{"tester hold"}},
+		{name: "control: the asked implementer's relaunch holds nobody", ready: claim.RoleImplementer},
+		{name: "control: a relaunch once the merge landed holds nobody", landed: true, ready: claim.RoleTester},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
+				heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
+			}
+			if tc.landed {
+				landsMergeForward(t, pool)
+			}
+			before := len(mergeForwardMessages(t, pool))
+			applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ClaimReady{Issue: "LEGION-208", Role: tc.ready, Launch: 2})
+			var held []string
+			for _, told := range toldWho(mergeForwardMessages(t, pool)[before:]) {
+				if told == "tester hold" || told == "implementer hold" {
+					held = append(held, told)
+				}
+			}
+			if !reflect.DeepEqual(held, tc.want) {
+				t.Errorf("the ready of the %s's launch 2 queued the holds %v, want %v", tc.ready, held, tc.want)
+			}
+		})
+	}
+}
+
 // The plan `implementer reviewer tester`: a merge forward asked in reviewing lands, the head it
 // left conflicts in its turn, and a second merge forward of that head is asked, still in
 // reviewing. The reviewer's approval of that head starts the tester while the second merge is

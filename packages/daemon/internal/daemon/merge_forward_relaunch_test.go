@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -84,6 +85,9 @@ func wokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *super
 	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
 	machine := releasedClaim(t, sup, claim.RoleImplementer)
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	// The listener resolves the role to the session the claim records, as it does once that
+	// session claimed its role.
+	publisher.holdBy(func() string { return machine.View().Claim.Session })
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
 	drainAt(t, runner, 0, "the ask's first attempt")
 	machine.Wait()
@@ -255,6 +259,7 @@ func failedWithTheAsk(t *testing.T, at phase.Phase, asked record.MergeForward, a
 		t.Fatalf("create the failed %s's claim: %v", ask.Role, err)
 	}
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	publisher.holdBy(func() string { return machine.View().Claim.Session })
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 	return runner, pool, publisher, machine
 }
@@ -304,6 +309,86 @@ func TestAnAskWhoseFailedClaimIsRetriedBeforeItsRowEndsReachesTheNewLaunch(t *te
 	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Testing, implementersAsk(), owedAsk)
 	relaunchBeforeTheEnd(t, runner, pool, machine, nil)
 	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
+}
+
+// The ask's row runs while the implementer's launch 2 is still coming up and the listener still
+// names the session of launch 1 as the role's holder: that session's process died, and its clean
+// stop at the listener has not landed (the daemon's stop of a session is asynchronous and may
+// fail, leaving the registration until it expires). Launch 2 cannot resume that session and starts
+// a fresh one in the same launch (supervise's startFresh), which registers and comes ready, and
+// claims the role only later. A copy stored for the old session tells launch 2 nothing, so the
+// fresh session is told the ask once, by the row, once it holds the role, and the record keeps
+// launch 2 as the one told. Crediting launch 2 with the copy the old session took would leave the
+// fresh session told nothing.
+func TestAnAskReachesTheFreshSessionOfTheLaunchWhileTheOldSessionHoldsTheRole(t *testing.T) {
+	t.Parallel()
+	const freshSession = "ses-fresh-implementer"
+	publisher := &holderPublisher{}
+	asked := implementersAsk()
+	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Testing, workflow.PhaseStatus(phase.Testing), record.PullRequestOpen, &asked)
+	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+		Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1, State: supervise.StateFailed,
+		Failure: "deaths with work outstanding ran out", Session: "ses-implementer", SessionFile: t.TempDir() + "/session.jsonl"}, "")
+	if err != nil {
+		t.Fatalf("create the failed implementer's claim: %v", err)
+	}
+	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
+	publisher.holdBy(func() string { return "ses-implementer" })
+
+	sup.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		token, runtime.ErrSessionFileMissing)})
+	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: token}); err != nil {
+		t.Fatalf("the operator's retry of the implementer: %v", err)
+	}
+	machine.Wait()
+	launching := machine.Claim()
+	if launching.State != supervise.StateLaunching || launching.Generation != 2 || launching.Session != "" {
+		t.Fatalf("after the retry the implementer is %s at launch %d recording session %q, want launch 2 launching a fresh session",
+			launching.State, launching.Generation, launching.Session)
+	}
+	drainAt(t, runner, 0, "the ask's attempt while launch 2 comes up")
+
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: 2},
+		supervise.RequestRegister{Claim: token, Generation: 2, Session: freshSession, SessionFile: t.TempDir() + "/fresh.jsonl"},
+		supervise.RequestReady{Claim: token, Generation: 2, Session: freshSession},
+	} {
+		if err := machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("bring up the implementer's launch 2: handle %T: %v", ev, err)
+		}
+	}
+	machine.Wait()
+	drainAt(t, runner, 10*time.Minute, "an attempt while the old session still holds the role")
+	publisher.holdBy(func() string { return freshSession })
+	drainAt(t, runner, 20*time.Minute, "an attempt once the fresh session holds the role")
+	drainAt(t, runner, 30*time.Minute, "a later attempt")
+
+	_, delivered := publisher.snapshot()
+	want := owedAsk.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"})
+	var fresh int
+	for _, published := range delivered {
+		if published.message == want && published.holder == freshSession {
+			fresh++
+		}
+	}
+	if fresh != 1 {
+		t.Errorf("the fresh session of launch 2 was told the ask %d times (every delivery: %+v), want once", fresh, delivered)
+	}
+	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
+		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
+	}
+	var sent uint64
+	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
+		Scan(&sent); err != nil {
+		t.Fatalf("read the record's ask: %v", err)
+	}
+	if sent != 2 {
+		t.Errorf("the record's ask was told launch %d, want launch 2", sent)
+	}
 }
 
 // The merger was asked to merge the base forward in merging, and the architect moved the issue
@@ -423,13 +508,13 @@ type publishedThen struct {
 	then func()
 }
 
-func (p *publishedThen) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.holderPublisher.Publish(ctx, topic, message, payload, key)
+func (p *publishedThen) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	holder, err := p.holderPublisher.Publish(ctx, topic, message, payload, key)
 	if then := p.then; err == nil && then != nil {
 		p.then = nil
 		then()
 	}
-	return err
+	return holder, err
 }
 
 // endedAndRetried is an operator's stop of machine's live claim, which retires it, and the
