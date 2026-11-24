@@ -34,9 +34,12 @@ import {
 } from "../environment";
 import { PERSON_TRADE_VAR } from "../signins";
 import {
+  FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_PROJECTS,
+  FORM_SCOPE,
+  SCOPE_READ,
 } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
@@ -148,13 +151,14 @@ test("a client is built for the broker, the identity and the session the variabl
     // the client a sign-in makes).
     AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
   });
-  const client = made?.client;
-  expect(client?.describe()).toBe(
+  if (made === undefined) throw new Error("the factory made no client for a projected token");
+  const { client } = made;
+  expect(client.describe()).toBe(
     "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
   // The key is this process's own, made once with the client, and only its public half exists
   // outside the signer.
-  expect(Object.hasOwn(client?.key.publicJwk ?? {}, "d")).toBe(false);
+  expect(Object.hasOwn(client.key.publicJwk, "d")).toBe(false);
 });
 
 test("a machine's client this factory builds asks the broker for no launcher credential", async () => {
@@ -189,8 +193,10 @@ test("a machine's client this factory builds asks the broker for no launcher cre
       // decides its project, and the broker refuses one it is told.
       [PROJECTS_VAR]: "PRIV",
     });
-    const token = await made?.client.token();
-    expect(token?.credentialId).toBe("");
+    if (made === undefined) throw new Error("the factory made no client for a projected token");
+    const token = await made.client.token();
+    made.client.close();
+    expect(token.credentialId).toBe("");
     expect(forms).toHaveLength(1);
     expect(forms[0]?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
     expect(forms[0]?.has(FORM_PROJECTS)).toBe(false);
@@ -296,8 +302,8 @@ test("a process that turns the person trade off is refused a device login's trad
   };
   // Control: with the person trade on, the same machine's device login makes its client.
   const made = await brokerTokenClient(env, "ses-laptop-1");
-  expect(made).toBeDefined();
-  made?.client.close();
+  if (made === undefined) throw new Error("the factory made no client for a device login");
+  made.client.close();
   const refusal = await brokerTokenClient(
     { ...env, [PERSON_TRADE_VAR]: "off" },
     "ses-laptop-1"
@@ -343,14 +349,64 @@ test("a caller acting as no session trades under the session variable, else the 
     [{}, deviceLoginSessionName(written.thumbprint)],
   ] as const) {
     const made = await brokerTokenClient({ ...env, ...extra });
-    await made?.client.token();
-    made?.client.close();
+    if (made === undefined) throw new Error("the factory made no client for a device login");
+    await made.client.token();
+    made.client.close();
     expect(stub.trades.at(-1)?.form.get("session")).toBe(session);
   }
   // The name's form, held apart from the function that makes it.
   expect(deviceLoginSessionName("abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFG")).toBe(
     "device-login-abcdefghijkl"
   );
+});
+
+test("a device login's read trade asks for read and its cut, proved with the login's key beside a holder key of its own", async () => {
+  // The login's key signs the machine login's launcher proofs, and the broker binds no read token
+  // to a key that signs them. The login's live access token is spent as it is, so only the trades
+  // reach this stand-in, which records the holder proof (`DPoP-Holder`).
+  const stub = stubBroker(() => ({
+    body: {
+      access_token: fixtureSecret("traded"),
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "DPoP",
+      expires_in: 600,
+    },
+  }));
+  stops.push(stub.stop);
+  const path = loginPath();
+  const written = await writeDeviceLoginFile(path, stub.url, {
+    access_token: fixtureSecret("access"),
+    access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+  });
+  const env = {
+    [BROKER_URL_VAR]: stub.url,
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [DEVICE_LOGIN_FILE_VAR]: path,
+  };
+  const cut = "2026-11-19T08:30:00.123456Z";
+  const read = await brokerTokenClient(env, "ses-laptop-1", { asOf: cut });
+  const plain = await brokerTokenClient(env, "ses-laptop-1");
+  if (read === undefined || plain === undefined) {
+    throw new Error("the factory made no client for a device login");
+  }
+  await read.client.token();
+  await plain.client.token();
+  read.client.close();
+  plain.client.close();
+
+  expect(stub.trades).toHaveLength(2);
+  const [readTrade, plainTrade] = stub.trades;
+  expect(readTrade?.form.get(FORM_SCOPE)).toBe(SCOPE_READ);
+  expect(readTrade?.form.get(FORM_AS_OF)).toBe(cut);
+  expect(readTrade?.form.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
+  // Proved with the login's key, which the broker binds a trade of its token to, and bound to a
+  // holder key that is not it, which signs every proof a caller presents beside the token.
+  expect(await calculateJwkThumbprint(readTrade?.proofHeader.jwk as JWK)).toBe(written.thumbprint);
+  const holderJwk = readTrade?.holderHeader.jwk as JWK;
+  expect(await calculateJwkThumbprint(holderJwk)).not.toBe(written.thumbprint);
+  expect(read.client.key.publicJwk).toEqual(holderJwk);
+  // Asked for no read, the same login sends no holder proof.
+  expect(plainTrade?.holderHeader).toEqual({});
 });
 
 test("a device login takes an http broker on this machine's loopback alone", async () => {
