@@ -245,8 +245,9 @@ func TestAReviewersOwnMoveBackCountsItsPairAndNoReviewRound(t *testing.T) {
 	}
 }
 
-// taskCounts is the counts of the returns of key's task a at generation, as recordPass keeps them
-// on its plan_tasks row (record.Store.ReturnCounts).
+// taskCounts is the counts of the returns of key's task a at generation, where recordPass keeps
+// them (record.Store.ReturnCounts): on the task's plan_tasks row when key has plan rows at that
+// generation, and on key's implementer's phases row when it has none (record.ImplementerCounts).
 func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) record.ReturnCounts {
 	t.Helper()
 	var counts record.ReturnCounts

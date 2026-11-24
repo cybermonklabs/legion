@@ -39,15 +39,19 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 		phase               phase.Phase
 		// handedOverFrom is the tree a root carried its run out of: a root past admitted waits
 		// in the line only as a tree another tree handed over, since a root's own record is
-		// what says its generation has still to run (record.Waiting).
+		// what says its generation has still to run (record.Waiting). generation is the one it
+		// waits at, 0 for the 1 seedWaiting writes: a hand-over's re-admission opens one past the
+		// generation the root ran at in the tree it left (readmit), so a carried root is at 2 at
+		// least.
 		handedOverFrom string
+		generation     uint64
 	}{
 		{name: "a person's in_progress", status: "in_progress", phase: phase.Admitted},
 		{name: "an outside session's in_progress", actor: "ses-outsider", status: "in_progress", phase: phase.Admitted},
 		{name: "an outside session's needs_review", actor: "ses-outsider", status: "needs_review", phase: phase.Admitted},
 		{name: "a person's testing", status: "testing", phase: phase.Admitted},
 		{name: "an outside session's retro", actor: "ses-outsider", status: "retro", phase: phase.Admitted},
-		{name: "a person's in_progress on a root carried into implementing", status: "in_progress", phase: phase.Implementing, handedOverFrom: "LEGION-200"},
+		{name: "a person's in_progress on a root carried into implementing", status: "in_progress", phase: phase.Implementing, handedOverFrom: "LEGION-200", generation: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -57,6 +61,9 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 			seedWaiting(t, pool, "LEGION-5", "B")
 			waiting := issue(t, pool, "LEGION-5")
 			waiting.Phase, waiting.HandedOverFrom = tc.phase, tc.handedOverFrom
+			if tc.generation != 0 {
+				waiting.Generation = tc.generation
+			}
 			putIssue(t, pool, waiting)
 			assertWaiting(t, pool, []string{"LEGION-5"})
 
@@ -83,14 +90,16 @@ func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
 				t.Fatalf("architect starts for LEGION-5 = %d, want none: Legion runs nothing someone else took", started)
 			}
 
-			// Set back to todo with the label, it is queued again and takes the free slot.
+			// Set back to todo with the label, it is queued again at its next generation and takes
+			// the free slot.
 			apply(t, pool, admission, "queued-again", intake.DispatchIssue{Key: "LEGION-5", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "LEGION-5", Rank: "B", HandedOver: true}, engine)
-			if got := issue(t, pool, "LEGION-5"); got.Phase != phase.Admitted || got.Generation != 2 || got.LingerUntil != nil || got.Status != "in_progress" {
-				t.Fatalf("LEGION-5 set back to todo = %#v, want it admitted at generation 2 and running", got)
+			next := waiting.Generation + 1
+			if got := issue(t, pool, "LEGION-5"); got.Phase != phase.Admitted || got.Generation != next || got.LingerUntil != nil || got.Status != "in_progress" {
+				t.Fatalf("LEGION-5 set back to todo = %#v, want it admitted at generation %d and running", got, next)
 			}
 			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-5", Index: 0, AdmittedAt: fixedNow}})
 			if started := architectStarts(t, pool, "LEGION-5"); started != 1 {
-				t.Fatalf("architect starts for LEGION-5 = %d, want one, for its generation 2", started)
+				t.Fatalf("architect starts for LEGION-5 = %d, want one, for its generation %d", started, next)
 			}
 		})
 	}

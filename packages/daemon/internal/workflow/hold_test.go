@@ -518,8 +518,8 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 // caller of the status route names one. The release writes the Dispatch status of the phase the
 // issue ends in, as a phase transition writes it, so the board shows the phase the issue works
 // and a later todo on the same issue is a status change again. Nothing else moves: the
-// generation, the rounds, the conflict rounds, the backward moves, the cap count and the
-// admission slot all stand as they were.
+// generation, the pass, the rounds, the conflict rounds, the backward moves, the cap count and
+// the admission slot all stand as they were.
 //
 // A person's move in the Dispatch dashboard and the daemon's own write — which the controller's
 // set_status and an operator's `legion issue status` both reach the record as — are the same event
@@ -546,19 +546,20 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			var logged bytes.Buffer
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil))))
+			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
+			apply := applyFacts(t, pool, engine)
 			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
 				Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress",
 				Rank: "U", HandedOver: true, LastDispatchSeq: 4})
 			seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
 			// The counts three review rounds that requested changes, one conflict round and two
 			// tester fails leave, the third counted round reaching review_round_cap 3 (recordPass,
-			// recordRound). The test reads them back without the pass.
-			counted := record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Rounds: 4, ConflictRounds: 1,
+			// recordRound). Each release must leave every one of them, the pass among them, where
+			// it found it.
+			counted := record.ReturnCounts{Pass: 6, Rounds: 4, ConflictRounds: 1,
 				BackwardMoves: map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}, CapTold: 3}
-			seeded := counted
-			seeded.Pass = 6
-			seedPhase(t, pool, seeded)
+			seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Pass: counted.Pass, Rounds: counted.Rounds,
+				ConflictRounds: counted.ConflictRounds, BackwardMoves: counted.BackwardMoves, CapTold: counted.CapTold})
 			todo := func(seq int64, own bool) intake.DispatchIssue {
 				return intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: "todo",
 					Title: "root", Rank: "U", HandedOver: true, DaemonActor: own, StatusMove: own}
@@ -583,7 +584,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Phase != phase.Implementing || !strings.Contains(starts[0].Task, reason) {
 				t.Fatalf("start rows = %+v, want one implementer start of implementing whose task carries %q", starts, reason)
 			}
-			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+			if got := taskCounts(t, pool, engine, root, 3); !reflect.DeepEqual(got, counted) {
 				t.Fatalf("the implementer's counts after the release = %+v, want the %+v the hold left", got, counted)
 			}
 			if got := slotCount(t, pool, root); got != 1 {
@@ -616,7 +617,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 			if got := startTask(t, pool, claim.RoleImplementer); !strings.Contains(got, reason) {
 				t.Fatalf("the implementer the second release started is told %q, want the daemon's own reason %q", got, reason)
 			}
-			if got := phaseCounts(t, pool, root, claim.RoleImplementer); !reflect.DeepEqual(got, counted) {
+			if got := taskCounts(t, pool, engine, root, 3); !reflect.DeepEqual(got, counted) {
 				t.Fatalf("the implementer's counts after the second release = %+v, want the %+v the hold left", got, counted)
 			}
 		})
@@ -763,18 +764,24 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 // implementing. The release writes the status of the phase it ends in, in_progress over the todo
 // Dispatch shows, beside the move's own row, which observes the record's needs_review.
 //
-// A todo on a root held for its stopped task is no such release: it starts the task again and
-// raises its pass (restartTask).
+// A todo on a root held for its stopped task is no such release either (planHold), and it takes
+// one of two roads. A task whose work ran starts again at its first step and raises its pass
+// (restartTask; TestATodoOnAStoppedRootStartsItsTaskAtStepOne). A task stopped before its first
+// step went out waits for that step again and raises nothing (waitForFirstStep;
+// TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask reads where it then stands).
 func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
 	const root = "LEGION-208"
-	before := record.ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}}
-	raised := record.ReturnCounts{Pass: 3, Rounds: 2, BackwardMoves: map[string]int{"reviewing-implementing": 2}}
+	// The counts one conflict round and three review rounds that requested changes leave, the
+	// third counted round reaching review_round_cap 3 (recordPass, recordRound); the settled round
+	// is a fourth counted one, which tells the cap no second time.
+	before := record.ReturnCounts{Pass: 4, Rounds: 4, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 3}, CapTold: 3}
+	raised := record.ReturnCounts{Pass: 5, Rounds: 5, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 4}, CapTold: 3}
 	changesRequested := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne,
 		Author: testReviewApp, Body: reviewBody("Name the rollback path.", headOne)}
 	todo := intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
 		Title: "root", Rank: "U", HandedOver: true}
-	// heldFromReviewing is the root in reviewing with one review round and one more pass behind it,
-	// held from reviewing by its reviewer's failed claim, with its counts and its one slot read.
+	// heldFromReviewing is the root in reviewing with the rounds before behind it, held from
+	// reviewing by its reviewer's failed claim, with its counts and its one slot read.
 	heldFromReviewing := func(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.Fact) intake.Result, record.Issue) {
 		t.Helper()
 		pool := migratedPool(t)
@@ -782,8 +789,8 @@ func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t
 		apply := applyFacts(t, pool, engine)
 		seedReview(t, pool, "green")
 		seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
-		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim", Pass: 2, Rounds: 1,
-			BackwardMoves: map[string]int{"reviewing-implementing": 1}})
+		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim", Pass: before.Pass, Rounds: before.Rounds,
+			ConflictRounds: before.ConflictRounds, BackwardMoves: before.BackwardMoves, CapTold: before.CapTold})
 		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
 		held := storedIssue(t, pool, root)
 		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Reviewing}) {
@@ -877,8 +884,8 @@ func storedIssue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 	return *got
 }
 
-// phaseCounts is role's phases row of issue with the counts alone: what a release must leave
-// where it found them.
+// phaseCounts is role's phases row of issue with its rounds, conflict rounds, moves back and cap
+// mark alone, the pass left out.
 func phaseCounts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	got := record.PhaseRow{Issue: issue, Role: role}
