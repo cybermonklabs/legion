@@ -214,7 +214,6 @@ func (res result) late() lateRun {
 // skippedRun is a run that skipped the row's test or a subtest of it (go test's skip action, a
 // Bun testcase's <skipped>): UNKNOWN, neither a pass nor a failure, since what was skipped
 // checked nothing. A row's test that needs a test database skips without its URL.
-// check-redact-remote-text.sh refuses a skipped row the same way.
 type skippedRun struct{ tests []string }
 
 func (s skippedRun) Error() string {
