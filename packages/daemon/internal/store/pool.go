@@ -368,10 +368,11 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 // transaction, so the boundary guard counts its two steps on pgx's pool: it takes a connection
 // from the queue and begins on it, the two steps of pgxpool's own BeginTx (pgx v5.13.0
 // pgxpool/pool.go:867-873), which runs both on one context. Here each step has a bound of its own
-// under BoundAfterAcquire: the wait in the queue ends at the acquire bound (errAcquireBound), and
-// the BEGIN runs under the write bound counted from the first hand-out, which the transaction
-// keeps (storeTx.handedOut) for TransactWith to run it under. With no bound both steps run on ctx,
-// as pgxpool's do.
+// under BoundAfterAcquire: the first wait in the queue ends at the acquire bound (errAcquireBound),
+// and the BEGIN runs under the write bound counted from the first hand-out, which the transaction
+// keeps (storeTx.handedOut) for TransactWith to run it under. A retry's wait (below) answers the
+// BEGIN that failed before it rather than errAcquireBound. With no bound both steps run on ctx, as
+// pgxpool's do.
 //
 // A BEGIN that failed began nothing, so it is tried on another connection when the connection it
 // failed on is closed, while the write bound lasts, at most the pool's size and one more times.
@@ -382,8 +383,8 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 // refused on an open connection is answered as it is. A bounded acquire is not pinged
 // (PoolConfig's ShouldPing), so for a bounded transaction this retry is that replacement, and the
 // BEGIN, under the write bound, is the check. A retry waits in the queue until the earlier of the
-// acquire bound and the write deadline, so it extends neither; a retry the queue ends names the
-// BEGIN that failed before it.
+// acquire bound and the write deadline, so it extends neither; a retry that gets no connection,
+// its wait ended or its dial refused, names the BEGIN that failed before it.
 //
 // The transaction it gives is always the store's own (storeTx), so every statement of it passes
 // the argument rule. Its release gives the connection back and then clears the caller's hold mark,
@@ -403,7 +404,7 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 		conn, err := p.pool.Acquire(waiting)
 		if err != nil {
 			if failed != nil {
-				return nil, fmt.Errorf("store: no other connection was handed out within the wait after a BEGIN failed on a closed one: %w", errors.Join(err, failed))
+				return nil, fmt.Errorf("store: no other connection after a BEGIN failed on a closed one: %w", errors.Join(err, failed))
 			}
 			return nil, bound.notBegun(ctx, acquiring, err)
 		}
@@ -425,9 +426,9 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 		if !closed || writing.Err() != nil {
 			return nil, err
 		}
-		if failed == nil && bound != nil {
+		if deadline, ok := writing.Deadline(); ok && failed == nil {
 			var stopWaiting context.CancelFunc
-			waiting, stopWaiting = context.WithDeadline(acquiring, handedOut.Add(bound.write))
+			waiting, stopWaiting = context.WithDeadline(acquiring, deadline)
 			defer stopWaiting()
 		}
 		failed = err

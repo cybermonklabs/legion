@@ -39,7 +39,7 @@ func Outage(t testing.TB, dsn string, plan ...Connection) *OutageProxy {
 	listener, upstream, through := listenProxy(t, dsn, "the outage Postgres proxy", true)
 	o := &OutageProxy{DSN: through, proxy: startProxy(t, listener, upstream), plan: plan}
 	n := 0
-	go o.proxy.serve(func(client net.Conn) {
+	o.proxy.serve(func(client net.Conn) {
 		handling := Forward
 		if n < len(o.plan) {
 			handling = o.plan[n]

@@ -31,7 +31,7 @@ func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
 	listener, upstream, through := listenProxy(t, dsn, "the delayed Postgres proxy", false)
 	p := startProxy(t, listener, upstream)
-	go p.serve(func(client net.Conn) {
+	p.serve(func(client net.Conn) {
 		p.forward(client, func(client, server net.Conn) { p.relayDelayed(client, server, delay) }, copyToClient)
 	})
 	return through
@@ -75,25 +75,27 @@ type proxy struct {
 	wg     sync.WaitGroup
 }
 
-// startProxy is a proxy on listener to upstream, closed at the test's end. Its caller starts
-// serve on a goroutine of its own.
+// startProxy is a proxy on listener to upstream, closed at the test's end.
 func startProxy(t testing.TB, listener net.Listener, upstream string) *proxy {
 	p := &proxy{listener: listener, upstream: upstream, conns: map[net.Conn]struct{}{}}
-	p.wg.Add(1)
 	t.Cleanup(p.close)
 	return p
 }
 
-// serve hands each connection the proxy accepts to accept, until the listener closes.
+// serve hands each connection the proxy accepts to accept, on a goroutine of its own that the
+// proxy's close waits for, until the listener closes.
 func (p *proxy) serve(accept func(client net.Conn)) {
-	defer p.wg.Done()
-	for {
-		client, err := p.listener.Accept()
-		if err != nil {
-			return
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		for {
+			client, err := p.listener.Accept()
+			if err != nil {
+				return
+			}
+			accept(client)
 		}
-		accept(client)
-	}
+	}()
 }
 
 // forward dials the server for client and relays the pair both ways: client to server through

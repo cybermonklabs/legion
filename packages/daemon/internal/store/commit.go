@@ -90,8 +90,8 @@ type afterAcquire struct{ acquire, write time.Duration }
 // a BEGIN the database never answers, which runs its own write from the hand-out, and once write
 // in every other. A transaction queued behind others waits in the queue first, up to acquire, as
 // the connections ahead of it come back each within its holder's own bound. The hard bound of a
-// bounded call is ctx's own deadline: acquire, write and CommitSettleBound together (37 s for a
-// claim write, supervise.Deps.BoundWrite). A deadline counted from before the wait was the queue's
+// bounded call is ctx's own deadline: acquire, write and CommitSettleBound together (a claim
+// write's are supervise.Deps.BoundWrite's). A deadline counted from before the wait was the queue's
 // bound as well as the write's: a wave of transactions on a pool of a few connections cut the last
 // of them for the writes ahead of it, however quickly each would have run.
 func BoundAfterAcquire(ctx context.Context, acquire, write time.Duration) (context.Context, context.CancelFunc) {
@@ -274,11 +274,12 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     statement that fails fails the whole transaction (below). Under a bound (BoundAfterAcquire)
 //     the join's write bound runs from the join, since the open transaction holds its connection.
 //   - The transaction begins through the pool's BeginTx, the boundary's one begin. Under a bound
-//     the daemon's pool ends the wait in its queue at the acquire bound (errAcquireBound) and runs
-//     the BEGIN under the write bound counted from the moment it first handed out a connection
-//     (Pool.BeginTx), and the transaction runs under that same deadline (running); a transaction
-//     of another pool, which records no hand-out, runs under the write bound counted from its
-//     begin.
+//     the daemon's pool ends its first wait in the queue at the acquire bound (errAcquireBound) and
+//     runs the BEGIN under the write bound counted from the moment it first handed out a
+//     connection (Pool.BeginTx), and the transaction runs under that same deadline (running). A
+//     BEGIN tried again on another connection, because the one it met was closed, answers its own
+//     failure where its wait for that other connection ends, not errAcquireBound. A transaction of
+//     another pool, which records no hand-out, runs under the write bound counted from its begin.
 //   - A rollback is deferred as soon as the transaction begins, so a panic in write, or any
 //     return below, gives the connection back to the pool and clears the caller's hold mark. It
 //     runs on the commit's context, below, so a rollback after the caller's cancel still reaches
