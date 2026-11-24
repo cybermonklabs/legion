@@ -1,6 +1,10 @@
 package main
 
 import (
+	"fmt"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,25 +20,11 @@ func TestASlotPoolServesItsTakersInTurn(t *testing.T) {
 	if err := pool.take(1); err != nil {
 		t.Fatal(err)
 	}
-	queued := func(n int) {
-		t.Helper()
-		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-			pool.mu.Lock()
-			got := len(pool.queue)
-			pool.mu.Unlock()
-			if got == n {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the pool queued %d takers, want %d", got, n)
-			}
-		}
-	}
 	tookTwo, tookOne := make(chan struct{}), make(chan struct{})
 	go func() { _ = pool.take(2); close(tookTwo) }()
-	queued(1)
+	waitQueued(t, pool, 1)
 	go func() { _ = pool.take(1); close(tookOne) }()
-	queued(2)
+	waitQueued(t, pool, 2)
 	select {
 	case <-tookOne:
 		t.Fatal("a taker of one took the free slot ahead of the taker of two queued before it")
@@ -71,8 +61,17 @@ func TestASlotPoolRefusesAWaitOnASlotHeldAcrossAPause(t *testing.T) {
 	if err := pool.pause(1); err != nil {
 		t.Fatalf("a pause holding one of two slots with nothing queued: %v", err)
 	}
-	if err := pool.take(2); err == nil {
-		t.Error("a take of both slots while one is held across a pause was let wait, want it refused")
+	// On a goroutine of its own and waited on for a bounded time, so a take let wait fails this
+	// test by name instead of hanging it until -timeout.
+	refused := make(chan error, 1)
+	go func() { refused <- pool.take(2) }()
+	select {
+	case err := <-refused:
+		if err == nil {
+			t.Error("a take of both slots while one is held across a pause got them, want it refused")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a take of both slots while one is held across a pause was let wait, want it refused at once")
 	}
 	if err := pool.take(1); err != nil {
 		t.Errorf("a take of the slot no paused test holds: %v", err)
@@ -85,19 +84,142 @@ func TestASlotPoolRefusesAWaitOnASlotHeldAcrossAPause(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { _ = queued.take(2) }()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-		queued.mu.Lock()
-		n := len(queued.queue)
-		queued.mu.Unlock()
-		if n == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the take of two never queued")
-		}
-	}
+	waitQueued(t, queued, 1)
 	if err := queued.pause(1); err == nil {
 		t.Error("a pause holding a slot a queued take of two needs was let through, want it refused")
 	}
 	queued.give(1)
+}
+
+// A process that a test starts while another of its own runs never waits for a slot
+// (processSlots.take). Each row builds the state in which waiting would hang: two of four slots
+// held across a pause, as the two mention tests hold theirs; one held by the test's own first
+// process; and a take of two queued for the last free slot and one more. A second start that waited
+// would queue behind that take, which waits for a slot only the waiting test could give back. In a
+// test that runs alone, the second start takes the free slot at once. In a parallel test with no
+// reservation, it is refused by name at once. In a parallel test that reserved two, it takes its
+// reserved slot at once. When each row ends and its slots are back, the queued take is served.
+func TestASecondStartNeverWaitsForASlot(t *testing.T) {
+	// Not parallel: its first row is a test that runs alone, which requireRunsAlone confirms
+	// through t.Setenv, and testing refuses that in a test under a parallel one.
+	t.Run("a test that runs alone", func(t *testing.T) {
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false))
+		if stopped != "" {
+			t.Fatalf("the second start of a test that runs alone stopped (%s), want it to take the free slot", stopped)
+		}
+	})
+	t.Run("a parallel test with no reservation", func(t *testing.T) {
+		t.Parallel()
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, false))
+		if !strings.Contains(stopped, "reserveProcessSlots") {
+			t.Fatalf("the second start of a parallel test with no reservation stopped with %q, want it refused, "+
+				"naming reserveProcessSlots", stopped)
+		}
+	})
+	t.Run("a parallel test that reserved two", func(t *testing.T) {
+		t.Parallel()
+		stopped := startOnItsOwnGoroutine(t, slotsWithATakeOfTwoQueued(t, true))
+		if stopped != "" {
+			t.Fatalf("the second start of a parallel test that reserved two stopped (%s), want its reserved slot", stopped)
+		}
+	})
+}
+
+// slotsWithATakeOfTwoQueued is a pool of four slots in TestASecondStartNeverWaitsForASlot's state,
+// with each subtest its own root test. Two slots are held across a pause, t's first process holds a
+// third (reserving two first when reserve is set), and a take of two is queued. When t ends, its
+// own slots go back through its cleanups, and the queued take must then be served.
+func slotsWithATakeOfTwoQueued(t *testing.T, reserve bool) *processSlots {
+	t.Helper()
+	slots := newProcessSlots(4, func(t testing.TB) string { return t.Name() })
+	queued := make(chan struct{})
+	// Registered first, so it runs last, once the cleanups registered below have given t's slots
+	// back: the queued take waits for slots a running test gives back, and gets them.
+	t.Cleanup(func() {
+		select {
+		case <-queued:
+		case <-time.After(10 * time.Second):
+			t.Error("the queued take of two never got its slots once the test's own were back")
+		}
+	})
+	if err := slots.pool.take(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := slots.pool.pause(2); err != nil {
+		t.Fatal(err)
+	}
+	if reserve {
+		slots.reserve(t, 2)
+	}
+	slots.take(t)
+	go func() {
+		if err := slots.pool.take(2); err == nil {
+			close(queued)
+		}
+	}()
+	waitQueued(t, slots.pool, 1)
+	return slots
+}
+
+// startOnItsOwnGoroutine starts t's next process on slots from a goroutine of its own, under a
+// testing.TB whose Fatalf stops that goroutine as a test's does, and answers why the start was
+// stopped, empty when it took a slot (whose release t's cleanup runs). It waits a bounded time, so
+// a start that waits for a slot fails the test by name instead of hanging it.
+func startOnItsOwnGoroutine(t *testing.T, slots *processSlots) (stopped string) {
+	t.Helper()
+	answered := make(chan string, 1)
+	go func() {
+		stopping := &stoppingTB{TB: t}
+		defer func() { answered <- stopping.stop() }()
+		slots.take(stopping)
+	}()
+	select {
+	case stopped = <-answered:
+		return stopped
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second start waited for a slot, with one free and a take of two queued ahead of it")
+		return ""
+	}
+}
+
+// waitQueued waits a bounded time until pool has n takers queued.
+func waitQueued(t *testing.T, pool *slotPool, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		pool.mu.Lock()
+		got := len(pool.queue)
+		pool.mu.Unlock()
+		if got == n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool queued %d takers, want %d", got, n)
+		}
+	}
+}
+
+// stoppingTB is a testing.TB whose Fatal, Fatalf and FailNow record why and stop the goroutine that
+// calls them (runtime.Goexit), as a test's own do, without failing the test it wraps.
+type stoppingTB struct {
+	testing.TB
+	mu      sync.Mutex
+	stopped string
+}
+
+func (s *stoppingTB) Fatalf(format string, args ...any) {
+	s.mu.Lock()
+	s.stopped = fmt.Sprintf(format, args...)
+	s.mu.Unlock()
+	runtime.Goexit()
+}
+
+func (s *stoppingTB) Fatal(args ...any) { s.Fatalf("%s", fmt.Sprint(args...)) }
+
+func (s *stoppingTB) FailNow() { s.Fatalf("FailNow") }
+
+// stop is why the TB was stopped, empty when it was not.
+func (s *stoppingTB) stop() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
 }

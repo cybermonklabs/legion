@@ -57,7 +57,8 @@ import (
 // measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
 // and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
 // them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
-// (serverSlots), the count the lane's Postgres is sized for.
+// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// reserves both before its first start (reserveProcessSlots).
 
 const memoryTestToken = "memory-test-token"
 
@@ -184,7 +185,7 @@ func collectOnSignal() {
 // leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
-	releaseSlot := takeServerSlot(t)
+	releaseSlot := takeProcessSlot(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
