@@ -302,7 +302,7 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	// under a grant admitting every _INBOX. subject it reaches the relay as s2's own done and the
 	// frame is acknowledged away, which this wait names as soon as it sees it.
 	one.reply(heldFrame, relayReplyDone)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for !slices.Contains(s1.refusals(), heldFrame.msg.Reply) {
 		info, err := consumers.Info(t.Context(), s2.id)
 		if err != nil {
@@ -322,7 +322,7 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	// frame away, which this wait names as soon as it sees it.
 	one.reply(relayedFrame{msg: &natsgo.Msg{Reply: forged}}, relayReplyDone)
 	refusedLine := []string{`"msg":"` + relayRefusedReplyLine + `"`, `"session_id":"` + s2.id + `"`, `"reply_session_id":"` + s1.id + `"`}
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(testwait.Remaining(t, time.Second))
 	for !slices.ContainsFunc(strings.Split(listener.Output.String(), "\n"), func(line string) bool {
 		return !slices.ContainsFunc(refusedLine, func(field string) bool { return !strings.Contains(line, field) })
 	}) {
@@ -624,7 +624,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		// A nak of a gap-marked frame runs the re-mark once.
 		frameFor(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01", "a-gap-mark")
 		nak(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01")
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 		for reMarked.Load() == 0 && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}

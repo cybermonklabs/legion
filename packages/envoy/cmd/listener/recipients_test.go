@@ -107,7 +107,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break

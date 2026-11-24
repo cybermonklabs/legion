@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -100,7 +101,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("store session %s by a direct bucket write: %v", invalidKey, err)
 	}
 	listed := []string{ordinary, readableLegacy, unreadableLegacy, invalidKey}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for _, id := range listed {
 		for {
 			if _, err := sessions.Get(id); err == nil {

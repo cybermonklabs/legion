@@ -19,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -59,7 +60,7 @@ func rewriteAsEarlierBuild(t *testing.T, conn *natsgo.Conn, sessionID string) {
 // awaitEarlierBuildRecord waits until registry reads sessionID's record as live and naming no key.
 func awaitEarlierBuildRecord(t *testing.T, registry *session.SessionRegistry, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		entry, state := registry.Lookup(sessionID)
 		if state == session.Live && entry.SessionID == "" && entry.MachineID != "" {

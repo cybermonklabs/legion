@@ -622,7 +622,7 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 		ownForward := store(listenerTestEnvelope(contracts.RoleTopicPrefix+ownRole, "scope-own-forward-"+id.New()))
 
 		got := map[string]bool{}
-		deadline := time.Now().Add(15 * time.Second)
+		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 		for !got[ownForward.EventID] && time.Now().Before(deadline) {
 			for _, frame := range takeScopeFrames(t, client, 1, time.Until(deadline)) {
 				got[frame.item.EventID] = true

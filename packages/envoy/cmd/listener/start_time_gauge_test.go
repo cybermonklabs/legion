@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A listener serves its process's start on /metrics as envoy_listener_start_time_seconds, in Unix
@@ -100,7 +101,7 @@ func TestTheListenerLogsItsOldFormCounterAndStart(t *testing.T) {
 func startTimeSample(t *testing.T, listener *listenerProcess) (int64, string) {
 	t.Helper()
 	url := "http://127.0.0.1:" + strconv.Itoa(listener.port) + "/metrics"
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		response, err := http.Get(url)
 		if err == nil {

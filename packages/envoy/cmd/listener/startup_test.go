@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -459,7 +460,7 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	listener.waitHealthy(t)
 	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
 	// within a few one-second ticks of turning healthy; five seconds covers them.
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 		consumers := 0
 		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
 			consumers++
@@ -505,7 +506,7 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Logf("settled %s after turning healthy", time.Since(healthy).Round(10*time.Millisecond))
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); ; time.Sleep(100 * time.Millisecond) {
 		entry, err := kv.Get(key)
 		if err != nil {
 			t.Fatalf("read the seeded CI record: %v", err)
@@ -600,7 +601,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	for _, cache := range []string{"interest registry", "session registry", "cistore"} {
 		msg := cache + " cache warm-up"
 		warmUp := listenerJSONRecord(t, listener, msg)
-		for deadline := time.Now().Add(30 * time.Second); warmUp == nil && time.Now().Before(deadline); {
+		for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); warmUp == nil && time.Now().Before(deadline); {
 			time.Sleep(100 * time.Millisecond)
 			warmUp = listenerJSONRecord(t, listener, msg)
 		}
@@ -616,7 +617,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	// how this test gets one to read.
 	server.Stop(t)
 	textLine := regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} .*envoy nats disconnected`)
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for !textLine.MatchString(listener.Output.String()) {
 		if time.Now().After(deadline) {
 			if listenerJSONRecord(t, listener, "envoy nats disconnected") != nil {

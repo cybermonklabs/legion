@@ -444,7 +444,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	answer := "none: no request to /healthz was answered"
 	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
 	// once more after it, because a listener that dies in the last sleep, or between the last poll

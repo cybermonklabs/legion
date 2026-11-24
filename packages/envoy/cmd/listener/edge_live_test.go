@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -351,7 +352,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = probe.Flush()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 		for {
 			logged := rig.violations(t)
 			if slices.ContainsFunc(logged, func(v []string) bool { return v[1] == provoked }) {

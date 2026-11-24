@@ -610,7 +610,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 	reopened := rig.open(t, s, fresh.token)
 	rig.register(t, s, fresh.token, "epoch-2")
 	seen := map[string]bool{}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for !seen[held.EventID] || !seen[after.EventID] {
 		if time.Now().After(deadline) {
 			t.Fatalf("after the reopen the socket was sent %v, want both %s (unanswered at the close) and %s (stored after it)", seen, held.EventID, after.EventID)

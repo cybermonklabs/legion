@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // crashWatch bounds a row's wait for a session to receive what the row waits for.
@@ -325,10 +326,11 @@ func (rig *crashRig) seqOn(subject, eventID string) uint64 {
 	return 0
 }
 
-// awaitStored waits up to 10 s for an envelope of eventID on subject and returns it.
+// awaitStored waits for an envelope of eventID on subject and returns it, with the test binary's
+// deadline as its only bound.
 func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 	rig.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(rig.t, time.Second))
 	for {
 		held := rig.stored(subject)
 		if i := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID }); i >= 0 {

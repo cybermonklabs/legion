@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The role lane's forwarder publishes each holder's forwards in the order the handler handed them
@@ -243,10 +244,12 @@ func roleForwardsLogged(role string, listeners ...*listenerProcess) int {
 	return total
 }
 
-// settledRoleForwards waits, up to 10 s, until the listeners logged want forwards on role's lane,
-// then a second more for any past it, and returns how many they logged.
-func settledRoleForwards(role string, want int, listeners ...*listenerProcess) int {
-	for deadline := time.Now().Add(10 * time.Second); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
+// settledRoleForwards waits until the listeners logged want forwards on role's lane, with the test
+// binary's deadline as its only bound, then a second more for any past it, and returns how many
+// they logged.
+func settledRoleForwards(t *testing.T, role string, want int, listeners ...*listenerProcess) int {
+	t.Helper()
+	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); roleForwardsLogged(role, listeners...) < want && time.Now().Before(deadline); {
 		time.Sleep(50 * time.Millisecond)
 	}
 	time.Sleep(time.Second)
@@ -306,7 +309,7 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 		t.Fatalf("flush the role messages: %v", err)
 	}
 	frames := gatherForwards(holderFrames, messages, 10*time.Second, time.Second)
-	forwards := settledRoleForwards(role, messages, listeners...)
+	forwards := settledRoleForwards(t, role, messages, listeners...)
 	stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID))
 	t.Logf("%d role messages: the holder received %d forwards, the listeners logged %d, the stream stores %d", messages, len(frames), forwards, stored)
 	if len(frames) != messages || forwards != messages || stored != messages {
@@ -444,7 +447,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 			t.Fatalf("the holder received event %s %d times live, want once from each listener (%d forwards for %d messages)", item.EventID, perEvent[item.EventID], len(received), messages)
 		}
 	}
-	if forwards := settledRoleForwards(role, 2*messages, listeners...); forwards != 2*messages {
+	if forwards := settledRoleForwards(t, role, 2*messages, listeners...); forwards != 2*messages {
 		t.Fatalf("the listeners logged %d forwards, want %d, every message from each", forwards, 2*messages)
 	}
 	if stored := storedForwards(t, client, contracts.LegacyAgentSubject(holderID)); stored != messages {

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // discoveryFailedLine is the line the listener logs for an issuer whose discovery failed, at most
@@ -70,7 +71,7 @@ func TestTheListenerServesWhileItsIssuersCannotBeDiscovered(t *testing.T) {
 	wantIssuerHealth(t, base, false, false)
 
 	cluster.FailDiscovery(0)
-	deadline := time.Now().Add(45 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		status := call(projected).StatusCode
 		if status == http.StatusOK {

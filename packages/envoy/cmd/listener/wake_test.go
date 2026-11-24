@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The wake report's wire shape is what the Legion daemon's decoder reads
@@ -259,7 +260,7 @@ func TestWakeReportsEndWithTheListenerAndAreCappedInFlight(t *testing.T) {
 	// The listener stops: every report still retrying ends with it, rather than holding its
 	// goroutine for the rest of its budget.
 	stopListener()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for len(reporter.slots) > 0 {
 		if time.Now().After(deadline) {
 			t.Fatalf("%d reports are still retrying after the listener stopped", len(reporter.slots))

@@ -708,7 +708,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		}
 		return held
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	var forwards uint64
 	for {
 		forwards = agentForwards()
@@ -2276,7 +2276,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 		t.Fatalf("publish first failed: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		count := len(delivered)
@@ -2294,7 +2294,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 	}
 
 	firstListener.Close()
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(testwait.Remaining(t, time.Second))
 	for time.Now().Before(deadline) {
 		info, infoErr := publisher.JS().ConsumerInfo(bus.Stream, consumer)
 		if infoErr == nil && !info.PushBound {
@@ -2346,7 +2346,7 @@ func TestDurableConsumerRestart(t *testing.T) {
 	}
 	defer resub.Unsubscribe()
 
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(testwait.Remaining(t, time.Second))
 	for time.Now().Before(deadline) {
 		mu.Lock()
 		count := len(delivered)
@@ -2551,7 +2551,7 @@ func TestRebuildingALostDurableConsumerReplacesItsSubscription(t *testing.T) {
 	if _, err := client.JS().Publish("notifications.github.acme.widgets.push.branch.main", []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for deliveries.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the rebuilt subscription never delivered")
@@ -2581,7 +2581,7 @@ func TestBoundDurableConsumerIsNotStolen(t *testing.T) {
 	t.Cleanup(func() { _ = firstSub.Unsubscribe(); _ = first.JS().DeleteConsumer(bus.Stream, consumer) })
 	// Subscribe returns before the server has processed the SUB, and the consumer is push-bound
 	// only once it has; the property under test is about a consumer that is already bound.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		info, err := first.JS().ConsumerInfo(bus.Stream, consumer)
 		if err == nil && info.PushBound {
@@ -2957,7 +2957,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	// merge queue (run 42117898395). Production never binds through that primitive; its boot
 	// calls bindListenerDurable, which retries the bind every durableBindInterval up to
 	// durableBindDeadline. internal/bus/stream_config_test.go waits the same way.
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testwait.Remaining(t, time.Second)); ; time.Sleep(10 * time.Millisecond) {
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {
 			t.Fatalf("read the legacy durable consumer: %v", err)
@@ -4642,7 +4642,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	if _, err := other.Upsert(store.Interest{SessionID: "ses_after_move", MachineID: "other-listener"}, []string{"notifications.agent.ses_after_move"}); err != nil {
 		t.Fatalf("subscribe through another listener: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		found := false
 		interests, err := registry.List()
@@ -4681,7 +4681,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		t.Fatalf("wait for session cache: %v", err)
 	}
 	watcherConn.Close()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for sessions.WatchErr() == nil {
 		if time.Now().After(deadline) {
 			t.Fatal("stopped watcher was not detected")
@@ -5050,7 +5050,7 @@ func endInterestWatcherWhileConnected(t *testing.T, client *bus.Client, registry
 	if err := client.JS().DeleteStream("KV_" + bus.InterestBucket); err != nil {
 		t.Fatalf("delete the interest bucket's stream: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for registry.WatchErr() == nil {
 		if time.Now().After(deadline) {
 			t.Fatal("the interest watcher never ended after its stream was deleted")
@@ -5106,7 +5106,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 		t.Fatalf("write an interest after the rebuild: %v", err)
 	}
 	// Match reads only the cache, which is what delivery reads; Get would fall back to KV on a miss.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for len(registry.Match("m1", "notifications.rebuilt")) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the rebuilt registry's cache never saw an interest written after the rebuild")

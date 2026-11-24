@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // legionListener is a listener's /v1 mux over a session registry and the Legion agent registry on
@@ -419,7 +420,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	}
 
 	server.Restart(t, listenerGrant())
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for {
 		status, answer := callListener(t, listener.port, http.MethodPut, "/v1/legion/agents/sessions/ses-tester", entry)
 		if status == http.StatusOK {
@@ -471,7 +472,7 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 	}
 
 	failing.Store(false)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for l.do(t, http.MethodGet, "/v1/legion/agents?issue=INFRA-448", "").Code != http.StatusOK {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry still answers 503 after its open recovered\n%s", logs.String())
@@ -541,7 +542,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	t.Cleanup(func() { started.close(context.Background()) })
 	l.deps.legionAgents = started
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	for !strings.Contains(logs.String(), "legion agent registry did not move to the new NATS connection") {
 		if time.Now().After(deadline) {
 			t.Fatalf("the registry did not report the failed move\n%s", logs.String())

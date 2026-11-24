@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // readyzAnswer is one /readyz answer: its status code, and the status and error its body names.
@@ -49,7 +50,7 @@ func TestHealthzReadyzOfTheListenerBinaryAnswers200OnlyOnceV1Serves(t *testing.T
 	url := "http://127.0.0.1:" + strconv.Itoa(listener.port) + "/readyz"
 	// The deadline is a hang guard and decides nothing: the row passes at the first 200 and fails
 	// at the first answer that is neither the 503 nor the 200.
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(testwait.Remaining(t, time.Second))
 	starting := 0
 	for time.Now().Before(deadline) {
 		response, err := client.Get(url)
