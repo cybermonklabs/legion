@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `dispatch whoami` reads Dispatch's `sign_in_required` to say whether Dispatch refuses the
+  session's every write until a person runs `agent-secrets login`. A session whose token an
+  exchange entry minted for its Kubernetes account, with no person, is no longer told it may not
+  write: Dispatch records its writes under that account. Against a Dispatch of an older build,
+  which omits the field, the command keeps its earlier rule: a credential that names a service and
+  proves a session is told its writes are refused.
+time: 2026-11-21T19:37:09.000000000Z
+custom:
+  Issue: pr4873

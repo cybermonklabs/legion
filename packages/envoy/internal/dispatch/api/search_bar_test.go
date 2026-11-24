@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // searchComment writes one comment on an issue as login and answers its id: the corpus of every
@@ -25,6 +26,18 @@ func searchComment(t *testing.T, handler http.Handler, issueKey, login, body str
 		t.Fatalf("create %s's comment: status=%d body=%s", login, response.Code, response.Body.String())
 	}
 	return decodeBody[model.Comment](t, response).ID
+}
+
+// searchIssueMessage writes one issue message as login and answers its id: a message carries an
+// author and an issue of its own as a comment does, and, since this change, an edit of its own.
+func searchIssueMessage(t *testing.T, handler http.Handler, issueKey, login, body string) string {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/messages",
+		map[string]any{"body": body}, login)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create %s's message: status=%d body=%s", login, response.Code, response.Body.String())
+	}
+	return decodeBody[model.Message](t, response).ID
 }
 
 // A person writes an issue key the way they remember it, and every one of those ways must put
@@ -507,6 +520,295 @@ func TestSearchNarrowsEveryLegByStatusAuthorAndDate(t *testing.T) {
 			}
 		}
 	})
+}
+
+// updated_since reads when the item's text was last written, not when it was first written: an
+// edit rewrites the row's search vector, so the search finds the new text, and dropping the row
+// for the date the text it replaced was written would hide every corrected post from a narrowed
+// search. Both posts an author corrects - a comment (PATCH /api/v1/comments/{id}) and an issue
+// message (PATCH /api/v1/messages/{id}) - are written before the watermark and edited after it,
+// beside one of each written before it and never edited, which the filter must still drop.
+func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
+	editedComment := searchComment(t, handler, issue.Key, "alice", "A quadrant, to be reworded.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "An astrolabe nobody rewords.")
+	editedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A sextant, to be reworded.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "An astrolabe message nobody rewords.")
+
+	// The watermark is the database's own clock, the clock every row's time is written by.
+	var cut time.Time
+	if err := database.Pool.QueryRow(ctx, "select now()").Scan(&cut); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	requireEdit(t, "reword the comment", editCommentAs(t, handler, editedComment,
+		"The astrolabe of the comment, reworded.", nil, nil))
+	requireEdit(t, "reword the message", dispatchRequest(t, handler, http.MethodPatch,
+		"/api/v1/messages/"+editedMessage,
+		map[string]any{"body": "The astrolabe of the message, reworded."}, "alice"))
+
+	// The control: the two edits put the word in the two edited posts, so all four match.
+	unfiltered := searchResponse(t, handler, "q=astrolabe")
+	for _, want := range []struct{ kind, id string }{
+		{"comment", editedComment}, {"comment", keptComment},
+		{"message", editedMessage}, {"message", keptMessage},
+	} {
+		if searchResultOf(unfiltered, want.kind, want.id) == nil {
+			t.Fatalf("unfiltered results = %#v, want the %s %s, or the filter below decides nothing",
+				unfiltered.Results, want.kind, want.id)
+		}
+	}
+
+	body := searchResponse(t, handler, url.Values{
+		"q": {"astrolabe"}, "updated_since": {cut.Format(time.RFC3339Nano)},
+	}.Encode())
+	for _, want := range []struct{ kind, id string }{
+		{"comment", editedComment}, {"message", editedMessage},
+	} {
+		if searchResultOf(body, want.kind, want.id) == nil {
+			t.Fatalf("results = %#v, want the %s %s, whose text was written by an edit after the watermark",
+				body.Results, want.kind, want.id)
+		}
+	}
+	for _, gone := range []struct{ kind, id string }{
+		{"comment", keptComment}, {"message", keptMessage},
+	} {
+		if searchResultOf(body, gone.kind, gone.id) != nil {
+			t.Fatalf("results = %#v, want nothing of the %s %s, written before the watermark and never edited",
+				body.Results, gone.kind, gone.id)
+		}
+	}
+}
+
+// A hit of a comment or a message its author edited carries the time of the edit, so the page
+// printing its snippet can say the post was corrected, and a hit of one never edited carries
+// none: on a request for keywords only and on one that asks for no such thing, each of which
+// runSearch answers through the one stamp of the page (stampSearchPostMarks).
+func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
+	editedComment := searchComment(t, handler, issue.Key, "alice", "A quadrant, to be reworded.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "An astrolabe nobody rewords.")
+	editedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A sextant, to be reworded.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "An astrolabe message nobody rewords.")
+	requireEdit(t, "reword the comment", editCommentAs(t, handler, editedComment,
+		"The astrolabe of the comment, reworded.", nil, nil))
+	requireEdit(t, "reword the message", dispatchRequest(t, handler, http.MethodPatch,
+		"/api/v1/messages/"+editedMessage,
+		map[string]any{"body": "The astrolabe of the message, reworded."}, "alice"))
+	editedAt := func(table, id string) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := database.Pool.QueryRow(ctx, `select edited_at from `+table+` where id = $1`, id).Scan(&at); err != nil {
+			t.Fatalf("read the edit of %s %s: %v", table, id, err)
+		}
+		return at
+	}
+	want := map[[2]string]*time.Time{
+		{"comment", editedComment}: new(editedAt("comments", editedComment)),
+		{"comment", keptComment}:   nil,
+		{"message", editedMessage}: new(editedAt("messages", editedMessage)),
+		{"message", keptMessage}:   nil,
+	}
+	for _, query := range []string{"q=astrolabe&keywords_only=true", "q=astrolabe"} {
+		page := searchResponse(t, handler, query)
+		for key, at := range want {
+			hit := searchResultOf(page, key[0], key[1])
+			if hit == nil {
+				t.Fatalf("%s: results = %#v, want the %s %s", query, page.Results, key[0], key[1])
+			}
+			switch {
+			case at == nil && hit.EditedAt != nil:
+				t.Fatalf("%s: the %s %s edited_at = %v on a post never edited", query, key[0], key[1], hit.EditedAt)
+			case at != nil && (hit.EditedAt == nil || !hit.EditedAt.Equal(*at)):
+				t.Fatalf("%s: the %s %s edited_at = %v, want the edit's time %v", query, key[0], key[1], hit.EditedAt, *at)
+			}
+		}
+	}
+}
+
+// A delete clears a post's body, so the keyword arm drops the post at once, and it drops the
+// post's windows in the same transaction (TestDeleteDropsThePostsWindowsBeforeAnyTick). A
+// hit of a deleted post is what the mark is the backstop for, which this row makes by writing
+// the post's windows back: the meaning arm then returns the deleted comment or message with an
+// empty snippet, the hit carries the post's delete mark so its reader can say the post is
+// deleted, and a hit of a post that stands carries none (stampSearchPostMarks). The windows are written and embedded as the package's
+// meaning rows seed them; after the delete each deleted post's windows are written back as
+// they stood and the post is marked owed its windows, which is what a delete that dropped no
+// window would leave (refs.recordItemIndexed), and the tick is not run between that and the
+// search.
+func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
+	t.Parallel()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")
+	deletedComment := searchComment(t, handler, issue.Key, "alice", "A remark about the quadrant, to withdraw.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "A remark about the astrolabe that stands.")
+	deletedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the sextant, to withdraw.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the compass that stands.")
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+deletedComment, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+keptComment, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+deletedMessage, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+keptMessage, angledVector(0.9, 5))
+	processAllPending(t, database, embedder)
+	left := map[string]string{}
+	for _, ownerKey := range []string{"comment/" + deletedComment, "message/" + deletedMessage} {
+		left[ownerKey] = postWindowRows(t, database, ownerKey)
+	}
+
+	comment := deleteThreadComment(t, handler, deletedComment, "alice")
+	message := deleteIssueMessage(t, handler, deletedMessage, "alice")
+	if comment.DeletedAt == nil || message.DeletedAt == nil {
+		t.Fatalf("the deletes answered no mark: comment %#v, message %#v", comment.DeletedAt, message.DeletedAt)
+	}
+	writeBackPostWindows(t, database, "comment_block_state", "comment_id", deletedComment, left["comment/"+deletedComment])
+	writeBackPostWindows(t, database, "message_block_state", "message_id", deletedMessage, left["message/"+deletedMessage])
+	for _, ownerKey := range []string{"comment/" + deletedComment, "message/" + deletedMessage} {
+		if windows := postEmbeddingWindows(t, database, ownerKey); windows == 0 {
+			t.Fatalf("%s holds no window after its windows were written back, so no meaning hit can be what this row reads", ownerKey)
+		}
+	}
+
+	// The keyword leg alone finds none of the four posts, so each hit below, the two standing
+	// posts' among them, is the meaning leg's: a search that fell back to keywords alone, the one
+	// that answers Degraded, would find none of them.
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
+	page := searchResponse(t, handler, "q=wibbleflorp")
+	for _, want := range []struct {
+		kind, id string
+		at       *time.Time
+	}{
+		{"comment", deletedComment, comment.DeletedAt},
+		{"comment", keptComment, nil},
+		{"message", deletedMessage, message.DeletedAt},
+		{"message", keptMessage, nil},
+	} {
+		hit := searchHit(t, page, want.kind, want.id)
+		if want.at == nil {
+			if hit.DeletedAt != nil || hit.DeletedBy != nil {
+				t.Fatalf("the %s %s, which stands, carries the delete mark %v by %#v", want.kind, want.id, hit.DeletedAt, hit.DeletedBy)
+			}
+			continue
+		}
+		if hit.Snippet != "" {
+			t.Fatalf("the deleted %s %s's snippet = %q, want the empty one its cleared body gives", want.kind, want.id, hit.Snippet)
+		}
+		if hit.DeletedAt == nil || !hit.DeletedAt.Equal(*want.at) {
+			t.Fatalf("the deleted %s %s's deleted_at = %v, want the delete's time %v", want.kind, want.id, hit.DeletedAt, *want.at)
+		}
+		if hit.DeletedBy == nil || hit.DeletedBy.Kind != "user" || hit.DeletedBy.ID != "alice" {
+			t.Fatalf("the deleted %s %s's deleted_by = %#v, want the user alice, who deleted it", want.kind, want.id, hit.DeletedBy)
+		}
+	}
+
+	// The tick then drops the windows left behind, and the meaning arm no longer finds them.
+	windowOwedItems(t, database)
+	after := searchResponse(t, handler, "q=wibbleflorp")
+	for _, gone := range []struct{ kind, id string }{{"comment", deletedComment}, {"message", deletedMessage}} {
+		if searchResultOf(after, gone.kind, gone.id) != nil {
+			t.Fatalf("after the tick, results = %#v still hold the deleted %s %s", after.Results, gone.kind, gone.id)
+		}
+	}
+}
+
+// postWindowRows is every embeddings row of the post whose owner key is ownerKey, each whole, as
+// one JSON array: what writeBackPostWindows writes back.
+func postWindowRows(t *testing.T, database *store.Store, ownerKey string) string {
+	t.Helper()
+	var rows string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(jsonb_agg(to_jsonb(e)), '[]')::text from embeddings e where split_part(e.id, '#', 1) = $1
+	`, ownerKey).Scan(&rows); err != nil {
+		t.Fatalf("read the embedding windows of %s: %v", ownerKey, err)
+	}
+	return rows
+}
+
+// writeBackPostWindows writes rows, which postWindowRows read, back into embeddings as they
+// stood, keeping any of them still there, and marks the post owed its windows on its state row
+// (state, keyed by column): what a delete that dropped no window would leave, its windows
+// standing and the post listed for the block-index tick's window arm (refs.recordItemIndexed).
+func writeBackPostWindows(t *testing.T, database *store.Store, state, column, id, rows string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into embeddings select * from jsonb_populate_recordset(null::embeddings, $1::jsonb)
+		on conflict (kind, id) do nothing
+	`, rows); err != nil {
+		t.Fatalf("write back the embedding windows of %s: %v", id, err)
+	}
+	if tag, err := database.Pool.Exec(ctx,
+		`update `+state+` set windows_owed_at = now() where `+column+` = $1`, id); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("mark %s owed its windows: %v", id, err)
+	}
+}
+
+// A delete drops the post's embedding windows in its own transaction (clearDeletedPostBody,
+// refs.TombstoneItem), so the moment the delete answers, with no block-index tick run since,
+// a deleted comment and a deleted message hold no window and the meaning arm of search returns
+// neither. The windows are written and embedded as the package's meaning rows seed them, and
+// the same query finds all four posts before the delete, so the arm reached the two it then
+// loses; a comment and a message that stand are the control after it, found as before.
+func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
+	t.Parallel()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")
+	deletedComment := searchComment(t, handler, issue.Key, "alice", "A remark about the quadrant, to withdraw.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "A remark about the astrolabe that stands.")
+	deletedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the sextant, to withdraw.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A message about the compass that stands.")
+	// A distinct axis each, as angledVector requires of vectors answering one query.
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+deletedComment, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+keptComment, angledVector(0.9, 3))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+deletedMessage, angledVector(0.9, 4))
+	embedWindowsAs(t, database, embedder, "message_block", "message/"+keptMessage, angledVector(0.9, 5))
+	processAllPending(t, database, embedder)
+
+	deleted := []struct{ kind, id, ownerKey string }{
+		{"comment", deletedComment, "comment/" + deletedComment},
+		{"message", deletedMessage, "message/" + deletedMessage},
+	}
+	kept := []struct{ kind, id string }{{"comment", keptComment}, {"message", keptMessage}}
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
+	before := searchResponse(t, handler, "q=wibbleflorp")
+	for _, post := range deleted {
+		searchHit(t, before, post.kind, post.id)
+		if windows := postEmbeddingWindows(t, database, post.ownerKey); windows == 0 {
+			t.Fatalf("%s holds no window before its delete, so dropping them proves nothing", post.ownerKey)
+		}
+	}
+	for _, post := range kept {
+		searchHit(t, before, post.kind, post.id)
+	}
+
+	deleteThreadComment(t, handler, deletedComment, "alice")
+	deleteIssueMessage(t, handler, deletedMessage, "alice")
+
+	for _, post := range deleted {
+		if windows := postEmbeddingWindows(t, database, post.ownerKey); windows != 0 {
+			t.Fatalf("%s keeps %d windows after its delete answered: a meaning search reaches it until a tick drops them",
+				post.ownerKey, windows)
+		}
+	}
+	// The keyword leg alone finds none of the four posts (requireNoKeywordHit above), so the
+	// standing posts found here are the meaning leg's: this search reached that leg, where a
+	// search that fell back to keywords alone, the one that answers Degraded, would miss the
+	// deleted posts whatever became of their windows.
+	after := searchResponse(t, handler, "q=wibbleflorp")
+	for _, post := range kept {
+		searchHit(t, after, post.kind, post.id)
+	}
+	for _, post := range deleted {
+		if hit := searchResultOf(after, post.kind, post.id); hit != nil {
+			t.Fatalf("the meaning arm still returns the deleted %s %s after its delete: %#v", post.kind, post.id, hit)
+		}
+	}
 }
 
 // A filter narrows every leg of the search, not the page it is cut to: bob's comment is the

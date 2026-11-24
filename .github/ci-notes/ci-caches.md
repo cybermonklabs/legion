@@ -65,56 +65,23 @@ only when that version's text starts with this one's (go1.27.30 for go1.27.3), a
 object of its build cache on the toolchain that compiled it, so such an entry costs only its
 download. No entry carries the readers' key itself any more, so GitHub's matching gives a reader
 the newest entry whose key starts with it: the last fill's.
-Why: these keys used to name the Go version alone, and the fill saved only when that exact key
-was missing, so each family was filled once per Go version. The go-daemon, go-envoy and
-go-envoy-test entries every job restored on 2026-11-22 had been saved on 2026-11-18 between
-13:03 and 13:08Z (go-notices' on 2026-11-19), and at main's e7381b7d4c9 a job that restored
-them had to compile again 312 of the daemon module's 335 packages and 573 of the envoy module's
-618 (`go list -test -deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and
-321. The refill-superseded job deletes the other entries of the family once the new one is
-listed, three a run at most, newest first, so that its deletes are three priced ladders inside
-the job's budget that check-download-retry.sh can read (#the-refill-superseded-job); a common run
-supersedes one, so each family keeps one entry per runner, as it did before. A job that is downloading
-a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the job goes
-on, compiling what the entry would have given it, so it is slower, not failed.
-The build cache in an entry does not grow with each fill: Go deletes the objects no build has
-used for five days (trimLimit in Go's cmd/go/internal/cache), and a restore keeps each file's
-modification time, which is the time of last use Go reads. The module cache keeps every module
-version it has downloaded (Go removes none by itself), until a Go bump starts the family again:
-after a bump the fill finds no entry of the new Go (unless an older version's text starts with
-the new one's, as the prefix note above says) and builds from nothing.
+Why each fill builds on the newest entry of its family, and why it keeps only what its own
+build used, are the two sections after this one.
 
 go-envoy-infra, elan and the two dispatch builds are still looked up first (`lookup-only`, and
 no `restore-keys`: the question is whether that exact key exists, and the answer downloads
 nothing), and only a miss runs the build and saves what it left. Each of their keys carries a
 hash of the files that choose what the entry holds, and a run that finds its key builds
 nothing. Each save takes the key its lookup computed (`steps.<id>.outputs.cache-primary-key`),
-never a hashFiles() of its own: the build can change a hashed file (a go command may add the
-checksums it fetched to go.sum or go.work.sum), so a hash taken after the build need not be the
-lookup's. go-envoy-infra's save hashed its files again, and its key drifted: in run 45088325195
-the lookup asked for ...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the
-lookup and built for seven to ten minutes a leg. Where a job fills two families it fills the
-smaller one first, so the entry that carries the other's objects too is the one that was large
-already. A leg of a matrix that fails leaves the other running (`fail-fast: false`): a cancelled
-leg saves nothing, and one architecture's fill has no reason to cost the other's.
+never a hashFiles() of its own (#why-a-lookups-save-takes-the-lookups-key). Where a job fills
+two families it fills the smaller one first, so the entry that carries the other's objects too is
+the one that was large already. A leg of a matrix that fails leaves the other running
+(`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no reason
+to cost the other's.
 
-Beside those six, the architecture-check job fills
-architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
-.github/actions/architecture-check, and the spec-check job fills
-spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
-envoy-go-build runs both actions. Neither is a lookup step of this workflow: each action
-restores and saves its entry itself, keyed on the runner's architecture, on the Go version its
-own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum,
-so both jobs run on ubuntu-24.04, the runner envoy-go-build runs on. On a miss it restores the
-newest entry of that Go version (restore-keys). It saves only on a miss of the exact key in a
-push, schedule or workflow_dispatch run: a run of any other event (pull_request,
-pull_request_target, merge_group, issue_comment, workflow_run and the rest) may hold another
-person's code, so it restores the entry and never saves it. This workflow's push to main is
-where the entry lands in the scope every later run reads. check-ci-filters.sh's cache-family
-rule reads this workflow's own actions/cache steps and not a composite action's, so it holds
-nothing of these two families; the "Caches" paragraph of
-.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
-record of their restores and saves.
+Beside those six, the architecture-check and spec-check jobs fill the families of the
+composite actions .github/actions/architecture-check and .github/actions/spec-check, which
+restore and save their entries themselves (#the-architecture-check-and-spec-check-families).
 
 Four families here are no Go family. The elan home the airlock-lean job restores, whose key is
 the content of the Lean toolchain the model names rather than a Go version. The bun family,
@@ -125,15 +92,109 @@ architecture, so each architecture needs an entry and a saving job of its own, a
 runs a leg on each runner the action's callers run on, ubuntu-24.04 and ubuntu-24.04-arm. And
 the two builds dispatch-two-builds runs the tree against, the previous release's and the
 first-rollout release's, which that job restores and this workflow's dispatch-builds job builds
-and saves. Two others that were no Go family went with the jobs that read them, the Playwright
-browsers and the .deb files of the apt list the browser suite installed, because
-dispatch-browser.yaml's shard and alone jobs run in the image this repository builds, which
-carries the browsers and their host packages, so neither entry has a restore left to serve
-(dispatch://INFRA-1443). A save whose restore is gone is what check-ci-filters.sh refuses, so
-the two jobs that wrote them are gone with them.
+and saves. Two others that were no Go family went with the jobs that read them
+(#the-two-entries-that-went-with-the-jobs-that-read-them).
 
 go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 with ci.yaml's docs job.
+
+## Why each fill builds on the newest entry of its family
+
+These keys used to name the Go version alone, and the fill saved only when that exact key was
+missing, so each family was filled once per Go version. The go-daemon, go-envoy and go-envoy-test
+entries every job restored on 2026-11-22 had been saved on 2026-11-18 between 13:03 and 13:08Z
+(go-notices' on 2026-11-19), and at main's e7381b7d4c9 a job that restored them had to compile
+again 312 of the daemon module's 335 packages and 573 of the envoy module's 618 (`go list -test
+-deps -f {{.Stale}}`); from an entry filled five merges earlier, 135 and 321. The
+refill-superseded job deletes the other entries of the family once the new one is listed, three a
+run at most, newest first, so that its deletes are three priced ladders inside the job's budget
+that check-download-retry.sh can read (#the-refill-superseded-job); a common run supersedes one,
+so each family keeps one entry per runner, as it did before. A job that is downloading a deleted
+entry at that moment gets a cache miss: actions/cache/restore warns and the job goes on, compiling
+what the entry would have given it, so it is slower, not failed.
+
+## Why each fill keeps only what its own build used
+
+Each fill keeps in the build cache only what its own build used: a step before the build marks
+every restored entry unused, the build marks what it reads or writes, and a step after it deletes
+the rest (.github/scripts/go-cache-working-set.sh). Without that, an entry grew with each fill: a
+build adds the objects of every package that changed and nothing takes the replaced ones out, since
+Go's own trim deletes only what no build has used for five days and every fill was within that.
+go-envoy-test grew from 690 MB on 2026-11-22 to 2,039 MB by 19:18Z on 2026-11-23, and its restore
+in dispatch-browser's binaries job from 15.5 s to 59 s at the median. The module cache keeps every
+module version it has downloaded (Go removes none by itself), so it grows only with a change to a
+module file, until a Go bump starts the family again: after a bump the fill finds no entry of the
+new Go (unless an older version's text starts with the new one's, as the prefix note of
+#what-this-workflow-fills-and-why-it-runs-on-a-push-to-main says) and builds from nothing.
+
+## Why a lookup's save takes the lookup's key
+
+The build can change a hashed file (a go command may add the checksums it fetched to go.sum or
+go.work.sum), so a hash taken after the build need not be the lookup's. go-envoy-infra's save
+hashed its files again, and its key drifted: in run 45088325195 the lookup asked for
+...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the lookup and built for
+seven to ten minutes a leg.
+
+## The architecture-check and spec-check families
+
+The architecture-check job fills architecture-check-<os>-<arch>-go<version>-<hash>, the family of
+the composite action .github/actions/architecture-check, and the spec-check job fills
+spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
+envoy-go-build runs both actions. Neither is a lookup step of the workflow: each action restores
+and saves its entry itself, keyed on the runner's architecture, on the Go version its own setup-go
+installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum, so both jobs run
+on ubuntu-24.04, the runner envoy-go-build runs on. On a miss it restores the newest entry of that
+Go version (restore-keys). It saves only on a miss of the exact key in a push, schedule or
+workflow_dispatch run: a run of any other event (pull_request, pull_request_target, merge_group,
+issue_comment, workflow_run and the rest) may hold another person's code, so it restores the entry
+and never saves it. The workflow's push to main is where the entry lands in the scope every later
+run reads. check-ci-filters.sh's cache-family rule reads the workflow's own actions/cache steps and
+not a composite action's, so it holds nothing of these two families; the "Caches" paragraph of
+.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the record
+of their restores and saves.
+
+## The two entries that went with the jobs that read them
+
+Two entries that were no Go family went with the jobs that read them - the Playwright browsers and
+the .deb files of the apt list the browser suite installed - because dispatch-browser.yaml's shard
+and alone jobs run in the image this repository builds, which carries the browsers and their host
+packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
+restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with
+them.
+
+## The Go module downloads before each fill's builds
+
+Each Go fill downloads the modules its builds compile once, retried, before those builds (the
+Retries note of .github/ci-budgets.md; the retried unit is the download, never the build and
+never the test). On every run, as the builds run on every push now: the restored entry's module
+cache holds what the last fill downloaded, so the call fetches only what moved since.
+
+- The daemon job makes one call: the root go.work binds packages/daemon and packages/envoy, and a
+  download in either reads both modules' requirements.
+- The notices job makes two calls for the three module directories the notices script builds in:
+  in workspace mode `go mod download` with no arguments downloads the pattern `all` of the whole
+  workspace, so the first call, made in the root go.work, brings down both modules'
+  requirements. packages/envoy/infra the root go.work does not bind (its own go.work binds it and
+  packages/envoy), so it takes the second call. packages/daemon is downloaded there though the
+  daemon job downloads it too: the two jobs answer different keys on runners of their own, so
+  neither can lean on the other's module cache.
+- The envoy job's one call serves both of its builds. The go-envoy-test restore after it unpacks
+  that entry's module files over the same cache and takes none out, so the test build finds every
+  module the call fetched.
+- The darwin vet's call runs on top of the module cache go-envoy's newest entry gave. `go mod
+  download` with no arguments takes the whole build list, every platform's modules among them, so
+  the darwin vet finds its own.
+- The envoy-infra job's one call runs on that build's own condition, so a run that finds the key
+  downloads nothing: packages/envoy/infra's go.work binds it and packages/envoy, and a download in
+  it reads both modules' requirements. Its lookup is `lookup-only`, so no module cache is ever
+  restored there and the cold figure below is what a miss pays.
+
+180 s per attempt, for every one of them: the slowest cold `go mod download` measured is 113 s,
+for packages/envoy/infra, against 81 s for packages/daemon and 77 s for packages/envoy, each on an
+empty module cache on 2026-11-07, so the bound is 1.6 times the slowest of the three. It can be
+that tight where a tarball fetch's could not: an attempt the bound kills leaves what it fetched in
+the module cache for the next one to resume from. A run with no entry of its Go to restore, as
+after a Go bump, starts from an empty module cache, and that cold figure is what it pays.
 
 ## When it runs, and one fill at a time
 

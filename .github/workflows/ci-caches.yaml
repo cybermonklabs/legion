@@ -5,6 +5,9 @@ name: CI caches
 # families, elan, bun and the two builds dispatch-two-builds compares against, which a release's
 # dispatch fills again (`only: dispatch-builds`, below). go-docs is docs-pages.yaml's.
 # why: .github/ci-notes/ci-caches.md#what-this-workflow-fills-and-why-it-runs-on-a-push-to-main
+# Each fill keeps in the build cache only what its own build used
+# (.github/scripts/go-cache-working-set.sh).
+# why: .github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used
 
 # A push to main, and a dispatch: by hand, or from release-envoy-listener.yaml's release_publish
 # with `only: dispatch-builds` once a release is tagged, which runs the dispatch-builds jobs alone.
@@ -97,20 +100,8 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
-      # The modules the builds below compile, downloaded once and retried before them (the
-      # Retries note of .github/ci-budgets.md; the retried unit is the download, never the
-      # build and never the test). On every run, as the builds run on every push now: the
-      # restored entry's module cache holds what the last fill downloaded, so the call fetches
-      # only what moved since. One call: the root go.work binds packages/daemon and
-      # packages/envoy, and a download in either reads both modules' requirements.
-      #
-      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
-      # packages/envoy/infra, against 81 s for packages/daemon and 77 s for packages/envoy, each
-      # on an empty module cache on 2026-11-07, so the bound is 1.6 times the slowest of the
-      # three. It can be that tight where a tarball fetch's could not: an attempt the bound kills
-      # leaves what it fetched in the module cache for the next one to resume from. A run with no
-      # entry of its Go to restore, as after a Go bump, starts from an empty module cache, and
-      # that cold figure is what it pays.
+      # The modules the builds below compile, downloaded once and retried before them.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
       - name: Download the Go modules this job builds
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
         # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
@@ -118,6 +109,13 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+
+      # Every entry of the restored build cache is marked unused here, the builds below mark what
+      # they use, and the step after them deletes the rest, so the entry saved holds this commit's
+      # build and not every build since the family was last filled from nothing
+      # (.github/scripts/go-cache-working-set.sh says how, and what that growth cost).
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-daemon-working-set"
 
       # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
@@ -144,6 +142,9 @@ jobs:
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
         working-directory: packages/daemon
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-daemon-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -206,23 +207,8 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-
 
-      # The modules the notices script loads and cross-builds for every release target,
-      # downloaded once and retried before it (the Retries note of .github/ci-budgets.md;
-      # the retried unit is the download, never the build). On every run, as the notices step
-      # runs on every push now: the restored entry's module cache holds what the last fill
-      # downloaded, so the calls fetch only what moved since. Two calls for the three module
-      # directories the script builds in: in workspace mode `go mod download` with no arguments
-      # downloads the pattern `all` of the whole workspace, so the first call, made in the root
-      # go.work that binds packages/daemon and packages/envoy, brings down both modules'
-      # requirements. packages/envoy/infra the root go.work does not bind — its own go.work binds
-      # it and packages/envoy — so it takes the second call. packages/daemon is downloaded here
-      # though the daemon job above downloads it too: the two jobs answer different keys on
-      # runners of their own, so neither can lean on the other's module cache.
-      #
-      # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
-      # (packages/envoy/infra; packages/daemon 81 s, packages/envoy 77 s, each on an empty module
-      # cache on 2026-11-07), and an attempt the bound kills leaves what it fetched for the next
-      # one.
+      # The modules the notices script builds, downloaded once and retried before it.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
       - name: Download the Go modules the notices script builds
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
         # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s. That is a whole
@@ -232,6 +218,10 @@ jobs:
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
           retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
+
+      # As the daemon job's step of this name: the script's builds mark what they use.
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-notices-working-set"
 
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
@@ -247,6 +237,9 @@ jobs:
         # 674 + 1050 = 1724 s -> 29 min.
         timeout-minutes: 29
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-notices-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -311,19 +304,8 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
-      # The module both builds below compile, downloaded once and retried before the first (the
-      # Retries note of .github/ci-budgets.md; the retried unit is the download, never the build).
-      # On every run, as both builds run on every push now: the restored entry's module cache
-      # holds what the last fill downloaded, so the call fetches only what moved since. The
-      # go-envoy-test restore after it unpacks that entry's module files over the same cache and
-      # takes none out, so the test build finds every module this call fetched.
-      #
-      # 180 s per attempt: 1.6 times the 113 s of the slowest cold `go mod download` measured
-      # (packages/envoy/infra; packages/envoy 77 s, each on an empty module cache on 2026-11-07),
-      # and an attempt the bound kills leaves what it fetched in the module cache for the next
-      # one to resume from, which a tarball fetch cannot do. A run with no entry of its Go to
-      # restore, as after a Go bump, starts from an empty module cache, and that cold figure is
-      # what it pays.
+      # The module both builds below compile, downloaded once and retried before the first.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
       - name: Download the Go modules this job builds
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
         # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
@@ -331,6 +313,10 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+
+      # As the daemon job's first step of the script, for go-envoy's build.
+      - name: Mark the restored build cache's entries unused until the go-envoy build uses them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-working-set"
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
@@ -342,6 +328,12 @@ jobs:
       - name: Build the listener and natsd of the envoy module
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
+
+      # This fill runs no go vet, on purpose (PR #5289): with one, full or -stdmethods alike, the
+      # saved x64 entry was 475 MB against 202 MB without, so a go-envoy reader that vets reruns cgo
+      # for net, os/user and runtime/cgo, and that is the chosen cost.
+      - name: Delete the build cache's entries the go-envoy build did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -374,6 +366,14 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As above, for go-envoy-test's build, and naming go-envoy's kept entries as used: the entry
+      # saved below holds go-envoy's objects too, and the restore above can have put an older time
+      # on files the go-envoy build used.
+      - name: Mark the restored build cache's entries unused until the go-envoy-test build uses them
+        run: |
+          .github/scripts/go-cache-working-set.sh begin \
+            "$RUNNER_TEMP/go-envoy-test-working-set" "$RUNNER_TEMP/go-envoy-working-set"
+
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
       # package's test binary and `-o /dev/null` writes none of them, so every object the restored
@@ -384,6 +384,9 @@ jobs:
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./internal/testnats/
         working-directory: packages/envoy
+
+      - name: Delete the build cache's entries neither envoy build used
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-test-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -450,12 +453,8 @@ jobs:
           key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
-      # The modules the vet reads, downloaded once and retried before it (the Retries note of
-      # .github/ci-budgets.md; the retried unit is the download, never the vet), on top of the
-      # module cache go-envoy's newest entry gave, so the call fetches only what moved since that
-      # fill. `go mod download` with no arguments takes the whole build list, every platform's
-      # modules among them, so the darwin vet finds its own. 180 s per attempt, as the envoy
-      # job's download has it.
+      # The modules the vet reads, downloaded once and retried before it.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
       - name: Download the Go modules this job builds
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
         # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
@@ -463,6 +462,12 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+
+      # As the daemon job's first step of the script, over the vet's own build cache.
+      - name: Mark the restored darwin build cache's entries unused until the vet uses them
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-envoy-darwin-vet-working-set"
 
       # envoy-go-build's vet, its env and its script as that step has them (ci_job_reads.py's
       # darwin_vet_script is the text check-ci-filters.sh holds that step to), so the entry holds
@@ -477,6 +482,11 @@ jobs:
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/envoy
+
+      - name: Delete the darwin build cache's entries the vet did not use
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-envoy-darwin-vet-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -694,17 +704,8 @@ jobs:
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
-      # The infra module's own workspace, downloaded once and retried before the vet and the
-      # builds below (the Retries note of .github/ci-budgets.md; the retried unit is
-      # the download, never the build). On that build's own condition, so a run that finds the
-      # key downloads nothing. One call: packages/envoy/infra's go.work binds it and
-      # packages/envoy, and a download in it reads both modules' requirements.
-      #
-      # 180 s per attempt: a cold `go mod download` of packages/envoy/infra measured 113 s on an
-      # empty module cache on 2026-11-07, the slowest of the three modules measured there, so the
-      # bound is 1.6 times it, and an attempt it kills leaves what it fetched in the module cache
-      # for the next one to resume from. The lookup above is `lookup-only`, so no module cache is
-      # ever restored here and that cold figure is what a miss pays.
+      # The infra module's workspace, downloaded once and retried before the vet and the builds.
+      # why: .github/ci-notes/ci-caches.md#the-go-module-downloads-before-each-fills-builds
       - name: Download the Go modules this job builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than

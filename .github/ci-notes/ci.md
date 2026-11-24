@@ -371,11 +371,12 @@ The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts's "the
 reader's table is the same table" and src/dispatch-text-references.test.ts's "the Go
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
-tables, and scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, pmdoc's generated block schema and contracts' own generated TypeScript
-- is current. Not pmdoc/schema, the block schema those generated types are the
-shape of: this job generates that Go from packages/contracts/schemas, and reads no
-file of pmdoc/schema itself.
+tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
+own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
+of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+block schema those generated types are the shape of: this job generates that Go from
+packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
 ## contracts: `bun run check:api` renders schemas/dispatch-openapi.json into
 
@@ -1202,8 +1203,11 @@ older than the architecture in the key restores by go-notices-<os>-, which an <o
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
 go-envoy, go-envoy-test and go-envoy-darwin-vet are filled on every push to main: the fill
 restores the newest entry
-of the family, runs on it the build the job runs, which compiles only what changed since, and
-saves the result under the job's key followed by the commit (`-${{ github.sha }}`). No entry
+of the family, runs on it the build the job runs, which compiles only what changed since, deletes
+from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
+without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every
+job that restores it downloaded the growth), and saves the result under the job's key followed by
+the commit (`-${{ github.sha }}`). No entry
 carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
 starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
 other entry of the family, so each family keeps one entry per runner, as before. A job that is
@@ -1387,10 +1391,11 @@ CI_OK_SELECTED_BY, a JSON object, is.
 
 ## Why changes, pr-title, cancel-started and ci-ok run on arm64
 
-changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
-shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
-so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
-about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
+`changes`, `pr-title`, `cancel-started` and `ci-ok` run on arm64. Their JavaScript actions,
+shell scripts and tools, including the Go and Bun setup in `changes`, do not need an x64
+runner. At busy hours the x64 pool queues a job for about 15 minutes where the arm64 pool
+starts one in seconds (INFRA-4222). The `# why:` link above the `changes` runner applies
+to all four jobs.
 
 ## What the changes job selects, and the two terms every job carries
 
