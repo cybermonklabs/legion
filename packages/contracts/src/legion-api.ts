@@ -544,7 +544,6 @@ const legionWaitingLineView = z.object({
   kind: z
     .enum(["returning", "answered", "queued_root", "first_phase", "waiting_on_issue"])
     .optional(),
-  priority: z.number().int().min(0).max(3).nullable().optional(),
   partPlace: z.number().int().positive().optional(),
   partLength: z.number().int().positive().optional(),
   holdsSlot: z.boolean().optional(),
@@ -552,6 +551,7 @@ const legionWaitingLineView = z.object({
   rootRank: nonEmptyString.optional(),
   ownRank: nonEmptyString.optional(),
   rootKey: issueKey.optional(),
+  priority: z.number().int().min(0).max(3).nullable().optional(),
   reason: nonEmptyString.optional(),
 });
 
@@ -751,13 +751,6 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   status: nonEmptyString.optional(),
-  /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
-   * (contract 221): the priority Dispatch sends on the issue itself. The admission line places an
-   * issue at this priority, else at its tree root's, and the line's own `priority` says which.
-   * Present on every issue the workflow records; absent on an issue it does not record (phase
-   * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
-   * caller below 221. */
-  priority: z.number().int().min(0).max(3).nullable().optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
    * holds an admission slot of its own, so neither `admission.active` nor `admission.waiting`
    * says which tree an issue belongs to; a reader tells a child from a root here, and finds the
@@ -798,6 +791,13 @@ const legionIssue = z.object({
    * any live root stands on its chain, and this is the only surface that chain reaches. */
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
+  /** The issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for an issue with none
+   * (contract 221): the priority Dispatch sends on the issue itself. The admission line places an
+   * issue at this priority, else at its tree root's, and the line's own `priority` says which.
+   * Present on every issue the workflow records; absent on an issue it does not record (phase
+   * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
+   * caller below 221. */
+  priority: z.number().int().min(0).max(3).nullable().optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
