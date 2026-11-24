@@ -221,9 +221,8 @@ prompt it launched with until then.
   copy that is every launch, the controller's included; for an arm's copy, the memory block's among
   them, it is each launch of a unit drawn into that arm. Fix what `error` names:
   - `permission denied`: give the daemon's user write access to the copy's directory.
-  - `is a directory`, or `file exists` when the directory holds files: a directory stands at the
-    copy's path, so the old copy is already gone and each launch that reads it fails. Remove that
-    directory.
+  - `file exists`: a directory stands at the copy's path, so the old copy is already gone and each
+    launch that reads it fails. Remove that directory.
   - `not a directory`: a file stands where the copy's directory should be. Remove that file.
   - `no space left on device`, `disk quota exceeded` or `read-only file system`: free space or
     quota on the state directory's volume, or remount it writable.
