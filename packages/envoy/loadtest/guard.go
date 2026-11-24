@@ -587,6 +587,19 @@ func isEndpointURL(flag, v string) bool {
 	}
 }
 
+// joinTrimPath is raw, an endpoint flag's URL, without the slashes that end it when it has no
+// query and no fragment, so a value that differs from the stack's by a trailing slash alone is the
+// stack's own. A value with a query or a fragment is as it came: the slashes that end its text are
+// the query's or the fragment's, which a trim would change (http://host/p?next=/ would ask with
+// next empty), and urljoin.Join, which joins a route onto an endpoint's URL, reads a path that ends
+// in a slash as one that does not.
+func joinTrimPath(raw string) string {
+	if strings.ContainsAny(raw, "?#") {
+		return raw
+	}
+	return strings.TrimRight(raw, "/")
+}
+
 // foreignFlagError refuses an endpoint flag that names something other than the stack's own.
 type foreignFlagError struct {
 	Flag string
@@ -656,11 +669,11 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 		flag, given, stack string
 		dst                *string
 	}{
-		{"-url", strings.TrimRight(f.url, "/"), local("http", sv.Ports.Dispatch), &e.dispatch},
-		{"-listener", strings.TrimRight(f.listener, "/"), local("http", sv.Ports.Listener), &e.listener},
+		{"-url", joinTrimPath(f.url), local("http", sv.Ports.Dispatch), &e.dispatch},
+		{"-listener", joinTrimPath(f.listener), local("http", sv.Ports.Listener), &e.listener},
 		{"-nats", f.nats, local("nats", sv.Ports.NATS), &e.nats},
-		{"-nats-mon", strings.TrimRight(f.natsMon, "/"), local("http", sv.Ports.NATSMonitor), &e.natsMon},
-		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof},
+		{"-nats-mon", joinTrimPath(f.natsMon), local("http", sv.Ports.NATSMonitor), &e.natsMon},
+		{"-pprof", joinTrimPath(f.pprof), local("http", sv.Ports.Pprof), &e.pprof},
 		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg},
 		{"-token-file", f.token, sv.DispatchToken, &e.token},
 		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken},
