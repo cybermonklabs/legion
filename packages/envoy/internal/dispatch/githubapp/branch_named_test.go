@@ -23,15 +23,18 @@ import (
 // it leaves on the attempt holds the credential or a piece of the token. Captures
 // githubapp.named-branch/<row>.
 func TestABranchACallerNamedPrintsAsTheRuleReadsIt(t *testing.T) {
-	const token = redacttest.Token
 	for _, row := range []struct {
 		name, branch string
+		// token is the installation token the comparison carries. The credential row's shares
+		// no run with the probe, so that a reading that redacts only the request's own values
+		// still prints the probe's; the echo row's is the value the branch echoes.
+		token string
 		// piece is the credential the row's branch echoes, which the output may hold no run
 		// of; empty where the branch carries no value of this request's.
 		piece string
 	}{
-		{name: "credential", branch: redacttest.Words},
-		{name: "echoes-token", branch: "release-" + token, piece: token},
+		{name: "credential", branch: redacttest.Words, token: "ghs_the_comparisons_own_token"},
+		{name: "echoes-token", branch: "release-" + redacttest.Token, token: redacttest.Token, piece: redacttest.Token},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +45,7 @@ func TestABranchACallerNamedPrintsAsTheRuleReadsIt(t *testing.T) {
 				serverError(w, r)
 			})
 			ctx, attempt := githubreads.Begin(context.Background())
-			_, err := client.CommitOnBranch(ctx, token, "acme", "web", NamedBranch(row.branch), mainCommit)
+			_, err := client.CommitOnBranch(ctx, row.token, "acme", "web", NamedBranch(row.branch), mainCommit)
 			if err == nil {
 				t.Fatal("a comparison GitHub failed answered no error")
 			}
