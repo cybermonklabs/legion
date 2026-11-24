@@ -89,6 +89,18 @@ func ShownLogin(login string) string {
 	return NotALogin
 }
 
+// ShownLogins is each of logins, the accounts a GitHub answer names, as a message may print it
+// (ShownLogin), in the order the answer named them, so a reader still sees every entry is there.
+// The answer is decided on as it came; only its printing goes through this. The answer is never
+// nil, so a route that serves it serves an empty list rather than null.
+func ShownLogins(logins []string) []string {
+	shown := make([]string, 0, len(logins))
+	for _, login := range logins {
+		shown = append(shown, ShownLogin(login))
+	}
+	return shown
+}
+
 // NotABranch is what ShownBranch prints in place of a branch name it does not print.
 const NotABranch = "(a branch name the daemon does not print)"
 

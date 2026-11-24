@@ -893,10 +893,7 @@ func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dfl
 			return dir.name, nil
 		}
 	}
-	shown := make([]string, 0, len(layout.owners))
-	for _, owner := range slices.Sorted(maps.Keys(layout.owners)) {
-		shown = append(shown, githubrest.ShownLogin(owner))
-	}
+	shown := githubrest.ShownLogins(slices.Sorted(maps.Keys(layout.owners)))
 	return "", fmt.Errorf("the %s App's gh bundle for %s holds no owner the App is installed on (%s): %w",
 		appRole, role, strings.Join(shown, ", "), errors.Join(failures...))
 }

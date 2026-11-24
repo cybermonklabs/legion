@@ -272,10 +272,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 	// githubrest.NotALogin, so the controller and the operator still see an entry is there. The
 	// route decides on none of them.
 	listed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
-	installed := make([]string, 0, len(listed))
-	for _, owner := range listed {
-		installed = append(installed, githubrest.ShownLogin(owner))
-	}
+	installed := githubrest.ShownLogins(listed)
 	answer := ControllerCredentialResponse{
 		Owners:    make(map[string]ControllerOwnerCredential, len(bundle.Dirs)),
 		Default:   bundle.Default,

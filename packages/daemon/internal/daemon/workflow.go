@@ -613,11 +613,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 				"app", string(role))
 			continue
 		}
-		shown := make([]string, 0, len(owners[role]))
-		for _, owner := range owners[role] {
-			shown = append(shown, githubrest.ShownLogin(owner))
-		}
-		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", shown)
+		log.Info("legion workflow proved a GitHub App's key", "app", string(role), "installedOn", githubrest.ShownLogins(owners[role]))
 	}
 	return nil
 }
