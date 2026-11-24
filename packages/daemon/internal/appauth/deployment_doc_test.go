@@ -1,5 +1,7 @@
 package appauth
 
+//ci:reads docs/deployment.md fencedBlock (path from deploymentDoc)
+
 import (
 	"encoding/json"
 	"fmt"

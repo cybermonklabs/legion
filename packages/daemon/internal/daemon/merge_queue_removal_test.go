@@ -473,7 +473,7 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 
 // seed records one case's issue before the boot: a tree root of its own standing in stands, with
 // the slot row seedWorkflowTree writes for every root (which admission's first pass releases for
-// an issue past its review, merging among them: record.KeepsSlot), its lifecycle open under the
+// an issue in accepting, retro or merging: record.KeepsSlot), its lifecycle open under the
 // workflow, on an open pull request GitHub last read mergeable and clean at the issue's head on
 // main, so the boot's start read applies nothing. Its merger's claim stands in merger, where a
 // suspended claim is one the idle release suspended: released, its session kept. An issue in

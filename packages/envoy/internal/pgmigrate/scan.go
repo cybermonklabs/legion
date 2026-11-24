@@ -86,6 +86,27 @@ func scanSQL(text string, visit func(sqlToken) error) error {
 	return failure
 }
 
+// WithoutComments is text with each comment read as the one space it stands for, as Postgres reads
+// text with standard_conforming_strings on, the setting a pgx statement is sent under: a -- comment
+// runs to a newline or a carriage return, a /* */ comment nests, and none starts inside a string,
+// a quoted identifier or a dollar quote, whose tag takes bytes 0x80-0xff as scan.l's ident_start
+// does. Every other byte is kept. A reader that matches words in a statement reads it through
+// this, so a comment between two words hides neither, and a comment's text is no statement.
+func WithoutComments(text string) string {
+	var kept strings.Builder
+	last := 0
+	lexSQL(text, true, func(token sqlToken) {
+		if token.kind != sqlComment {
+			return
+		}
+		kept.WriteString(text[last:token.start])
+		kept.WriteByte(' ')
+		last = token.end
+	})
+	kept.WriteString(text[last:])
+	return kept.String()
+}
+
 // isDigit is scan.l's decdigit, [0-9].
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 

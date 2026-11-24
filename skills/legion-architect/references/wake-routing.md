@@ -13,7 +13,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. One for an older version came late: answer its reason if the latest version does not. |
 | `carried-gate-opened` | Start nothing and release nothing for it. |
-| `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
+| `phase-finished` | The next phase started, or `retro-held` came too. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
 | `pr-blocked` | The review round cap is reached: decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in `skill://legion-architect/references/acceptance.md`). |
@@ -39,7 +39,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 ## A capped pull request
 
 A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Requests for changes are what it counts.
+Only requests for changes count: no tester's fail, no move back.
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it.

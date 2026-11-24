@@ -443,14 +443,17 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 	}
 }
 
-// Planning has no earlier phase to move back to, so a planner's news ends with the planner's own
+// A stale plan is the planner's own work wherever its task places its step, so a planner's news ends with the planner's own
 // answer, as its prompt gives it (prompts/go/planner.md): a stale plan is revised in place and its
 // plan review run again, and a current one gets a comment. No move back is named.
 func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	text := RenderNews(plannerHolderNews())
 	t.Logf("the news of a planner:\n%s", text)
 	rule := lastParagraph(text)
-	for _, want := range []string{"read each named section and check at the new version", "Planning has no earlier phase",
+	if strings.Contains(rule, "Planning has no earlier phase") {
+		t.Errorf("the planner's closing rule still says planning has no earlier phase, false for a planner after the implementer: %q", rule)
+	}
+	for _, want := range []string{"read each named section and check at the new version", "A stale plan is your own work wherever your task places your step",
 		"revise `plan.md` in place to match the new version of the design", "run the plan review again", "`dispatch comment` on LEGION-218"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the planner's closing rule %q does not say %q", rule, want)

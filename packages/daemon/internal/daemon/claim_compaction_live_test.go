@@ -332,10 +332,11 @@ func (r *claimCompactionLive) overrides() overrides {
 }
 
 // seed records the issues as the daemon would hold them at the moment each one's worker began: a
-// root handed to Legion, in the phase its worker works, holding its tree's admission slot with
-// its lifecycle open, and that worker's claim mid-launch, which this boot relaunches. The one
-// claim that runs no pane is the Claude Code role's, seeded stopped so nothing ever launches it:
-// the compaction refuses such a claim on its backend before it reads any state at all.
+// root handed to Legion, in the phase its worker works, with its lifecycle open, an admission
+// slot the seed writes (liveProof.admit), and that worker's claim mid-launch, which this boot
+// relaunches. The one claim that runs no pane is the Claude Code role's, seeded stopped so
+// nothing ever launches it: the compaction refuses such a claim on its backend before it reads
+// any state at all.
 //
 // Each phase worker's claim also holds the task its phase's start left pending, because a start
 // writes the relaunch and the task together (workflow's StartOrOwe) and a slotted worker holding
@@ -351,7 +352,9 @@ func (r *claimCompactionLive) overrides() overrides {
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
 // planner a planning issue names, find no claim at all and start one. Accepting is the phase
 // whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
-// passes over it as it passes over every architect.
+// passes over it as it passes over every architect. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *claimCompactionLive) seed() {
 	t := r.t
 	t.Helper()
@@ -862,13 +865,13 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 // own `fresh_session`, and reads back what each worker is given in the session it starts in: a
 // phase worker its issue's current phase task, and the root architect its catch-up.
 //
-// The phase worker is the one step 6 stopped, and the daemon starts such a worker again on its
-// own: its issue holds a slot in a worker phase and its claim owes no task, which is the state
-// admission repairs (internal/admit/admit.go's resumeSlottedWorkers). So this step asks for the
-// fresh session through retryFreshSession, which waits out a claim the daemon is in the middle
-// of starting, and what it reads back afterwards is the same either way: the fresh session is
-// the operator's, and the task in it is the one the issue's phase owes (api's
-// restartWorkedPhase).
+// The phase worker is the one step 6 stopped, and the daemon does not start such a worker again
+// on its own: its issue holds a slot in a worker phase and its claim owes no task, but admission's
+// slot repair passes over a retired claim on purpose (internal/admit/admit.go's owedOf, under
+// resumeSlottedWorkers). This step asks for the fresh session through
+// retryFreshSession, which also waits out a claim the daemon is in the middle of starting, and
+// what it reads back afterwards is the fresh session the operator asked for, with the task the
+// issue's phase owes (api's restartWorkedPhase).
 func (r *claimCompactionLive) freshSessionsStartEachWorker() {
 	t := r.t
 	planner := r.token(r.ladder, claim.RolePlanner)

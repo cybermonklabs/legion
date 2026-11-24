@@ -13,19 +13,22 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// beneathRetro is the issues beneath issue still in the workflow (openBeneath) where its move into
-// to is the pass of its task's last step into the retro, on a plan with no acceptance step, and
-// nothing for every other move. A parent is accepted only once no issue beneath it is still in
-// the workflow, and a task with no step acceptance:owner has no sign-off to refuse a parent while
-// one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead
-// (transition),
-// from retro for its children (record.HoldForChildren), until none of them is open beneath it
-// (releaseHeldParents). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
-// reads record.StandsAt), so the parent holds none of the slots its children may need. An issue
-// with no plan rows walks today's line, whose retro follows the owner's acceptance, so it is never
-// held so.
+// beneathRetro is the issues beneath issue still in the workflow (openBeneath) where issue moves
+// into the retro (to) and its task's last step is not the owner's sign-off, and nothing for every
+// other move. A parent's head proves its children's merged work. The owner's sign-off is refused
+// while one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so a task whose last step is the sign-off
+// passes into its retro with none of them in the workflow. A task whose last step is another has
+// no such refusal before its retro: a task with no step acceptance:owner, and a task whose
+// sign-off stands before another step (`implementer acceptance:owner reviewer`), where an issue
+// beneath the parent may enter the workflow after the sign-off. Such a parent is held before its
+// retro instead (transition), from retro for its children (record.HoldForChildren), until none of
+// them is open beneath it (releaseHeldParents). The hold stands in place of the retro, which keeps
+// no slot (record.KeepsSlot reads record.StandsAt), so the parent holds none of the slots its
+// children may need. An issue with no plan rows walks today's line, whose retro follows the
+// owner's sign-off, so it is never held so.
 func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to phase.Phase) ([]string, error) {
-	if !w.Stored || to != phase.Retro || slices.Contains(w.Line, phase.Accepting) {
+	steps := w.steps()
+	if !w.Stored || to != phase.Retro || len(steps) == 0 || steps[len(steps)-1] == phase.Accepting {
 		return nil, nil
 	}
 	return e.openBeneath(ctx, tx, issue)
@@ -185,7 +188,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, parent, status, ""); err != nil {
 		return err
 	}
-	from := record.StandsAt(parent)
 	parent.Phase, parent.Hold, parent.Status = phase.Retro, nil, status
 	if err := e.WriteIssue(ctx, tx, parent); err != nil {
 		return err
@@ -207,8 +209,9 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	// The release moves the parent into its retro as the pass into the retro would have
-	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
-	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
-	// forward of the move.
-	return e.releasedIntoPhase(ctx, tx, parent, from)
+	// (transition), so it queues the reconcile of its tree's news as that pass does
+	// (queueMovedNews). It asks nothing of the merge forward, as the hold before it asked nothing
+	// (holdBeforeRetro): the retro is where the merge comes next (classify.MergeComesNext), where a
+	// move asks nothing (mergeForwardOnEntry).
+	return e.queueMovedNews(ctx, tx, parent)
 }
