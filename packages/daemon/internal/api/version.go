@@ -2110,8 +2110,8 @@ package api
 // for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
 // of the processes that run a role's session (its agent, shim, role-init or a helper) that the
 // kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
-// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
-// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// daemon tells that role with a kernelKillNote classified as stopping a command or a session
+// process, under the same event id `memory-guard-kill:<id>:<sequence>`. The
 // state's settings block carries the new `runtime.kubernetes.sandbox` key as
 // `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
 // alone would bump nothing.

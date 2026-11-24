@@ -4742,13 +4742,13 @@ For a process of a role, the watch also gives a report to that role's part of th
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
 The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the topic of the claim whose process it was, with the sizes in binary units.
 
-For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel` the note is `kernelKillNote`'s command form, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause` and `stopped=command`:
 
 ```text
 The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
-For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
+For `cause: kernel-protected` the note is `kernelKillNote`'s session form, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause` and `stopped=session`:
 
 ```text
 The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of yours. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
