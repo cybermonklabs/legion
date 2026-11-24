@@ -3095,10 +3095,14 @@ func (r *outbox) claimsOfIssue(issue string) []*supervise.Machine {
 // finished at those fences. left is whether the issue was read and stands no longer; an issue with
 // no such claim is not read.
 func (r *outbox) retireUnstartedOfLeftIssue(ctx context.Context, row record.OutboxRow, issue string) (left bool, err error) {
-	var unstarted []*supervise.Machine
+	type unstartedClaim struct {
+		machine *supervise.Machine
+		token   claim.Token
+	}
+	var unstarted []unstartedClaim
 	for _, machine := range r.claimsOfIssue(issue) {
-		if machine.View().Claim.Unstarted() {
-			unstarted = append(unstarted, machine)
+		if held := machine.View().Claim; held.Unstarted() {
+			unstarted = append(unstarted, unstartedClaim{machine: machine, token: held.Token})
 		}
 	}
 	if len(unstarted) == 0 {
@@ -3116,9 +3120,9 @@ func (r *outbox) retireUnstartedOfLeftIssue(ctx context.Context, row record.Outb
 	if stands {
 		return false, nil
 	}
-	for _, machine := range unstarted {
-		token := machine.View().Claim.Token
-		if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
+	for _, held := range unstarted {
+		token := held.token
+		if err := held.machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
 			return false, fmt.Errorf("retire claim %s, stored after %s left the workflow: %w", token, issue, err)
 		}
 		r.log.Info("outbox start: a claim no start has run against, of an issue that has left the workflow, is retired", "row", row.ID,
