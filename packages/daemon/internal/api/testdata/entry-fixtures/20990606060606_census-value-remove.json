@@ -1,0 +1,18 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "removeValues": {
+        "phase": ["censusRevert"]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/phase/retry",
+      "change": "remove"
+    }
+  ],
+  "answerRows": [],
+  "enumeratedRows": []
+}

@@ -1558,13 +1558,58 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	if rewritingFixtures() {
 		t.Skip("the fixtures are being rewritten; run the suite again without -update")
 	}
-	onFile := shapeRecordsOfBuild(t, packageEntryFixtures)
+	for _, problem := range recordSetProblems(t, packageEntryFixtures) {
+		t.Error(problem)
+	}
+}
+
+// censusAddTestContract and censusRemoveTestContract are the ids of two test entries, the second a
+// revert of the first: the first adds `censusRevert` to the domain of censusRevertKeyPath on the
+// issue record, and the second takes it out again and retires censusRetiredRoute, as a fixture
+// may (entryFixture). Each id is later than any entry of this tree can be, and no other test
+// registry registers either.
+const (
+	censusAddTestContract    = 20990505050505
+	censusRemoveTestContract = 20990606060606
+)
+
+// censusRetiredRoute is the route a plugin calls that the revert retires.
+const censusRetiredRoute = "POST /legion/v1/phase/retry"
+
+// A revert is a new entry that undoes an earlier one, so the census holds each contract to what
+// the composition gives it: the value the first entry adds is on the first entry's record and on
+// no record after the revert, and the route the revert retires is wanted at no contract the
+// revert's number reaches. A census that wanted every value from its arrival up, or every route
+// of the frozen rows and the entries' rows, would fail this build and could pass only by editing
+// a frozen row.
+func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
+	if rewritingFixtures() {
+		t.Skip("the fixtures are being rewritten; run the suite again without -update")
+	}
+	installContractRegistry(t, testRegistry(t, stampOf(censusAddTestContract, censusRemoveTestContract),
+		contractEntry{id: censusAddTestContract, slug: "census-value-add"},
+		contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}}))
+	for _, problem := range recordSetProblems(t, pairEntryFixtures) {
+		t.Error(problem)
+	}
+	if _, wanted := pluginRequests()[censusRetiredRoute]; wanted {
+		t.Errorf("pluginRequests holds %s, which the revert retires (RemovedRoutes): no record of this daemon's own contract holds it", censusRetiredRoute)
+	}
+}
+
+// recordSetProblems is every problem of the record set of this build, its entry fixtures read from
+// dir, against the case above.
+func recordSetProblems(t *testing.T, dir string) []string {
+	t.Helper()
+	problems := []string{}
+	errorf := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	onFile := shapeRecordsOfBuild(t, dir)
 	noBody := map[AnswerID]bool{}
 	want := map[shapeKey]bool{}
 	for _, answer := range Answers() {
 		noBody[answer.ID] = answer.NoBody
 		if answer.Since > DaemonAPIVersion() {
-			t.Errorf("the %s answer arrived at %d, above this daemon's own contract %d", answer.ID, answer.Since, DaemonAPIVersion())
+			errorf("the %s answer arrived at %d, above this daemon's own contract %d", answer.ID, answer.Since, DaemonAPIVersion())
 		}
 		for _, contract := range SupportedContracts() {
 			if answer.Since <= contract {
@@ -1579,11 +1624,11 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields() {
 		if !slices.ContainsFunc(Answers(), func(answer Answer) bool { return answer.ID == field.Answer }) {
-			t.Errorf("answers.go's EnumeratedFields declares `%s` of the %s answer, which is no row of Answers", field.KeyPath, field.Answer)
+			errorf("answers.go's EnumeratedFields declares `%s` of the %s answer, which is no row of Answers", field.KeyPath, field.Answer)
 		}
 		for _, value := range field.Values {
 			if value.Since < ServingFloor || value.Since > DaemonAPIVersion() {
-				t.Errorf("answers.go's EnumeratedFields gives `%s` of `%s` the arrival %d, outside the floor %d and this daemon's own contract %d: a value older than the floor is recorded from the floor up, as an answer is",
+				errorf("answers.go's EnumeratedFields gives `%s` of `%s` the arrival %d, outside the floor %d and this daemon's own contract %d: a value older than the floor is recorded from the floor up, as an answer is",
 					value.Value, field.KeyPath, value.Since, ServingFloor, DaemonAPIVersion())
 			}
 		}
@@ -1592,52 +1637,53 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	for _, record := range onFile {
 		key := shapeKey{contract: record.Contract, answer: record.Answer}
 		if seen[key] {
-			t.Errorf("the records hold the %s answer at contract %d twice", record.Answer, record.Contract)
+			errorf("the records hold the %s answer at contract %d twice", record.Answer, record.Contract)
 		}
 		seen[key] = true
 		if !want[key] {
-			t.Errorf("the records hold the %s answer at contract %d, which is no pair of SupportedContracts and Answers: the answer arrived later, or the contract is one this daemon describes no shape for",
+			errorf("the records hold the %s answer at contract %d, which is no pair of SupportedContracts and Answers: the answer arrived later, or the contract is one this daemon describes no shape for",
 				record.Answer, record.Contract)
 			continue
 		}
 		if record.NoBody != noBody[record.Answer] {
-			t.Errorf("the records hold the %s answer at contract %d with noBody %t and answers.go says %t",
+			errorf("the records hold the %s answer at contract %d with noBody %t and answers.go says %t",
 				record.Answer, record.Contract, record.NoBody, noBody[record.Answer])
 		}
 		if record.NoBody && len(record.KeyPaths) != 0 {
-			t.Errorf("the records hold the %s answer at contract %d as writing no body and give it %d key paths",
+			errorf("the records hold the %s answer at contract %d as writing no body and give it %d key paths",
 				record.Answer, record.Contract, len(record.KeyPaths))
 		}
 		if !slices.IsSorted(record.KeyPaths) {
-			t.Errorf("the records hold the %s answer at contract %d with its key paths out of order",
+			errorf("the records hold the %s answer at contract %d with its key paths out of order",
 				record.Answer, record.Contract)
 		}
 		wantDomains := domainsOf(EnumeratedFields(), record.Answer, record.Contract)
 		for path, domain := range record.Domains {
 			admitted, declared := wantDomains[path]
 			if !declared {
-				t.Errorf("the records hold a domain of `%s` on the %s answer at contract %d and answers.go's EnumeratedFields declares no such field of that answer",
+				errorf("the records hold a domain of `%s` on the %s answer at contract %d and answers.go's EnumeratedFields declares no such field of that answer",
 					path, record.Answer, record.Contract)
 				continue
 			}
 			if !slices.Equal(domain, admitted) {
-				t.Errorf("the records hold `%s` on the %s answer at contract %d admitting %v and the table says %v: a domain holds the sorted values whose arrival is at or below the contract",
+				errorf("the records hold `%s` on the %s answer at contract %d admitting %v and the table says %v: a domain holds the sorted values whose arrival is at or below the contract",
 					path, record.Answer, record.Contract, domain, admitted)
 			}
 		}
 		for path, admitted := range wantDomains {
 			if _, recorded := record.Domains[path]; !recorded && len(admitted) > 0 {
-				t.Errorf("the records hold no domain of `%s` on the %s answer at contract %d, and the table admits %v there: a record that holds no domain for a field admits no value of it",
+				errorf("the records hold no domain of `%s` on the %s answer at contract %d, and the table admits %v there: a record that holds no domain for a field admits no value of it",
 					path, record.Answer, record.Contract, admitted)
 			}
 		}
 	}
 	for key := range want {
 		if !seen[key] {
-			t.Errorf("the records hold no record of the %s answer at contract %d: every answer the table names is recorded at every contract from its arrival up",
+			errorf("the records hold no record of the %s answer at contract %d: every answer the table names is recorded at every contract from its arrival up",
 				key.answer, key.contract)
 		}
 	}
+	return problems
 }
 
 // Every record of the state holds `settings` and, below it, exactly the top-level keys
