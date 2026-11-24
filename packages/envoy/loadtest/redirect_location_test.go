@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,18 @@ func requireNoLocation(t *testing.T, capture, printed string) {
 	if strings.Contains(printed, "moved") {
 		t.Errorf("%s names the Location: %q", capture, printed)
 	}
+}
+
+// rowTokenURL serves, until t ends, a metadata stand-in that answers redirectRowBearer as the
+// access token, so a Cloud Monitoring row's read carries the bearer its stand-in echoes, which
+// holds the gate's marker.
+func rowTokenURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `{"access_token":%q,"expires_in":3599,"token_type":"Bearer"}`, redirectRowBearer)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // TestARedirectEchoReachesNetHTTPsOwnError is the twin of every row here: the stand-in's echo of
@@ -174,21 +187,19 @@ func TestAGuardCheckRedirectPrintsNoLocationOfIt(t *testing.T) {
 }
 
 // TestACloudSQLReadRedirectPrintsNoLocationOfIt: whatever answers at Cloud Monitoring's address
-// answers cloudsql-cpu's read, which carries the pod's access token, with a redirect whose
-// Location quotes that token (redirectCases). The command's error holds no run of the token and no
-// word of the Location, and the stand-in a Location on another host names is asked nothing
-// (followed). Captures loadtest.cloudsql-redirect/<case>.
+// answers cloudsql-cpu's read, which carries the pod's access token (here redirectRowBearer, which
+// rowTokenURL's metadata stand-in answers), with a redirect whose Location quotes that token
+// (redirectCases). The command's error holds no run of the token and no word of the Location, and
+// the stand-in a Location on another host names is asked nothing (followed). Captures
+// loadtest.cloudsql-redirect/<case>.
 func TestACloudSQLReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	for _, c := range redirectCases(t) {
 		t.Run(c.name, func(t *testing.T) {
-			_, _, err := runCloudSQLCPUAgainst(t, bearerEcho(t, c.location))
+			_, _, err := runCloudSQLCPUAgainst(t, bearerEcho(t, c.location), "-token-url", rowTokenURL(t))
 			if err == nil {
 				t.Fatal("cloudsql-cpu succeeded against a server that answers a redirect")
 			}
-			redacttest.RequireNoPiece(t, "loadtest.cloudsql-redirect/"+c.name, err.Error(), cloudsqlTestToken)
-			if strings.Contains(err.Error(), "moved") {
-				t.Errorf("cloudsql-cpu's error names the Location: %q", err)
-			}
+			requireNoLocation(t, "loadtest.cloudsql-redirect/"+c.name, err.Error())
 		})
 	}
 	t.Run("followed", func(t *testing.T) {
