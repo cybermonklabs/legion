@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A role-routed Dispatch event that the outbox kept for a role no session held is no longer lost
+  in silence when its copy's hour ends. The listener that drops such a copy stores an expiry
+  notice on `notifications.envoy.kept.expired.<role>` and counts it on
+  `envoy_role_kept_expiry_notices_total`. Dispatch's outbox reads the notices and keeps the event
+  again, up to three keeps in all, or forwards it to a session that holds the role by then. After
+  the third keep ends, the outbox appends a `role.undelivered` event on the event's issue,
+  document or project. Once an hour for each role, it also posts one message on the issue, or on
+  the document's issue, that names every event the role did not take. A role forward that the
+  stream stored after its resolution's fence and acknowledgement window no longer counts as
+  delivered: the event stays pending and goes to the role's holder at the next read. Migration
+  `20261124134448` adds three tables and changes nothing that exists.
+time: 2026-11-24T20:14:23.365119246Z
+custom:
+    Issue: pr5402
