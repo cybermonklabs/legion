@@ -3285,7 +3285,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// internal/projection may not read. It is read through tx like every other durable fact
 	// here, so the body is still one snapshot, and it is what the state serves as
 	// `strandedClaims` below.
-	resumes, err := strandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
+	resumes, err := workflow.StrandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

@@ -14,7 +14,6 @@
       "!!packages/contracts/fixtures/live",
       "!!packages/dispatch/e2e/__recordings__",
       "!!packages/daemon/internal/runtime/sandbox/testdata/golden",
-      "!!packages/daemon/internal/projection/testdata",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
@@ -41,6 +40,7 @@
       "!packages/contracts/fixtures/capability-redaction-plugin-report.json",
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
+      "!packages/daemon/internal/api/testdata/populated-state.json",
       "!packages/envoy/going/testdata/filtered-answers.json"
     ]
   },

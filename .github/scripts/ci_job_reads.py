@@ -577,10 +577,10 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
+    f"{DAEMON}/internal/api/composed_state_test.go": reads(
+        (f"{FIX}/daemon-api/*", "internal/api/composed_state_test.go:65 testgolden.Check reads each composed fixture (paths from api.GoldenPath at :57-61)")),
     f"{DAEMON}/internal/api/state_golden_test.go": reads(
-        (f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:686 (path from goldenPath at :39)"),
-        (f"{DAEMON}/internal/projection/testdata/populated-state.json",
-         "internal/api/state_golden_test.go:237 reads the projected state internal/projection writes (projectedStatePath, :231)")),
+        (f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:447 and :454 (testgolden.Check, path from goldenPath at :39)")),
     f"{DAEMON}/internal/appauth/deployment_doc_test.go": reads(("docs/deployment.md", "internal/appauth/deployment_doc_test.go:30 (path from deploymentDoc at :20)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
@@ -626,7 +626,7 @@ RULES = {
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
-    f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:218 (goldenAt, path from golden at :197)")),
+    f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:195 (testgolden.Check)")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:762-763")),

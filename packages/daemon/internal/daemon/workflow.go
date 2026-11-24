@@ -718,6 +718,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
+	// The admission stamps and measures on the same one clock as the engine above, so the
+	// architect-stalled arms the state serves are judged at the state's own instant.
+	w.admission.UseClock(clock)
 	// The project's declared experiments decide what each unit admission records is drawn for.
 	// A project whose file writes neither the `memory` block nor an `experiments` key declares
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no

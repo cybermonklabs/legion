@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -188,57 +189,9 @@ func sandboxLocator(token claim.Token, sandbox, podUID string, generation uint64
 // golden pins the state document Project's caller serves: Go writes it (`-update`), and
 // `packages/contracts/src/legion-api.test.ts` parses it through the schema the plugin reads the
 // state with and holds the parse equal to the file. A fixture that differs from what Go now
-// writes is stale. It is internal/api's golden helper with this package's command in its message:
-// the daemon-api fixtures are written from two packages, so a state-shape change takes both
-// `-update` runs whether or not the helper is shared. Once a third package writes one, the
-// helper moves into an internal/testgolden package.
+// writes is stale (testgolden.Check).
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	goldenAt(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value)
-}
-
-// goldenAt is golden for the file at path: Go writes value there with `-update`, and the test
-// fails where the file differs from it, naming the first line that differs.
-func goldenAt(t *testing.T, path string, value any) {
-	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", path, err)
-	}
-	encoded = append(encoded, '\n')
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create the directory of %s: %v", path, err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/projection/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		line, held, written := firstDifference(want, encoded)
-		t.Fatalf("%s is stale (run `go test ./internal/projection/ -update`): line %d of the file holds %q, and Go writes %q", path, line, held, written)
-	}
-}
-
-// firstDifference is the first line, counted from 1, at which the file's bytes held and the
-// bytes Go writes differ, with that line of each ("" past the end of one of them).
-func firstDifference(held, written []byte) (int, string, string) {
-	heldLines, writtenLines := bytes.Split(held, []byte("\n")), bytes.Split(written, []byte("\n"))
-	for i := 0; ; i++ {
-		var h, w []byte
-		if i < len(heldLines) {
-			h = heldLines[i]
-		}
-		if i < len(writtenLines) {
-			w = writtenLines[i]
-		}
-		if !bytes.Equal(h, w) || i >= len(heldLines) || i >= len(writtenLines) {
-			return i + 1, string(h), string(w)
-		}
-	}
+	testgolden.Check(t, filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name), value, *updateGolden,
+		"go test ./internal/projection/ -run Golden -update")
 }

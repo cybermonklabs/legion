@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -28,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testgolden"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -57,7 +57,7 @@ bind: 0.0.0.0
 advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
-admission_cap: 4
+admission_cap: 5
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
@@ -119,6 +119,7 @@ controller: daemon
 worker_backends: {tester: omp}
 repository_renames:
   - {from: acme/widgets-legacy, to: acme/widgets}
+  - {from: sjawhar/legion, to: cybermonklabs/legion}
 capabilities:
   decided:
     pool-capacity: "the pool is sized by hand for the admission cap"
@@ -187,8 +188,8 @@ runtime:
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a
-// default, which is what the Stage 3 and operator-claim goldens and the defaults test show.
-const minimalSettingsFile = `project: DEMO
+// default, which is what the Stage 3 and operator-claim fixtures and the defaults test show.
+const minimalSettingsFile = `project: LEGION
 postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
 `
@@ -220,161 +221,35 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 	return loadSettingsFile(t, minimalSettingsFile)
 }
 
-// projectedStatePath is the projected part of the populated state: what internal/projection's
-// Project serves over a seeded record, with the stranded claims and the architect-stalled arms
-// internal/daemon's source.State puts on it from the same snapshot. internal/projection's
-// TestThePopulatedStateIsTheProjectionOfItsSeed writes it (`go test ./internal/projection/
-// -update`) and fails where it differs from that projection, so every issue view, the admission
-// block, the waiting wakes, the held outbox rows and the stranded claims of state.json are a
-// state the daemon serves, and a hand-written value no record can produce cannot reach the
-// fixture.
-var projectedStatePath = filepath.Join("..", "projection", "testdata", "populated-state.json")
+// composedStatePath is the populated state as the daemon composes it over a seeded record:
+// composed_state_test.go's TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds writes it
+// (`-update`) and fails where it differs from that composition. Every fixture this package writes
+// from the populated state reads it from here.
+const composedStatePath = "testdata/populated-state.json"
 
-// projectedState is the file at projectedStatePath as the state it holds, held to read back byte
-// for byte as it was written, so no field of it is lost or changed on the way into this package.
-func projectedState(t *testing.T) State {
+// composedStateRewrite is the two commands that write the populated state and every fixture read
+// from it, in the order they must run: the composition, then this package's goldens. The first
+// test's name holds no `Golden`, so the second command does not run it.
+const composedStateRewrite = "go test ./internal/api/ -run '^TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds$' -update, " +
+	"then go test ./internal/api/ -run Golden -update"
+
+// populatedState is the composed populated state, held to read back byte for byte as it was
+// written, so no field of it is lost or changed on the way into this package's tests.
+func populatedState(t *testing.T) State {
 	t.Helper()
-	written, err := os.ReadFile(projectedStatePath)
+	written, err := os.ReadFile(composedStatePath)
 	if err != nil {
-		t.Fatalf("read the projected state (run `go test ./internal/projection/ -update`): %v", err)
+		t.Fatalf("read the composed populated state (run %s): %v", composedStateRewrite, err)
 	}
 	var state State
 	if err := json.Unmarshal(written, &state); err != nil {
-		t.Fatalf("decode %s: %v", projectedStatePath, err)
+		t.Fatalf("decode %s (run %s): %v", composedStatePath, composedStateRewrite, err)
 	}
-	again, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		t.Fatalf("encode the projected state again: %v", err)
+	if again := testgolden.Encode(t, composedStatePath, state); !bytes.Equal(again, written) {
+		line, held, read := testgolden.FirstDifference(written, again)
+		t.Fatalf("%s does not read back as it was written (run %s): line %d holds %q, and the state read from it writes %q",
+			composedStatePath, composedStateRewrite, line, held, read)
 	}
-	if again = append(again, '\n'); !bytes.Equal(again, written) {
-		line, held, read := firstDifference(written, again)
-		t.Fatalf("%s does not read back as it was written: line %d holds %q, and the state read from it writes %q", projectedStatePath, line, held, read)
-	}
-	return state
-}
-
-// populatedState carries every optional the state shape has, so the fixture pins the full shape
-// rather than Stage 1's empty record. What the projection serves is the projected state above;
-// the rest is what internal/daemon's source.State puts beside it from the deployment and the
-// store: the daemon's boots, the cap, the count of claims to refresh, the pause, the controller,
-// the secrets login, the capabilities, the repositories, the settings, the consumers and the
-// lowest plugin contract.
-func populatedState(t *testing.T) State {
-	t.Helper()
-	state := projectedState(t)
-	// When the controller paused the project, nine minutes before the state was read.
-	pausedSince := time.Date(2026, 9, 22, 9, 9, 0, 0, time.UTC)
-	state.Daemon = DaemonInfo{
-		Project:       "legion",
-		SchemaVersion: 1,
-		Boots:         4,
-		FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
-		StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
-	}
-	// The cap is the deployment's, and the five issues the daemon has started fill it.
-	state.Admission.Cap = 5
-	// Four claims are still on an earlier plugin, the one whose refresh wake waits in
-	// `wakesWaiting` among them: the count is everything the lane has left to do and the wakes are
-	// the share of it the pacing is holding now, which is the pair a reader of a running wave needs
-	// (contract 73).
-	state.ClaimsToRefresh = 4
-	// The controller paused the project nine minutes before this read (decision 25 of
-	// dispatch://INFRA-3759), built through pausedViewOf from the store's own rows as the state's
-	// read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the pause found
-	// it in, so the pause waits on its stop. Two rows are held for the pause: the start of
-	// LEGION-211's released implementer that a wake queued, which names its claim, and a notice for
-	// LEGION-209's architect, which names none (the tree walk routes a notice at run time), so it
-	// carries no `claim`.
-	state.Paused = pausedViewOf(store.Pause{
-		ID: 7, Project: "LEGION", Since: pausedSince, Reason: "the model provider is refusing every turn",
-		By: store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
-	}, []store.PauseStop{{
-		ID: 31, Pause: 7, Claim: "legion-legion-legion-208-implementer", Issue: "LEGION-208",
-		Role: claim.RoleImplementer, AskedAt: pausedSince,
-	}}, []record.PauseHeldRow{
-		{OutboxRow: record.OutboxRow{ID: 811, Kind: record.OutboxKindSupervise, Issue: "LEGION-211"},
-			Claim: "legion-legion-legion-211-implementer", WaitedSeconds: 412},
-		{OutboxRow: record.OutboxRow{ID: 814, Kind: record.OutboxKindNotice, Issue: "LEGION-209"}, WaitedSeconds: 95},
-	})
-	state.ControllerLocator = &ControllerLocator{
-		Runtime:      "kubernetes",
-		External:     true,
-		SessionID:    "ses_controller",
-		RegisteredAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
-	}
-	state.AgentSecretsLogin = &AgentSecretsLoginView{State: "issued"}
-	// A kubernetes deployment whose image passed the probe, with the broker gap decided and one
-	// role unreserved, and no session's report yet, so the fixture carries a decided row and an
-	// open row beside the present, unchecked and withheld ones, rendered by the report itself: a
-	// wording change there rewrites the fixture rather than leaving the pinned words stale. Its one
-	// repository cache, acme/widgets' (Ready and read, as `repositories` below says), last answered
-	// its health with a repack that failed for lack of space, so the repository-cache-room row is
-	// open too, with the third source, `caches`, which a caller below cachesSourceContract is
-	// served without.
-	state.Capabilities = CapabilityStatesOf(capabilities.Deployment{
-		Runtime: "kubernetes", Probed: true, ModelFallback: "on",
-		Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
-		UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
-		Caches: []capabilities.Cache{{
-			Repo: "acme/widgets", Claim: "cache-legion-legion-cache-acme-widgets-d782c874", Read: true, Reported: true,
-			VolumeBytes: 20 << 30, AvailableBytes: 107374182, Bytes: 6612345678,
-			RepackOutOfSpaceAt: time.Date(2026, 10, 16, 2, 15, 33, 0, time.UTC),
-		}},
-	}.Report())
-	// Five repositories the live records name, of three owners, sorted by name, each showing an
-	// answer the block carries: acme/gadgets, the review App not installed on it, which GitHub
-	// answered of both Apps; acme/widgets, both role Apps installed, its cache Ready and its last
-	// health read answered; sjawhar/legion, which the records keep under its name before a
-	// configured transfer and the rename rule serves as cybermonklabs/legion, both Apps installed
-	// there; zeta/archive, whose implement App read GitHub did not answer, so it carries why and no
-	// answer of the Apps at all; and zeta/tools, both Apps installed and its cache failing, which
-	// withoutWebhookApp names as Dispatch's GitHub App not installed on it, served all the same.
-	// acme/legacy, which no live record names any more, keeps its cache until its retention ends.
-	state.Repositories = RepositoriesView{
-		Live: []LiveRepositoryView{
-			{Repo: "acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
-			{Repo: "acme/widgets", Apps: &AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
-				Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
-				Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992", LastFetchAt: time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC), Bytes: 6612345678,
-			}},
-			{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", Apps: &AppInstallationsView{Implement: true, Review: true}},
-			{Repo: "zeta/archive", ReadError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
-			{
-				Repo: "zeta/tools", Apps: &AppInstallationsView{Implement: true, Review: true},
-				Cache: &CacheView{
-					Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
-					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-				},
-			},
-		},
-		WithoutWebhookApp: []WebhookAppGapView{{
-			Repo:   "zeta/tools",
-			Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
-		}},
-		Caches: []CacheView{{
-			Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
-		}},
-	}
-	// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
-	state.Settings = SettingsOf(settingsFixtureConfig(t))
-	// The three durable consumers the daemon opens, in the order Lag answers them
-	// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
-	// messages waiting and has handled none for over a minute; the listener-wake consumer's info
-	// read ran out of the bound.
-	state.Consumers = ConsumerLagViewsOf([]intake.ConsumerLag{
-		{Name: "legion-go-LEGION-dispatch", LastHandledAt: time.Date(2026, 9, 22, 9, 17, 50, 0, time.UTC)},
-		{
-			Name: "legion-go-LEGION-github", Waiting: 412, OldestAt: time.Date(2026, 9, 22, 9, 5, 34, 0, time.UTC), OldestAge: 754 * time.Second,
-			LastHandledAt: time.Date(2026, 9, 22, 9, 16, 41, 0, time.UTC), Stalled: true,
-		},
-		{Name: "legion-go-LEGION-wake", Unavailable: "read the consumer's info: context deadline exceeded"},
-	})
-	// The oldest plugin any pod of the fixture's project runs, which the state route reads from the
-	// claims of its own snapshot (api's lowestPluginContract). The floor is the reading this change
-	// records of the fleet, and the fixture carries a value so that the golden and every walk over
-	// it see the field.
-	lowest := ServingFloor
-	state.LowestPluginContract = &lowest
 	return state
 }
 
@@ -385,7 +260,7 @@ func populatedState(t *testing.T) State {
 func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
-	golden(t, "state.json", state)
+	stateGolden(t, "state.json", state)
 }
 
 // The state route's body for a caller whose plugin is at the contract before
@@ -405,14 +280,14 @@ func TestStateGolden(t *testing.T) {
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
-	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
+	stateGolden(t, "state-narrowed-repositories.json", json.RawMessage(body))
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`
 // the whole-project body holds under `issues.LEGION-208`, which a test of the route holds the
 // two to, field for field.
 func TestIssueRecordGolden(t *testing.T) {
-	golden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
+	stateGolden(t, "issue-record.json", populatedState(t).Issues[recordGoldenIssue])
 }
 
 // What `GET /healthz` answers: that the daemon is serving, and the project it serves.
@@ -448,83 +323,6 @@ func TestNoSessionFacingBodyCarriesSuspendedBy(t *testing.T) {
 	}
 }
 
-func TestStateStage3Golden(t *testing.T) {
-	golden(t, "state-stage3.json", State{
-		Daemon: DaemonInfo{
-			Project:       "LEGION",
-			SchemaVersion: 3,
-			Boots:         5,
-			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
-			StartedAt:     time.Date(2026, 9, 22, 17, 30, 0, 0, time.UTC),
-		},
-		Admission: Admission{
-			Cap: 2, Active: []string{"LEGION-208"}, Waiting: []string{"LEGION-209"},
-			Trees: []string{"LEGION-208"},
-		},
-		Issues: map[string]Issue{
-			"LEGION-208": {
-				Key:           "LEGION-208",
-				Generation:    4,
-				Phase:         phase.Reviewing,
-				Status:        "needs_review",
-				Tree:          "LEGION-208",
-				Repo:          "sjawhar/legion-smoke",
-				DefaultBranch: "main",
-				Workers:       map[claim.Role]PhaseView{},
-			},
-		},
-		PendingStatusWrites: []PendingStatusWrite{{
-			Issue:     "LEGION-208",
-			Payload:   json.RawMessage(`{"status":"needs_review"}`),
-			Attempts:  2,
-			NextAt:    time.Date(2026, 9, 22, 17, 32, 0, 0, time.UTC),
-			LastError: "Dispatch unavailable",
-		}},
-		Settings: SettingsOf(minimalSettingsConfig(t)),
-	})
-}
-
-// An operator's claim on an issue the workflow does not record is listed for the claim's sake,
-// and says so rather than leaving its phase and status empty: an empty phase is no value of the
-// phase enum, so it refuses the whole document, over a row that is a legitimate state.
-// internal/projection's own test holds the producer to these values.
-func TestStateOperatorClaimGolden(t *testing.T) {
-	golden(t, "state-operator-claim.json", State{
-		Daemon: DaemonInfo{
-			Project:       "AC91849371",
-			SchemaVersion: 3,
-			Boots:         1,
-			FirstBootAt:   time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
-			StartedAt:     time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC),
-		},
-		Admission: Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
-		Issues: map[string]Issue{
-			"AC91849371-900": {
-				Key:     "AC91849371-900",
-				Phase:   Unrecorded,
-				Status:  string(Unrecorded),
-				Workers: map[claim.Role]PhaseView{},
-				Architect: &ClaimView{
-					Session: "01a0d71d-aace-7448-a0d4-e401d736438f",
-					State:   "idle",
-					Locator: &runtime.Locator{
-						Runtime:     "tmux",
-						Claim:       "legion-ac91849371-ac91849371-900-architect",
-						Incarnation: "1618075:268131172",
-						Tmux:        &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
-					},
-					// No round is open over an operator's spawn either: every claim view names
-					// one of the four states, and the projection writes this one for a claim no
-					// round has reached.
-					UpdateState: UpdateStateNone,
-				},
-			},
-		},
-		PendingStatusWrites: []PendingStatusWrite{},
-		Settings:            SettingsOf(minimalSettingsConfig(t)),
-	})
-}
-
 // goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
 var (
 	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
@@ -540,27 +338,6 @@ func goldenPause(ended bool) store.Pause {
 		p.EndedAt, p.EndedBy = goldenPauseEnded, store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
 	}
 	return p
-}
-
-// While the project runs after a pause has ended, the state names that pause and who ended it
-// (`lastPause`, decision 25 of dispatch://INFRA-3759) and carries no `paused`; populatedState
-// carries the other key, the pause that stands. A state carries one of the two at most, so each has
-// a state of its own, built as the state's read builds it (pauseViewOf).
-func TestStateLastPauseGolden(t *testing.T) {
-	last := pauseViewOf(goldenPause(true))
-	golden(t, "state-last-pause.json", State{
-		Daemon: DaemonInfo{
-			Project:       "LEGION",
-			SchemaVersion: 3,
-			Boots:         5,
-			FirstBootAt:   time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC),
-			StartedAt:     time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC),
-		},
-		Admission:           Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
-		PendingStatusWrites: []PendingStatusWrite{},
-		LastPause:           &last,
-		Settings:            SettingsOf(minimalSettingsConfig(t)),
-	})
 }
 
 // stubPauses is a pause service that answers what a golden asks of it: the pause routes are held
@@ -663,52 +440,18 @@ func TestPauseRouteGoldens(t *testing.T) {
 
 // golden pins one response's wire shape: Go writes it (`-update`), and
 // `packages/contracts/src/legion-api.test.ts` parses it through the schema of the response it is
-// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale.
+// and holds the parse equal to the file. A fixture that differs from what Go now writes is stale
+// (testgolden.Check).
 func golden(t *testing.T, name string, value any) {
 	t.Helper()
-	encoded, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal %s: %v", name, err)
-	}
-	encoded = append(encoded, '\n')
-
-	path := goldenPath(name)
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create fixture directory: %v", err)
-		}
-		if err := os.WriteFile(path, encoded, 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		return
-	}
-
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read golden (run `go test ./internal/api/ -update`): %v", err)
-	}
-	if !bytes.Equal(encoded, want) {
-		line, held, written := firstDifference(want, encoded)
-		t.Fatalf("%s is stale (run `go test ./internal/api/ -update`): line %d of the file holds %q, and Go writes %q", name, line, held, written)
-	}
+	testgolden.Check(t, goldenPath(name), value, *updateGolden, "go test ./internal/api/ -run Golden -update")
 }
 
-// firstDifference is the first line, counted from 1, at which the file's bytes held and the
-// bytes Go writes differ, with that line of each ("" past the end of one of them).
-func firstDifference(held, written []byte) (int, string, string) {
-	heldLines, writtenLines := bytes.Split(held, []byte("\n")), bytes.Split(written, []byte("\n"))
-	for i := 0; ; i++ {
-		var h, w []byte
-		if i < len(heldLines) {
-			h = heldLines[i]
-		}
-		if i < len(writtenLines) {
-			w = writtenLines[i]
-		}
-		if !bytes.Equal(h, w) || i >= len(heldLines) || i >= len(writtenLines) {
-			return i + 1, string(h), string(w)
-		}
-	}
+// stateGolden is golden for a fixture written from the populated state, whose failure names the
+// two commands that write the state and the fixture, in order (composedStateRewrite).
+func stateGolden(t *testing.T, name string, value any) {
+	t.Helper()
+	testgolden.Check(t, goldenPath(name), value, *updateGolden, composedStateRewrite)
 }
 
 // The register response is what the plugin reads its claim, its secret and the task agents its
