@@ -644,11 +644,11 @@ func (c *cache) publishLocked(ctx context.Context, fetched time.Time) error {
 // walk calls visit, in lexical order, for every regular file and directory of the clone the tar
 // streams, with its slash-separated path relative to the clone: the clone's history and refs
 // (workspace.FeedEntry), nothing of its own configuration, and no temporary or lock file git is
-// writing.
+// writing. A directory it cannot list fails it with no path named (unpathed).
 func (c *cache) walk(visit func(name string, entry fs.DirEntry, info fs.FileInfo) error) error {
 	return filepath.WalkDir(c.dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return unpathed(err)
 		}
 		if path == c.dir {
 			return nil
@@ -746,7 +746,7 @@ func (c *cache) serveTar(w http.ResponseWriter, r *http.Request) {
 	defer closeEntries(entries)
 	w.Header().Set("Content-Type", "application/x-tar")
 	archive := tar.NewWriter(w)
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if err = archive.WriteHeader(entry.header); err != nil {
 			break
 		}
@@ -757,7 +757,7 @@ func (c *cache) serveTar(w http.ResponseWriter, r *http.Request) {
 			_, err = archive.Write(entry.body)
 		}
 		if err != nil {
-			err = fmt.Errorf("stream %s: %w", entry.header.Name, err)
+			err = fmt.Errorf("stream entry %d of %d, %s: %w", i+1, len(entries), entry.kind(), unpathed(err))
 			break
 		}
 	}
@@ -773,11 +773,25 @@ func (c *cache) serveTar(w http.ResponseWriter, r *http.Request) {
 }
 
 // tarEntry is one entry of a snapshot of the clone: its tar header, and for a file either its bytes
-// (HEAD, packed-refs and the refs) or, for a pack, the pack opened.
+// (HEAD, packed-refs and the refs) or, for a pack, the pack opened. Its name is the clone's path,
+// which under refs/ is a branch GitHub named, or whatever answered the cache's fetch in GitHub's
+// place, which holds the provisioning token the fetch carried: a failure names an entry by its
+// place in the stream and its kind alone.
 type tarEntry struct {
 	header *tar.Header
 	body   []byte
 	file   *os.File
+}
+
+// kind names the kind of the entry, as a failure of the stream names it.
+func (e tarEntry) kind() string {
+	switch {
+	case e.header.Typeflag == tar.TypeDir:
+		return "a directory"
+	case e.file != nil:
+		return "a pack file"
+	}
+	return "a ref file"
 }
 
 // snapshot takes, under the read lock, everything one tar stream sends (walk): each entry's header,
@@ -843,7 +857,7 @@ func (c *cache) snapshotOnce() ([]tarEntry, error) {
 			taken[path] = true
 		default:
 			if one.body, err = os.ReadFile(path); err != nil {
-				return err
+				return unpathed(err)
 			}
 			header.Size = int64(len(one.body))
 		}
@@ -905,4 +919,14 @@ func pathExists(path string) (bool, error) {
 // oneLine is err's text on one line, its lines joined by " | ", as the fetch logs a retried failure.
 func oneLine(err error) string {
 	return strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " | ")
+}
+
+// unpathed is err, a file call's failure, as its operation and the system's reason alone, never
+// its path, which in the clone can be a ref's (tarEntry). It unwraps to that reason, so a full
+// volume or a missing file still reads as one.
+func unpathed(err error) error {
+	if onPath := (*fs.PathError)(nil); errors.As(err, &onPath) {
+		return fmt.Errorf("%s: %w", onPath.Op, onPath.Err)
+	}
+	return err
 }
