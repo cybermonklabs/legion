@@ -3569,7 +3569,7 @@ package api
 // (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
 // #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
 // 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
-// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (the entry above,
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
 // over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
 // each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
 // 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
@@ -3580,9 +3580,9 @@ package api
 // 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
 // #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
 // open pull request declares.
-// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (the entry above),
-// and a reading of the open heads that change this file, between 2026-11-24T12:30:11Z and
-// 12:32:24Z, found 246 declared by this change alone (245 by #5158, 251 by #5307), so this entry
-// kept 246. Read the base's own number and every open pull request again at every forward merge
-// rather than from this line.)
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 246
