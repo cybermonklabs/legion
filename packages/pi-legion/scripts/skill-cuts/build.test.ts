@@ -5492,6 +5492,189 @@ test("build-cases --written passes over, before asking the written-case reader, 
   expect(existsSync(named)).toBe(false);
 }, 120_000);
 
+/** The arguments of a written build into `name` over the configuration `configFile`, whose seeded
+ *  order of the store_a sessions at `files` puts `files[0]` first. */
+function writtenInOrder(
+  configFile: string,
+  name: string,
+  files: readonly string[],
+  ...extra: string[]
+): string[] {
+  const candidates = files.map((file) => ({ store: "store_a", hash: fileHash(file), path: file }));
+  const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
+    (each) => blindOrder(candidates, each)[0]?.item.path === files[0]
+  );
+  expect(seed).toBeDefined();
+  const sessions = path.join(setupDir, `${name}-sessions.jsonl`);
+  writeFileSync(sessions, candidates.map((each) => `${JSON.stringify(each)}\n`).join(""));
+  const args = writtenArgs(
+    path.join(scratch, name, "cases.jsonl"),
+    "--sessions",
+    sessions,
+    "--seed",
+    seed ?? "",
+    ...extra
+  );
+  args[args.indexOf("--config") + 1] = configFile;
+  return args;
+}
+
+/** The first message of the two context sessions below, which no reader's request holds when the
+ *  build passed them over before asking. */
+const MISSES_REQUEST = "Write the alpha notes of the listing-misses session.";
+/** A session on a served model and one on a model no route serves, each F1 as the good and the
+ *  not-served sessions have it, whose subagent Helper records a listing that holds alpha, beta and
+ *  ghost: the rebuilt profile lists alpha, beta and older, so it misses 1 of the 3 recorded names. */
+const MISSES_SERVED = "/sessions/listing-misses.jsonl";
+const MISSES_UNSERVED = "/sessions/listing-misses-unserved.jsonl";
+
+/** The path of a stand-in store that holds MISSES_SERVED and MISSES_UNSERVED besides the suite's
+ *  sessions. */
+function listingMissesStore(): string {
+  const ghostHelper = sessionText("subagent").replace(
+    "- beta: Use for the beta greeting.\\n",
+    "- beta: Use for the beta greeting.\\n- ghost: Use for work no repository lists.\\n"
+  );
+  return changedStore("written-listing-misses", (files) => {
+    const held = files.store_a ?? {};
+    held[MISSES_SERVED] = sessionText("good", (lines) => setText(lines, 0, () => MISSES_REQUEST));
+    held[MISSES_UNSERVED] = sessionText("not-served", (lines) => {
+      SESSIONS["not-served"]?.change?.(lines);
+      setText(lines, 0, () => MISSES_REQUEST);
+    });
+    for (const file of [MISSES_SERVED, MISSES_UNSERVED]) {
+      held[`${file.slice(0, -".jsonl".length)}/Helper.jsonl`] = ghostHelper;
+    }
+  });
+}
+
+/** Why the screen's rule (score.ts's listingStanding) drops a session whose rebuilt listing
+ *  misses ghost of the 3 names its Helper recorded. */
+const MISSES_WHY =
+  "listing-misses: its rebuilt listing misses 1 of the 3 names of the recorded subagent listing (33.3%), more than 10%: ghost";
+
+// Catches: a written build that takes a context session whose cases the screen drops for the
+// listing (the defect: a build took a session whose rebuilt listing missed 64 of its 204 recorded
+// names, and all 11 written cases dropped at the screen as listing-misses, after the readers'
+// spend on their tasks).
+test("build-cases --written passes over, before asking the written-case reader, a context session whose rebuilt listing misses more than 10% of its recorded names as listing-misses, takes the next one, and refuses a --context-session of it", async () => {
+  const store = listingMissesStore();
+  const goodFile = sessionPath("good");
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(
+    await main(
+      writtenInOrder(store, "written-listing-misses", [MISSES_SERVED, goodFile]),
+      io(printed)
+    )
+  ).toBe(EXIT.ok);
+  const out = path.join(scratch, "written-listing-misses", "cases.jsonl");
+  const summary = summaryOf<WrittenSummary>(out);
+  const hash = fileHash(MISSES_SERVED);
+  expect(summary.contextSession.hash).toBe(fileHash(goodFile));
+  expect(summary.contextSession.how).toContain("place 2 of 2");
+  expect(summary.contextSession.passed).toEqual([{ store: "store_a", hash, why: MISSES_WHY }]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${hash}: passed over (${MISSES_WHY})\n`
+  );
+  // No request holds the passed-over session's first message: the written-case reader was asked
+  // of the chosen session alone.
+  const sent = recorder.requests.slice(from);
+  expect(sent.some((request) => request.body.includes(MISSES_REQUEST))).toBe(false);
+  expect(usersOf(sent, WRITTEN_PROMPT)).toHaveLength(1);
+  expect(loadCases(out, old).length).toBeGreaterThan(0);
+  // A --context-session of it is refused (exit 1), naming why, before any reader call.
+  const refused: string[] = [];
+  const named = writtenArgs(
+    path.join(scratch, "written-listing-misses-named", "cases.jsonl"),
+    "--context-session",
+    `store_a:${hash}`
+  );
+  named[named.indexOf("--config") + 1] = store;
+  const before = recorder.requests.length;
+  expect(await main(named, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("")).toContain(`--context-session store_a:${hash}: ${MISSES_WHY}`);
+  expect(recorder.requests.length).toBe(before);
+  expect(existsSync(named[named.indexOf("--out") + 1] ?? "")).toBe(false);
+});
+
+test("build-cases --written passes over as listing-misses, in its second pass, a context session on a model the gateway does not serve whose rebuilt listing misses more than 10% of its recorded names, before asking the written-case reader, and takes the next one", async () => {
+  const store = listingMissesStore();
+  const models = path.join(setupDir, "written-listing-misses-models.json");
+  writeFileSync(
+    models,
+    JSON.stringify({
+      sessions: 1,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", served: true, sessions: 1, anthropic: true },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 0,
+      served: 1,
+      withModel: 1,
+    })
+  );
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  // Both sessions are on a model no route serves, so the build asks neither in its first pass.
+  expect(
+    await main(
+      writtenInOrder(
+        store,
+        "written-listing-misses-unserved",
+        [MISSES_UNSERVED, sessionPath("not-served")],
+        "--reading-models",
+        models
+      ),
+      io(printed)
+    )
+  ).toBe(EXIT.ok);
+  const out = path.join(scratch, "written-listing-misses-unserved", "cases.jsonl");
+  const summary = summaryOf<WrittenSummary>(out);
+  const hash = fileHash(MISSES_UNSERVED);
+  expect(summary.contextSession.hash).toBe(fileHash(sessionPath("not-served")));
+  expect(summary.contextSession.how).toContain("no reading session on a served model");
+  expect(summary.contextSession.passed).toEqual([{ store: "store_a", hash, why: MISSES_WHY }]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${hash}: passed over (${MISSES_WHY})\n`
+  );
+  const sent = recorder.requests.slice(from);
+  expect(sent.some((request) => request.body.includes(MISSES_REQUEST))).toBe(false);
+  expect(usersOf(sent, WRITTEN_PROMPT)).toHaveLength(1);
+  expect(loadCases(out, old).length).toBeGreaterThan(0);
+});
+
+test("build-cases --written takes, as before, a context session whose rebuilt listing misses none of its recorded names, or that is not measurable, and its cases carry that measure", async () => {
+  // good's Helper records alpha and beta, which its profile lists; openai has no subagent in the
+  // store, so its listing is not measurable, and the screen drops no case for it.
+  const rows = [
+    { name: "good", kind: "subagent listing", recorded: 2 },
+    { name: "openai", kind: "not measurable", recorded: null },
+  ] as const;
+  for (const row of rows) {
+    const other = sessionPath(row.name === "good" ? "openai" : "good");
+    const printed: string[] = [];
+    const name = `written-listing-taken-${row.name}`;
+    expect(
+      await main(writtenInOrder(config, name, [sessionPath(row.name), other]), io(printed))
+    ).toBe(EXIT.ok);
+    const out = path.join(scratch, name, "cases.jsonl");
+    const summary = summaryOf<WrittenSummary>(out);
+    expect(summary.contextSession.hash).toBe(fileHash(sessionPath(row.name)));
+    expect(summary.contextSession.how).toContain("place 1 of 2");
+    expect(summary.contextSession.passed).toEqual([]);
+    expect(printed.join("")).not.toContain("passed over");
+    const cases = loadCases(out, old);
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      const item = c.evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
+      const measure = ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
+      expect(measure).toMatchObject({ kind: row.kind, recorded: row.recorded, missing: [] });
+    }
+  }
+});
+
 test("the context session is the first served reading session whose rebuilt profile lists the skill", async () => {
   // not-served runs on a model no route serves; other-copy read acme/other's alpha, so its profile
   // installs no alpha of the cut's repository; good and openai are on served models, and list it.

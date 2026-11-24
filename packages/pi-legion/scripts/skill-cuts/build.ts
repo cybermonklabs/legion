@@ -435,7 +435,10 @@
  * repository) is passed over as `no-checkout`, since its cases' runs could answer no read-only
  * call; one whose recorded system prompt, role's prompt or first user message names by an
  * absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
- * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`, both
+ * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`; one
+ * whose listing measure (the one its cases would carry: `contextMeasure`) the screen's rule drops
+ * (score.ts's `listingStanding`: its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT
+ * of its recorded names, none when the measure says not measurable) as `listing-misses`, all three
  * before the reader is asked; one whose work the reader finds is on the skill's own text as
  * `skill-as-material`; and one for which the reader's every reply, on each try, stopped at the
  * model's refusal (the model refuses that session's material; any other failure of the reader
@@ -771,7 +774,7 @@ import {
   writtenAnswerSchema,
 } from "./readers";
 import { isObject } from "./replay";
-import { LISTING_MEASURE_ITEM } from "./score";
+import { LISTING_MEASURE_ITEM, listingStanding } from "./score";
 
 /** Exit statuses: `stopped` at `--budget-usd` or by the memory stop (`BuildPeak`), `stoppedByCost`
  *  by the stop rule (`stopBy`). */
@@ -893,6 +896,8 @@ export const DROP_REASONS = {
     "in build-cases --written, the build knows no checkout of the context session's working directory: its header names none, its profile names no session repository, or the directory is not at the profile's path in the checkout; a written case's run answers its read-only calls from that checkout alone, so the session is passed over",
   "reader-refused":
     "in build-cases --written, the written-case reader's every reply for the context session, on each try, stopped at the model's refusal: the model refuses that session's material, so the session is passed over",
+  "listing-misses":
+    "in build-cases --written, the listing measure the context session's cases would carry (score.ts's listingStanding, the screen's own rule) finds that its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names of the recorded listing it is set against, so the screen would drop every case built on the session; the session is passed over before any reader call",
   "no-common-line":
     "the session's own successful reads of the skill's files hold no whole line of the base text, so the case reader has no line to offer",
   "step-not-after-read": "the case reader's step is at or before the skill's read",
@@ -7961,6 +7966,25 @@ function outsideMaterial(made: WrittenContext): string | undefined {
   return undefined;
 }
 
+/** The listing measure (score.ts's LISTING_MEASURE_ITEM) every written case of the context session
+ *  `made` carries: a top-level session's against the earliest subagent of it spawned under the
+ *  build its profile is read at, read from the store (subagents.sql); a failed read leaves it not
+ *  measurable, with why. */
+async function contextMeasure(run: CaseRun, made: WrittenContext): Promise<Evidence> {
+  const { listing } = made;
+  const between = betweenOf(listing);
+  if (between === undefined) return listingMeasure(listing, unasked(listing));
+  const hash = pathHash(made.filePath);
+  try {
+    const found = await subagentListings(run.config.psqlCommand, made.store.name, [
+      { hash, ...between },
+    ]);
+    return listingMeasure(listing, { found: found.get(betweenKey(hash, between)) });
+  } catch (error) {
+    return listingMeasure(listing, { unread: `subagents.sql failed: ${messageFor(error)}` });
+  }
+}
+
 /** A session passed over as the context of written cases, and why. */
 interface PassedSession {
   readonly store: string;
@@ -7974,6 +7998,8 @@ interface ChosenContext {
   readonly chosen: WrittenContext;
   readonly tasks: WrittenCaseAnswer["tasks"];
   readonly how: string;
+  /** The listing measure its written cases carry (`contextMeasure`). */
+  readonly measure: Evidence;
   readonly passed: PassedSession[];
 }
 
@@ -7987,16 +8013,20 @@ type WrittenAsked = WrittenCaseAnswer | { readonly refused: string };
 const STOPPED_AT_REFUSAL = "(the reply stopped at refusal)";
 
 /**
- * The context session of a written build, the written-case reader's tasks for it (`ask`), how it
- * was chosen, and the sessions passed over before it: the one `given` names (`--context-session`),
- * refused (thrown, naming why) where it gives no written cases (`writtenContext`: one in no
- * checkout the build knows among them, `no-checkout`), reads material outside its checkout
- * (`outsideMaterial`), or `ask` says its work is on the skill's own text or its every reply
- * stopped at the model's refusal; else the first session of
+ * The context session of a written build, the written-case reader's tasks for it (`ask`), its
+ * listing measure, how it was chosen, and the sessions passed over before it: the one `given`
+ * names (`--context-session`), refused (thrown, naming why) where it gives no written cases
+ * (`writtenContext`: one in no checkout the build knows among them, `no-checkout`), reads material
+ * outside its checkout (`outsideMaterial`), has a listing measure the screen's rule drops
+ * (`contextMeasure`, score.ts's `listingStanding`: its rebuilt listing misses more than
+ * MAX_LISTING_MISSING_PERCENT of its recorded names), or `ask` says its work is on the skill's own
+ * text or its every reply stopped at the model's refusal; else the first session of
  * `order` (the build's seeded order of `--sessions`) that gives written cases on a model the
  * gateway serves and whose answer is tasks, one that gives none passed over under its drop reason
  * (`no-checkout` among them), one that reads material outside its checkout passed over, before it
- * is asked, as `outside-material`, one whose answer is `material` as `skill-as-material` with the
+ * is asked, as `outside-material`, one whose listing measure the rule drops passed over, before it
+ * is asked, as `listing-misses` with the rule's text (a measure that is not measurable is no
+ * reason), one whose answer is `material` as `skill-as-material` with the
  * reader's why, and one whose every reply stopped at refusal as `reader-refused` with the reader's
  * refusals; else, when none does, the first that gives them on
  * any model and whose answer is tasks, each such session asked in its turn (the first one's
@@ -8026,6 +8056,15 @@ async function chooseContext(
     if ("material" in answer) return { why: `${material}: ${answer.material.why}` };
     return { tasks: answer.tasks };
   };
+  // The listing measure `made`'s cases would carry, or, where the screen's rule drops them for it,
+  // why that rule passes the session over: its text, which begins `listing-misses`.
+  const measuredOf = async (
+    made: WrittenContext
+  ): Promise<{ readonly measure: Evidence } | { readonly why: string }> => {
+    const measure = await contextMeasure(run, made);
+    const standing = listingStanding([measure]);
+    return standing.state === "dropped" ? { why: standing.reason } : { measure };
+  };
   if (given !== undefined) {
     const named = `--context-session ${given.store}:${given.hash}`;
     const { paths: found } = await resolvePaths(run.config.psqlCommand, given.store, [given.hash]);
@@ -8038,9 +8077,17 @@ async function chooseContext(
     if ("drop" in made) throw new Error(`${named}: ${made.drop}: ${made.detail}`);
     const reads = outsideMaterial(made);
     if (reads !== undefined) throw new Error(`${named}: ${outside}: ${reads}`);
+    const listing = await measuredOf(made);
+    if ("why" in listing) throw new Error(`${named}: ${listing.why}`);
     const answer = await tasksOf(made);
     if ("why" in answer) throw new Error(`${named}: ${answer.why}`);
-    return { chosen: made, tasks: answer.tasks, how: "--context-session", passed: [] };
+    return {
+      chosen: made,
+      tasks: answer.tasks,
+      measure: listing.measure,
+      how: "--context-session",
+      passed: [],
+    };
   }
   const passed: PassedSession[] = [];
   const sayPassed = (place: string, store: string, hash: string, why: string) =>
@@ -8076,12 +8123,19 @@ async function chooseContext(
         rmSync(spool, { force: true });
         continue;
       }
+      const listing = await measuredOf(made);
+      if ("why" in listing) {
+        passOver(store.name, candidate.hash, listing.why, place);
+        rmSync(spool, { force: true });
+        continue;
+      }
       const answer = await tasksOf(made);
       if ("tasks" in answer) {
         return {
           chosen: made,
           tasks: answer.tasks,
-          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout, whose work is not on the skill's own text and whose material the written-case reader's model does not refuse: ${place}`,
+          measure: listing.measure,
+          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout, whose rebuilt listing misses no more of its recorded names than the screen allows, whose work is not on the skill's own text and whose material the written-case reader's model does not refuse: ${place}`,
           passed,
         };
       }
@@ -8135,12 +8189,18 @@ async function chooseContext(
       passAgain(`${outside}: ${reads}`);
       continue;
     }
+    const listing = await measuredOf(made);
+    if ("why" in listing) {
+      passAgain(listing.why);
+      continue;
+    }
     const answer = await tasksOf(made);
     if ("tasks" in answer) {
       return {
         chosen: made,
         tasks: answer.tasks,
-        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout, works on what is not the skill's own text and has material the written-case reader's model does not refuse, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
+        measure: listing.measure,
+        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout, has a rebuilt listing that misses no more of its recorded names than the screen allows, works on what is not the skill's own text and has material the written-case reader's model does not refuse, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
         passed: passed.slice(0, each.at),
       };
     }
@@ -8621,7 +8681,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       }
       throw error;
     }
-    const { chosen, how, passed, tasks } = picked;
+    const { chosen, how, measure, passed, tasks } = picked;
     const tasksFrom =
       givenAnswer === undefined
         ? "the written-case reader"
@@ -8691,24 +8751,10 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       return { items };
     };
 
-    // What every case takes from the context session: its profile, the listing measure (a
-    // top-level session's against the earliest subagent of it spawned under the build its profile
-    // is read at), the read calls' message and the directory its first read of the skill showed
-    // (of a read by path, the directory of the copy it read).
-    const { first, installedDir, init, profiled, listing } = chosen;
-    const between = betweenOf(listing);
-    let read = unasked(listing);
-    if (between !== undefined) {
-      try {
-        const found = await subagentListings(config.psqlCommand, chosen.store.name, [
-          { hash: contextPathHash, ...between },
-        ]);
-        read = { found: found.get(betweenKey(contextPathHash, between)) };
-      } catch (error) {
-        read = { unread: `subagents.sql failed: ${messageFor(error)}` };
-      }
-    }
-    const measure = listingMeasure(listing, read);
+    // What every case takes from the context session: its profile, the listing measure chosen
+    // with it (`contextMeasure`), the read calls' message and the directory its first read of the
+    // skill showed (of a read by path, the directory of the copy it read).
+    const { first, installedDir, init, profiled } = chosen;
     const target = `skill://${given.skill}`;
     const oldArm: Arm = {
       name: "old",

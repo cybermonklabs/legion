@@ -2273,14 +2273,23 @@ user message names by an absolute path outside its checkout's root a file the se
 reads, by a `read` call or with `cat`, `head`, `tail` or `sed -n` in a `bash` call (a skill's
 file, read by `skill://`, shown as a skill file or under a skill's installed directory, is none;
 the detail names the path, where it is named and the message that reads it), whose runs would ask
-for material the checkout copy answers no read of, `skill-as-material: <why>` for a session
+for material the checkout copy answers no read of, `listing-misses: <detail>` for a session whose
+listing measure, the one its written cases would carry (`listing measure` in a case's evidence,
+above), the screen's own rule (`score.ts`'s `listingStanding`) drops: its rebuilt listing misses
+more than 10% of the names of the recorded listing it is set against (the detail is the rule's
+text, the count and the names; a measure that says not measurable, as one does for a session that
+records no prompt and has no subagent with a listing under its build, is no reason, since the
+screen keeps such a case), whose every case the screen would drop before any model call,
+`skill-as-material: <why>` for a session
 whose work, by the written-case reader's answer, is on the skill's own text, or
 `reader-refused: <refusals>` for a session for which the written-case reader's every reply, on
 each of its 3 tries, stopped at the model's refusal (`stop_reason` `refusal`: the model refuses
 that session's material; the detail is the reader's refusal of each reply; a reader that fails in
 any other way, one of its replies not stopped at refusal among them, still fails the build, exit
 1, as does a refusal of its second ask, below): such a session is
-passed over, a `no-checkout` or an `outside-material` one before the reader is asked, as the
+passed over, a `no-checkout`, an `outside-material` or a `listing-misses` one before the reader is
+asked (the listing measure is read from the store with subagents.sql for a top-level session, as a
+written case's is), as the
 session form drops a `skill-as-material` one, and the next candidate taken; a `--context-session`
 of one is refused, exit 1). A case's
 `model` is the context session's when the gateway serves it; else the served model with the most
