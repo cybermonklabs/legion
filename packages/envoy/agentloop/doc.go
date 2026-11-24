@@ -45,7 +45,8 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters and the retry, and nothing else.
+// the token, the endpoint's query parameters, the retry and the credentials it put on requests
+// (below), and nothing else.
 //
 // # Cache marks
 //
@@ -67,6 +68,20 @@
 // openai-responses, and on openai-chat as response_format.json_schema without the provider's
 // strict mode, because the package checks the reply against the schema itself and strict mode
 // refuses schemas that are valid JSON Schema.
+//
+// # The model's own words
+//
+// Whatever answers in the model's place can write a credential the run sent it back into its
+// reply: the token the transport read for an attempt, the one azure-anthropic's middleware signed
+// a request with, a query value the endpoint adds under a name no contract declares public. The
+// transport keeps exactly those, across every attempt and call of the run, and nothing else of a
+// request: the prompt, the data and the schema are the caller's own words, which a reply quotes as
+// a matter of course. A Detail names the model's words - a refusal, a last reply that is no object
+// of Request.Final and the SDK's error about it, a finish reason none of the pinned SDKs reports -
+// as Result.Words reads them, those credentials redacted and then the rule for remote text, before
+// the Detail cuts them to 500 characters. Result.WithoutTokens is the redaction alone, for a caller
+// that keeps the reply as data. No credential leaves the package in a field: a Result printed
+// whole prints none.
 //
 // # Bounds
 //
