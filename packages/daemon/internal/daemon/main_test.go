@@ -19,13 +19,15 @@ import (
 // names no -parallel. Every test calls t.Parallel but those that change something the whole
 // process shares (each says what in a `Not parallel:` comment), which run first, one at a time.
 // Each parallel test clones a database and boots daemons whose pools hold up to four connections
-// each, and go test's default of GOMAXPROCS would run as many at once as the machine has cores:
-// four on CI's runner, hundreds on a dev box, where it would open more connections than a test
-// server allows (the shared one allows 483). Four is the runner's own count, the one the race
-// step's measurements were taken at.
+// each, and go test's default of GOMAXPROCS would run as many at once as the machine has cores,
+// hundreds on a dev box, where it would open more connections than a test server allows (the
+// shared one allows 483). Eight is twice CI's four cores: most of these tests wait on a daemon,
+// a database or a timer rather than compute, so at four about half of a runner-sized pod's CPU sat
+// idle in the race step while tests queued for a slot. At eight on CI's runner the step's peaks were
+// 4.9 GiB of the runner's 15.6 and 169 of the service's 487 connections.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const daemonTestParallelism = 4
+const daemonTestParallelism = 8
 
 // processDSN is LEGION_TEST_PG_DSN as this test process started with it, after the guard: the
 // server whose template testDSN clones each test's database from. A test that sets the variable to
