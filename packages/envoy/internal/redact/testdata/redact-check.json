@@ -7243,7 +7243,7 @@
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
         "preimage": "target, shown = next, nextShown",
-        "replacement": "target, shown = next, ShownBody(next)"
+        "replacement": "target, shown, _ = next, ShownBody(next), nextShown"
       }
     },
     {
