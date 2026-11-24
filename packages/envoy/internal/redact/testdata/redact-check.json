@@ -18,6 +18,7 @@
       "(github.com/sjawhar/envoy/configaddr.Address).Words",
       "(github.com/sjawhar/envoy/configaddr.Address).Cause",
       "(github.com/sjawhar/envoy/configaddr.Address).Error",
+      "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).Shown",
       "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.projectKubeError"
     ],
     "printers": [
@@ -3513,6 +3514,27 @@
           "packages/daemon/internal/api/kube_refusal_answer_test.go"
         ],
         "capture": "kubeerror.api/state-projection"
+      },
+      {
+        "row": "githubapp-default-branch-minted-again",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": [
+          "packages/envoy/internal/dispatch/githubapp/target_words_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "githubapp.default-branch-minted-again"
+      },
+      {
+        "row": "delivery-branch-lines-caller-named",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/internal/dispatch/delivery/branch_lines_test.go"],
+        "capture": "delivery.branch-lines/caller-named"
+      },
+      {
+        "row": "configured-url-github-api-base-fence",
+        "base": "df40decadf9eac6ea77c04b76bcb17c183635fa7",
+        "files": ["packages/envoy/cmd/dispatch/configured_url_words_test.go"],
+        "capture": "dispatch.configured-url/github-api-base-fence"
       }
     ],
     "boundary_fields": {
@@ -8651,13 +8673,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestADefaultBranchGitHubAnsweredPrintsAsTheRuleReadsIt",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: the comparison's target and its decode's error name a branch GitHub answered as the rule reads it",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DefaultBranch: the branch it answers carries the printed form its own answer's record gives it, which the comparison's target and its decode's error name",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DefaultBranch",
       "capture": "githubapp.default-branch",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
-        "preimage": "shown := redact.Field(redact.Tokens(branch, -1, token))",
-        "replacement": "shown := redact.Tokens(branch, -1, token)"
+        "preimage": "shown: ShownBody(body.Said(repository.DefaultBranch).String()),",
+        "replacement": "shown: repository.DefaultBranch,"
       }
     },
     {
@@ -8665,13 +8687,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/githubapp",
       "test": "TestADefaultBranchPrintsNoTokenItsReadCarried",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: a default branch that echoes the installation token prints without it",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DefaultBranch: a default branch that echoes the installation token the read carried prints without it, from that answer's record",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).DefaultBranch",
       "capture": "githubapp.default-branch-echo",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
-        "preimage": "redact.Tokens(branch, -1, token)",
-        "replacement": "branch"
+        "preimage": "body.Said(repository.DefaultBranch).String()",
+        "replacement": "redact.Field(repository.DefaultBranch)"
       }
     },
     {
@@ -11374,13 +11396,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/delivery",
       "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/read-failed",
-      "production": "delivery branchLine: the branch field of CommitOnBranch's three lines through redact.Field",
+      "production": "delivery branchLine: the branch field of CommitOnBranch's three lines, as the read that named the branch printed it and otherwise as the rule reads it (githubapp.Branch.Shown)",
       "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.branchLine",
       "capture": "delivery.branch-lines/read-failed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/delivery/branch.go",
-        "preimage": "redact.Field(branch)",
-        "replacement": "branch"
+        "preimage": "branch.Shown()",
+        "replacement": "branch.Name"
       }
     },
     {
@@ -11388,13 +11410,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/delivery",
       "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/read-failed",
-      "production": "delivery readBranchCommit: its error names the branch through redact.Field",
+      "production": "delivery readBranchCommit: its error names the branch as githubapp.Branch.Shown prints it",
       "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.readBranchCommit",
       "capture": "delivery.branch-lines/read-failed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/delivery/branch.go",
-        "preimage": "redact.Field(branch)",
-        "replacement": "branch"
+        "preimage": "branch.Shown()",
+        "replacement": "branch.Name"
       }
     },
     {
@@ -11409,13 +11431,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/delivery",
       "test": "TestADefaultBranchGitHubNamesPrintsThroughTheRuleInEveryBranchLine/write-failed",
-      "production": "delivery writeBranchCommit: its error names the branch through redact.Field",
+      "production": "delivery writeBranchCommit: its error names the branch as githubapp.Branch.Shown prints it",
       "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.writeBranchCommit",
       "capture": "delivery.branch-lines/write-failed",
       "mutation": {
         "file": "packages/envoy/internal/dispatch/delivery/branch.go",
-        "preimage": "redact.Field(branch)",
-        "replacement": "branch"
+        "preimage": "branch.Shown()",
+        "replacement": "branch.Name"
       }
     },
     {
@@ -12194,6 +12216,90 @@
       "package": "github.com/sjawhar/legion/daemon/internal/api",
       "test": "TestAKubernetesRefusalOfALaunchReachesTheProjectedStateWithNoCredential",
       "production": "api stateRoute (GET /legion/v1/state) through projectState's repeatable-read snapshot of the store's pool, internal/projection.Project (which places the claim on its issue by the architect's phases row and builds its view with api.ClaimViewOf) and writeAnswerFrom: a root's architect, recorded as the workflow records one (issue at admitted, tree open under the workflow, phases row naming the claim), whose machine (supervise.NewMachine over api.NewBootTokens' recording store) was refused every launch by the Sandbox runtime itself (sandbox.New, Spawn) when the Kubernetes API answered its read of the claim's Sandbox 403 with a Status echoing the bearer; the machine stores the refusal as lastStartFailure (storetext.FarSideError) and fails the claim, and the projected architect view's lastStartFailure and failure detail hold the runtime's projection (resend's projectKubeError: 'kubernetes: get sandboxes <name>: the API server answered 403 Forbidden'), none of the bearer"
+    },
+    {
+      "id": "githubapp-default-branch-minted-again",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestADefaultBranchPrintsNoTokenAnEarlierMintCarried",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).CommitOnBranch: a default branch that echoes the token the read that named it carried prints without it, whatever token the comparison carries"
+    },
+    {
+      "id": "githubapp-named-branch",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestABranchACallerNamedPrintsAsTheRuleReadsIt/credential",
+      "production": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).shownName: a branch no read of GitHub named prints in the comparison's target and errors as the rule reads it",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).shownName",
+      "capture": "githubapp.named-branch/credential",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "return redact.Field(redact.Tokens(b.Name, -1, token))",
+        "replacement": "return redact.Tokens(b.Name, -1, token)"
+      }
+    },
+    {
+      "id": "githubapp-named-branch-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestABranchACallerNamedPrintsAsTheRuleReadsIt/echoes-token",
+      "production": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).shownName: a branch a caller named that echoes this read's own installation token prints without it",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).shownName",
+      "capture": "githubapp.named-branch/echoes-token",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "redact.Tokens(b.Name, -1, token)",
+        "replacement": "b.Name"
+      }
+    },
+    {
+      "id": "githubapp-branch-readings-apart",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestABranchGitHubNamedPrintsFromItsOwnAnswer",
+      "production": "githubapp.Branch: a branch GitHub named prints from that answer's own record and one a caller named as the rule reads it, so neither reading stands in for the other, and an ordinary branch prints as it came under both"
+    },
+    {
+      "id": "delivery-branch-lines-caller-named",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestABranchACallerNamedPrintsThroughTheRuleInItsLines",
+      "production": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).Shown: delivery's line about a branch a caller named prints it as the rule reads it, in its branch field and in its error",
+      "function": "(github.com/sjawhar/envoy/internal/dispatch/githubapp.Branch).Shown",
+      "capture": "delivery.branch-lines/caller-named",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/commits.go",
+        "preimage": "return redact.Field(b.Name)",
+        "replacement": "return b.Name"
+      }
+    },
+    {
+      "id": "configured-url-github-api-base",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestABootRefusalNamesNoCredentialItsAddressCarries/github-api-base-path",
+      "production": "dispatch resolveBootConfig: the refusal of a DISPATCH_GITHUB_API_BASE that carries a path names the setting and the base as redact.URL reads it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.resolveBootConfig",
+      "capture": "dispatch.configured-url/github-api-base-path",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "\"DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with no path)\", redact.URL(base))",
+        "replacement": "\"DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with no path)\", base)"
+      }
+    },
+    {
+      "id": "configured-url-github-api-base-fence",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dispatch",
+      "test": "TestTheDevSignInFenceNamesNoCredentialTheGitHubBaseCarries",
+      "production": "dispatch devSignInLoadedFence: the refusal of an App private key signing calls to a base that is no loopback host names it as redact.URL reads it",
+      "function": "github.com/sjawhar/envoy/cmd/dispatch.devSignInLoadedFence",
+      "capture": "dispatch.configured-url/github-api-base-fence",
+      "mutation": {
+        "file": "packages/envoy/cmd/dispatch/main.go",
+        "preimage": "redact.URL(boot.GitHubAPIBase)",
+        "replacement": "boot.GitHubAPIBase"
+      }
     }
   ],
   "bun": [
@@ -15163,6 +15269,26 @@
       "site": "daemon kubernetes.go:351: a kubeconfig proxy-url client-go cannot parse, quoted by clientcmd's validation",
       "source": "the t-7 report's third concern, the coordinator's second round",
       "guard": "sandbox-kube-daemon-kubeconfig-proxy-url"
+    },
+    {
+      "site": "githubapp CommitOnBranch: a default_branch GitHub answered printed with the comparison's own token redacted alone, so one echoing a token the client minted for the installation earlier, live for up to an hour, printed whole",
+      "source": "the concern t-2a's report left at its head",
+      "guard": "githubapp-default-branch-minted-again"
+    },
+    {
+      "site": "delivery branchLine, readBranchCommit and writeBranchCommit: a branch a caller named printed with no token of the read that names it redacted",
+      "source": "the integration of t-2a's and t-2b's branch reads",
+      "guard": "delivery-branch-lines-caller-named"
+    },
+    {
+      "site": "cmd/dispatch resolveBootConfig: a DISPATCH_GITHUB_API_BASE with a path was taken, under which the public-request-name table cannot name POST /graphql, so the merged pull request search could not send GitHub's cursor back and ended at its second page",
+      "source": "t-2b's note to the integrator",
+      "guard": "configured-url-github-api-base"
+    },
+    {
+      "site": "cmd/dispatch devSignInLoadedFence: the refusal of an App key reaching a base that is no loopback host printed DISPATCH_GITHUB_API_BASE whole, its user information, query and fragment included",
+      "source": "the class search of the configured-URL finding over cmd/dispatch",
+      "guard": "configured-url-github-api-base-fence"
     }
   ]
 }
