@@ -1,13 +1,16 @@
 // Package redirectstest is the stand-ins the redirect rows of the envoy and daemon modules answer
 // with: a server in a client's server's place that answers every request with a redirect whose
 // Location quotes the credential the request carried, as whoever answers there can, and a target
-// that counts what it is asked, which a client that follows no redirect never asks.
+// that counts what it is asked, or keeps it, which a client that follows no redirect never asks.
 package redirectstest
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -54,6 +57,35 @@ func Target(t testing.TB) (host string, asked func() int64) {
 	}))
 	t.Cleanup(server.Close)
 	return server.Listener.Addr().String(), func() int64 { return count.Swap(0) }
+}
+
+// Sent serves, until t ends, a stand-in that answers every request 500 and keeps what each one
+// carried: its method, its request URI and every header it was sent, a line for each request. It
+// answers its address (host:port) and sent, the text of the requests it has been asked since sent
+// was last called, so each row reads its own. A client that follows a redirect To it carries the
+// credential on, in the Location's query and in the headers net/http copies onto the redirect's
+// request (Authorization among them, on to the same host name), and a row captures it from that
+// text; a client that follows no redirect sends it nothing, and sent answers "".
+func Sent(t testing.TB) (host string, sent func() string) {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		asked strings.Builder
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		fmt.Fprintf(&asked, "%s %s %v\n", r.Method, r.RequestURI, r.Header)
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().String(), func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		text := asked.String()
+		asked.Reset()
+		return text
+	}
 }
 
 // Dead is an address (host:port) nothing listens at: a port just closed.
