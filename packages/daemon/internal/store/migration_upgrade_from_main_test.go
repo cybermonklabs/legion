@@ -165,13 +165,13 @@ import (
 // outbox_kind_check: over the present shapes of 20261123203838 and 20261123203839 it changes no
 // row and leaves the same indexes and constraints, so it needs no row of its own here
 // (migration_20261123203842_test.go).
-// The agent of a claim's session (20261122120917) is applied after the claims a release suspended
-// and the plan's step agents (20261123203837), whose plan_steps.agent it reads, and touches no
+// The agent of a claim's session (20261124172711) is applied last of this release's, after the
+// plan's step agents (20261123203837), whose plan_steps.agent it reads, and touches no
 // outbox_kind_check: it adds claims.session_agent at its default, the empty string, on every row
 // it finds, and records on a claim the agent of its latest kept start (step_starts) or of the
 // latest plan row of its name, and writes no queued row; this test seeds no plan row and no step
-// start, so it needs no row of its own here (migration_20261122120917_test.go and
-// migration_20261122120917_keys_test.go).
+// start, so it needs no row of its own here (migration_20261124172711_test.go and
+// migration_20261124172711_keys_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -183,8 +183,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
-	20261122120917, 20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840,
-	20261123203841, 20261123203842, 20261124044450,
+	20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840, 20261123203841,
+	20261123203842, 20261124044450, 20261124172711,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -202,14 +202,14 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the agent of
-// a claim's session's 20261122120917, the roles of a deployment's 20261123181746, the name of each
-// step's agent's 20261123203837, the claim of each resume's 20261123203838, the claim of each
-// backstop's 20261123203839, the claims a release suspended's 20261123203840, the record that a
-// claim took another role's 20261123203841, the repair of the open resume per claim's
-// 20261123203842 and the key of a phases row by its step's 20261124044450. That is why the loop
-// below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
+// a deployment's 20261123181746, the name of each step's agent's 20261123203837, the claim of each
+// resume's 20261123203838, the claim of each backstop's 20261123203839, the claims a release
+// suspended's 20261123203840, the record that a claim took another role's 20261123203841, the
+// repair of the open resume per claim's 20261123203842, the key of a phases row by its step's
+// 20261124044450 and the agent of a claim's session's 20261124172711. That is why the loop below
+// holds the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
