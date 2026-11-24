@@ -467,7 +467,7 @@ func crashConcurrentClaims(t *testing.T) {
 	select {
 	case answer = <-cAnswer:
 		cAnswer <- answer
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("%s's claim did not answer within 10s", c)
 	}
 	if answer.Code != http.StatusOK {

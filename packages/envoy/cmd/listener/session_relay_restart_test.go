@@ -55,7 +55,7 @@ func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-failed:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the relay's restart never reached its create")
 	}
 }

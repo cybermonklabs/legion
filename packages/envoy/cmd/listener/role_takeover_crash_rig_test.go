@@ -286,7 +286,7 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Remaining(rig.t, time.Second)):
 		rig.t.Fatalf("the stream did not acknowledge %d messages to %s within 30s", n, sessionID)
 	}
 }

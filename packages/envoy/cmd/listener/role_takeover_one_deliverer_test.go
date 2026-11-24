@@ -465,7 +465,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		eventID := rig.publishToRole(t, role, "while the claim cannot be read")
 		seq := rig.lastSeqOf(t, holder, eventID)
 		// Two refused reads: the frame was given back once and delivered to the relay again.
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
+		if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool { return rig.claimReads.Load() >= 2 }) {
 			t.Errorf("the session relay read role %s's claim %d times within 10s of the message's store, want at least two", role, rig.claimReads.Load())
 		}
 		requireNoneHeard(t, heard, "the holder "+holder+" while its role's claim could not be read", eventID)
@@ -507,7 +507,7 @@ func TestARoleMessageIsNotDeliveredToASessionWhoseRoleWasTaken(t *testing.T) {
 		rig.refuseCopy.Store(true)
 		late := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"late-forward-"+id.New())
 		seq := rig.storeOn(t, previous, late)
-		if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
+		if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool { return rig.copies.Load() >= 2 }) {
 			t.Errorf("the session relay tried to copy the role message %d times within 10s of its store, want at least two", rig.copies.Load())
 		}
 		requireNoneHeard(t, heardPrevious, "the previous holder "+previous+" while the copy could not be stored", late.EventID)

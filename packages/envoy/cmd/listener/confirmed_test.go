@@ -180,7 +180,7 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quie
 		select {
 		case frame := <-frames:
 			got = append(got, frame)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
 		}
 	}

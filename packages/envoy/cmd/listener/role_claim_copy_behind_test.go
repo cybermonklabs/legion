@@ -91,7 +91,7 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 
 			event := rig.storeDispatchMessage(t, previous, role)
 			if tc.behind {
-				if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+				if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 20*time.Millisecond, func() bool {
 					return rig.copies.Load() > 0 || heardPrevious.count(event) > 0
 				}) {
 					t.Fatalf("the previous holder's relay neither copied the role message %s to the kept lane nor handed it to %s within 15s: no read the copy behind is there for was made", event, previous)

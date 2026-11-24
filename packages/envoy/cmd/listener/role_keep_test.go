@@ -484,7 +484,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy handed to the role's next holder", frame)
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the claimant of %s was handed no kept copy in 30 seconds", role)
 	}
 
@@ -498,7 +498,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	select {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy forwarded to the live holder", frame)
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the live holder of %s was forwarded nothing in 30 seconds", role)
 	}
 }
@@ -1072,7 +1072,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 		if forwarded.KeptAt == nil || *forwarded.KeptAt <= 0 {
 			t.Fatalf("the forwarded copy carries kept_at %v, want the time the stream stored it", forwarded.KeptAt)
 		}
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the copy kept for %s, which held the role already, reached it in no 20 seconds and no second claim comes:\n%s",
 			holder, harness.logs.String())
 	}

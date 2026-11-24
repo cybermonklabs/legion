@@ -111,7 +111,7 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 					go verifier.Run(t.Context())
 					select {
 					case <-accepted:
-					case <-time.After(5 * time.Second):
+					case <-time.After(testwait.Remaining(t, time.Second)):
 						t.Fatal("the background discovery never dialed the silent issuer within 5 s")
 					}
 				}

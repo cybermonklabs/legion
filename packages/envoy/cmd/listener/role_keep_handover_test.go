@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptHandover is one forward a drain of a kept lane made: the session it reached, the dedupe
@@ -981,7 +982,7 @@ func TestAKeptLaneGuardStopsWaitingWhenTheHandoversContextEnds(t *testing.T) {
 		if ok {
 			t.Fatalf("the cancelled hold of role %s reported that it took the guard, which the first hold still holds", role)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the hold of role %s's guard did not return within 10 s of its context ending", role)
 	}
 

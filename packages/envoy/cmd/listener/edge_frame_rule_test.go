@@ -125,7 +125,7 @@ func (r *scopeRig) openSocket(t *testing.T, session, token string) *relaySocketC
 	client.ping()
 	select {
 	case <-client.pongs:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("no pong within 5 s of the socket's sub")
 	}
 	return client

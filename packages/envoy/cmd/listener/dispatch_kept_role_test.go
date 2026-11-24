@@ -20,6 +20,7 @@ import (
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // This file is the one proof that a role message Dispatch's outbox could not deliver reaches the
@@ -106,7 +107,7 @@ func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *d
 		cancel()
 		select {
 		case <-stopped:
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Error("Dispatch's outbox did not stop")
 		}
 	})

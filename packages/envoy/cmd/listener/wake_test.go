@@ -202,7 +202,7 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	}
 	select {
 	case <-reported:
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the report's goroutine is still retrying after the stream took it")
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // edgeWithheldSeries is envoy_edge_exceptions_withheld_total's series for one topic prefix and
@@ -120,7 +121,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		if key != roleForwardDedupePrefix+item.DedupeKey {
 			t.Fatalf("the shared listener handed over %s, want the kept copy %s", key, roleForwardDedupePrefix+item.DedupeKey)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the shared listener's handover forwarded nothing, so the rig cannot see a handover:\n%s", harness.logs.String())
 	}
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {

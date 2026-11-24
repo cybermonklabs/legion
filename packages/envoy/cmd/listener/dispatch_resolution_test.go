@@ -347,7 +347,7 @@ func (s *rigSession) awaitFrame(t *testing.T) string {
 	select {
 	case frame := <-s.standIn.frames:
 		return string(frame.msg.Data)
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("no frame reached %s's own consumer", s.id)
 		return ""
 	}

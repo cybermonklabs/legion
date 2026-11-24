@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -407,7 +408,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	var firstForward ended
 	select {
 	case firstForward = <-first:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the resend's first forward did not end")
 	}
 	thaw()

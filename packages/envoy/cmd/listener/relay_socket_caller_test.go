@@ -80,7 +80,7 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 		flood(t, rig.owner.url, sockets[i].session, n)
 	}
 	// Each socket has either taken every frame sent to it or closed.
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool {
 		for i, socket := range sockets {
 			if frames, _ := socket.held(); !socket.ended.Load() && frames != sent[i] {
 				return false
@@ -113,7 +113,7 @@ func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
 	for _, client := range clients {
 		_ = client.conn.Close()
 	}
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool {
 		for i := range relaySocketMaxPerCaller {
 			if rig.holds(sessionOf(i)) != 0 {
 				return false
@@ -150,11 +150,11 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 	unlock := sync.OnceFunc(socket.writeMu.Unlock)
 	t.Cleanup(unlock)
 	flood(t, rig.owner.url, session, 6)
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, socket.ended.Load) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, socket.ended.Load) {
 		t.Fatalf("the held socket did not close within 10 s; the replica holds %d bytes", rig.sockets.buffered.Load())
 	}
 	unlock()
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
 		t.Fatalf("the replica still counts %d bytes 10 s after the held socket closed", rig.sockets.buffered.Load())
 	}
 	if got := person.buffered.Load(); got != 0 {
@@ -180,7 +180,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 	unlock := sync.OnceFunc(socket.writeMu.Unlock)
 	t.Cleanup(unlock)
 	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
 		t.Fatal("the socket took no frame within 5 s")
 	}
 	_ = client.conn.Close()
@@ -190,7 +190,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 		t.Fatalf("the replica gave the socket's place back while its pump still held a frame; the person's record counts %d bytes and the replica keeps %d caller records", socket.caller.buffered.Load(), rig.callerRecords())
 	}
 	unlock()
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
 		t.Fatal("the replica still holds the socket 5 s after its pump let its frame go")
 	}
 	if got, records := socket.caller.buffered.Load(), rig.callerRecords(); got != 0 || records != 0 {

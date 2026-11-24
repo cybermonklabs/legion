@@ -125,7 +125,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 		if forwarded.Topic != contracts.RoleTopicPrefix+role || !strings.HasPrefix(forwarded.DedupeKey, roleForwardDedupePrefix) {
 			t.Fatalf("the holder received topic %q dedupe key %q, want the role forward of %s", forwarded.Topic, forwarded.DedupeKey, contracts.RoleTopicPrefix+role)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the role holder received no forward while another task holds the durable:\n%s", listener.Output.String())
 	}
 
@@ -221,14 +221,14 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 				t.Fatalf("the holder received dedupe key %q, want one prefixed %s", frame.DedupeKey, roleForwardDedupePrefix)
 			}
 			keys[frame.DedupeKey]++
-		case <-time.After(10 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Fatalf("the holder received %d of %d role messages", received, messages)
 		}
 	}
 	select {
 	case frame := <-frames:
 		t.Fatalf("the holder received a frame past the %d published: %+v", messages, frame)
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 	}
 	if len(keys) != messages {
 		t.Fatalf("the holder received %d distinct dedupe keys over %d frames, want %d: a publish was forwarded twice", len(keys), messages, messages)

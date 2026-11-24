@@ -511,7 +511,7 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 		if msg.Subject != accepted {
 			t.Fatalf("received subject %q, want %q", msg.Subject, accepted)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the team publish reached nobody")
 	}
 }
@@ -830,7 +830,7 @@ func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testin
 				if forwarded.DedupeKey != roleForwardDedupePrefix+"publish.resend-1" {
 					t.Fatalf("%s: holder received dedupe %q, want it with the forward prefix", what, forwarded.DedupeKey)
 				}
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Remaining(t, time.Second)):
 				t.Fatalf("%s: holder received no forward", what)
 			}
 		}
@@ -2693,7 +2693,7 @@ func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
 		if outcome.bind.attempts < 2 {
 			t.Fatalf("the bind took %d attempts, want the refused ones before the release counted too", outcome.bind.attempts)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the replacement never bound the released durable")
 	}
 	if !replacement.SubOK() {
@@ -2768,7 +2768,7 @@ func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
 		if after := outcome.at.Sub(cancelled); after > 500*time.Millisecond {
 			t.Fatalf("the bind returned %s after the context ended, want at once rather than at its next 2 s attempt", after)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the bind never returned after the context ended")
 	}
 }
@@ -3005,7 +3005,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	}
 	select {
 	case <-durableReceived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("migrated durable listener did not receive a non-role message")
 	}
 	if err := client.Publish(contracts.Envelope{
@@ -3022,7 +3022,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	}
 	select {
 	case <-roleReceived:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("migrated listener role lane did not receive the core message")
 	}
 }
@@ -4380,7 +4380,7 @@ func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
 
 	select {
 	case <-recovered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("monitor stopped before the transient NATS failures recovered")
 	}
 	if got := atomic.LoadInt32(&probeCalls); got < 4 {
@@ -4389,7 +4389,7 @@ func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("monitor did not stop after shutdown")
 	}
 }
@@ -4426,12 +4426,12 @@ func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T
 		if got != 20 {
 			t.Fatalf("the monitor terminated after %d disconnected probes, want exactly 20", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor never terminated a disconnected probe that never recovered")
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor did not return after terminating")
 	}
 	if got := rebuilds.Load(); got != 0 {
@@ -4476,12 +4476,12 @@ func TestRunSelfHealthMonitor_CountsADisconnectedProbeAfterARebuild(t *testing.T
 		if got != 20 {
 			t.Fatalf("the monitor terminated after %d disconnected probes, the post-rebuild probe among them, want exactly 20", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor never terminated a disconnection that began on the probe after a rebuild")
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor did not return after terminating")
 	}
 	if got := rebuilds.Load(); got != 1 {
@@ -4525,7 +4525,7 @@ func TestRunSelfHealthMonitor_DoesNotTerminateOnSustainedConnectedTransientFailu
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("monitor did not stop after shutdown")
 	}
 }
@@ -4586,13 +4586,13 @@ func TestRunSelfHealthMonitor_DisconnectedFailuresDoNotAccumulateAcrossRecoverie
 			case <-terminated:
 				t.Fatalf("the monitor terminated after %d probes: %d outages of %d disconnected failures each, every one ended by a connected probe, must not add up to the bound",
 					calls.Load(), outages, disconnectedFailureThreshold-1)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Remaining(t, time.Second)):
 				t.Fatalf("probe calls = %d, want more than %d", calls.Load(), outages*cycle)
 			}
 			cancel()
 			select {
 			case <-done:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Remaining(t, time.Second)):
 				t.Fatal("monitor did not stop after shutdown")
 			}
 		})
@@ -4833,12 +4833,12 @@ func TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault(t *testing.
 			}()
 			select {
 			case <-terminated:
-			case <-time.After(2 * time.Second):
+			case <-time.After(testwait.Remaining(t, time.Second)):
 				t.Fatal("the monitor never terminated a fault three rebuilds left in place")
 			}
 			select {
 			case <-done:
-			case <-time.After(time.Second):
+			case <-time.After(testwait.Remaining(t, time.Second)):
 				t.Fatal("the monitor did not return after terminating")
 			}
 			if got := rebuilds.Load(); got != 3 {
@@ -4902,7 +4902,7 @@ func TestRunSelfHealthMonitor_ShutdownCutRebuildLogsNoError(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor did not return after the shutdown cut its rebuild")
 	}
 	if got := terminates.Load(); got != 0 {
@@ -4968,12 +4968,12 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 	}()
 	select {
 	case <-terminated:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatalf("the listener stayed up without its role bucket: %d rebuilds, no termination", rebuilds.Load())
 	}
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the monitor did not return after terminating")
 	}
 	if got := rebuilds.Load(); got != 3 {

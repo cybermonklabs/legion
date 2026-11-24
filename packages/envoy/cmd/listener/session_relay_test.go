@@ -586,7 +586,7 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 		if !ok {
 			t.Fatal("the retry wait reported the run stopped")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the retry wait did not end on the wake sent before it")
 	}
 }

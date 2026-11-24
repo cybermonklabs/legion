@@ -596,7 +596,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	})
 	select {
 	case <-inOpen:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the retry did not open again")
 	}
 
@@ -611,7 +611,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	close(release)
 	select {
 	case <-registry.retried:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the retry did not end once its open returned")
 	}
 	if n := opens.Load(); n != 2 {

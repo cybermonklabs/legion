@@ -586,12 +586,12 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-naked:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Fatal("onReply did not return within 2s of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
 		}
 		select {
 		case <-started:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Fatal("onReply never started the re-mark")
 		}
 		// The re-mark is still blocked. The other session's done is acked at once.
@@ -602,7 +602,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		}()
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Remaining(t, time.Second)):
 			t.Fatal("the other session's receipt was blocked behind the slow re-mark")
 		}
 		if otherAcker.acks.Load() != 1 {
@@ -734,7 +734,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	nak("TOKENOFTHEFIRSTREMARKFRAME01")
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("onReply never started the first re-mark")
 	}
 	// The second nak of the same session while the first re-mark is in flight: scheduleReMark folds
@@ -755,7 +755,7 @@ func TestTwoReMarksOfOneSessionDoNotRunAtOnce(t *testing.T) {
 	close(release)
 	select {
 	case <-entered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Remaining(t, time.Second)):
 		t.Fatal("the folded re-mark never ran after the first finished; the session's owed mark is dropped")
 	}
 }
