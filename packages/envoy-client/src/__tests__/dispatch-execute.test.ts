@@ -4990,7 +4990,7 @@ describe("executeDispatchTool", () => {
   // removed nothing (a Dispatch that predates labels_add ignores it and answers the issue as it
   // stood), and "labels cleared" only for a labels that emptied the set.
   test("dispatch_issue_update says labels none after a labels_add that left none, and cleared after an empty labels", async () => {
-    const fetchImpl = async (): Promise<Response> =>
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
       response({ key: "ACME-10", title: "Board", status: "triage", labels: [], route: null });
     const run = (args: Record<string, unknown>) =>
       executeDispatchTool({
@@ -16813,7 +16813,7 @@ describe("executeDispatchTool", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    expect(requested.toSorted()).toEqual([
+    expect([...requested].sort()).toEqual([
       "/api/v1/issues/ACME-10",
       "/api/v1/issues/ACME-10/comments",
     ]);
