@@ -292,11 +292,14 @@ func TestASubOwnersVersionDependsOnWhereItsTaskStands(t *testing.T) {
 // of the hold: f runs at its parts from a real start, with f1 running and f2 done; the real failed
 // claim of f's sub-owner holds f, and its version then adds f3, which waits. f1 passes its step and
 // is done, which starts nothing while f is held. The owner's retry_or_escalate releases f, and f3
-// starts at its first step in that fact's transaction.
+// starts at its first step in that fact's transaction. The retry starts no sub-owner, as no start
+// of f at its parts does (Walk.RoleAt): it queues no start of the role.
 //
-// The fault it catches is a part that waits for good after its task's release (its control: the
-// release of retry_or_escalate with no start of the tasks that may start, as at the base, which
-// leaves f3 waiting).
+// The faults it catches are a part that waits for good after its task's release, and a retry that
+// fails for a start of the sub-owner its claim cannot name (its controls: the release of
+// retry_or_escalate with no start of the tasks that may start, as at the base, which leaves f3
+// waiting; restart that starts the sub-owner, which fails the retry: the branch of its step is
+// unknown).
 func TestAReleasedTaskStartsItsWaitingPart(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -327,6 +330,9 @@ func TestAReleasedTaskStartsItsWaitingPart(t *testing.T) {
 	tasks = tasksOf(t, pool, engine, root.Key)
 	assertTask(t, tasks, "f", record.TaskRunning, atParts)
 	assertTask(t, tasks, "f3", record.TaskRunning, atStep(1))
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleSubOwner); len(starts) != 0 {
+		t.Fatalf("the starts of the sub-owner of %s after the retry = %+v, want none", root.Key, starts)
+	}
 }
 
 // A part starts where its task's join ends, at each door that ends it, a carried one among them: f

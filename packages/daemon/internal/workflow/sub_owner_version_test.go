@@ -124,4 +124,3 @@ func TestAVersionThatStartsATaskWithASubOwnerAgainStartsTasksOnce(t *testing.T) 
 		t.Fatalf("the version that starts f again ran startReady %d times, want once, at its door", runs)
 	}
 }
-

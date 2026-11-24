@@ -768,8 +768,13 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
 // a worker it starts.
+//
+// It starts no sub-owner (claim.RoleSubOwner), the role of a task held at its parts: Engine.start
+// starts no role at a task's parts (Walk.RoleAt), so no start of this release names the claim of a
+// sub-owner, and its retry releases the task alone, whose parts that wait then start at the door of
+// the retry (startReadyNow).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.Role, told func(Standing) string, freshSession bool) error {
-	if role == "" || role == claim.RoleArchitect {
+	if role == "" || role == claim.RoleArchitect || role == claim.RoleSubOwner {
 		return nil
 	}
 	at, err := e.standingPart(ctx, tx, s)
