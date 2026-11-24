@@ -298,9 +298,10 @@ func TestCheckState(t *testing.T) {
 			c.Uncited = map[string]map[string]string{"c2": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
 		// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." The
-		// own results of the refused commit count nowhere, a failing example's commit too, the commit
-		// that its fault was planted on for a program check of the code, and for a program check of
-		// production the commit of its test; the results of another commit stay.
+		// own results of the refused commit that support true, a pass and a caught failing example,
+		// count nowhere, a failing example's commit too, the commit that its fault was planted on for a
+		// program check of the code, and for a program check of production the commit of its test; the
+		// results of another commit stay.
 		{name: "R48, a refusal at the commit of the caught failing example alone takes out that example at c2, where that commit's results count", change: func(c *checkCase) {
 			c.commit("x1", "c1", "docs/x.md")
 			c.commit("c2", "c1", "docs/x.md")
@@ -394,11 +395,11 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, later)
 			c.Uncited = map[string]map[string]string{later.Commit: {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "planted_on_outside_history", Detail: "c9"}},
-		{name: "control: a refusal at planted_on takes out a later missed record planted on c3, a commit of the history that carries to c1", change: func(c *checkCase) {
+		{name: "R48, a refusal at planted_on keeps a later missed record planted on c3, a commit of the history whose results count at c1: a missed example is no support of true", change: func(c *checkCase) {
 			c.commit("c3", "c1", "docs/x.md")
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
 			c.Uncited = map[string]map[string]string{"c3": {c.check: "test-not-in-code"}}
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
 		{name: "control: a later missed failing example planted on c3, a commit of the history that does not carry to c1", change: func(c *checkCase) {
 			c.commit("c3", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.PlantedOn, r.Commit = "c3", "f-c3" }))
@@ -473,6 +474,43 @@ func TestCheckState(t *testing.T) {
 			c.programPass(checkStateGraphProgram, "c2", "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "no_failing_example"}},
+		// R48 bounds a refusal to its commit: "At that commit, such a check reads unknown, and no
+		// earlier result of it counts." At another subject R7 decides ("a later failure cancels an
+		// earlier pass"), and R9's unknown cases read "never as true". So a refusal takes out of the
+		// results of its commit only what supports true, a pass and a failing example that caught its
+		// fault, and keeps a failure, a run that could not run and a failing example that missed its
+		// fault wherever they count. Each row: Q or its like of the graph, at subject c2 under deploy
+		// d2 at tx1, with a pass of the test of c2 and a failing example that the test of c2 caught,
+		// and the row's newer result of the test of c1, where CI refused the check.
+		{name: "R48, a refusal of a program check of production at the commit of the test of a newer failure keeps that failure", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c1", 2*time.Hour))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "false", Reason: "failed", From: "d2"}},
+		{name: "R48, a refusal of a program check of the graph at the commit of the test of a newer failure keeps that failure", change: func(c *checkCase) {
+			c.programPass(checkStateGraphProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateGraphProgram, ResultRun, OutcomeFail, "c1", 2*time.Hour))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "disagree", Disagree: true}},
+		{name: "R48, a refusal of a program check of production at the commit of the test of a newer run that could not run keeps that run", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "could_not_run"}},
+		{name: "R48, a refusal of a program check of production at the commit of the test of a newer failing example that missed its fault keeps that example", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "failing_example_missed"}},
+		{name: "control: a refusal of a program check of production at the commit of the test of a newer pass takes out that pass, and the older failure decides", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c1", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c2", 30*time.Minute))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "false", Reason: "failed", From: "d2"}},
+		{name: "control: with no refusal, the newer failure of the test of c1 decides", change: func(c *checkCase) {
+			c.programPass(checkStateProductionProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c1", 2*time.Hour))
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "false", Reason: "failed", From: "d2"}},
 		// An agent or a query of the code counts its results at their commit, as C does
 		// (CountsAtACommit): a refusal there takes them out at c2, where they count, its runs and its
 		// failing examples alike. With its pass at c1 the refusal at c1 takes out the run; with its

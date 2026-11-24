@@ -171,13 +171,15 @@ func TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs(t *testing.T) {
 }
 
 // R48: "At that commit, such a check reads unknown, and no earlier result of it counts." R7: "A
-// pass and a failure on one such subject and one procedure make the state unknown." At the commit
+// pass and a failure on one such subject and one procedure make the state unknown", and "a later
+// failure cancels an earlier pass"; R9: its unknown cases read "never as true". At the commit
 // where CI refused the check, the check reads unknown (uncited) with the refusal's rule, whatever
 // else holds there: its own results before or after the refusal, a result carried from another
-// commit, or newer evidence of another commit that counts there. The refused commit's own results
-// count nowhere, at it or where R8 would carry them: R48 cancelled them at their commit, so R8 has
-// nothing to carry. The own results of every other commit are R7's and R8's, whatever CI refused
-// elsewhere: a refusal cancels no result of another commit. Each row: carry, with a subject at c1
+// commit, or newer evidence of another commit that counts there. Of the refused commit's own
+// results, what supports true, a pass and a failing example that caught its fault, counts nowhere;
+// its failures, its runs that could not run and its failing examples that missed their fault count
+// wherever they would, so a refusal never moves a state toward true at another subject. The own
+// results of every other commit stay, whatever CI refused elsewhere. Each row: carry, with a subject at c1
 // whose spec files are m2's (withSubjectAtC1), the row's records, c0 as c1's parent with c1's tree
 // and ties where the row says so, and a run of the job that ended at m2 but where the row says
 // none; CI refused the check at the row's commit. The check reads unknown (uncited) there, the
@@ -228,20 +230,20 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 		{name: "m2's pass recorded between c1's pass and c1's failing example", refused: "c1",
 			changes: []change{at("2026-11-12T10:02:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)}, want: "true (passed, counted from m2)", none: "true (passed, counted from m2)"},
 		// Each row below holds a failure, a run that could not run or a failing example that missed its
-		// fault. The refusal at c1 takes out c1's own, and cancels none of another commit's: R7 reads
-		// a pass and a failure of one procedure as unknown.
+		// fault. The refusal keeps each of them, at the refused commit's results too, so the state at
+		// another subject reads as it does with no refusal, or further from true.
 		{name: "unknown stays unknown: c2 fails at 10:03, between c1's pass and c1's failing example, then passes at 12:00", refused: "c1",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T12:00:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
 			want:    "unknown (disagree)", none: "unknown (disagree)"},
 		{name: "c2 fails at 10:03, and m2 passes", refused: "c1",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
 			want:    "unknown (disagree)", none: "unknown (disagree)"},
-		{name: "c1 fails at 10:00, and c0, c1's parent, passes at 11:00: c1's failure counts nowhere", refused: "c1", c0: true,
+		{name: "c1 fails at 10:00, and c0, c1's parent, passes at 11:00: c1's failure stays", refused: "c1", c0: true,
 			changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T11:00:00Z", 5), fault("c0", "2026-11-12T11:05:00Z", 6)},
-			want:    "true (passed, counted from c0)", none: "unknown (disagree)"},
-		{name: "c0, c1's parent, passes at 09:00, and c1 fails at 10:00: c1's failure counts nowhere", refused: "c1", c0: true,
+			want:    "unknown (disagree)", none: "unknown (disagree)"},
+		{name: "c0, c1's parent, passes at 09:00, and c1 fails at 10:00: c1's failure stays", refused: "c1", c0: true,
 			changes: []change{failsAtC1, run("c0", "pass", "2026-11-12T09:00:00Z", 5), fault("c0", "2026-11-12T09:05:00Z", 6)},
-			want:    "true (passed, counted from c0)", none: "false (failed, counted from c1)"},
+			want:    "false (failed, counted from c1)", none: "false (failed, counted from c1)"},
 		{name: "c2 fails at 10:03 and passes at 10:04, before c1's failing example, and catches its fault at 12:05", refused: "c1",
 			changes: []change{run("c2", "fail", "2026-11-12T10:03:00Z", 5), run("c2", "pass", "2026-11-12T10:04:00Z", 6), fault("c2", "2026-11-12T12:05:00Z", 7)},
 			want:    "unknown (disagree)", none: "unknown (disagree)"},
@@ -256,15 +258,15 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 		{name: "c2 passes at 10:02, before c1's failing example, fails at 11:00 and catches its fault at 11:05", refused: "c1",
 			changes: []change{run("c2", "pass", "2026-11-12T10:02:00Z", 5), run("c2", "fail", "2026-11-12T11:00:00Z", 6), fault("c2", "2026-11-12T11:05:00Z", 7)},
 			want:    "unknown (disagree)", none: "unknown (disagree)"},
-		{name: "c1 fails at 10:00, and m2 passes: c1's failure counts nowhere", refused: "c1",
+		{name: "c1 fails at 10:00, and m2 passes: c1's failure stays", refused: "c1",
 			changes: []change{failsAtC1, at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
-			want:    "true (passed, counted from m2)", none: "unknown (disagree)"},
+			want:    "unknown (disagree)", none: "unknown (disagree)"},
 		{name: "a run at c2 at 10:03 that could not run, between c1's pass and c1's failing example", refused: "c1",
 			changes: []change{run("c2", "could_not_run", "2026-11-12T10:03:00Z", 5)}, want: "unknown (could_not_run)", none: "unknown (could_not_run)"},
-		{name: "a failing example at c1 at 10:06 that missed its fault, and m2's later pass: c1's failing examples count nowhere", refused: "c1",
+		{name: "a failing example at c1 at 10:06 that missed its fault, and m2's later pass: c1's missed failing example stays", refused: "c1",
 			changes: []change{func(r []map[string]any) []map[string]any {
 				return append(r, withMembers(r[1], map[string]any{"outcome": "pass", "at": "2026-11-12T10:06:00Z", "seq": 5}))
-			}, at("2026-11-13T12:00:00Z")}, want: "unknown (no_failing_example)", none: "unknown (failing_example_missed)"},
+			}, at("2026-11-13T12:00:00Z")}, want: "unknown (failing_example_missed)", none: "unknown (failing_example_missed)"},
 		{name: "a failing example at m2 that missed its fault, after m2's caught one, and m2's pass", refused: "c1",
 			changes: []change{at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7), func(r []map[string]any) []map[string]any {
 				return append(r, withMembers(plantedOn(r[1], "m2"), map[string]any{"outcome": "pass", "at": "2026-11-13T12:06:00Z", "seq": 8}))
@@ -275,9 +277,9 @@ func TestARefusalOfCICancelsTheResultsOfItsCommitAlone(t *testing.T) {
 		{name: "CI refused the check at c2, which passes at 10:30, and m2 passes with its caught failing example", refused: "c2",
 			changes: []change{run("c2", "pass", "2026-11-12T10:30:00Z", 5), at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
 			want:    "true (passed, counted from m2)", none: "true (passed, counted from m2)"},
-		{name: "CI refused the check at c2, which fails at 10:30, and m2 passes with its caught failing example: c2's failure counts nowhere", refused: "c2",
+		{name: "CI refused the check at c2, which fails at 10:30, and m2 passes with its caught failing example: c2's failure stays", refused: "c2",
 			changes: []change{run("c2", "fail", "2026-11-12T10:30:00Z", 5), at("2026-11-13T12:00:00Z"), fault("m2", "2026-11-13T12:05:00Z", 7)},
-			want:    "true (passed, counted from m2)", none: "unknown (disagree)"},
+			want:    "unknown (disagree)", none: "unknown (disagree)"},
 		{name: "control: CI refused the check at c4, whose results do not count at c1, c2 or m2, and c4 passes", refused: "c4",
 			changes: []change{run("c4", "pass", "2026-11-13T11:00:00Z", 5)}, want: "true (passed, counted from c1)", none: "true (passed, counted from c1)"},
 	} {

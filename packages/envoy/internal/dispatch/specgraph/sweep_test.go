@@ -234,20 +234,23 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 }
 
 // A refusal of CI at a commit A makes its check read unknown at A, whatever else holds there (R48:
-// "At that commit, such a check reads unknown, and no earlier result of it counts"), and it takes
-// the results of the check that refusalsTakeOut states for its base out of the derivation. So adding
-// one moves no check toward true, no statement or its own state toward met, and no wait toward ends,
-// but by one right: where the refusal takes results out, the results that stay can decide, and they
-// can read true (refusalTakesItsResultsOut). The right covers each place of a subject at another
-// commit than A where the input reads what the base reads with those results taken out of
-// results.json (withoutResultsOf), and no place at A, where R48 gives none. A refusal that the table
-// does not name takes out nothing, and has no right. The sweep adds one refusal at a time to
-// uncited.json of each base (sweepBases), at each commit that a record of the base names, for each
-// check of its approved spec that the base does not refuse there, and reads each one back as the
-// reader reads it, against the refusals that it means, built before its writer runs (refusalAdded,
-// refusalRead). A row of the table that names no refusal that the sweep adds, a base that is no base
-// of the sweeps, and a seq that names no one result of the row's check fail the test by name.
-func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
+// "At that commit, such a check reads unknown, and no earlier result of it counts"), and of the
+// results of A it takes out of the derivation only those that support true: a pass, and a failing
+// example that caught its fault. Its failures, its runs that could not run and its failing examples
+// that missed their fault stay wherever they count (R7: "a later failure cancels an earlier pass";
+// R9: "never as true"). So adding one moves no check toward true, no statement or its own state
+// toward met, and no wait toward ends, and the sweep gives a refusal no right. refusalsTakeOut states
+// as data, for each base, which results each refusal takes out; at each subject at another commit
+// than A, such a refusal reads as the base with those results taken out of results.json
+// (withoutResultsOf), so a refusal that takes out more or less than its row says fails by the row.
+// A refusal that the table does not name takes out nothing that counts at another subject. The
+// sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each commit that a
+// record of the base names, for each check of its approved spec that the base does not refuse
+// there, and reads each one back as the reader reads it, against the refusals that it means, built
+// before its writer runs (refusalAdded, refusalRead). A row of the table that names no refusal that
+// the sweep adds, a base that is no base of the sweeps, and a seq that names no one result of the
+// row's check fail the test by name.
+func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "refusals", bases)
@@ -266,6 +269,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 				t.Fatalf("the base: %v", err)
 			}
 			current, _ := s.Approved.Current()
+			whole := baseStates(t, base)
 			rows := takesOut[name]
 			added := make([]bool, len(rows))
 			var inputs []sweepInput
@@ -276,9 +280,18 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 					}
 					fsys := refusalAdded(t, base, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if i := slices.IndexFunc(rows, func(r refusalOut) bool { return r.commit == commit && r.check == c.ID }); i >= 0 {
+					i := slices.IndexFunc(rows, func(r refusalOut) bool { return r.commit == commit && r.check == c.ID })
+					got, err := scenarioStates(fsys)
+					switch {
+					case err != nil && i >= 0:
+						t.Fatalf("%s: %v", in.what, err)
+					case i >= 0:
 						added[i] = true
-						in.right, in.allowed = refusalTakesItsResultsOut, withoutResultsOf(t, base, rows[i])
+						if want := withoutResultsOf(t, base, rows[i]); !maps.Equal(awayFrom(s, commit, got), want) {
+							t.Errorf("%s reads at the subjects at other commits than %s:\n%v\nand the base with the results of seq %v taken out reads:\n%v", in.what, commit, awayFrom(s, commit, got), rows[i].seqs, want)
+						}
+					case err == nil && !maps.Equal(awayFrom(s, commit, got), awayFrom(s, commit, whole)):
+						t.Errorf("%s, which refusalsTakeOut does not name, reads at the subjects at other commits than %s:\n%v\nand the base reads:\n%v", in.what, commit, awayFrom(s, commit, got), awayFrom(s, commit, whole))
 					}
 					inputs = append(inputs, in)
 				}
@@ -290,8 +303,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 			}
 			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "refusals", name, n)
-			t.Logf("%d refusals added: %d refused, %d read, %d of them toward true by right: %q",
-				n.inputs, n.refused, n.read, n.byRight, n.rights)
+			t.Logf("%d refusals added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})
 	}
 }
@@ -304,37 +316,40 @@ type refusalOut struct {
 }
 
 // refusalsTakeOut is, for each base of the sweeps (sweepBases) by its name, each refusal of CI that
-// the refusal sweep adds and that takes results out of the derivation, with those results by their
-// seq in the base's results.json. It is data, written from the records of each base, and not a
-// second reading of the rule that the derivation applies: a change of what a refusal takes out is a
-// change of these rows. A refusal that it does not name takes out nothing. It is a function that
-// gives a new table at each call.
+// the refusal sweep adds and that takes results that count at another subject out of the
+// derivation, with those results by their seq in the base's results.json: of the refused commit's
+// results of the check, a pass and a failing example that caught its fault. It is data, written
+// from the records of each base, and not a second reading of the rule that the derivation applies: a
+// change of what a refusal takes out is a change of these rows. A refusal that it does not name
+// takes out nothing that counts at another subject. It is a function that gives a new table at each
+// call.
 func refusalsTakeOut() map[string][]refusalOut {
 	const code, program = "a-restart-loses-no-message", "a-production-restart-loses-no-message"
 	// The rows that several bases share: of carry and of most bases built from it, a refusal of its
 	// check at c1 takes out its pass at c1 (seq 1) and its failing example planted on c1 (seq 2), and
 	// one at c3 its pass at c3 (seq 3); of each base of production-and-graph that keeps its program
-	// check of production, a refusal at c1 takes out that check's three results, each of test_commit
-	// c1; and of each base of wait-cycle, a refusal at b1 takes out the run and the failing example of
-	// each of its three checks there.
+	// check of production, a refusal at c1 takes out that check's pass and caught failing example of
+	// test_commit c1 (seq 1 and 2), and keeps its failing run (seq 3); and of each base of wait-cycle,
+	// a refusal at b1 takes out the pass and the caught failing example of each of its two passing
+	// checks there, and the caught failing example alone of the third, whose run failed.
 	carry := []refusalOut{{"c1", code, []int64{1, 2}}, {"c3", code, []int64{3}}}
-	production := []refusalOut{{"c1", program, []int64{1, 2, 3}}}
+	production := []refusalOut{{"c1", program, []int64{1, 2}}}
 	waitCycle := []refusalOut{
 		{"b1", "a-sent-message-reaches-a-listener", []int64{1, 2}},
 		{"b1", "a-late-session-gets-the-message", []int64{3, 4}},
-		{"b1", "a-restart-keeps-the-message", []int64{5, 6}},
+		{"b1", "a-restart-keeps-the-message", []int64{6}},
 	}
 	return map[string][]refusalOut{
 		"carry": carry,
 		"carry with a failure of c0, c1's parent, and a later pass of c2": slices.Concat(carry,
-			[]refusalOut{{"c0", code, []int64{5}}, {"c2", code, []int64{6, 7}}}),
+			[]refusalOut{{"c2", code, []int64{6, 7}}}),
 		"carry with a later failing example planted by no step":                      carry,
-		"carry with a later failing example planted on c1 that missed its fault":     {{"c1", code, []int64{1, 2, 5}}, {"c3", code, []int64{3}}},
+		"carry with a later failing example planted on c1 that missed its fault":     {{"c1", code, []int64{1, 2}}, {"c3", code, []int64{3}}},
 		"carry with a later failing example planted on c9, no commit of the history": carry,
 		"carry with c2's failure at 10:30 and a later pass of m2": slices.Concat(carry,
-			[]refusalOut{{"c2", code, []int64{5}}, {"m2", code, []int64{6, 7}}}),
+			[]refusalOut{{"m2", code, []int64{6, 7}}}),
 		"carry with c2's failure between c1's pass and c1's failing example": slices.Concat(carry,
-			[]refusalOut{{"c2", code, []int64{5, 6, 7}}}),
+			[]refusalOut{{"c2", code, []int64{6, 7}}}),
 		"carry with its failing example planted by no step": {{"c1", code, []int64{1}}, {"c3", code, []int64{3}}},
 		"earlier-text": {{"c0", "messages-come-in-the-order-of-their-writes", []int64{1, 2}}},
 		"one-commit-two-answers": {
@@ -363,13 +378,9 @@ func refusalsTakeOut() map[string][]refusalOut {
 	}
 }
 
-// refusalTakesItsResultsOut is the right of a refusal of CI that takes results of its check out of
-// the derivation (refusalsTakeOut): those results count nowhere, and the results that stay decide.
-const refusalTakesItsResultsOut = `the results that the refusal takes out count nowhere, and the results that stay decide (R48: "no earlier result of it counts")`
-
 // withoutResultsOf is the states of base (scenarioStates) with each result that the refusal of row
-// takes out (refusalsTakeOut) taken out of results.json, and with no state of a subject at the row's
-// commit: the places that the refusal may move toward true, each to the state given here. Each seq of
+// takes out (refusalsTakeOut) taken out of results.json, at each subject at another commit than the
+// row's (awayFrom): at that commit the refusal itself decides. Each seq of
 // the row names one result of base, of the row's check, or the test fails by the row. The results
 // that it means, as the reader reads them, and the place of each record to take out come from a
 // decode of base of their own, made before the writer runs; the writer (resultsWithout) is handed a
@@ -401,12 +412,18 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, row refusalOut) map[strin
 	if err != nil {
 		t.Fatalf("the base with the results of seq %v taken out: %v", row.seqs, err)
 	}
+	return awayFrom(s, row.commit, states)
+}
+
+// awayFrom is states with no state of a subject of s at commit.
+func awayFrom(s Scenario, commit string, states map[string]string) map[string]string {
+	away := maps.Clone(states)
 	for i, subject := range s.Subjects {
-		if subject.Commit == row.commit {
-			maps.DeleteFunc(states, func(at, _ string) bool { return strings.HasPrefix(at, fmt.Sprintf("subject %d ", i+1)) })
+		if subject.Commit == commit {
+			maps.DeleteFunc(away, func(at, _ string) bool { return strings.HasPrefix(at, fmt.Sprintf("subject %d ", i+1)) })
 		}
 	}
-	return states
+	return away
 }
 
 // resultsWithout is the writer of withoutResultsOf: the tree of results.json that it is handed

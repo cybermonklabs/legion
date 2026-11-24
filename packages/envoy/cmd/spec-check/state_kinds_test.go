@@ -323,19 +323,17 @@ func TestARefusalOfAnAgentOrAQueryOfTheCodeTakesOutTheResultsOfItsCommit(t *test
 // R48: "At that commit, such a check reads unknown, and no earlier result of it counts." R8: "A
 // result at one commit also counts at another commit when no code that the check runs changed
 // between the two." A program check of production or of the graph reads the commit of its test,
-// the test_commit of its results, as a check of the code reads the commit of its results, so the
-// results whose test ran at a commit where CI refused the check count nowhere, at it or where R8
-// would carry them: its runs and its failing examples alike. Each row: production-and-graph with its
-// program check of production written as the row's kind, c2 a commit of c1's tree, the check's pass
-// at test_commit c2 and its caught failing example at c1, each of which counts at m2, and CI's
-// refusal at c1 or at none. The failing examples: with its failing run of 11:00 taken out, it reads
-// true with no refusal (the control), and with the refusal unknown (no_failing_example): the pass of
-// c2 counts, and the failing example of c1 counts nowhere. The runs: with that run of c1 one that
-// could not run, it reads unknown (could_not_run) with no refusal (the control), and with the
-// refusal unknown (no_failing_example): that run counts nowhere, so the pass of c2 is the newest run
-// that counts. A failing run in its place would show no runs half for production, whose newest run
-// decides after its failing example: the refusal takes out the failing example of c1 too, so the
-// check reads unknown (no_failing_example) whether that failing run counts or not.
+// the test_commit of its results, as a check of the code reads the commit of its results, so of the
+// results whose test ran at a commit where CI refused the check, those that support true count
+// nowhere, at it or where R8 would carry them: a pass and a failing example that caught its fault;
+// and a run that could not run stays wherever it counts, since a refusal never moves a state toward
+// true. Each row: production-and-graph with its program check of production written as the row's
+// kind, c2 a commit of c1's tree, the check's pass at test_commit c2 and its caught failing example
+// at c1, each of which counts at m2, and CI's refusal at c1 or at none. The failing examples: with
+// its failing run of 11:00 taken out, it reads true with no refusal (the control), and with the
+// refusal unknown (no_failing_example): the pass of c2 counts, and the failing example of c1 counts
+// nowhere. The runs: with that run of c1 one that could not run, it reads unknown (could_not_run)
+// with no refusal, and with the refusal too: the refusal keeps that run, the newest that counts.
 func TestARefusalOfAProgramCheckOfProductionOrOfTheGraphTakesOutTheResultsOfItsTestCommit(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -356,7 +354,7 @@ func TestARefusalOfAProgramCheckOfProductionOrOfTheGraphTakesOutTheResultsOfItsT
 				{"failing examples", "", "true (passed, counted from " + k.from + ")"},
 				{"failing examples", "c1", "unknown (no_failing_example)"},
 				{"runs", "", "unknown (could_not_run)"},
-				{"runs", "c1", "unknown (no_failing_example)"},
+				{"runs", "c1", "unknown (could_not_run)"},
 			} {
 				dir := scenarioAs(t, "production-and-graph", check, specgraph.ProcedureProgram, k.subject)
 				withCommitOf(t, dir, "c2", "c1")

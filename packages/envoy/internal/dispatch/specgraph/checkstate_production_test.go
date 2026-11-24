@@ -168,6 +168,23 @@ func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
 		At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
 }
 
+// programResult is a result of the program check q of production or of the graph, of kind with
+// outcome, of its test at testCommit, recorded after after checkStateRun: a run under deploy d2 or
+// at the transaction tx1, reported by q's job, or a failing example of author-b's fault in
+// author-a's test, as programPass's results are.
+func programResult(q Check, kind ResultKind, outcome Outcome, testCommit string, after time.Duration) Result {
+	r := Result{Check: q.ID, Kind: kind, Outcome: outcome, TestCommit: testCommit, At: checkStateRun.Add(after)}
+	switch {
+	case kind == ResultFailingExample:
+		r.FaultAuthor, r.TestAuthors = "author-b", []string{"author-a"}
+	case q.Subject == SubjectGraph:
+		r.Job, r.GraphTx = q.Test.Job, "tx1"
+	default:
+		r.Job, r.Deploy = q.Test.Job, "d2"
+	}
+	return r
+}
+
 // productionRun is a run of a production check under deploy, recorded at at.
 func productionRun(c Check, deploy string, outcome Outcome, at time.Time) Result {
 	r := Result{Check: c.ID, Kind: ResultRun, Outcome: outcome, Deploy: deploy, At: at}

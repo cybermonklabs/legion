@@ -51,8 +51,9 @@ func subjectFault(p Point, now time.Time) string {
 // commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
 // marks how each member reads when the caller does not set it (memberMark): a run of a job never
 // moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
-// cancels the results of that commit wherever they count (R48, CheckStates step 2), so each can
-// move a state away from what the evidence without it gives, and the caller gives JobRuns and
+// cancels the results of that commit that support true wherever they count (R48, CheckStates step
+// 2), so each can move a state away from what the evidence without it gives, and never toward
+// true, and the caller gives JobRuns and
 // Uncited, empty for none, and Input.check refuses nil. With no tie, or no history, no result
 // carries: a result counts only at its own commit, so a failure at another commit then says nothing
 // about this one. So a caller that gives no Ties or no History is refused too, and one that states
@@ -141,16 +142,20 @@ const (
 //     result of it counts"): unknown, uncited, Detail the rule, whatever else holds there: C's
 //     results at S.Commit before or after the refusal, a result carried from another commit, or
 //     newer evidence of another commit that would count there, so no result of C makes it true
-//     or false at S.Commit. The own results of a commit where CI refused C, the candidates of step
-//     3 whose commit is that commit (resultCommit; for a failing example of a program check of the
-//     code, the commit that it counts from, faultCommit), count nowhere, at it or where R8 would
-//     carry them: R48 cancelled them at their commit, so R8 has nothing to carry
-//     (withoutRefused). With such a result taken out that would count at S and no run left that
-//     counts at S: unknown, uncited, Detail the least rule by its name of those refusals, so that
-//     the order of the results does not choose it. The own results of every other commit are R7's
-//     and R8's, whatever CI refused elsewhere: a refusal cancels no result of another commit, so a
-//     pass and a failure of one procedure at one commit read unknown, disagree, and whether a
-//     result carries across the refused commit is the question of the ties and the history (R8: "A
+//     or false at S.Commit. Of the own results of a commit where CI refused C, the candidates of
+//     step 3 whose commit is that commit (resultCommit; for a failing example of a program check
+//     of the code, the commit that it counts from, faultCommit), those that support true, a pass
+//     and a failing example that caught its fault, count nowhere, at it or where R8 would carry
+//     them; its failures, its runs that could not run and its failing examples that missed their
+//     fault count wherever they would, since at another subject R7 decides ("a later failure
+//     cancels an earlier pass") and R9's unknown cases read "never as true", so a refusal never
+//     moves a state toward true (withoutRefused). With such a result taken out that would count at
+//     S and no run left that counts at S: unknown, uncited, Detail the least rule by its name of
+//     those refusals, so that the order of the results does not choose it. The own results of
+//     every other commit are R7's and R8's, whatever CI refused elsewhere: a refusal cancels no
+//     result of another commit, so a pass and a failure of one procedure at one commit read
+//     unknown, disagree, and whether a result carries across the refused commit is the question of
+//     the ties and the history (R8: "A
 //     result at one commit also counts at another commit when no code that the check runs changed
 //     between the two"). A query or an agent of production or of the graph has no commit of a
 //     result, so only CI's refusal at S.Commit counts for it, whatever commit a result's TestCommit
@@ -701,17 +706,20 @@ func (j *checkJudge) carries(check, commit string) bool {
 }
 
 // withoutRefused takes out of runs and faults, the candidates of c (step 2), each result of a
-// commit where CI refused c, by the commit where its job ran (resultCommit), and a failing example
-// by the commit that it counts from (faultCommit), the commit that the step planted the fault on for
-// a program check of the code: R48 makes c read unknown at that commit and no result of it counts
-// there, so the refused commit's own results count nowhere, at it or where R8 would carry them.
-// The results of each other commit stay, whatever CI refused elsewhere (R7, R8). refused is whether
-// a result taken out would have counted at the subject, and rule the least rule, by its name, of
-// those refusals, so that the order of the results, which says nothing, does not choose the rule
-// that the state names. A check whose results count at no commit (CountsAtACommit), a query or an
-// agent of production or of the graph, has no result of a commit, so it keeps each candidate,
-// whatever commit a result's TestCommit names: only CI's refusal at S.Commit counts for it, before
-// its results are read.
+// commit where CI refused c that supports true (supportsTrue): a pass, by the commit where its job
+// ran (resultCommit), and a failing example that caught its fault, by the commit that it counts
+// from (faultCommit), the commit that the step planted the fault on for a program check of the
+// code. R48 bounds a refusal to its commit ("At that commit, such a check reads unknown, and no
+// earlier result of it counts"), and at every other subject R7 decides, where "a later failure
+// cancels an earlier pass", and R9's unknown cases read "never as true": so the refused commit's
+// failures, its runs that could not run and its failing examples that missed their fault stay
+// wherever they count, and a refusal never moves a state toward true. The results of each other
+// commit stay, whatever CI refused elsewhere. refused is whether a result taken out would have
+// counted at the subject, and rule the least rule, by its name, of those refusals, so that the
+// order of the results, which says nothing, does not choose the rule that the state names. A
+// check whose results count at no commit (CountsAtACommit), a query or an agent of production or
+// of the graph, has no result of a commit, so it keeps each candidate, whatever commit a result's
+// TestCommit names: only CI's refusal at S.Commit counts for it, before its results are read.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
 	if !CountsAtACommit(c) {
 		return "", false, runs, faults
@@ -720,7 +728,7 @@ func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string
 		return func(r Result) bool {
 			commit := commitOf(r)
 			other, at := j.in.Uncited[commit][c.ID]
-			if !at {
+			if !at || !supportsTrue(r) {
 				return true
 			}
 			if j.carries(c.ID, commit) && (!refused || other < rule) {
@@ -732,6 +740,16 @@ func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string
 	keptRuns = resultsWhere(runs, kept(resultCommit))
 	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }))
 	return rule, refused, keptRuns, keptFaults
+}
+
+// supportsTrue is whether the result r, a run or a failing example, is evidence toward true: a run
+// that passed, or a failing example on which the test failed, as it must (R9). A failure, a run that
+// could not run and a failing example that missed its fault each keep a check from true.
+func supportsTrue(r Result) bool {
+	if r.Kind == ResultFailingExample {
+		return r.Outcome == OutcomeFail
+	}
+	return r.Outcome == OutcomePass
 }
 
 // jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the

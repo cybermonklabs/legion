@@ -226,7 +226,7 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 		{"a later failing example planted on c9, no commit of the history, where CI refused the check", then(later(map[string]any{"planted_on": "c9"}), refusedAt("c9")), atEach("unknown (planted_on_outside_history c9)")},
 		{"a later failing example planted on f1, no commit of the history, where CI refused the check", then(later(map[string]any{"planted_on": "f1"}), refusedAt("f1")), atEach("unknown (planted_on_outside_history f1)")},
 		{"a later failing example planted on c9, no commit of the history, at f2 where CI refused the check", then(later(map[string]any{"planted_on": "c9"}), refusedAt("f2")), atEach("unknown (planted_on_outside_history c9)")},
-		{"control: CI's refusal at c2 takes out a later failing example planted on c2, which carries to c1 and m2", then(later(map[string]any{"planted_on": "c2", "commit": "f-c2"}), refusedAt("c2")), map[string]string{"c1": fromC1, "m2": fromC1}},
+		{"CI's refusal at c2 keeps a later failing example planted on c2 that missed its fault, which carries to c1 and m2", then(later(map[string]any{"planted_on": "c2", "commit": "f-c2"}), refusedAt("c2")), map[string]string{"c1": "unknown (failing_example_missed)", "m2": "unknown (failing_example_missed)"}},
 		{"control: a later failing example that missed its fault planted on c3, which does not carry to c1, c2 or m2", later(map[string]any{"planted_on": "c3", "commit": "f-c3"}), atEach(fromC1)},
 		{"a second fault, planted on c3 and tested at f3, makes the check true at c3", results(func(r []map[string]any) []map[string]any {
 			return append(r, withMembers(r[1], map[string]any{"commit": "f3", "planted_on": "c3", "at": "2026-11-13T10:05:00Z", "seq": 5}))
