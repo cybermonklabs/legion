@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    `legion gh api` places a release-asset upload URL, `https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>`,
+    on its repository as it places an `api.github.com` URL. It refused that host before (`names another
+    host than api.github.com`), so a script that uploads release assets through `gh api` could not run
+    under it. Every other host is still refused.
+time: 2026-11-24T00:43:58Z
+custom:
+    Issue: gh-uploads-host

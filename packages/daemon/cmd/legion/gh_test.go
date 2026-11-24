@@ -628,6 +628,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// A URL is one in any case, as gh parses it.
 		{argv: []string{"pr", "view", "HTTPS://GITHUB.COM/sjawhar/legion/pull/1"}, owner: "sjawhar"},
 		{argv: []string{"api", "HTTPS://API.GITHUB.COM/repos/sjawhar/legion"}, owner: "sjawhar"},
+		{argv: []string{"api", "HTTPS://UPLOADS.GITHUB.COM/repos/sjawhar/legion/releases/1/assets?name=x"}, owner: "sjawhar"},
 		{argv: []string{"api", "REPOS/sjawhar/legion"}, owner: "sjawhar"},
 		// A command naming no repository, and GH_REPO where the leaf reads it.
 		{argv: []string{"pr", "list"}},
@@ -672,6 +673,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"--bogus", "pr", "list"}, err: `"--bogus" comes before the command's name`},
 		{argv: []string{"api", "repositories/12345"}, err: "by its id"},
 		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/w"}, err: "another host"},
+		{argv: []string{"api", "https://example.com/repos/acme/widgets"}, err: "names another host than api.github.com"},
 		{argv: []string{"api", "--hostname", "ghe.example.com", "repos/acme/w"}, err: "another host"},
 		{argv: []string{"api", "repos/../x/y"}, err: `"..", which is no GitHub login`},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "../x/y"}, err: `names another host`},
@@ -848,6 +850,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "REPOS/sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
+		{argv: []string{"api", "https://uploads.github.com/repos/acme/widgets/releases/456153056/assets?name=zlib-bin.tar.zst"}, owner: "acme", repo: "widgets"},
 		{argv: []string{"api", "search/issues?q=repo:sjawhar/legion+is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/{owner}/{repo}/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},

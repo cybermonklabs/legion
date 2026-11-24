@@ -440,17 +440,18 @@ func (s *selectors) query(words []string) error {
 
 // endpoint collects the owner a gh api endpoint names, and the repository where it names one:
 // repos/<owner>/<repo>, repos/<owner>/, orgs/<owner>/ or users/<owner>/, with or without the
-// API's host before it, and a search endpoint's q, reporting whether it is a search endpoint,
-// whose q field is its query too. A placeholder in the owner's place names none (GH_REPO's, or
-// the working directory's, fills it), and one in the repository's names the owner alone, since
-// what fills it is read where gh reads it (fromOwnRepository); a repository named by id
-// (repositories/<id>) and another host are errors. gh reads an endpoint holding "://" as a whole
-// URL.
+// API's host before it, api.github.com or uploads.github.com (where a release's assets are
+// uploaded, repos/<owner>/<repo>/releases/<id>/assets), whose path is read alike, and a search
+// endpoint's q, reporting whether it is a search endpoint, whose q field is its query too. A
+// placeholder in the owner's place names none (GH_REPO's, or the working directory's, fills it),
+// and one in the repository's names the owner alone, since what fills it is read where gh reads it
+// (fromOwnRepository); a repository named by id (repositories/<id>) and any other host are errors.
+// gh reads an endpoint holding "://" as a whole URL.
 func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	path := endpoint
 	if strings.Contains(endpoint, "://") {
 		parsed, err := url.Parse(endpoint)
-		if err != nil || !strings.EqualFold(parsed.Host, "api.github.com") {
+		if err != nil || (!strings.EqualFold(parsed.Host, "api.github.com") && !strings.EqualFold(parsed.Host, "uploads.github.com")) {
 			return false, cannotPlace(endpoint, "names another host than api.github.com", true)
 		}
 		path = parsed.Path
