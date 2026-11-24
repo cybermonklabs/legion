@@ -2000,7 +2000,7 @@ func (e *Engine) memoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.Mem
 	case shimwire.MemoryKillCauseKernel:
 		note, told = kernelKillNote(report, stopped), "workflow: the role whose process the pod's kernel stopped is told why"
 	case shimwire.MemoryKillCauseKernelProtected:
-		stopped = memoryKillSession
+		stopped = memoryKillCommand
 		note, told = kernelKillNote(report, stopped), "workflow: the role whose session's own process the pod's kernel stopped is told why"
 	default:
 		note, told = memoryGuardNote(report), "workflow: the role whose process the memory guard ended is told why"
