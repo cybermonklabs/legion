@@ -22,7 +22,7 @@ import (
 // twin shows a client that follows the 307 sends the stand-in the session id, so the rows can see
 // one sent on. Captures mcpbridge.redirect-followed/<case>, what the stand-in was sent.
 func TestAPostFollowsNoRedirectOffItsEndpointsOrigin(t *testing.T) {
-	const session = "sess-not-a-secret-7Qz4k"
+	const session = "sess-not-a-secret-token-7Qz4k"
 	target, sent := redirectstest.Sent(t)
 	serve := func(endpoint func(host string) string, credential func(r *http.Request) string) string {
 		mux := http.NewServeMux()
@@ -47,14 +47,12 @@ func TestAPostFollowsNoRedirectOffItsEndpointsOrigin(t *testing.T) {
 		return "http://" + host + "/message?sessionId=" + session
 	}, func(r *http.Request) string { return r.URL.Query().Get("sessionId") })
 	t.Run("twin", func(t *testing.T) {
-		response, err := http.DefaultClient.Post(sessioned+"/message?sessionId="+session, "application/json", strings.NewReader(`{}`))
+		request, err := http.NewRequest(http.MethodPost, sessioned+"/message?sessionId="+session, strings.NewReader(`{}`))
 		if err != nil {
-			t.Fatalf("a client that follows the 307 failed: %v", err)
+			t.Fatal(err)
 		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, session) {
-			t.Fatalf("a client that follows the 307 sent the stand-in no session id, so the rows cannot see one sent on: %q", text)
-		}
+		request.Header.Set("Content-Type", "application/json")
+		redirectstest.RequireSentOn(t, request, session, sent)
 	})
 	basic := serve(func(host string) string {
 		return "http://" + redacttest.User + ":" + redacttest.Password + "@" + host + "/message"

@@ -22,25 +22,13 @@ import (
 func TestAListenerRedirectPrintsNoLocationOfIt(t *testing.T) {
 	const bearer = "not-a-secret-listener-RDX-0b6d"
 	dead := redirectstest.Dead(t)
-	echo := func(location func(bearer string) string) string {
-		return redirectstest.Echo(t, "Authorization", func(authorization string) string {
-			return location(strings.TrimPrefix(authorization, "Bearer "))
-		})
-	}
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, echo(redirectstest.Unparsed)+SessionsRoute, nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+SessionsRoute, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), bearer) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, bearer)
 	})
 	calls := []struct {
 		name string
@@ -63,7 +51,7 @@ func TestAListenerRedirectPrintsNoLocationOfIt(t *testing.T) {
 			{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }},
 		} {
 			t.Run(call.name+"-"+c.name, func(t *testing.T) {
-				err := call.call(&Client{URL: echo(c.location), Token: bearer, HTTP: &http.Client{}})
+				err := call.call(&Client{URL: redirectstest.EchoBearer(t, c.location), Token: bearer, HTTP: &http.Client{}})
 				if err == nil {
 					t.Fatal("the call answered no error")
 				}

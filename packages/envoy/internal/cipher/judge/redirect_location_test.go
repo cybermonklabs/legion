@@ -1,14 +1,13 @@
 package judge
 
 import (
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
+	"github.com/sjawhar/envoy/redirects/redirectstest"
 )
 
 // TestAJudgeReadRedirectPrintsNoLocationOfIt: whatever answers at Dispatch's address answers the
@@ -22,26 +21,16 @@ import (
 // Captures judge.redirect/<case>.
 func TestAJudgeReadRedirectPrintsNoLocationOfIt(t *testing.T) {
 	const token = "mz6rd-not-a-secret-RDX-c2f8"
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dead := closed.Addr().String()
-	_ = closed.Close()
+	dead := redirectstest.Dead(t)
 	for _, c := range []struct {
 		name     string
 		location func(bearer string) string
 	}{
-		{"unparsed", func(bearer string) string { return "/moved%zz" + bearer }},
-		{"elsewhere", func(bearer string) string { return "http://" + dead + "/moved?access_token=" + bearer }},
+		{"unparsed", redirectstest.Unparsed},
+		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Location", c.location(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
-				w.WriteHeader(http.StatusFound)
-			}))
-			defer server.Close()
-			dispatch := Dispatch{BaseURL: server.URL, Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: &http.Client{}}
+			dispatch := Dispatch{BaseURL: redirectstest.EchoBearer(t, c.location), Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: &http.Client{}}
 			_, err := dispatch.Issue(t.Context(), testIssue)
 			if err == nil {
 				t.Fatal("the issue read answered no error")

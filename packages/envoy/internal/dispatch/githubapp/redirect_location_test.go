@@ -117,23 +117,17 @@ func TestAGitHubCallThatGetsNoAnswerPrintsNoCredentialItCarried(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.Header.Set("Authorization", "Bearer "+redirectToken)
-			response, err := http.DefaultClient.Do(request)
-			if c.name == "followed" {
-				if err != nil {
-					t.Fatalf("a client that follows every redirect got no answer from the target: %v", err)
-				}
-				_ = response.Body.Close()
-				if n := asked(); n != 1 {
-					t.Fatalf("a client that follows every redirect asked the target %d times, want 1: the row cannot see one", n)
-				}
+			if c.name != "followed" {
+				redirectstest.RequireEcho(t, request, redirectToken)
 				return
 			}
-			if err == nil {
-				_ = response.Body.Close()
-				t.Fatalf("net/http answered %d with no error: the row cannot see one", response.StatusCode)
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("a client that follows every redirect got no answer from the target: %v", err)
 			}
-			if !strings.Contains(err.Error(), redirectToken) {
-				t.Fatalf("net/http's own error holds no echo of the token, so the row cannot see a leak: %q", err)
+			_ = response.Body.Close()
+			if n := asked(); n != 1 {
+				t.Fatalf("a client that follows every redirect asked the target %d times, want 1: the row cannot see one", n)
 			}
 		})
 	}

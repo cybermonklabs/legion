@@ -81,9 +81,7 @@ func TestAGoogleOrIssuerCallFollowsNoRedirect(t *testing.T) {
 		account         = "example-fleet@example-project.iam.gserviceaccount.com"
 	)
 	target, sent := redirectstest.Sent(t)
-	bearerTo := func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	}
+	bearerTo := func(bearer string) string { return redirectstest.To(target, bearer) }
 	t.Run("twin", func(t *testing.T) {
 		const credential = "followed-twin-RDX-8e3f5a10"
 		post := func(t *testing.T, endpoint, header, value, body string) *http.Request {
@@ -95,21 +93,17 @@ func TestAGoogleOrIssuerCallFollowsNoRedirect(t *testing.T) {
 			r.Header.Set(header, value)
 			return r
 		}
-		for name, r := range map[string]*http.Request{
-			"a JSON body's 307": post(t, newRawServer(t, bodyEcho(http.StatusTemporaryRedirect, target, "subjectToken")),
+		for _, r := range []*http.Request{
+			// a JSON body's 307
+			post(t, newRawServer(t, bodyEcho(http.StatusTemporaryRedirect, target, "subjectToken")),
 				"Content-Type", "application/json", `{"subjectToken":"`+credential+`"}`),
-			"a bearer's 302": post(t, redirectstest.Echo(t, "Authorization", bearerTo), "Authorization", "Bearer "+credential, ""),
-			"a form's 302": post(t, echoIssuer(t, bodyEcho(http.StatusFound, target, "device_code"))+"/token",
+			// a bearer's 302
+			post(t, redirectstest.EchoBearer(t, bearerTo), "Authorization", "Bearer "+credential, ""),
+			// a form's 302
+			post(t, echoIssuer(t, bodyEcho(http.StatusFound, target, "device_code"))+"/token",
 				"Content-Type", "application/x-www-form-urlencoded", url.Values{"device_code": {credential}}.Encode()),
 		} {
-			response, err := http.DefaultClient.Do(r)
-			if err != nil {
-				t.Fatalf("a client that follows %s failed: %v", name, err)
-			}
-			_ = response.Body.Close()
-			if text := sent(); !strings.Contains(text, credential) {
-				t.Fatalf("a client that follows %s sent the stand-in no credential, so the rows cannot see one sent on: %q", name, text)
-			}
+			redirectstest.RequireSentOn(t, r, credential, sent)
 		}
 	})
 	dead := "http://" + redirectstest.Dead(t)
@@ -137,7 +131,7 @@ func TestAGoogleOrIssuerCallFollowsNoRedirect(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]string{"access_token": federated})
 			})
-			return pool(t, sts, redirectstest.Echo(t, "Authorization", bearerTo))
+			return pool(t, sts, redirectstest.EchoBearer(t, bearerTo))
 		}},
 		{"device", "HTTP 302", []string{deviceCode, clientWord}, func(t *testing.T) error {
 			_, err := signIn(t, "device_code").Wait(context.Background(), &oauth2.DeviceAuthResponse{DeviceCode: deviceCode, Interval: 1, Expiry: time.Now().Add(time.Minute)})

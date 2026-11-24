@@ -33,14 +33,7 @@ func TestAnEnrolmentRedirectPrintsNoLocationOfIt(t *testing.T) {
 			t.Fatal(err)
 		}
 		request.Header.Set("Proof", registrarToken)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), registrarToken) {
-			t.Fatalf("net/http's own error holds no echo of the proof, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, registrarToken)
 	})
 	for _, at := range []string{"login", "enrolment"} {
 		t.Run(at, func(t *testing.T) {
@@ -102,11 +95,6 @@ func TestAnEnrolmentRedirectPrintsNoLocationOfIt(t *testing.T) {
 func TestABoundProbeRedirectPrintsNoLocationOfIt(t *testing.T) {
 	const bearer = "not-a-secret-demo-RDX-9e02"
 	dead := redirectstest.Dead(t)
-	echo := func(location func(bearer string) string) string {
-		return redirectstest.Echo(t, "Authorization", func(authorization string) string {
-			return location(strings.TrimPrefix(authorization, "Bearer "))
-		})
-	}
 	probe := func(t *testing.T, address string) string {
 		t.Setenv("AIRLOCK_S_URL", address)
 		t.Setenv("AIRLOCK_DEMO_TOKEN", bearer)
@@ -117,19 +105,12 @@ func TestABoundProbeRedirectPrintsNoLocationOfIt(t *testing.T) {
 		return stdout.String()
 	}
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, echo(redirectstest.Unparsed)+"/go", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/go", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), bearer) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, bearer)
 	})
 	for _, c := range []struct {
 		name     string
@@ -139,7 +120,7 @@ func TestABoundProbeRedirectPrintsNoLocationOfIt(t *testing.T) {
 		{"elsewhere", func(bearer string) string { return redirectstest.To(dead, bearer) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			printed := probe(t, echo(c.location))
+			printed := probe(t, redirectstest.EchoBearer(t, c.location))
 			redacttest.RequireNoPiece(t, "dev-proxy-stands.probe-redirect/"+c.name, printed, bearer)
 			if strings.Contains(printed, "moved") {
 				t.Errorf("probe-bound printed the Location: %q", printed)
@@ -148,7 +129,7 @@ func TestABoundProbeRedirectPrintsNoLocationOfIt(t *testing.T) {
 	}
 	t.Run("followed", func(t *testing.T) {
 		target, asked := redirectstest.Target(t)
-		if printed := probe(t, echo(func(bearer string) string { return redirectstest.To(target, bearer) })); printed != "302\n" {
+		if printed := probe(t, redirectstest.EchoBearer(t, func(bearer string) string { return redirectstest.To(target, bearer) })); printed != "302\n" {
 			t.Errorf("probe-bound printed %q; want the redirect's own status, 302", printed)
 		}
 		if n := asked(); n != 0 {

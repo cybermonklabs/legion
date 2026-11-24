@@ -40,14 +40,12 @@ func TestATokenExchangeFollowsNoRedirect(t *testing.T) {
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, status := range statuses {
-			response, err := http.PostForm(sts(t, status), url.Values{"subject_token": {token}})
+			request, err := http.NewRequest(http.MethodPost, sts(t, status), strings.NewReader(url.Values{"subject_token": {token}}.Encode()))
 			if err != nil {
-				t.Fatalf("a client that follows the %d failed: %v", status, err)
+				t.Fatal(err)
 			}
-			_ = response.Body.Close()
-			if text := sent(); !strings.Contains(text, token) {
-				t.Fatalf("a client that follows the %d sent the stand-in no token, so the rows cannot see one sent on: %q", status, text)
-			}
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			redirectstest.RequireSentOn(t, request, token, sent)
 		}
 	})
 	for _, status := range statuses {

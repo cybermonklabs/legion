@@ -20,23 +20,14 @@ import (
 func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 	const token = "wd3kc-not-a-secret-RDX-b7e2"
 	target, sent := redirectstest.Sent(t)
-	location := func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	}
+	location := func(bearer string) string { return redirectstest.To(target, bearer) }
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", location)+"/api/v1/issues/"+testIssue, nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, location)+"/api/v1/issues/"+testIssue, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, token) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no token, so the row cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, token, sent)
 	})
 	for _, c := range []struct {
 		name   string
@@ -46,7 +37,7 @@ func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 		{"given", &http.Client{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			dispatch := Dispatch{BaseURL: redirectstest.Echo(t, "Authorization", location), Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: c.client}
+			dispatch := Dispatch{BaseURL: redirectstest.EchoBearer(t, location), Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: c.client}
 			_, err := dispatch.Issue(t.Context(), testIssue)
 			text := sent()
 			redacttest.RequireNoPiece(t, "judge.redirect-followed/"+c.name, text, token)

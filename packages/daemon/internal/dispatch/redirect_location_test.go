@@ -28,31 +28,23 @@ func TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError(t *testing.T) {
 	target, asked := redirectstest.Target(t)
 	dead := redirectstest.Dead(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/api/v1/issues/LEGION-9/events", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/api/v1/issues/LEGION-9/events", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), token) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, token)
 	})
-	bare := func(credential string) string { return strings.TrimPrefix(credential, "Bearer ") }
 	for _, c := range []struct {
 		name     string
-		location func(credential string) string
+		location func(carried string) string
 	}{
 		{"unparsed", redirectstest.Unparsed},
-		{"unanswered", func(credential string) string { return redirectstest.To(dead, bare(credential)) }},
-		{"followed", func(credential string) string { return redirectstest.To(target, bare(credential)) }},
+		{"unanswered", func(carried string) string { return redirectstest.To(dead, carried) }},
+		{"followed", func(carried string) string { return redirectstest.To(target, carried) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := dispatch.New(redirectstest.Echo(t, "Authorization", c.location), token).EventsAfter(context.Background(), "LEGION-9", 0)
+			_, err := dispatch.New(redirectstest.EchoBearer(t, c.location), token).EventsAfter(context.Background(), "LEGION-9", 0)
 			if err == nil {
 				t.Fatal("EventsAfter answered no error")
 			}

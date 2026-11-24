@@ -61,26 +61,21 @@ func TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT(t *testing.T) {
 			defer tokens.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			var err error
 			if c.name == "twin" {
 				// The exchange as net/http's own client asks it, with the JWT the Manager signs.
-				var request *http.Request
-				request, err = http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/app/installations/77/access_tokens", nil)
+				request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/app/installations/77/access_tokens", nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				signed, signErr := tokens.generateJWT("12345", privatePEM, time.Now())
-				if signErr != nil {
-					t.Fatal(signErr)
+				signed, err := tokens.generateJWT("12345", privatePEM, time.Now())
+				if err != nil {
+					t.Fatal(err)
 				}
 				tokens.appHeaders(request, signed)
-				var response *http.Response
-				if response, err = server.Client().Do(request); err == nil {
-					_ = response.Body.Close()
-				}
-			} else {
-				_, err = tokens.Token(ctx, Implement, "acme")
+				redirectstest.RequireEcho(t, request, signed)
+				return
 			}
+			_, err := tokens.Token(ctx, Implement, "acme")
 			if err == nil {
 				t.Fatal("the exchange answered no error")
 			}
@@ -89,12 +84,6 @@ func TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT(t *testing.T) {
 			mu.Unlock()
 			if !strings.HasPrefix(signed, "eyJ") {
 				t.Fatalf("the exchange carried no JWT the stand-in could echo: %q", signed)
-			}
-			if c.name == "twin" {
-				if !strings.Contains(err.Error(), signed) {
-					t.Fatalf("net/http's own error holds no echo of the JWT, so the rows cannot see a leak: %q", err)
-				}
-				return
 			}
 			oauth2calltest.RequireNoPiece(t, "appauth.redirect/"+c.name, err.Error(), signed)
 			if strings.Contains(err.Error(), "moved") {

@@ -21,31 +21,19 @@ import (
 // going.chat-redirect/unparsed.
 func TestAChatRedirectLogsNoLocationOfIt(t *testing.T) {
 	const bearer = "kq7tn-not-a-secret-RDX-3e8c"
-	echo := func() string {
-		return redirectstest.Echo(t, "Authorization", func(credential string) string {
-			return redirectstest.Unparsed(strings.TrimPrefix(credential, "Bearer "))
-		})
-	}
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodPost, echo()+"/openai/v1/chat/completions", nil)
+		request, err := http.NewRequest(http.MethodPost, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/openai/v1/chat/completions", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the row cannot see one")
-		}
-		if !strings.Contains(err.Error(), bearer) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the row cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, bearer)
 	})
 	t.Run("unparsed", func(t *testing.T) {
 		var logged logtest.Buffer
 		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 		client, err := going.NewHTTPClient(going.HTTPConfig{
-			Place: "endpoint", Endpoint: echo() + "/openai/v1", Model: "gpt-test", Tokens: staticTokens{token: bearer},
+			Place: "endpoint", Endpoint: redirectstest.EchoBearer(t, redirectstest.Unparsed) + "/openai/v1", Model: "gpt-test", Tokens: staticTokens{token: bearer},
 		})
 		if err != nil {
 			t.Fatalf("NewHTTPClient: %v", err)

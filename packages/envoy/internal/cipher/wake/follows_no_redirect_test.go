@@ -22,28 +22,19 @@ import (
 func TestANoticeFollowsNoRedirect(t *testing.T) {
 	const token = "hb7qe-not-a-secret-RDX-3f1a"
 	target, sent := redirectstest.Sent(t)
-	location := func(credential string) string {
-		return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-	}
+	location := func(bearer string) string { return redirectstest.To(target, bearer) }
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodPost, redirectstest.Echo(t, "Authorization", location)+"/v1/messages/send", nil)
+		request, err := http.NewRequest(http.MethodPost, redirectstest.EchoBearer(t, location)+"/v1/messages/send", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err != nil {
-			t.Fatalf("a client that follows the redirect failed: %v", err)
-		}
-		_ = response.Body.Close()
-		if text := sent(); !strings.Contains(text, token) {
-			t.Fatalf("a client that follows the redirect sent the stand-in no token, so the row cannot see one sent on: %q", text)
-		}
+		redirectstest.RequireSentOn(t, request, token, sent)
 	})
 	t.Run("given", func(t *testing.T) {
 		var logged bytes.Buffer
 		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-		Envoy{URL: redirectstest.Echo(t, "Authorization", location), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
+		Envoy{URL: redirectstest.EchoBearer(t, location), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
 		text := sent()
 		redacttest.RequireNoPiece(t, "wake.redirect-followed/given", text, token)
 		if text != "" {

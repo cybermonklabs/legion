@@ -26,19 +26,12 @@ func TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation(t *testing.T) {
 	const bearer = "xv9pk-not-a-secret-RDX-9d2e"
 	target, asked := redirectstest.Target(t)
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/legion/v1/operator/state", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/legion/v1/operator/state", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+bearer)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the rows cannot see one")
-		}
-		if !strings.Contains(err.Error(), bearer) {
-			t.Fatalf("net/http's own error holds no echo of the bearer, so the rows cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, bearer)
 	})
 	// operatorCall is an operator request's error, or the daemon's answer other than 2xx as the
 	// operator reads it (refusal).
@@ -62,14 +55,12 @@ func TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation(t *testing.T) {
 		location func(credential string) string
 	}{
 		{"operator-unparsed", operatorCall, redirectstest.Unparsed},
-		{"operator-followed", operatorCall, func(credential string) string {
-			return redirectstest.To(target, strings.TrimPrefix(credential, "Bearer "))
-		}},
+		{"operator-followed", operatorCall, func(carried string) string { return redirectstest.To(target, carried) }},
 		{"state-unparsed", stateRead, func(string) string { return redirectstest.Unparsed(bearer) }},
 		{"state-followed", stateRead, func(string) string { return redirectstest.To(target, bearer) }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			err := c.call(redirectstest.Echo(t, "Authorization", c.location))
+			err := c.call(redirectstest.EchoBearer(t, c.location))
 			if err == nil {
 				t.Fatal("the read answered no error")
 			}

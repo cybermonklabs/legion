@@ -24,22 +24,15 @@ func TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken(t *testing.T) {
 	const token = "kq3vz-not-a-secret-RDX-5e1c"
 	repo := ghrepo.MustParse("acme/widgets")
 	t.Run("twin", func(t *testing.T) {
-		request, err := http.NewRequest(http.MethodGet, redirectstest.Echo(t, "Authorization", redirectstest.Unparsed)+"/tar", nil)
+		request, err := http.NewRequest(http.MethodGet, redirectstest.EchoBearer(t, redirectstest.Unparsed)+"/tar", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-			t.Fatal("net/http answered the unparsed Location with no error: the row cannot see one")
-		}
-		if !strings.Contains(err.Error(), token) {
-			t.Fatalf("net/http's own error holds no echo of the token, so the row cannot see a leak: %q", err)
-		}
+		redirectstest.RequireEcho(t, request, token)
 	})
 	t.Run("tar-unparsed", func(t *testing.T) {
-		request := FetchRequest{Repo: repo, CacheURL: redirectstest.Echo(t, "Authorization", redirectstest.Unparsed), CacheToken: token, Clock: WallClock{}}
+		request := FetchRequest{Repo: repo, CacheURL: redirectstest.EchoBearer(t, redirectstest.Unparsed), CacheToken: token, Clock: WallClock{}}
 		_, err := unpackCache(context.Background(), initOnly{}, request, filepath.Join(t.TempDir(), "staging"))
 		if err == nil {
 			t.Fatal("unpackCache answered no error")
