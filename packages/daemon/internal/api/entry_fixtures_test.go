@@ -27,9 +27,10 @@ var updateEntry = flag.String("update-entry", "", "write again the fixture of th
 // `-update-entry` write into those entries' fixtures in place of what this build's request types
 // read: a JSON object from an entry's id to its routes, in the form of a fixture's `routes`, made
 // over the record of the entries before it (requestsWith). One build's types read the same fields
-// at every number, so of two entries written in one run that each change a request, the first
-// would take both changes; scripts/daemon-contract-convert.sh writes the file from the records a
-// branch made before dispatch://INFRA-1569 kept at each of its numbers.
+// at every number, so they give the requests of the last entry of the build's order alone: an
+// earlier entry this file does not name takes the routes of its committed fixture, and one with no
+// fixture is refused (writeEntryFixtures). scripts/daemon-contract-convert.sh writes the file from
+// the records a branch made before dispatch://INFRA-1569 kept at each of its numbers.
 var entryRequests = flag.String("entry-requests", "", "a file of what each entry, by id, changes of the requests, which -update and -update-entry write in place of what the request types read")
 
 // rewritingFixtures is whether this run writes fixtures, with `-update` or `-update-entry`. The
@@ -863,13 +864,16 @@ func servedRecordsAt(contract int, served map[shapeKey]answerShape, walked map[s
 // The fixture of each entry, in the build's order. `-update` writes the fixture of each entry
 // that has none, and `-update-entry=<id>` writes that entry's again: what the daemon serves at the
 // entry's number less the record the entries before it compose (entryFixtureOf), with the rows of
-// answers.json and enumerated-fields.json as the registry holds them up to that entry, and with
-// the routes `-entry-requests` gives an entry it names in place of what the request types read
-// (entryRequests). No flag writes a frozen record or another entry's fixture: the frozen records
-// are what the readers of the numbered entries need, and another entry's fixture is what its own
-// contract means. A run with neither flag holds each fixture to the form `-update` writes, and the
-// rows the fixtures compose to the registry's own tables, so an entry whose rows moved after its
-// fixture was written is red here until its fixture is written again.
+// answers.json and enumerated-fields.json as the registry holds them up to that entry. Its routes
+// are those `-entry-requests` gives it (entryRequests); else, for the last entry of the build's
+// order, what the request types read; else those of its committed fixture. An earlier entry with
+// neither is refused, naming it: the types read the fields of every entry after it too, so they
+// would give it a later entry's request changes. No flag writes a frozen record or another entry's
+// fixture: the frozen records are what the readers of the numbered entries need, and another
+// entry's fixture is what its own contract means. A run with neither flag holds each fixture to
+// the form `-update` writes, and the rows the fixtures compose to the registry's own tables, so an
+// entry whose rows moved after its fixture was written is red here until its fixture is written
+// again.
 func TestEntryFixtures(t *testing.T) {
 	entries := NumberedEntries()
 	if !rewritingFixtures() {
@@ -919,7 +923,8 @@ func TestEntryFixtures(t *testing.T) {
 // that writes says to write, composing each over base and the fixtures of the entries before it.
 // registered holds each entry's declaration, served and walked are what the daemon serves and what
 // its request types read, and requests the routes `-entry-requests` gives each entry it names. It
-// returns the error of an entry whose fixture cannot be written or composed, naming the entry.
+// returns the error of an entry whose fixture cannot be written or composed, naming the entry, and
+// of an entry before the last whose routes neither requests nor its committed fixture gives.
 func writeEntryFixtures(t *testing.T, dir string, entries []NumberedEntry, registered []contractEntry, base contractRecords,
 	served map[shapeKey]answerShape, walked map[string][]string, requests map[int][]routeChange, writes func(NumberedEntry, bool) bool) error {
 	t.Helper()
@@ -930,7 +935,7 @@ func writeEntryFixtures(t *testing.T, dir string, entries []NumberedEntry, regis
 	before := base
 	var ahead []contractEntry
 	var ids []int
-	for _, entry := range entries {
+	for i, entry := range entries {
 		name := fmt.Sprintf("%d_%s", entry.ID, entry.Slug)
 		path := entryFixturePath(dir, entry)
 		ahead, ids = append(ahead, byID[entry.ID]), append(ids, entry.ID)
@@ -944,8 +949,20 @@ func writeEntryFixtures(t *testing.T, dir string, entries []NumberedEntry, regis
 				return fmt.Errorf("build the registry of the entries up to %s: %v", name, err)
 			}
 			at := servedRecordsAt(entry.Number, served, walked, upTo.answers, upTo.enumeratedFields)
-			if changes, given := requests[entry.ID]; given {
+			// One build's request types read every entry's fields at every number, so they give the
+			// requests of the last entry of the build's order alone; an earlier entry takes its
+			// routes from -entry-requests or from its committed fixture, never from the types.
+			changes, given := requests[entry.ID]
+			switch {
+			case given:
 				at.Requests = requestsWith(before.Requests, changes, entry.Number)
+			case i == len(entries)-1:
+				// The last entry's requests are what the types read, as servedRecordsAt took them.
+			case present:
+				at.Requests = requestsWith(before.Requests, fixture.Routes, entry.Number)
+			default:
+				return fmt.Errorf("entry %s is not last in the build's order, and the request types read the fields of every entry after it too, so they do not give its requests: "+
+					"give its routes with `-entry-requests=<file>` (an object of each entry's routes by its id, in the form of a fixture's `routes`), or restore its committed fixture %s, whose routes are kept", name, path)
 			}
 			fixture, err = entryFixtureOf(before, at)
 			if err != nil {
