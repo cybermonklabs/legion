@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr5158
+body: Speaks daemon API contract 245, whose state and issue records name each start waiting for its pod by role and claim token.

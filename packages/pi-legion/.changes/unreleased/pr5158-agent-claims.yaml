@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr5158
+body: |-
+  Speaks daemon API contract 245. Paused-state summaries distinguish multiple agents of one
+  role by claim token, omitting the token only for the worker that issue and role reach.
+  This remains correct after a new generation clears the previous agent's step.
