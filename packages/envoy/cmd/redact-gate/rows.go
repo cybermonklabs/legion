@@ -226,6 +226,7 @@ var (
 	assertLine  = regexp.MustCompile(`REDACT-ASSERT ([^\s:]+)`)
 	blindLine   = regexp.MustCompile(`blind: [^\n]*`)
 	loggedLine  = regexp.MustCompile(`^\s+\S+\.go:\d+: `) // a line t.Log, t.Error or t.Skip printed
+	testLogLine = regexp.MustCompile(`_test\.go:\d+: `)
 )
 
 // marked reports whether the output captured under k holds a marker.
@@ -414,7 +415,7 @@ func (g *gate) runTest(copyDir string, r *row) result {
 				tests = append(tests, e.Test)
 			}
 			output[e.Test].WriteString(e.Output)
-			if regexp.MustCompile(`_test\.go:\d+: `).MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") && res.note == "" {
+			if testLogLine.MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") && res.note == "" {
 				res.note = strings.TrimSpace(e.Output)
 			}
 			if loggedLine.MatchString(e.Output) && !strings.Contains(e.Output, "REDACT-") {
