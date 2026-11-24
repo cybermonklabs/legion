@@ -579,7 +579,12 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 1
 	}
 	address := op.base
-	answer, err := get(ctx, address+"/legion/v1/state")
+	stateURL, err := op.urlOf("/legion/v1/state")
+	if err != nil {
+		fmt.Fprintf(stderr, "legion state: %v\n", err)
+		return 1
+	}
+	answer, err := get(ctx, stateURL.String())
 	if err != nil {
 		fmt.Fprintf(stderr, "legion state: %v\n", err)
 		return 1

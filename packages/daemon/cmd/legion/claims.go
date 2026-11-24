@@ -551,7 +551,7 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 	}
 	var list api.OperatorClaims
 	if err := decodeAnswer(answer, &list); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(claimsRoute), err)
 		return 1
 	}
 	code := 0
@@ -622,7 +622,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		var list api.OperatorClaims
 		if err := decodeAnswer(answer, &list); err != nil {
-			fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, claimsRoute, err)
+			fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), op.shown(claimsRoute), err)
 			return nil, false
 		}
 		i := slices.IndexFunc(list.Claims, func(claim api.OperatorClaim) bool { return claim.Token == token })

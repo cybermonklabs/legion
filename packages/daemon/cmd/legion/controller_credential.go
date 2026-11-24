@@ -82,10 +82,12 @@ func controllerCredentialSuperseded(err error) bool {
 // (api.Failure), quoting its sentence through refusal otherwise.
 func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
-	answered, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
+	daemon := operator{base: daemonURL}
+	answered, err := daemon.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
+	asked := daemon.shown(route)
 	if answered.Status()/100 != 2 {
 		// Which refusal it is, is decided on the daemon's code as it came (RemoteText.Equal), and
 		// never on the rule's reading of it (SendBack), which is "" where a value the request
@@ -99,21 +101,21 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 			}
 			return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
 				code:    code,
-				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
+				message: fmt.Sprintf("%s: %s", asked, failure.Error),
 			}
 		}
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(answered))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s: %s", asked, refusal(answered))
 	}
 	var answer api.ControllerCredentialResponse
 	if err := answered.Decode(&answer); err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered with a body that is not JSON", asked)
 	}
 	if !slices.Contains(appauth.Roles, appauth.AppRole(answer.App)) {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an App (app) that is none of the App roles this legion knows, %s and %s", daemonURL, route, appauth.Implement, appauth.Review)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered an App (app) that is none of the App roles this legion knows, %s and %s", asked, appauth.Implement, appauth.Review)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
 	if err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an expiry (expiresAt) that is not RFC 3339", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered an expiry (expiresAt) that is not RFC 3339", asked)
 	}
 	bundle = ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
 	for owner, files := range answer.Owners {
@@ -122,16 +124,16 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	for i, pair := range answer.Renames {
 		from, err := ghrepo.Parse("the repository a rename moved", pair.From)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose from (renames[%d].from) names no repository GitHub could hold", daemonURL, route, i)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a rename whose from (renames[%d].from) names no repository GitHub could hold", asked, i)
 		}
 		to, err := ghrepo.Parse("the repository a rename moved it to", pair.To)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose to (renames[%d].to) names no repository GitHub could hold", daemonURL, route, i)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a rename whose to (renames[%d].to) names no repository GitHub could hold", asked, i)
 		}
 		bundle.Pairs = append(bundle.Pairs, ghrepo.Rename{From: from, To: to})
 	}
 	if bundle.Validate() != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a credential that is no gh bundle: its default and each of its owners (default, owners) must be a lowercased GitHub login, and its default one of its owners", daemonURL, route)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s answered a credential that is no gh bundle: its default and each of its owners (default, owners) must be a lowercased GitHub login, and its default one of its owners", asked)
 	}
 	return bundle, answer.Installed, nil
 }
