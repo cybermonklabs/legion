@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,12 +29,13 @@ var guarded = []string{
 	"internal/dispatch/store/storetest",
 }
 
-// The document tests and their helpers call no Cleanup method: they register a cleanup with Add.
+// The document tests and their helpers use no Cleanup method: they register a cleanup with Add.
 // The check reads their Go files as the parser does, test files and the helpers' other files
-// alike, and fails on every call whose function is a selector named Cleanup, whatever it is called
-// on (a *testing.T, a *testing.B, a testing.TB, or a type wrapping one), so a comment that says
-// t.Cleanup in English is prose rather than an offence, and a type that defines a Cleanup method
-// of its own is no offence either.
+// alike, and fails on every selector named Cleanup - a call, or a method value such as
+// `register := t.Cleanup` that a later call registers through - whatever it is taken from (a
+// *testing.T, a *testing.B, a testing.TB, a field holding one, or a type wrapping one). A comment
+// that says t.Cleanup in English is prose rather than an offence, and a type that defines a Cleanup
+// method of its own is no offence either.
 func TestTheDocumentTestsRegisterEveryCleanupThroughAdd(t *testing.T) {
 	t.Parallel()
 	var offences []string
@@ -48,9 +50,9 @@ func TestTheDocumentTestsRegisterEveryCleanupThroughAdd(t *testing.T) {
 	}
 }
 
-// The check finds a Cleanup call in a test file and in a helper's other file, and leaves Add, a
-// method named Cleanup defined on a type, and the word in a comment alone. Without this, a check
-// that read nothing would pass.
+// The check finds a Cleanup call in a test file and in a helper's other file, a Cleanup method
+// value, and one taken through a field, and leaves Add, a method named Cleanup defined on a type,
+// and the word in a comment alone. Without this, a check that read nothing would pass.
 func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -61,11 +63,13 @@ func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 	files := map[string]string{
 		"pkg/a_test.go": "package pkg\n\nimport \"testing\"\n\n" +
 			"// t.Cleanup in a comment is prose.\n" +
-			"func TestA(t *testing.T) {\n\tt.Cleanup(func() {})\n\ttestcleanup.Add(t, func() {})\n}\n",
+			"func TestA(t *testing.T) {\n\tt.Cleanup(func() {})\n\tregister := t.Cleanup\n\tregister(func() {})\n\ttestcleanup.Add(t, func() {})\n}\n",
 		"pkg/helper.go": "package pkg\n\nimport \"testing\"\n\n" +
 			"type wrap struct{ testing.TB }\n\n" +
 			"func (w wrap) Cleanup(f func()) {}\n\n" +
-			"func help(tb testing.TB) { tb.Cleanup(func() {}) }\n",
+			"func help(tb testing.TB) { tb.Cleanup(func() {}) }\n\n" +
+			"type holder struct{ t *testing.T }\n\n" +
+			"func (h holder) use() { h.t.Cleanup(func() {}) }\n",
 		"pkg/nested/b_test.go": "package nested\n\nimport \"testing\"\n\nfunc BenchmarkB(b *testing.B) { b.Cleanup(func() {}) }\n",
 		"pkg/c.go":             "package pkg\n\nfunc none() {}\n",
 	}
@@ -75,15 +79,19 @@ func TestTheCleanupCheckFindsWhatItLooksFor(t *testing.T) {
 		}
 	}
 	got := cleanupCalls(t, root, "pkg")
-	want := []string{"pkg/a_test.go:7: t.Cleanup", "pkg/helper.go:9: tb.Cleanup", "pkg/nested/b_test.go:5: b.Cleanup"}
+	want := []string{
+		"pkg/a_test.go:7: t.Cleanup", "pkg/a_test.go:8: t.Cleanup",
+		"pkg/helper.go:13: h.t.Cleanup", "pkg/helper.go:9: tb.Cleanup",
+		"pkg/nested/b_test.go:5: b.Cleanup",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the check found %q, want %q", got, want)
 	}
 }
 
-// cleanupCalls names, as file:line and the call, every Cleanup call in the Go files under dir,
-// written from root. A file whose bytes do not hold "Cleanup(" is not parsed: an offence is
-// reported from a call whose selector is named Cleanup, copied from these same bytes.
+// cleanupCalls names, as file:line and the selector, every selector named Cleanup in the Go files
+// under dir, written from root. A file whose bytes do not hold "Cleanup" is not parsed: an offence
+// is reported from a selector named Cleanup, copied from these same bytes.
 func cleanupCalls(t *testing.T, root, dir string) []string {
 	t.Helper()
 	var offences []string
@@ -105,7 +113,7 @@ func cleanupCalls(t *testing.T, root, dir string) []string {
 		if err != nil {
 			return err
 		}
-		if !bytes.Contains(source, []byte("Cleanup(")) {
+		if !bytes.Contains(source, []byte("Cleanup")) {
 			return nil
 		}
 		files := token.NewFileSet()
@@ -114,19 +122,11 @@ func cleanupCalls(t *testing.T, root, dir string) []string {
 			return err
 		}
 		ast.Inspect(parsed, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
+			selector, ok := node.(*ast.SelectorExpr)
 			if !ok || selector.Sel.Name != "Cleanup" {
 				return true
 			}
-			receiver := "?"
-			if ident, ok := selector.X.(*ast.Ident); ok {
-				receiver = ident.Name
-			}
-			offences = append(offences, relative+":"+strconv.Itoa(files.Position(call.Pos()).Line)+": "+receiver+".Cleanup")
+			offences = append(offences, relative+":"+strconv.Itoa(files.Position(selector.Sel.Pos()).Line)+": "+types.ExprString(selector.X)+".Cleanup")
 			return true
 		})
 		return nil

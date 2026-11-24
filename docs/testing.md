@@ -529,13 +529,7 @@ envoy-go-race-docs fails its step when the binary passes 8 GB
 A docs test stays serial, and says so on its first line with what it measured, when run alone it
 adds far more memory than the others: a few hundred megabytes or more of live heap after a
 collection, about three times that under the race detector. Beside the package's other tests
-such a test would take the binary toward the step's limit. Today that is
-`TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge`,
-`TestARoomsHeldUpdatesStayBoundedAcrossManyAppendsAndAnUpload`,
-`TestASettlementStampsMoreBlocksThanYgosDefaultQueue`,
-`TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel`, and the two over-cap history tests
-(`TestAnUndecodableHistoryLoadsAsDocumentUnloadable`,
-`TestRebuildDocumentRestoresDocumentThatCannotLoad`).
+such a test would take the binary toward the step's limit.
 
 ## Go's package deadline
 
