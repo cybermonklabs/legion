@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -341,7 +342,8 @@ func TestABundleFailsWhenTheAppsInstallationsCannotBeRead(t *testing.T) {
 // GitHub's 39 characters makes one such name, and a name that is a path is another; discovery
 // takes any login GitHub lists, so the rule must hold of whatever it lists. No lease is asked
 // for either, no directory is written from its name, and each is said once on the log, naming
-// the owner, the App and the reason, however many bundles are built. The drift check names the
+// the App and the reason and the owner only in its shape (noDirectoryName: neither name is a
+// login, so each is the fixed phrase), however many bundles are built. The drift check names the
 // directories the bundle holds (GitHubDirs), and the controller's bundle leaves the same owners
 // out.
 func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
@@ -369,11 +371,23 @@ func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
 	if want := []string{"acme", "acme"}; !slices.Equal(minted, want) {
 		t.Errorf("minted %q, want %q: no lease is asked for an owner that is left out", minted, want)
 	}
+	var lines []string
+	for _, line := range strings.Split(said.String(), "\n") {
+		if strings.Contains(line, `reason="no directory name"`) {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 2 {
+		t.Errorf("the log holds %d warnings of a name that is no directory's, want two, one for each name over both builds:\n%s", len(lines), said.String())
+	}
+	for _, line := range lines {
+		if !strings.Contains(line, "level=WARN") || !strings.Contains(line, "app=implement") || !strings.Contains(line, `owner="`+githubrest.NotALogin+`"`) {
+			t.Errorf("the log holds %q, want a warning naming the implement App and the owner only as %q", line, githubrest.NotALogin)
+		}
+	}
 	for _, owner := range []string{tooLong, "../escape"} {
-		lines := leftOutLines(said, owner)
-		if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "app=implement") ||
-			!strings.Contains(lines[0], `reason="no directory name"`) {
-			t.Errorf("the log holds %q for %s, want one warning naming the implement App and the reason:\n%s", lines, owner, said.String())
+		if strings.Contains(said.String(), owner) {
+			t.Errorf("the log names %q as discovery listed it, want it said only in its shape:\n%s", owner, said.String())
 		}
 	}
 	if dirs := GitHubDirs(served, ghrepo.Renames{}, installed, nil, []AppRole{Implement}, issue); !slices.Equal(dirs, []string{"acme"}) {
