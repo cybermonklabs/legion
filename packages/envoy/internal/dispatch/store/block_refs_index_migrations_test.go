@@ -49,6 +49,7 @@ const blockRefsReaderHold = 30 * time.Second
 // session settings (nontransactional.go line 110), which the drop, a transactional migration,
 // does not run.
 func TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts(t *testing.T) {
+	t.Parallel()
 	attempts := pgmigrate.LockTimeoutAttempts*pgmigrate.LockTimeout + (pgmigrate.LockTimeoutAttempts-1)*pgmigrate.LockTimeoutRetryPause
 	if blockRefsReaderHold <= attempts {
 		t.Fatalf("the reader's hold of %s does not outlast the runner's %s of attempts and pauses, so a drop with no bound of its own would pass", blockRefsReaderHold, attempts)

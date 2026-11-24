@@ -1,5 +1,12 @@
 package config
 
+// This row and two of the envoy rows below it - internal/dispatch/outbox/
+// expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
+// read every filter gating a job that compiles them already matches. They are here so that a
+// later narrowing of one of those filters is refused by rule 1 rather than dropping the read
+// with nobody noticing (dispatch://INFRA-1413).
+//ci:reads packages/contracts/fixtures/daemon-api/* golden (the write is under -update, which CI never passes)
+
 import (
 	"bytes"
 	"encoding/json"

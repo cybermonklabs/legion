@@ -631,6 +631,12 @@ export function createChannelDelivery(input: {
         return tail.then(() => false)
       }
       if (late === true && passOverLateBtw(rendered)) return tail.then(() => false)
+      // A payload the card could not lay out is shown as the text its sender sent, said once here.
+      if (rendered.payloadShownAsText !== undefined) {
+        process.stderr.write(
+          `envoy-channel: message ${rendered.envelope?.event_id ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+        )
+      }
       return queued(async () => {
         // A message Dispatch accepted as this session's own turn is never also a card. A failure
         // after that acceptance throws, so the frame is not answered and the listener sends it

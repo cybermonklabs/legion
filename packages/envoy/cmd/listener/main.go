@@ -878,7 +878,7 @@ func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webho
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
-			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore, bodies)
+			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, github.VerdictAppID, publisher, ciStore, bodies)
 		}})
 	}
 	if slack := cfg.Slack; slack != nil {
