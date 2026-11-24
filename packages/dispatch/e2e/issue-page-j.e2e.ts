@@ -6,6 +6,9 @@ import {
   CONTROL_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
+  FILTER_SIGNAL_WORDS,
+  GLYPH_TOKENS,
+  NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
   PRESET_ORDER,
@@ -49,6 +52,7 @@ import {
   outlineSheet,
   phase,
   presetCount,
+  presetToggle,
 } from "./issue-page";
 import {
   DESKTOP,
@@ -80,6 +84,8 @@ import {
 } from "./issue-page-i";
 import {
   becauseLines,
+  briefRow,
+  checksDrawn,
   contentsLineFaults,
   decidedByCells,
   drawnContentsEntries,
@@ -113,13 +119,15 @@ import { asUser } from "./users";
  * check names in the view's `verification.md` (c-rows).
  */
 
-// c-three-things, as the architect reads R8: the three sentences stand each after its label;
-// with no view on they are in the Contents pane at 1440 px and in the Outline sheet at 390 px,
-// never above the outline; under Spec they are the view's first group; under Verification, Plan
-// and Decisions they are not drawn; no Contents pane is drawn under a view; and the two rows
-// "How it gets done" and "What you will be shown" are drawn nowhere. Partial on today's data:
-// who wrote the sentences and when they were last read back wait on a read that holds them, so
-// the head draws neither and this test never asserts an author.
+// c-three-things, as the architect reads R1 and R4: the three sentences stand each after its
+// label, and under them the two rows, "How it gets done" and "What you will be shown", each a
+// control that turns its filter on; with no view on they are in the Contents pane at 1440 px and
+// in the Outline sheet at 390 px, never above the outline; under Spec they are the view's first
+// group, above its first statement; under Verification, Plan and Decisions they are not drawn; no
+// Contents pane is drawn under a view. A spec with no summary draws the two rows alone, and an
+// issue with no check draws the second row's one line. Partial on today's data: who wrote the
+// sentences and when they were last read back wait on a read that holds them, so the head draws
+// neither and this test never asserts an author.
 // SLOW(>=2s): two seeded issues and twelve loads of the page, each read for its head and the
 // page's own draw.
 test("the three sentences stand with their labels in the Contents pane, the Spec filter and the Outline sheet @phone", async ({
@@ -138,9 +146,9 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
     );
   const labelled = async (head: Locator): Promise<string[]> =>
     (await head.locator("li [data-page-chrome]").allInnerTexts()).map((label) => label.trim());
-  /** The head `head` draws: the spec's own three sentences, each after its label, and neither
-   *  of the two rows. The sentences are the summary node's words, which the batched reference
-   *  read names last of the page's reads, so the reading waits for them. */
+  /** The head `head` draws: the spec's own three sentences, each after its label, with no link
+   *  in it. The sentences are the summary node's words, which the batched reference read names
+   *  last of the page's reads, so the reading waits for them. */
   const expectTheThree = async (head: Locator, where: string): Promise<void> => {
     await expect(head, `the three sentences are not drawn ${where}`).toHaveCount(1);
     await expect
@@ -149,31 +157,92 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       })
       .toEqual([...SUMMARY_SENTENCES]);
     expect(await labelled(head), `the three sentences carry no labels ${where}`).toEqual(labels);
-    const words = (await head.innerText()).replace(/\s+/g, " ");
-    for (const row of ["How it gets done", "What you will be shown"]) {
-      expect(words, `"${row}" is drawn ${where}`).not.toContain(row);
-    }
     expect(await head.getByRole("link").count(), `the head holds a link ${where}`).toBe(0);
   };
+  // The seed's six checks, by the state each stands in, in the order the page declares the
+  // states: one failed, one with no result, one out of date, two passed (the one whose result
+  // records no negative control is a pass like any other) and one the page cannot tell
+  // (`seedWholeIssue`).
+  const seededStates = [
+    ["failed", 1],
+    ["no-result", 1],
+    ["older", 1],
+    ["passed", 2],
+    ["unmarked", 1],
+  ] as const;
 
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    /** The two rows under the sentences of `head`: each a button named by its label alone, the
+     *  first drawing the Plan control's count and noun (`plan`), the second the number of the
+     *  seed's checks and each state that holds a check, as its shape, count and word, adding up
+     *  to the seed's checks. */
+    const expectTheRows = async (head: Locator, where: string, plan: string): Promise<void> => {
+      const checks = seeded.checks.all.length;
+      await expect(
+        head.locator("[data-brief-row]"),
+        `the two rows are not drawn ${where}`
+      ).toHaveCount(2);
+      await expect(
+        briefRow(head, "plan"),
+        `the first row is not named "${CONTROL_LABELS.in_short_how}" ${where}`
+      ).toHaveAccessibleName(CONTROL_LABELS.in_short_how);
+      await expect(
+        briefRow(head, "verification"),
+        `the second row is not named "${CONTROL_LABELS.in_short_shown}" ${where}`
+      ).toHaveAccessibleName(CONTROL_LABELS.in_short_shown);
+      await expect(
+        briefRow(head, "plan").locator("[data-brief-counts]"),
+        `"${CONTROL_LABELS.in_short_how}" does not draw the Plan control's count and noun ${where}`
+      ).toHaveText(`${plan} ${FILTER_SIGNAL_WORDS.steps}`);
+      await expect(
+        briefRow(head, "verification").locator("[data-brief-counts]"),
+        `"${CONTROL_LABELS.in_short_shown}" does not draw the number of the seed's checks ${where}`
+      ).toContainText(`${checks} ${VERIFICATION_WORDS.check_many}`);
+      const drawn = await checksDrawn(briefRow(head, "verification"));
+      expect(drawn.total, `the number of checks and its noun ${where}`).toBe(
+        `${checks} ${VERIFICATION_WORDS.check_many}`
+      );
+      expect(
+        drawn.states,
+        `the second row does not draw each state that holds a check, with its count, word and shape ${where}`
+      ).toEqual(
+        seededStates.map(([state, count]) => ({
+          count: String(count),
+          shape: GLYPH_TOKENS.states.check[state],
+          state,
+          word: NODE_STATE_WORDS.check[state],
+        }))
+      );
+      expect(
+        drawn.states.reduce((sum, state) => sum + Number(state.count), 0),
+        `the counts of the states do not add up to the seed's checks ${where}`
+      ).toBe(checks);
+    };
+
     // 1440 px, no view: in the Contents pane, at the left of the outline. The sentences are read
     // before the outline is waited for, so a slot that draws none fails on its own reading.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectTheThree(
-      contentsPane(page).getByTestId("issue-three-things"),
-      "in the Contents pane at 1440 px"
-    );
+    const pane = contentsPane(page).getByTestId("issue-three-things");
+    await expectTheThree(pane, "in the Contents pane at 1440 px");
+    // The rows count what the filter row counts: the Plan control's count, and the Verification
+    // control's, which is the number of the seed's checks.
+    await expect(presetCount(page, "plan"), "the Plan control draws no count").toHaveText(/^\d+$/);
+    const plan = (await presetCount(page, "plan").innerText()).trim();
+    await expect(
+      presetCount(page, "verification"),
+      "the Verification control does not count the seed's checks"
+    ).toHaveText(String(seeded.checks.all.length));
+    await expectTheRows(pane, "in the Contents pane at 1440 px", plan);
     await expectIssuePageDrawn(page);
     await expect(contentsPane(page), "no Contents pane is drawn with no view on").toHaveCount(1);
     expect(await threeThings(page).count(), "the three sentences are drawn twice").toBe(1);
-    const pane = await contentsPane(page).boundingBox();
+    const paneBox = await contentsPane(page).boundingBox();
     const outline = await tree(page).boundingBox();
-    expect(pane, "the Contents pane has no box").not.toBeNull();
+    expect(paneBox, "the Contents pane has no box").not.toBeNull();
     expect(outline, "the outline has no box").not.toBeNull();
     expect(
-      (pane?.x ?? 0) + (pane?.width ?? 0),
+      (paneBox?.x ?? 0) + (paneBox?.width ?? 0),
       "the Contents pane is not at the left of the outline"
     ).toBeLessThanOrEqual((outline?.x ?? 0) + 1);
 
@@ -188,8 +257,29 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       "the head draws a gap that every issue has, which tells the reader nothing about this one"
     ).toBe(0);
 
-    // Under a view, at both widths: no Contents pane; the Spec view draws the three as its
-    // first group, above its first statement; the other three draw none.
+    // A press on each row turns its filter on: Plan, then, from the page with no view on again,
+    // Verification.
+    await briefRow(contentsPane(page), "plan").click();
+    await expect(
+      presetToggle(page, "plan"),
+      `a press on "${CONTROL_LABELS.in_short_how}" did not turn the Plan filter on`
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(new URL(page.url()).pathname, "the Plan filter's address").toBe(
+      presetPath(seeded.key, "plan")
+    );
+    await page.goBack();
+    await expect(contentsPane(page), "going back did not draw the Contents pane").toHaveCount(1);
+    await briefRow(contentsPane(page), "verification").click();
+    await expect(
+      presetToggle(page, "verification"),
+      `a press on "${CONTROL_LABELS.in_short_shown}" did not turn the Verification filter on`
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(new URL(page.url()).pathname, "the Verification filter's address").toBe(
+      presetPath(seeded.key, "verification")
+    );
+
+    // Under a view, at both widths: no Contents pane; the Spec view draws the three, and the two
+    // rows under them, as its first group, above its first statement; the other three draw none.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
@@ -206,19 +296,30 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
         expect(await contentsPane(page).count(), `a Contents pane is drawn ${where}`).toBe(0);
         if (preset !== "spec") {
           expect(await threeThings(page).count(), `the three sentences are drawn ${where}`).toBe(0);
+          expect(
+            await page.locator("[data-brief-row]").count(),
+            `the two rows are drawn ${where}`
+          ).toBe(0);
           continue;
         }
         await expectTheThree(threeThings(page), where);
+        await expectTheRows(threeThings(page), where, plan);
         const head = await threeThings(page).boundingBox();
+        const lastRow = await briefRow(page, "verification").boundingBox();
         const firstRow = await nodeRows(page).first().boundingBox();
         expect(
           head?.y ?? Number.POSITIVE_INFINITY,
           `the three sentences are not the Spec view's first group ${where}`
         ).toBeLessThan(firstRow?.y ?? 0);
+        expect(
+          (lastRow?.y ?? Number.POSITIVE_INFINITY) + (lastRow?.height ?? 0),
+          `the two rows do not stand above the first statement ${where}`
+        ).toBeLessThanOrEqual((firstRow?.y ?? 0) + 1);
       }
     }
 
-    // 390 px, no view: not above the outline, and in the sheet the Outline control opens.
+    // 390 px, no view: not above the outline, and in the sheet the Outline control opens, which
+    // holds the three sentences, the two rows and the Contents list.
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
@@ -231,27 +332,43 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
       "the three sentences are drawn above the outline at 390 px"
     ).toBe(0);
     await outlineControl(page).click();
-    await expectTheThree(
-      outlineSheet(page).getByTestId("issue-three-things"),
-      "in the Outline sheet at 390 px"
-    );
+    const sheet = outlineSheet(page).getByTestId("issue-three-things");
+    await expectTheThree(sheet, "in the Outline sheet at 390 px");
+    await expectTheRows(sheet, "in the Outline sheet at 390 px", plan);
+    expect(
+      await drawnContentsEntries(outlineSheet(page)).count(),
+      "the Outline sheet holds no Contents list"
+    ).toBeGreaterThan(0);
   });
 
+  // A spec with no summary draws the two rows alone, and an issue with no check draws the second
+  // row's one line: this issue holds no plan task either, which is the first row's.
   await phase(browser, seedNoSummary, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // The line waits on the spec's blocks read, which says whether the spec holds a summary
-    // node at all: until it answers the head says nothing about one
-    // (`web/src/features/issue-page/IssueThreeThings.tsx`), so the reading waits for the line.
+    // The rows wait on every read the tree is built from, which the spec's blocks are one of:
+    // until they answer a row draws its label alone, so the reading waits for the lines.
     await expect(
-      threeThings(page),
-      "the head says something other than the page's own line for a spec with no summary"
-    ).toContainText(EMPTY_STATE_LINES.spec_summary);
+      briefRow(threeThings(page), "verification").locator("[data-brief-counts]"),
+      "an issue with no check does not draw the page's line for it under the second row"
+    ).toHaveText(EMPTY_STATE_LINES.verification);
+    await expect(
+      briefRow(threeThings(page), "plan").locator("[data-brief-counts]"),
+      "a plan with no task does not draw the page's line for it under the first row"
+    ).toHaveText(EMPTY_STATE_LINES.plan);
+    await expect(
+      threeThings(page).locator("[data-brief-row]"),
+      "the head does not draw the two rows"
+    ).toHaveCount(2);
     expect(
       await threeThings(page).locator("li").count(),
       "a spec with no summary draws sentences all the same"
     ).toBe(0);
+    await expect(
+      threeThings(page).locator("ul, p"),
+      "a spec with no summary draws something other than the two rows"
+    ).toHaveCount(0);
   });
 });
 

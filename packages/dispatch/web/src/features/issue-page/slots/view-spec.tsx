@@ -6,6 +6,7 @@ import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
+import { briefCounts } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, type ReadKey, useOutlineReads } from "../outline-reads";
@@ -38,7 +39,13 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // line cites - so their line while they stand failed (`namesFailure`) is passed on for the body
   // to draw. The body lands on the node the address names only once every read the tree's rows
   // come from has settled (`readsSettled`), for the one reason `SpecFilterBody` gives.
-  const { failed, namesFailure, readsSettled, root } = useOutlineReads(issue);
+  const { failed, namesFailure, namesHeld, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  // What the first group's two rows count, over the whole tree and under the same words filter as
+  // the view row's signals, once the tree may be counted (`briefCounts`).
+  const counts = useMemo(
+    () => briefCounts({ namesHeld, readsHeld, root }, address.filter),
+    [address.filter, namesHeld, readsHeld, root]
+  );
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
@@ -86,6 +93,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           // body's landing reads: a reader who acted keeps the page as they left it.
           {...(acts === undefined ? {} : { addressActs: acts })}
           context={view.context}
+          counts={counts}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.spec : EMPTY_STATE_LINES.no_match}
           // The words filter's Escape comes before the view is left; turning the view off with
           // Escape is a later step of the page's key table.

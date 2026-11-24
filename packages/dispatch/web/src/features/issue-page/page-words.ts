@@ -385,6 +385,9 @@ export const DECISIONS_WORDS = freeze({
 export const VERIFICATION_WORDS = freeze({
   /** The chip that narrows to nothing, which is the body as it opens. */
   all: "All",
+  /** After a count of checks, which every count of them is written with: "1 check", "6 checks". */
+  check_many: "checks",
+  check_one: "check",
   /** The heading over the checks that serve each statement. */
   checks: "Checks",
   /** Before the one commit the issue's results are read against. */
@@ -499,8 +502,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
- * present, saying what is absent rather than what the reader should do about it.
+ * query matches nothing, a plan with no task, an issue with no check. Each is one sentence, in
+ * the simple present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -517,7 +520,6 @@ export const EMPTY_STATE_LINES = freeze({
    *  shaped (R35): one statement, and several. */
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
-  spec_summary: "This spec has no summary.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -957,6 +959,10 @@ export const CONTROL_LABELS = freeze({
   in_short_done: "Done when:",
   /** The heading over the issue's three sentences in the Contents pane (R8). */
   in_short: "In short",
+  /** The labels of the two rows under the sentences, each a control that turns a filter on: "How
+   *  it gets done" the Plan filter, "What you will be shown" the Verification filter. */
+  in_short_how: "How it gets done",
+  in_short_shown: "What you will be shown",
   /** The one control row one keeps the actions behind: close, reopen, the pin and setting the
    *  parent. It names actions, never a property (R11 bans "more"). */
   issue_actions: "Issue actions",

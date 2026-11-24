@@ -43,7 +43,7 @@ import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
-import { IssueThreeThings } from "../IssueThreeThings";
+import { type BriefCounts, IssueThreeThings } from "../IssueThreeThings";
 import {
   focusedNodeOf,
   holdInPlaceOf,
@@ -123,8 +123,9 @@ const NOTHING = (): void => {};
  *   where its author wrote a number, and the row draws them in full, so the number a reader
  *   cites is the author's own.
  *
- * After its column heads the body draws the issue's three sentences under their labels, as the
- * picture's first group, in the statements' column, as the prototype's `renderSpec` puts them.
+ * After its column heads the body draws the issue's three sentences under their labels, and the
+ * two rows under them, as the picture's first group, in the statements' column, as the
+ * prototype's `renderSpec` puts them.
  *
  * It is the outline under the Spec filter, so it is one `role="tree"` named as the outline is,
  * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
@@ -139,6 +140,7 @@ const NOTHING = (): void => {};
 export function SpecFilterBody({
   addressActs,
   context,
+  counts,
   emptyLine,
   holdsEscape,
   issue,
@@ -157,6 +159,9 @@ export function SpecFilterBody({
   addressActs?: RefObject<AbortController | undefined>;
   /** The ids of the rows the filter draws only as context, drawn faint (R2, R32). */
   context: ReadonlySet<string>;
+  /** What the first group's two rows count, or undefined while the tree may not be counted yet
+   *  (`briefCounts`); the slot reads it from the page's tree (`slots/view-spec.tsx`). */
+  counts: BriefCounts | undefined;
   /** What the body says where the filter's query left no statement. */
   emptyLine: string;
   /** Whether the page takes Escape from a row before the body is left: a filter by words to
@@ -635,16 +640,16 @@ export function SpecFilterBody({
           {sentenceCase(NODE_TYPE_NAMES.requirement)}
         </span>
       </div>
-      {/* The issue's three sentences, the first group, in the statements' column, as the
-          prototype's `renderSpec` puts them after the column heads. */}
+      {/* The issue's three sentences and the two rows under them, the first group, in the
+          statements' column, as the prototype's `renderSpec` puts them after the column heads. */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
         <IssueThreeThings
+          counts={counts}
+          issueKey={issue.key}
           look="spec"
           nameOf={nameOf}
-          // The head says the spec holds no summary only once its blocks are held; the
-          // sentences themselves come with the batched names read, which waits until no read
-          // of the tree is still out (`slots/contents.tsx`).
-          specHeld={spec !== undefined && specBlocksRead.data !== undefined}
+          // The sentences come with the batched names read, which waits until no read of the
+          // tree is still out (`slots/contents.tsx`).
           summary={summary}
         />
       </div>

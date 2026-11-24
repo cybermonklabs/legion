@@ -47,7 +47,9 @@ import {
 } from "../decisions-filter/decisions-fixtures";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
+import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
+import { presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { shortDay } from "../node-time";
 import { TWO_THREADS } from "../outline-fixtures";
@@ -203,6 +205,7 @@ function drawBody(
     blocks = "answered",
     checks = [],
     context = new Set<string>(),
+    counts,
     coverage = "answered",
     decisionBlocks,
     decisions = "answered",
@@ -221,6 +224,7 @@ function drawBody(
     blocks?: ReadState;
     checks?: readonly CheckBlock[];
     context?: Set<string>;
+    counts?: BriefCounts;
     coverage?: ReadState;
     decisionBlocks?: ReadState;
     decisions?: ReadState;
@@ -316,6 +320,7 @@ function drawBody(
   const bodyOf = (over: IssueDetails): ReactNode => (
     <SpecFilterBody
       context={context}
+      counts={counts}
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
       issue={over}
@@ -2462,14 +2467,55 @@ test("a statement carries its mark while the asks read is out", () => {
 });
 
 // R5 and R35: a refused read of the spec's blocks says the statements could not be read, in the
-// line the view already says it in, and the issue's sentences say nothing, rather than that the
-// spec has no summary, which the view cannot know.
-test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
+// line the view already says it in, rather than that the spec holds none.
+test("a refused read of the spec's blocks says the statements could not be read", async () => {
   const { read, view } = drawBody(issueTree([]), [], { blocks: "failed" });
   try {
     await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
-    expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
     expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R1: the first group draws the two rows under the three sentences from the counts the body is
+// given, above the first statement, and each row's press turns its filter on. The body counts
+// nothing itself: what stands under each label is what the slot handed it.
+test("the first group draws the two rows from the counts it is given, and a press turns a filter on", async () => {
+  const user = userEvent.setup();
+  const counts: BriefCounts = {
+    checks: {
+      count: 3,
+      states: [
+        { count: 1, state: "failed" },
+        { count: 2, state: "passed" },
+      ],
+    },
+    plan: { count: 5, unit: "steps" },
+  };
+  const { read, view } = drawBody(issueTree([statement("r1")]), [], { counts });
+  const rowOfFilter = (filter: "plan" | "verification"): HTMLElement => {
+    const row = view.container.querySelector<HTMLElement>(`[data-brief-row="${filter}"]`);
+    if (row === null) throw new Error(`the first group draws no row for ${filter}`);
+    return row;
+  };
+  try {
+    const plan = rowOfFilter("plan");
+    const verification = rowOfFilter("verification");
+    expect(plan.textContent).toContain("5 steps");
+    expect(verification.textContent).toContain("3 checks");
+    const first = rowOf(view, "spec#b-r1");
+    for (const row of [plan, verification]) {
+      expect(
+        row.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `the ${row.getAttribute("data-brief-row")} row does not stand above the first statement`
+      ).not.toBe(0);
+    }
+    await user.click(plan);
+    expect(locationOf(view)).toBe(presetPath(KEY, "plan"));
+    await user.click(verification);
+    expect(locationOf(view)).toBe(presetPath(KEY, "verification"));
   } finally {
     view.unmount();
     read.mockRestore();

@@ -17,6 +17,10 @@ import { onScreen } from "./issue-page-i";
  * - **The issue's three sentences** `[data-testid="issue-three-things"]`, each an `li` whose
  *   label is `[data-page-chrome]` and whose sentence is `[data-author-text]`: in the Contents
  *   slot (the Contents pane and the Outline sheet), and as the Spec view's first group.
+ * - **The two rows under them**, one `button[data-brief-row="plan" | "verification"]` each, named
+ *   by its label alone, with what it counts in `[data-brief-counts]`: the Plan control's count and
+ *   noun, or the number of checks and, for each state that holds one,
+ *   `[data-brief-state="<state>"]` with its shape, count and word.
  * - **The Contents list**, one `[data-contents-entry="<node id>"]` per entry, its line
  *   `[data-contents-line]`, and above it the toggle named `CONTROL_LABELS.focus_branch`.
  * - **The Spec view** `[data-spec-body]`: its legend `[data-spec-legend]` of four
@@ -147,6 +151,37 @@ export async function seedTallSpec(): Promise<TallSpecSeed> {
 /** The issue's three sentences under "In short", wherever they are drawn. */
 export function threeThings(page: Page): Locator {
   return page.getByTestId("issue-three-things");
+}
+
+/** One of the two rows under the sentences in `scope`: the button that turns the Plan filter on
+ *  or the one that turns the Verification filter on. */
+export function briefRow(scope: Locator | Page, filter: "plan" | "verification"): Locator {
+  return scope.locator(`[data-brief-row="${filter}"]`);
+}
+
+/** What the second row draws under its label: the number of checks with its noun, then each
+ *  state that holds a check, in the order they are drawn. */
+export interface ChecksDrawn {
+  readonly states: readonly {
+    readonly count: string;
+    readonly shape: string | null;
+    readonly state: string | null;
+    readonly word: string;
+  }[];
+  readonly total: string;
+}
+
+/** The checks `row`, the second row under the sentences, counts. */
+export function checksDrawn(row: Locator): Promise<ChecksDrawn> {
+  return row.evaluate((element) => ({
+    states: [...element.querySelectorAll("[data-brief-state]")].map((part) => ({
+      count: part.querySelector("[data-author-text]")?.textContent?.trim() ?? "",
+      shape: part.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      state: part.getAttribute("data-brief-state"),
+      word: part.querySelector("[data-page-chrome]")?.textContent?.trim() ?? "",
+    })),
+    total: (element.querySelector("[data-author-text]")?.parentElement?.textContent ?? "").trim(),
+  }));
 }
 
 /** The author named inside `scope`, where the page names one. */
