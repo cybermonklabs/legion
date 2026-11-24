@@ -61,16 +61,32 @@ func untilTheTestDeadline(t testing.TB) context.Context {
 // inside the package and out (export_test.go).
 func shellCommand(t testing.TB, args ...string) *exec.Cmd {
 	t.Helper()
+	return shellCommandIn(t, scriptContext(t), scriptTimeout.String()+", or "+deadlineMargin.String()+" before go test's -timeout", args...)
+}
+
+// shellCommandUntilTheTestDeadline is shellCommand for a script that ends on an event of its own
+// and may rightly take minutes of wall time to reach it: the tailnet advertiser under its fake
+// clock (tailnetRig.run), which its fake sleep ends once the clock reaches the run's limit. Every
+// step of the clock forks the stand-ins, so the wall time a run takes is the machine's, and on a
+// loaded machine a run of a few hundred fake seconds passed scriptTimeout's 2 min (at a box load
+// of about 2,400, INFRA-3904). Its only bound is untilTheTestDeadline's, so a script that never
+// reaches its event still fails t by name, deadlineMargin before go test's -timeout.
+func shellCommandUntilTheTestDeadline(t testing.TB, args ...string) *exec.Cmd {
+	t.Helper()
+	return shellCommandIn(t, untilTheTestDeadline(t), deadlineMargin.String()+" before go test's -timeout", args...)
+}
+
+// shellCommandIn is the shell of shellCommand run in ctx, whose deadline bound names in a failure.
+func shellCommandIn(t testing.TB, ctx context.Context, bound string, args ...string) *exec.Cmd {
+	t.Helper()
 	shell := strings.Fields(os.Getenv("ENVOY_TEST_SHELL"))
 	if len(shell) == 0 {
 		shell = []string{"/bin/sh"}
 	}
-	ctx := scriptContext(t)
 	cmd := exec.CommandContext(ctx, shell[0], append(shell[1:], args...)...)
 	cmd.Cancel = func() error {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.Errorf("%s ran past its deadline (%s, or %s before go test's -timeout) and was killed: %s",
-				shell[0], scriptTimeout, deadlineMargin, scriptHead(args))
+			t.Errorf("%s ran past its deadline (%s) and was killed: %s", shell[0], bound, scriptHead(args))
 		}
 		return cmd.Process.Kill()
 	}

@@ -1243,15 +1243,16 @@ CEILING_STEP = "Size the service for this lane's Dispatch processes"
 CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)'
 
 
-def ceiling_run(job):
-    """The go run pg-connection-ceiling.sh starts in `job`'s sizing step."""
-    return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP)}", ENVOY,
+def ceiling_run(job, workflow=""):
+    """The go run pg-connection-ceiling.sh starts in `job`'s sizing step, in `workflow` when the
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
 
-def ceiling_reads(job):
+def ceiling_reads(job, workflow=""):
     """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
-    return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
+    return reads((CEILING, f"{at(job, CEILING_STEP, workflow)} runs it"))
 
 
 # The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
@@ -2938,6 +2939,14 @@ def browser_gate(filter, job):
         # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json",
+         "read at module load by packages/dispatch/e2e/visual-guard.ts (SHOT_READS_FILE), which "
+         f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
+         f"holds each visual row's reads and live views to it, and {at_browser(BROWSER_SHARD_SPECS)} runs the guard's own row"),
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         "read at module load by packages/dispatch/e2e/visual-guard.ts (OPENAPI_FILE), which "
+         f"e2e/visual.e2e.ts and e2e/visual-guard.e2e.ts import: {at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} "
+         "resolves each visual row's read to the route the table serves it by"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
@@ -3046,6 +3055,9 @@ GATES = [
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
         forced_order_run("daemon-go", DAEMON_FORCED_ORDER_STEP, DAEMON, DAEMON_FORCED_ORDER_PKGS),
+        # daemon-go-race sizes its Postgres for the Dispatch processes internal/daemon's
+        # scratch-Dispatch tests start; the job is the file's second, which the citation names.
+        ceiling_run("daemon-go-race", job_file("daemon-go")),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is - and it carries a -skip besides, which is no
@@ -3101,7 +3113,7 @@ GATES = [
                                                 f"consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
                                                f"const HubImage"),
-    ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
+    ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP) + ceiling_reads("daemon-go-race", job_file("daemon-go"))
       + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
@@ -3504,6 +3516,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
+        (f"{ENVOY}/internal/dispatch/api/testdata/visual-shot-reads.json", "read at module load by packages/dispatch/e2e/visual-guard.ts, the new URL of SHOT_READS_FILE, which e2e/__tests__/visual-guard.test.ts, a test this job runs, imports: the routes a visual row's page may read"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:358-360, the new URL at :359"),
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "

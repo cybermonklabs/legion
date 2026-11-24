@@ -521,4 +521,9 @@ func aGrantWhoseLaunchThePauseLetsOut(t *testing.T) {
 	}
 	h.wantStartLine(second.token, podIssue, nil)
 	stops.wantStops(t)
+	// The launch passed the wake gate before it parked, so its let-out writes no second wake line
+	// (wake.ran).
+	if lines := h.podRecords(WakeRanMessage, second.token); len(lines) != 1 {
+		t.Fatalf("wake lines of the second = %d, want the one its resume wrote at the wake gate", len(lines))
+	}
 }

@@ -50,6 +50,7 @@ legion config check --config legion.yaml
 | `projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: the memory block is the experiment named memory, so write the block or the key, not both` | The `memory` block **is** the experiment named `memory`, so the file declares it twice. Keep one spelling: the block, or `experiments.memory`. The block is accepted and refused in no other new way. |
 | `projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse` | Name that experiment's two arms `memory` and `none`, or declare your own experiment under another name, which may name whatever arms it likes. |
 | `projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it` | The experiment named `memory` is drawn once for a whole tree, as the `memory` block always has been: take `unit` out, or set `unit: tree`. To draw something for each issue on its own, declare it under another name. |
+| `projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own` | A draw of the experiment named `memory` is the tree's memory group and never says how an issue is done: take `plan` out of its arms, and declare an experiment of your own name, `unit: issue`, whose arms name `plan`. |
 | `projects.<KEY>.experiments must be a mapping of an experiment's name to its block` (or `projects.<KEY>.experiments.<NAME> must be a mapping`, `projects.<KEY>.experiments.<NAME>.variants must be a sequence of variant blocks`, or `projects.<KEY>.experiments.<NAME>.variants[<n>] names no name: a draw records the variant it drew by name`) | The shape: `experiments` is a mapping of a name to a block, a block is a mapping, its `variants` is a sequence of mappings, and each arm names a `name`. |
 | `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
 | `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
@@ -62,6 +63,11 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
 | `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner or default (got "…")` | An arm's `plan` says how the issues drawn into it are done: `owner`, whose issues take the plan their owner gives with `register_plan`, or `default`, whose issues run the project's `default_steps` and take no plan from their owner: once the daemon records such an issue, its owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.` | This release takes `owner` and `default` alone: write one of them, or take `plan` out of every arm of the experiment. |
+| `projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done` | An experiment that names `plan` in one arm names it in every arm, so that each issue it draws is in a group: write `plan` in each arm, or in none. |
+| `projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue` | Each issue keeps the group of its own draw for its whole life, so an experiment that sets `plan` draws for each issue: write `unit: issue`. |
+| `projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done` | Each issue would hold two words on how it is done, which may disagree, and one experiment would be measured under the other's arms: keep `plan` in one experiment of the project. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -195,6 +201,34 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
+
+## An edited instructions file does not reach the workers
+
+A running daemon reads the deployment's `instructions` file, and each declared arm's, again before
+every launch, so an edit reaches each role at its next launch. A role that is running keeps the
+prompt it launched with until then.
+
+- **The daemon logs `legion daemon launches with the instructions it last read: the file no longer
+  reads` at WARN.** The file `file` names was missing, unreadable or blank when a launch read it
+  (`error` says which). Launches go on carrying the text the daemon read last. Fix the file: the
+  next launch reads it again and logs `legion daemon read an edited instructions file`, or
+  `legion daemon reads an instructions file again` when it holds the text the daemon kept.
+- **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
+  be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
+  directory, which the prompt is composed from (`error` names the path and the cause). Launches go
+  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
+  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
+  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
+  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
+  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  The next launch writes the copy and logs the edit.
+- **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
+  Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
+  mounted as a directory, but never a file mounted by `subPath`, so the daemon goes on reading the
+  text of its pod's start. The kubelet also takes up to its sync period, about a minute, to update
+  a mounted ConfigMap.
+
+The daemon logs each refusal once, so a launch with no new line carries the same text as the last.
 
 ## The daemon stops
 
