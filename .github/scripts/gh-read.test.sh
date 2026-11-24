@@ -65,6 +65,10 @@ fi
 #                REST answer when the lookup finds no draft, so the REST answer closes second,
 #                after both requests opened.
 #   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
+#   rate-limit-fails  a message: the rate_limit route answers 502 with it.
+#   rate-limit-reset  a value the rate_limit route answers as both budgets' reset, at 0 remaining.
+#   words        text the route's own messages end with (a 404's, a spent budget's, a secondary
+#                limit's): a case's marker, which gh prints on stderr inside the message.
 #   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
 #                request trace prints as it came, line for line.
 # and appends `<epoch> <method> <path>` to `log` for every request it answers.
@@ -182,6 +186,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.rfile.read(length)
         path = urllib.parse.urlsplit(self.path).path
         now = clock()
+        words = f" {read('words')}" if read("words") else ""
         with open(os.path.join(state, "log"), "a") as log:
             log.write(f"{now:.3f} {self.command} {path}\n")
         with EVENTS:
@@ -220,18 +225,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
                       "remaining": 0 if spent else 15000,
                       "reset": spent_until if spent else int(now) + 3600}
+            if read("rate-limit-reset"):
+                bucket = dict(bucket, used=15000, remaining=0, reset=read("rate-limit-reset"))
             time.sleep(float(read("rate-limit-delay", "0")))
-            self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
-                              "rate": bucket})
+            if read("rate-limit-fails"):
+                self.answer(502, {"message": read("rate-limit-fails"), "status": "502"})
+            else:
+                self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
+                                  "rate": bucket})
         elif secondary:
             status, retry_after = read("secondary").split()
             self.answer(int(status), {
-                "message": "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+                "message": f"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.{words}",
                 "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api#about-secondary-rate-limits",
                 "status": status},
                 [] if retry_after == "none" else [("retry-after", retry_after)])
         elif spent:
-            self.answer(403, {"message": "API rate limit exceeded for installation ID 1.",
+            self.answer(403, {"message": f"API rate limit exceeded for installation ID 1.{words}",
                               "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
                               "status": "403"},
                         [("x-ratelimit-limit", "15000"), ("x-ratelimit-remaining", "0"),
@@ -251,7 +261,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         elif read("answer", "200") == "404":
-            self.answer(404, {"message": "Not Found",
+            self.answer(404, {"message": f"Not Found{words}",
                               "documentation_url": "https://docs.github.com/rest", "status": "404"})
         else:
             self.answer(200, json.loads(read("body", "{}")))
@@ -297,7 +307,7 @@ stand_in() {
   exit 1
 }
 
-mkdir -p "$work/state" "$work/bin" "$work/gh-config"
+mkdir -p "$work/state" "$work/bin" "$work/gh-config" "$work/runner-temp"
 stand_in "$work/state" "$work/port"
 port=$(<"$work/port")
 
@@ -319,8 +329,8 @@ github() {
 # drive [--no-worker] [NAME=value...] -- <shell code>: runs the code in a bash that has sourced
 # gh-read.sh, as a step's shell under the stand-in Runner.Worker (none with --no-worker), with gh
 # pointed at the stand-in GitHub and the NAME=value pairs set; JOB_TIMEOUT_MINUTES and
-# STEP_TIMEOUT_MINUTES are unset unless a pair sets them. Sets out (stdout), err (stderr) and
-# status.
+# STEP_TIMEOUT_MINUTES are unset unless a pair sets them, and RUNNER_TEMP, where the helper keeps
+# gh's words, is $work/runner-temp. Sets out (stdout), err (stderr) and status.
 drive() {
   local worker=yes
   local -a assignments=()
@@ -339,7 +349,7 @@ drive() {
   [ -z "$worker" ] || command=("$work/bin/Runner.Worker" -c '"$@"; exit $?' worker "${command[@]}")
   set +e
   out=$(cd "$work" && env -u JOB_TIMEOUT_MINUTES -u STEP_TIMEOUT_MINUTES -u GITHUB_TOKEN \
-    GH_READ="$script_dir/gh-read.sh" GH_HOST=github.localhost GH_TOKEN=t \
+    GH_READ="$script_dir/gh-read.sh" GH_HOST=github.localhost GH_TOKEN=t RUNNER_TEMP="$work/runner-temp" \
     GH_CONFIG_DIR="$work/gh-config" GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1 \
     HTTP_PROXY="http://127.0.0.1:$port" http_proxy="http://127.0.0.1:$port" NO_PROXY= no_proxy= \
     GH_RETRY_SECONDS=0 "${assignments[@]}" "${command[@]}" 2> "$work/err")
@@ -371,6 +381,11 @@ gap_at_least() {
 logged_wait_names() {
   { [ "$(warnings)" -eq 0 ] || { [ "$(warnings)" -eq 1 ] && grep -q -e "$1" <<<"$err"; }; } && echo true || echo false
 }
+# kept_by <line>: the file the helper's last line `<line>; its own words are in <file>` on stderr
+# names, read from err; nothing when it printed no such line. <line> is a sed pattern.
+kept_by() { sed -n "s/^$1; its own words are in //p" <<<"$err" | tail -n 1; }
+# kept_words <file>: what a kept file holds, or nothing when there is none.
+kept_words() { [ -n "$1" ] && cat -- "$1" 2>/dev/null || true; }
 
 # The stand-in clock (the stand-in GitHub's header says what it is). $work/clockbin holds a sleep
 # that waits one real second, then adds its whole seconds to the stand-in's clock-offset, and a date whose
@@ -424,8 +439,9 @@ check "makes the second call no sooner than the reset" "$(at_least "$(nth_at /re
 check "logs at most one line about the wait, naming the reset and the job's limit" \
   "$(logged_wait_names "^::warning::the API budget is spent until $(utc "$reset"); waiting [0-9]* s for it, within this job's limit at ")"
 check "and fails nothing" "$(is "$(errors)" 0)"
-check "gh's own words for the refusal stay in the log, once: the answered call printed none" \
-  "$(is "$(grep -c 'API rate limit exceeded for installation ID 1' <<<"$err")" 1)"
+check "gh's own words for the refusal are kept in the one file the log names: the answered call wrote none" \
+  "$(is "$(grep -c '^gh-read\.sh: the command exited 1 (HTTP 403); its own words are in ' <<<"$err")|$(grep -c 'API rate limit exceeded for installation ID 1' <<<"$(kept_words "$(kept_by 'gh-read\.sh: the command exited 1 (HTTP 403)')")")" '1|1')"
+check "and the log holds none of them" "$(is "$(contains "$err" 'API rate limit exceeded')" false)"
 
 # The rows above read the wait's line only when one was logged, since a slow host may have no wait
 # left to sleep. These two hold a wait the helper sleeps to its line: the wait is an hour off under a
@@ -526,11 +542,97 @@ echo "case: a plain 404 fails as it did before"
 github never 404
 drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
 check "exits as gh does" "$(is "$status" 1)"
-check "gh's words reach stderr" "$(contains "$err" '^gh: Not Found (HTTP 404)$')"
+check "the log names the exit, the HTTP status and the file that keeps gh's words" \
+  "$(is "$(grep -c '^gh-read\.sh: the command exited 1 (HTTP 404); its own words are in ' <<<"$err")" 1)"
+check "which hold them" "$(contains "$(kept_words "$(kept_by 'gh-read\.sh: the command exited 1 (HTTP 404)')")" '^gh: Not Found (HTTP 404)$')"
+check "and the log holds none of them" "$(is "$(contains "$err" 'Not Found')" false)"
 check "the body gh prints reaches stdout, as with a bare gh" "$(contains "$out" '"message":"Not Found"')"
 check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
 check "calls once" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
 check "logs nothing of its own" "$(is "$(warnings)|$(errors)" '0|0')"
+
+# --- The words of whatever answers gh's call in GitHub's place. It holds gh's token, gh prints its
+# message on stderr, and the rate_limit read hands its answer to the helper: each case below puts
+# the marker not-a-secret-token in one of those, and no run of eight of its characters (the run
+# the redaction rule's gate reads) may be in what the helper prints on stderr. Its stdout is gh's
+# answer, which the caller reads and holds to what it expects. The twin of each case: the file the
+# helper names holds the marker, and gh run bare prints it; the control: the stand-in GitHub
+# answered the call.
+marker=not-a-secret-token
+# holds_marker <text>: whether text holds a run of eight characters of the marker.
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+prints_no_marker() { holds_marker "$1" && echo false || echo true; }
+holds() { holds_marker "$1" && echo true || echo false; }
+
+echo "case: the words of a 404 that hold the marker are kept, not printed"
+github never 404
+echo "$marker" > "$work/state/words"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh api repos/o/r/pulls/1'
+check "twin: gh run bare prints the marker the answer's message holds" "$(holds "$err")"
+github never 404
+echo "$marker" > "$work/state/words"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "the helper prints no run of the marker" "$(prints_no_marker "$err")"
+check "it exits as gh does" "$(is "$status" 1)"
+words=$(kept_by 'gh-read\.sh: the command exited 1 (HTTP 404)')
+check "twin: the file its line names holds gh's words and the marker" \
+  "$(contains "$(kept_words "$words")" "^gh: Not Found $marker (HTTP 404)\$")"
+check "control: the stand-in GitHub answered the call" "$(is "$(calls /repos/o/r/pulls/1)" 1)"
+
+echo "case: the words of a refusal the helper waits out, under --stderr, are kept, not printed"
+# The refused run's words reached stderr before the wait even under --stderr, which names a file
+# for the run the helper ends on alone.
+github 10 404
+echo "$marker" > "$work/state/words"
+drive_on_clock JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset --stderr words gh api repos/o/r/pulls/1 > /dev/null'
+check "the helper prints no run of the marker the refusal's message holds" "$(prints_no_marker "$err")"
+check "it exits as the call after the wait did" "$(is "$status" 1)"
+words=$(kept_by 'gh-read\.sh: the command exited 1 (HTTP 403)')
+check "twin: the file its line names holds the refusal's words and the marker" \
+  "$(contains "$(kept_words "$words")" "^gh: API rate limit exceeded for installation ID 1\. $marker (HTTP 403)\$")"
+check "the --stderr file holds the 404's words of the call after the wait" \
+  "$(contains "$(kept_words "$work/words")" "^gh: Not Found $marker (HTTP 404)\$")"
+check "control: the stand-in GitHub answered both calls" "$(is "$(calls /repos/o/r/pulls/1)" 2)"
+rm -f "$work/words"
+
+echo "case: the words of a rate_limit read that fails are kept, not printed"
+github 3600
+echo "Bad Gateway $marker" > "$work/state/rate-limit-fails"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh api rate_limit'
+check "twin: gh run bare prints the marker the rate_limit route's message holds" "$(holds "$err")"
+github 3600
+echo "Bad Gateway $marker" > "$work/state/rate-limit-fails"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "the helper prints no run of the marker" "$(prints_no_marker "$err")"
+check "it fails by name, naming the HTTP status and the file that keeps the read's words" \
+  "$(is "$status|$(contains "$err" '^::error::GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets (HTTP 502); its words and answer are in ')" '75|true')"
+words=$(sed -n 's/^::error::.*its words and answer are in //p' <<<"$err")
+check "twin: that file holds the read's words and the marker" \
+  "$(contains "$(kept_words "$words")" "^gh: Bad Gateway $marker (HTTP 502)\$")"
+check "control: the stand-in GitHub answered the call and the read" \
+  "$(is "$(calls /repos/o/r/pulls/1)|$(calls /rate_limit)" '1|1')"
+
+echo "case: a rate_limit answer that is no epoch is kept, not printed"
+github 3600
+echo "$marker" > "$work/state/rate-limit-reset"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh api rate_limit --jq .resources.core.reset'
+check "twin: gh run bare prints the reset the rate_limit route answered, the marker" "$(holds "$out")"
+github 3600
+echo "$marker" > "$work/state/rate-limit-reset"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "the helper prints no run of the marker" "$(prints_no_marker "$err")"
+check "it fails by name, naming the file that keeps the read's answer" \
+  "$(is "$status|$(contains "$err" '^::error::GitHub refused this call for its API rate limit, and its rate_limit route did not say when the budget resets; its words and answer are in ')" '75|true')"
+words=$(sed -n 's/^::error::.*its words and answer are in //p' <<<"$err")
+check "twin: that file holds the answer, the marker" "$(contains "$(kept_words "$words")" "'$marker', not an epoch")"
+check "control: the stand-in GitHub answered the call and the read" \
+  "$(is "$(calls /repos/o/r/pulls/1)|$(calls /rate_limit)" '1|1')"
 
 echo "case: a call that succeeds passes through untouched"
 github never
@@ -648,9 +750,11 @@ check "waits the 3 s GitHub asked for, and not GitHub's 60 s minimum" \
   "$(is "$(gap_at_least /repos/o/r/pulls/1 3)|$(gap_at_least /repos/o/r/pulls/1 60)" 'true|false')"
 check "logs at most one line about the wait, naming the retry-after and the job's limit" \
   "$(logged_wait_names "^::warning::GitHub's secondary rate limit asks this call to wait 3 s (its retry-after), until .*, within this job's limit at ")"
-check "gh's own words for the refusal stay in the log, once" \
-  "$(is "$(grep -c 'secondary rate limit.* (HTTP 429)$' <<<"$err")" 1)"
-check "and none of gh's request trace does" "$(is "$(contains "$err" '^\* Request\|^< \|^> ')" false)"
+words=$(kept_by 'gh-read\.sh: the command exited 1 (HTTP 429)')
+check "gh's own words for the refusal are kept in the one file the log names" \
+  "$(is "$(grep -c '^gh-read\.sh: the command exited 1 (HTTP 429); its own words are in ' <<<"$err")|$(grep -c 'secondary rate limit.* (HTTP 429)$' <<<"$(kept_words "$words")")" '1|1')"
+check "and none of gh's request trace is, in that file or the log" \
+  "$(is "$(contains "$(kept_words "$words")" '^\* Request\|^< \|^> ')|$(contains "$err" '^\* Request\|^< \|^> ')" 'false|false')"
 
 echo "case: a secondary rate limit with no retry-after takes GitHub's one-minute minimum"
 # A minute and the margin do not fit in a one-minute limit, so the case fails at once rather than
