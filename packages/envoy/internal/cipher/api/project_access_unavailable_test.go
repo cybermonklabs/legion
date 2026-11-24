@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // downDispatch is a Dispatch stand-in that fails every question, as one the broker cannot reach.
@@ -44,7 +44,7 @@ func projectsDownDispatch(t *testing.T) *projectaccesstest.Server {
 // same fixed sentence, which names neither project; what Dispatch answered goes to the broker's
 // log.
 func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
-	tagged := func(name, project string) awstest.LocalSecret {
+	tagged := func(name, project string) memory.Secret {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, strings.ToLower(name)+"-v1")
 		s.Tags[policy.TagProject] = project
 		return s
@@ -55,14 +55,14 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 		"PUB":  {Visibility: "public", Owner: testApprover},
 	}, nil))
 	ts := newTestServerWith(t, func(d *api.Deps) {
-		local := awstest.NewLocal(tagged("PRIV_KEY", "PRIV"), tagged("PUB_KEY", "PUB"))
+		local := memory.New(tagged("PRIV_KEY", "PRIV"), tagged("PUB_KEY", "PUB"))
 		loader := policytest.Loader(local)
 		loader.ProjectChecks = true
 		current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 		if err != nil {
 			t.Fatalf("policy.NewCurrent: %v", err)
 		}
-		d.Machine.Policy, d.Machine.Secrets, d.Machine.Projects = current, policytest.Store(local), access
+		d.Machine.Policy, d.Machine.Secrets, d.Machine.Projects = current, local, access
 	})
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, body := ts.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",

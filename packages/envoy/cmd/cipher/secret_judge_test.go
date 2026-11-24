@@ -63,7 +63,7 @@ func TestCreateAndRetagWriteTheJudgeTags(t *testing.T) {
 	})
 
 	t.Run("a value the broker would refuse is refused before any write", func(t *testing.T) {
-		local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
+		local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1"))
 		writes := &countingTagWrites{Local: local}
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, writes, testAccount, adaSignIn)

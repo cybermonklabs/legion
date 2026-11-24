@@ -245,7 +245,7 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal()
 			if row.held {
-				local.Put(policytest.Secret("NEW_TEST", "ada@example.com", policy.TierAgent, "theirs"))
+				local.Put(awstest.Secret("NEW_TEST", "ada@example.com", policy.TierAgent, "theirs"))
 			}
 			startSecretBroker(t, servedBy(local))
 			var sm secretsAPI = local

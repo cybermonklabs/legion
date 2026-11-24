@@ -12,14 +12,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // profiledWithGroups is profiled with fake as the loader's group reader, so every set the policy
 // makes live asks fake who is a member of a group, and each full load names its groups to fake.
-func profiledWithGroups(t *testing.T, stored []awstest.LocalSecret, fake *groupstest.Directory, profiles ...string) *policy.Current {
+func profiledWithGroups(t *testing.T, stored []memory.Secret, fake *groupstest.Directory, profiles ...string) *policy.Current {
 	t.Helper()
-	loader := policytest.Loader(awstest.NewLocal(stored...), daemonService)
+	loader := policytest.Loader(memory.New(stored...), daemonService)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(profiles...), daemonService)
 	loader.Groups = fake
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
@@ -31,7 +31,7 @@ func profiledWithGroups(t *testing.T, stored []awstest.LocalSecret, fake *groups
 
 // groupListedApp is GROUP_LISTED_APP, an agent-tier GitHub App that the members of approversGroup
 // and the daemon service may ask for, for an hour at most.
-func groupListedApp() awstest.LocalSecret {
+func groupListedApp() memory.Secret {
 	app := policytest.TypeSecret("GROUP_LISTED_APP", appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	app.Tags[policy.TagRequesters] = approversOwner + " " + daemonService
 	app.Tags[policy.TagMaxGrant] = "1h"
@@ -56,7 +56,7 @@ func evaluated(t *testing.T, set *policy.Set, name, what string, r policy.Reques
 // would serve none of its members.
 func TestAGroupOnlyAProfileNamesIsNamedToTheReaderAtTheLoad(t *testing.T) {
 	fake := groupstest.New()
-	cur := profiledWithGroups(t, []awstest.LocalSecret{appSource()}, fake, readProfile,
+	cur := profiledWithGroups(t, []memory.Secret{appSource()}, fake, readProfile,
 		`{"name": "TEAM_READ", "source": "LEGION_IMPLEMENT_APP", "requesters": ["`+approversOwner+`"], `+acmeRead+`}`)
 	if got := fake.Wants(); !slices.EqualFunc(got, [][]string{{approversGroup}}, slices.Equal) {
 		t.Fatalf("the load named %v to the reader, want [[%s]]", got, approversGroup)
@@ -114,7 +114,7 @@ func TestAProfileOfAGroupOwnedSourceIsTheGroups(t *testing.T) {
 	fake := groupstest.New()
 	fake.Set(approversGroup, groupMember)
 	team := policytest.Secret("TEAM_KEY", approversOwner, policy.TierAgent, "team-v1")
-	set := profiledWithGroups(t, []awstest.LocalSecret{appSource(), team}, fake, readProfile,
+	set := profiledWithGroups(t, []memory.Secret{appSource(), team}, fake, readProfile,
 		`{"name": "TEAM_PROXY", "source": "TEAM_KEY", `+apiProxy+`}`).Get()
 	profile := servedProfile(t, set, "TEAM_PROXY")
 	if profile.Owner != approversOwner || !set.GroupOwned("TEAM_PROXY") {

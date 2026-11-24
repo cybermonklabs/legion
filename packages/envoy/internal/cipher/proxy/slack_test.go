@@ -36,7 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -474,7 +474,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	file := policytest.KindsFileOf(slackKindJSON)
 	token := policytest.Proxied(policytest.Secret(slackName, policy.OwnerShared, policy.TierAgent, slackValue), "slack")
 	token.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
-	local := awstest.NewLocal(token)
+	local := memory.New(token)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = true
 	loader.Profiles = policytest.Profiles(t, file)
@@ -485,7 +485,7 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	dispatch := &dispatchAt{}
 	dispatch.serve(t, rows)
 	m := &requests.Machine{
-		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
+		Store: st, Policy: current, Secrets: local, PendingTTL: 12 * time.Hour,
 		Audience: slackAudience, Skew: time.Minute, Replay: replayOnce(st),
 		Chain: requests.NewChainVerifier(st, slackAudience, time.Minute, current),
 		// Two strings the release carries through unread: the command here is the rig's client,

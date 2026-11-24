@@ -66,7 +66,7 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
+			secret := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
 			secret.Tags[policy.TagRequesters] = c.held
 			for k, v := range c.tags {
 				secret.Tags[k] = v
@@ -213,7 +213,7 @@ func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
+			secret := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
 			secret.Tags[policy.TagRequesters] = "ada@example.com"
 			secret.Tags[policy.TagProject] = "PRIV"
 			secret.Tags[policy.TagMaxGrant] = "1h"
@@ -255,7 +255,7 @@ func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
 // the secret, whose tier did change.
 func TestALandedRetagOfASharedSecretIsNotCalledRefused(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(policytest.Secret("API_KEY", policy.OwnerShared, policy.TierAgent, "v1"))
+	local := awstest.NewLocal(awstest.Secret("API_KEY", policy.OwnerShared, policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, &raceOnTag{secretsAPI: local, failReadBack: "tag", readBackErr: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:DescribeSecret"}}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "API_KEY", "--tier", "human")
@@ -471,7 +471,7 @@ func TestAnAWSTagWriteIsJudgedByItsAttempts(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := policytest.Secret("API_KEY", c.owner, policy.TierAgent, "v1")
+			secret := awstest.Secret("API_KEY", c.owner, policy.TierAgent, "v1")
 			secret.Tags[policy.TagMaxGrant] = "1h"
 			if c.project {
 				secret.Tags[policy.TagRequesters] = "ada@example.com"
@@ -532,7 +532,7 @@ func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
 		{"a landed write whose read-back failed (control)", func(v *valueReads) secretsAPI { return &raceOnTag{secretsAPI: v, failReadBack: "tag"} }, true, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			refused := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}}
 			useAWS(t, c.store(refused), testAccount, adaSignIn)
@@ -559,7 +559,7 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 	settings := gcpTestSettings()
 	broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 	id := testGCPPrefix + "api-key"
-	annotations := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags
+	annotations := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags
 	annotations[policy.TagRequesters] = "ada@example.com"
 	annotations[policy.TagProject] = "PRIV"
 	annotations[policy.TagMaxGrant] = "1h"
@@ -613,7 +613,7 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 // failed, and asks the broker to reread the secret.
 func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
+	local := awstest.NewLocal(awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	refused := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}}
 	useAWS(t, &raceOnTag{secretsAPI: refused, failReadBack: "tag"}, testAccount, adaSignIn)
@@ -702,7 +702,7 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			secret := policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
+			secret := awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1")
 			if !c.unlisted {
 				secret.Tags[policy.TagRequesters] = "ada@example.com"
 				secret.Tags[policy.TagProject] = "PRIV"
@@ -759,7 +759,7 @@ func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
 		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		id := testGCPPrefix + "api-key"
 		fake.secrets[id] = &fakeSecret{
-			secret:      &secretmanagerpb.Secret{Name: id, Annotations: policytest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags, Etag: "1"},
+			secret:      &secretmanagerpb.Secret{Name: id, Annotations: awstest.Secret("API_KEY", "ada@example.com", policy.TierHuman, "v1").Tags, Etag: "1"},
 			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
 			payloads:    [][]byte{[]byte("v1")},
 			etagCounter: 1,

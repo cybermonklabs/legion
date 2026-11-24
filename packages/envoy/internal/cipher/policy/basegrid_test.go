@@ -29,7 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 var writeGolden = flag.Bool("write-golden", false, "write testdata/evaluate-merge-base.json; run only at the merge base, as basegrid_test.go's head comment says")
@@ -62,8 +62,8 @@ type gridAnswer struct {
 // spells its cell. A combination the loader refuses — a service owning a human-tier secret —
 // stays in the grid, answered ErrUnknownSecret, since a refusal is an answer too. edit, when not
 // nil, changes each secret before it is stored.
-func gridSecrets(edit func(*awstest.LocalSecret)) (*awstest.Local, []string) {
-	store := awstest.NewLocal()
+func gridSecrets(edit func(*memory.Secret)) (*memory.Store, []string) {
+	store := memory.New()
 	var names []string
 	for _, owner := range []struct{ name, tag string }{{"SHARED", policy.OwnerShared}, {"PERSON", gridPerson}, {"SERVICE", gridService}} {
 		for _, tier := range []string{policy.TierAgent, policy.TierHuman} {

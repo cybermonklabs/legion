@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // faultKinds is the kinds part of each file the fault rows below write: github takes a stored
@@ -37,14 +37,14 @@ const faultOwner = "ada@example.com"
 
 // stored is the agent-tier stored secret name, holding a value of no type, with tags beside its
 // owner and tier.
-func stored(name string, tags map[string]string) awstest.LocalSecret {
+func stored(name string, tags map[string]string) memory.Secret {
 	s := policytest.Secret(name, faultOwner, policy.TierAgent, "value")
 	maps.Copy(s.Tags, tags)
 	return s
 }
 
 // app is the github-app secret name, which a profile's github block cuts to the account acme.
-func app(name string, tags map[string]string) awstest.LocalSecret {
+func app(name string, tags map[string]string) memory.Secret {
 	s := policytest.TypeSecret(name, faultOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	maps.Copy(s.Tags, tags)
 	return s
@@ -52,7 +52,7 @@ func app(name string, tags map[string]string) awstest.LocalSecret {
 
 // gcloudList is store's secrets as `gcloud secrets list --format='json(name,annotations)'` lists
 // them, each under the project's secret name for its id, written to a file of t's own.
-func gcloudList(t *testing.T, store []awstest.LocalSecret) string {
+func gcloudList(t *testing.T, store []memory.Secret) string {
 	t.Helper()
 	type entry struct {
 		Name        string            `json:"name"`
@@ -89,7 +89,7 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 	for _, c := range []struct {
 		name     string
 		profiles []string
-		store    []awstest.LocalSecret
+		store    []memory.Secret
 		// profile is the refused profile's name, or "" for a stored secret refused by its own
 		// name, secret; reason is the load's reason for it, "" for the control.
 		profile, secret, reason string
@@ -97,110 +97,110 @@ func TestProfilesCheckRefusesWhatTheLoadRefusesOfANameBehindTheProxy(t *testing.
 		{
 			"a proxy string naming another kind than its source's tag",
 			[]string{`{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`},
-			[]awstest.LocalSecret{stored("TOKEN", map[string]string{policy.TagProxy: "slack"})},
+			[]memory.Secret{stored("TOKEN", map[string]string{policy.TagProxy: "slack"})},
 			"TOKEN_READ", "", policy.ReasonProxyKindConflict,
 		},
 		{
 			"a stored token's profile behind no kind",
 			[]string{`{"name": "TOKEN"}`},
-			[]awstest.LocalSecret{stored("TOKEN", nil)},
+			[]memory.Secret{stored("TOKEN", nil)},
 			"TOKEN", "", policy.ReasonProfileSourceNotProxied,
 		},
 		{
 			"an allow behind no kind",
 			[]string{`{"name": "APP_READ", "source": "APP", ` + appBlock + `, "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}`},
-			[]awstest.LocalSecret{app("APP", nil)},
+			[]memory.Secret{app("APP", nil)},
 			"APP_READ", "", policy.ReasonProfileSourceNotProxied,
 		},
 		{
 			"a stored token behind a kind that only mints",
 			[]string{`{"name": "TOKEN", "proxy": "gcp"}`},
-			[]awstest.LocalSecret{stored("TOKEN", nil)},
+			[]memory.Secret{stored("TOKEN", nil)},
 			"TOKEN", "", policy.ReasonProxyWay,
 		},
 		{
 			"no max-grant under a kind that caps a grant",
 			[]string{`{"name": "TOKEN", "proxy": "capped"}`},
-			[]awstest.LocalSecret{stored("TOKEN", nil)},
+			[]memory.Secret{stored("TOKEN", nil)},
 			"TOKEN", "", policy.ReasonProxyMaxGrant,
 		},
 		{
 			"a profile's maxGrant above its kind's",
 			[]string{`{"name": "TOKEN", "proxy": "capped", "maxGrant": "2h"}`},
-			[]awstest.LocalSecret{stored("TOKEN", map[string]string{policy.TagMaxGrant: "12h"})},
+			[]memory.Secret{stored("TOKEN", map[string]string{policy.TagMaxGrant: "12h"})},
 			"TOKEN", "", policy.ReasonProxyMaxGrant,
 		},
 		{
 			"an allow whose source carries no proxy-narrowed tag",
 			[]string{`{"name": "TOKEN", "proxy": "narrow", "allow": [{"method": "GET", "pathPrefix": "/v1/items"}]}`},
-			[]awstest.LocalSecret{stored("TOKEN", nil)},
+			[]memory.Secret{stored("TOKEN", nil)},
 			"TOKEN", "", policy.ReasonProfileAllowNotNarrowed,
 		},
 		{
 			"a row on a host its kind does not bind",
 			[]string{`{"name": "TOKEN", "proxy": "github", "allow": [{"method": "GET", "pathPrefix": "/x", "host": "slack.com"}]}`},
-			[]awstest.LocalSecret{stored("TOKEN", narrowed)},
+			[]memory.Secret{stored("TOKEN", narrowed)},
 			"TOKEN", "", policy.ReasonProfileAllowHost,
 		},
 		{
 			"a row outside its kind's allow",
 			[]string{`{"name": "TOKEN", "proxy": "narrow", "allow": [{"method": "POST", "pathPrefix": "/v1/"}]}`},
-			[]awstest.LocalSecret{stored("TOKEN", narrowed)},
+			[]memory.Secret{stored("TOKEN", narrowed)},
 			"TOKEN", "", policy.ReasonProfileAllowOutsideKind,
 		},
 		{
 			"a proxy tag naming no kind of the file",
 			nil,
-			[]awstest.LocalSecret{stored("LONE", map[string]string{policy.TagProxy: "nokind"})},
+			[]memory.Secret{stored("LONE", map[string]string{policy.TagProxy: "nokind"})},
 			"", "LONE", policy.ReasonProxyKindUnknown,
 		},
 		{
 			"a proxy tag of a kind whose ways do not take the secret's type",
 			nil,
-			[]awstest.LocalSecret{stored("LONE", map[string]string{policy.TagProxy: "gcp"})},
+			[]memory.Secret{stored("LONE", map[string]string{policy.TagProxy: "gcp"})},
 			"", "LONE", policy.ReasonProxyWay,
 		},
 		{
 			"a proxy-narrowed tag that is not true",
 			nil,
-			[]awstest.LocalSecret{stored("LONE", map[string]string{policy.TagProxy: "slack", policy.TagProxyNarrowed: "yes"})},
+			[]memory.Secret{stored("LONE", map[string]string{policy.TagProxy: "slack", policy.TagProxyNarrowed: "yes"})},
 			"", "LONE", policy.ReasonProxyNarrowedMalformed,
 		},
 		{
 			"a narrowed secret no profile names",
 			nil,
-			[]awstest.LocalSecret{stored("LONE", map[string]string{policy.TagProxy: "slack", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})},
+			[]memory.Secret{stored("LONE", map[string]string{policy.TagProxy: "slack", policy.TagProxyNarrowed: policy.ProxyNarrowedTrue})},
 			"", "LONE", policy.ReasonProxyNarrowedProfiles,
 		},
 		{
 			"a profile whose source the load refuses",
 			[]string{`{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`},
-			[]awstest.LocalSecret{stored("TOKEN", map[string]string{policy.TagProxy: "nokind"})},
+			[]memory.Secret{stored("TOKEN", map[string]string{policy.TagProxy: "nokind"})},
 			"TOKEN_READ", "", policy.ReasonProfileSourceMissing,
 		},
 		{
 			"a profile whose source is another profile",
 			[]string{`{"name": "TOKEN_READ", "source": "TOKEN", "proxy": "github"}`, `{"name": "READ_OF_READ", "source": "TOKEN_READ", "proxy": "github"}`},
-			[]awstest.LocalSecret{stored("TOKEN", nil)},
+			[]memory.Secret{stored("TOKEN", nil)},
 			"READ_OF_READ", "", policy.ReasonProfileSourceMissing,
 		},
 		{
 			"a profile whose source is absent",
 			[]string{`{"name": "TOKEN_READ", "source": "GONE", "proxy": "github"}`},
-			[]awstest.LocalSecret{stored("OTHER", nil)},
+			[]memory.Secret{stored("OTHER", nil)},
 			"TOKEN_READ", "", policy.ReasonProfileSourceMissing,
 		},
 		{
 			"the control: a narrowed profile within its kind",
 			[]string{`{"name": "TOKEN", "proxy": "narrow", "allow": [{"method": "GET", "pathPrefix": "/v1/items"}]}`},
-			[]awstest.LocalSecret{stored("TOKEN", narrowed)},
+			[]memory.Secret{stored("TOKEN", narrowed)},
 			"TOKEN", "", "",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			file := policytest.KindsFileOf(faultKinds, c.profiles...)
 			// The load first, so the row is the refusal it names.
-			set := policytest.ProfiledCurrent(t, awstest.NewLocal(c.store...), file).Get()
+			set := policytest.ProfiledCurrent(t, memory.New(c.store...), file).Get()
 			key, subject := "profile:"+c.profile, `profile "`+c.profile+`"`
 			if c.profile == "" {
 				key, subject = policytest.ID(c.secret), `secret "`+c.secret+`"`
@@ -256,19 +256,19 @@ func TestProfilesCheckReadsASourceWaitingForItsValueAsServed(t *testing.T) {
 	waiting.Value, waiting.CreatedAt = "", &created
 	for _, c := range []struct {
 		name   string
-		source awstest.LocalSecret
+		source memory.Secret
 		detail string
 	}{
 		{"waiting for its value", waiting, "source TOKEN: " + policy.ReasonPendingValue},
 		{"the control: with its value", stored("TOKEN", nil), ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			set := policytest.ProfiledCurrent(t, awstest.NewLocal(c.source), file).Get()
+			set := policytest.ProfiledCurrent(t, memory.New(c.source), file).Get()
 			refusal, refused := set.Refused["profile:TOKEN_READ"]
 			if refused != (c.detail != "") || refusal.Detail != c.detail {
 				t.Fatalf("the load refuses TOKEN_READ %+v (refused %t); want detail %q", refusal, refused, c.detail)
 			}
-			if code, _, stderr := runCheck(t, profilesFile(t, file), "--secrets-json", gcloudList(t, []awstest.LocalSecret{c.source})); code != 0 || stderr != "" {
+			if code, _, stderr := runCheck(t, profilesFile(t, file), "--secrets-json", gcloudList(t, []memory.Secret{c.source})); code != 0 || stderr != "" {
 				t.Fatalf("the check = exit %d, stderr %q; want exit 0, since the list shows no value state", code, stderr)
 			}
 		})

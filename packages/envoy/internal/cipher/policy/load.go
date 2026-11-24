@@ -336,8 +336,8 @@ func ValidGroupOwner(owner string) bool {
 // its owner and tier tags, whether it is on the agent-secrets key, and whether it has a current
 // value.
 type Loader struct {
-	// Store lists, describes and reads the secrets: aws.Store over Secrets Manager and KMS (in
-	// local development and tests, over a awstest.Local), or gcp.Store over Secret Manager. Its
+	// Store lists, describes and reads the secrets: the store the registry opened for
+	// BROKER_SECRETS_STORE (secretstore/backends), the memory store in local runs and tests. Its
 	// metadata may answer a write's previous state for up to its ListLag, for which Current keeps
 	// and re-describes what a single-name read settled. Secrets Manager's DescribeSecret shows a
 	// write at once; Secret Manager documents its GetSecret as eventually consistent too, so

@@ -14,99 +14,14 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a
-// secret's request name from its name under the prefix, owner and tier from its tags, and its ARN
-// as the source, for every form Secrets Manager reports the agent-secrets key in — its ARN, its
-// key id, and an alias that points at it by name or by ARN.
-func TestLoadServesEveryWellTaggedSecretOnTheKey(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	keyID := policytest.KeyARN[strings.LastIndex(policytest.KeyARN, "/")+1:]
-	byForm := map[string]string{
-		"BY_ARN":       policytest.KeyARN,
-		"BY_KEY_ID":    keyID,
-		"BY_ALIAS":     "alias/agent-secrets",
-		"BY_ALIAS_ARN": "arn:aws:kms:us-east-1:111122223333:alias/agent-secrets",
-	}
-	store := awstest.NewLocal()
-	store.Alias(policytest.KeyARN, "alias/agent-secrets")
-	for name, keyForm := range byForm {
-		s := policytest.Secret(name, owner, policy.TierAgent, "v")
-		s.KmsKeyID = keyForm
-		store.Put(s)
-	}
-	store.Put(policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierHuman, "v"))
-
-	set, err := policytest.Loader(store).Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(set.Secrets) != len(byForm)+1 {
-		t.Fatalf("served %d secrets, want %d: %+v", len(set.Secrets), len(byForm)+1, set.Secrets)
-	}
-	deel := set.Secrets["DEEL_API_KEY"]
-	if deel.Name != "DEEL_API_KEY" || deel.Owner != policy.OwnerShared || deel.Tier != policy.TierHuman || deel.Source != awstest.ARN(policytest.ID("DEEL_API_KEY")) {
-		t.Fatalf("DEEL_API_KEY = %+v, want shared, human, read by its ARN", deel)
-	}
-	if len(set.Refused) != 0 || logged.String() != "" {
-		t.Fatalf("a load refusing nothing refused %+v and logged:\n%s", set.Refused, logged)
-	}
-}
-
-// failingAliases fails every ListAliases call, counting them.
-type failingAliases struct{ calls int }
-
-func (f *failingAliases) ListAliases(context.Context, *kms.ListAliasesInput, ...func(*kms.Options)) (*kms.ListAliasesOutput, error) {
-	f.calls++
-	return nil, errors.New("AccessDeniedException: not authorized to perform kms:ListAliases")
-}
-
-// TestARefusalForANameOrTagCostsNoAliasLookup pins that the policy asks whether a secret is on
-// the agent-secrets key only after its name and tags pass: a secret that names its key by an alias
-// but is refused for a malformed name or tag, or is scheduled for deletion, is refused (or absent)
-// by itself without a kms:ListAliases call, so a KMS that refuses the lookup fails no load. A
-// well-tagged secret on an alias still asks, and that failure fails the load.
-func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
-	onAlias := func(name string, edit func(*awstest.LocalSecret)) awstest.LocalSecret {
-		s := policytest.Secret(name, owner, policy.TierAgent, "v")
-		s.KmsKeyID = "alias/agent-secrets"
-		edit(&s)
-		return s
-	}
-	deleting := onAlias("DELETING", func(s *awstest.LocalSecret) { s.DeletedAt = new(time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)) })
-	store := awstest.NewLocal(
-		onAlias("ADMIN_TIER", func(s *awstest.LocalSecret) { s.Tags[policy.TagTier] = "admin" }),
-		onAlias("NO_OWNER", func(s *awstest.LocalSecret) { delete(s.Tags, policy.TagOwner) }),
-		deleting,
-	)
-	aliases := &failingAliases{}
-	loader := policy.Loader{Store: awsstore.Store{Client: store, KMS: aliases, KeyARN: policytest.KeyARN}, Prefix: policytest.Prefix}
-	ctx := context.Background()
-	if _, err := loader.Load(ctx); err != nil || aliases.calls != 0 {
-		t.Fatalf("Load = %v after %d ListAliases calls; want the refusals alone, with no lookup", err, aliases.calls)
-	}
-	for name, reason := range map[string]string{"ADMIN_TIER": policy.ReasonTierTagMalformed, "DELETING": policy.ReasonAbsent} {
-		if lk, err := loader.LoadOne(ctx, name); err != nil || lk.Reason != reason || aliases.calls != 0 {
-			t.Fatalf("LoadOne(%s) = %+v, %v after %d ListAliases calls; want %s with no lookup", name, lk, err, aliases.calls, reason)
-		}
-	}
-	store.Put(onAlias("SERVED", func(*awstest.LocalSecret) {}))
-	if _, err := loader.Load(ctx); err == nil || !strings.Contains(err.Error(), "AccessDeniedException") || aliases.calls != 1 {
-		t.Fatalf("Load with a well-tagged secret on an alias = %v after %d ListAliases calls; want the lookup's failure after one", err, aliases.calls)
-	}
-}
 
 // TestLoadRefusesEachUnservableSecretByNameWithTheExactLine pins every reason a secret under the
 // prefix is refused, each handed to the set under its whole name in the store with its reason
@@ -120,49 +35,46 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 // is refused.
 func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	refusals := map[string]struct {
-		secret awstest.LocalSecret
+		secret memory.Secret
 		want   policy.Refusal
 	}{}
-	refuse := func(name, reason, refusedOwner string, edit func(*awstest.LocalSecret)) {
+	refuse := func(name, reason, refusedOwner string, edit func(*memory.Secret)) {
 		s := policytest.Secret(name, owner, policy.TierAgent, "v")
 		edit(&s)
 		refusals[name] = struct {
-			secret awstest.LocalSecret
+			secret memory.Secret
 			want   policy.Refusal
 		}{s, policy.Refusal{Reason: reason, Owner: refusedOwner}}
 	}
-	refuse("NO_OWNER", policy.ReasonOwnerTagMissing, "", func(s *awstest.LocalSecret) { delete(s.Tags, policy.TagOwner) })
-	refuse("GITHUB_LOGIN_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *awstest.LocalSecret) { s.Tags[policy.TagOwner] = "octocat" })
-	refuse("CASED_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *awstest.LocalSecret) { s.Tags[policy.TagOwner] = "Person@Example.com" })
-	refuse("EMPTY_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *awstest.LocalSecret) { s.Tags[policy.TagOwner] = "" })
-	refuse("UNREGISTERED_SERVICE", policy.ReasonOwnerTagMalformed, "", func(s *awstest.LocalSecret) { s.Tags[policy.TagOwner] = "dispatch" })
-	refuse("NO_TIER", policy.ReasonTierTagMissing, owner, func(s *awstest.LocalSecret) { delete(s.Tags, policy.TagTier) })
-	refuse("ADMIN_TIER", policy.ReasonTierTagMalformed, owner, func(s *awstest.LocalSecret) { s.Tags[policy.TagTier] = "admin" })
-	refuse("CASED_TAG_KEY", policy.ReasonOwnerTagMissing, "", func(s *awstest.LocalSecret) {
+	refuse("NO_OWNER", policy.ReasonOwnerTagMissing, "", func(s *memory.Secret) { delete(s.Tags, policy.TagOwner) })
+	refuse("GITHUB_LOGIN_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *memory.Secret) { s.Tags[policy.TagOwner] = "octocat" })
+	refuse("CASED_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *memory.Secret) { s.Tags[policy.TagOwner] = "Person@Example.com" })
+	refuse("EMPTY_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *memory.Secret) { s.Tags[policy.TagOwner] = "" })
+	refuse("UNREGISTERED_SERVICE", policy.ReasonOwnerTagMalformed, "", func(s *memory.Secret) { s.Tags[policy.TagOwner] = "dispatch" })
+	refuse("NO_TIER", policy.ReasonTierTagMissing, owner, func(s *memory.Secret) { delete(s.Tags, policy.TagTier) })
+	refuse("ADMIN_TIER", policy.ReasonTierTagMalformed, owner, func(s *memory.Secret) { s.Tags[policy.TagTier] = "admin" })
+	refuse("CASED_TAG_KEY", policy.ReasonOwnerTagMissing, "", func(s *memory.Secret) {
 		s.Tags["Owner"] = s.Tags[policy.TagOwner]
 		delete(s.Tags, policy.TagOwner)
 	})
-	refuse("SERVICE_HUMAN", policy.ReasonServiceOwnerHumanTier, legion, func(s *awstest.LocalSecret) {
+	refuse("SERVICE_HUMAN", policy.ReasonServiceOwnerHumanTier, legion, func(s *memory.Secret) {
 		s.Tags[policy.TagOwner], s.Tags[policy.TagTier] = legion, policy.TierHuman
 	})
-	refuse("MANAGED_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *awstest.LocalSecret) { s.KmsKeyID = "" })
-	refuse("ANOTHER_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *awstest.LocalSecret) {
-		s.KmsKeyID = "arn:aws:kms:us-east-1:111122223333:key/another-key"
-	})
-	refuse("ANOTHER_KEYS_ALIAS", policy.ReasonNotOnAgentSecretsKey, owner, func(s *awstest.LocalSecret) { s.KmsKeyID = "alias/someone-elses" })
-	refuse("NO_VALUE", policy.ReasonNoCurrentValue, owner, func(s *awstest.LocalSecret) { s.Value = "" })
-	refuse("NO_TIER_NOR_VALUE", policy.ReasonTierTagMissing, owner, func(s *awstest.LocalSecret) {
+	refuse("MANAGED_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *memory.Secret) { s.OffKey = true })
+	refuse("ANOTHER_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *memory.Secret) { s.OffKey = true })
+	refuse("ANOTHER_KEYS_ALIAS", policy.ReasonNotOnAgentSecretsKey, owner, func(s *memory.Secret) { s.OffKey = true })
+	refuse("NO_VALUE", policy.ReasonNoCurrentValue, owner, func(s *memory.Secret) { s.Value = "" })
+	refuse("NO_TIER_NOR_VALUE", policy.ReasonTierTagMissing, owner, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagTier)
 		s.Value = ""
 	})
-	refuse("MANAGED_KEY_NO_VALUE", policy.ReasonNotOnAgentSecretsKey, owner, func(s *awstest.LocalSecret) {
-		s.KmsKeyID = ""
+	refuse("MANAGED_KEY_NO_VALUE", policy.ReasonNotOnAgentSecretsKey, owner, func(s *memory.Secret) {
+		s.OffKey = true
 		s.Value = ""
 	})
 
 	wellTagged := policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v")
-	store := awstest.NewLocal(wellTagged)
-	store.Alias("arn:aws:kms:us-east-1:111122223333:key/another-key", "alias/someone-elses")
+	store := memory.New(wellTagged)
 	want := map[string]policy.Refusal{}
 	for name, r := range refusals {
 		store.Put(r.secret)
@@ -204,125 +116,6 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	}
 }
 
-// pagedSecrets answers ListSecrets one secret per page, the shape a namespace bigger than one page
-// comes back in, and counts the filters it was asked for. Its other Secrets Manager calls are a
-// Local's, which a Load never makes.
-type pagedSecrets struct {
-	*awstest.Local
-	entries []smtypes.SecretListEntry
-	filters [][]smtypes.Filter
-}
-
-// pagedLoader is the Loader over a pagedSecrets listing entries, with no alias to resolve.
-func pagedLoader(t *testing.T, entries ...smtypes.SecretListEntry) (policy.Loader, *pagedSecrets) {
-	sm := &pagedSecrets{Local: awstest.NewLocal(), entries: entries}
-	return policy.Loader{Store: awsstore.Store{Client: sm, KMS: noAliases{t}, KeyARN: policytest.KeyARN}, Prefix: policytest.Prefix}, sm
-}
-
-func (p *pagedSecrets) ListSecrets(_ context.Context, in *secretsmanager.ListSecretsInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
-	p.filters = append(p.filters, in.Filters)
-	i := 0
-	if in.NextToken != nil {
-		i = int((*in.NextToken)[0] - '0')
-	}
-	out := &secretsmanager.ListSecretsOutput{SecretList: p.entries[i : i+1]}
-	if i+1 < len(p.entries) {
-		out.NextToken = aws.String(string(rune('0' + i + 1)))
-	}
-	return out, nil
-}
-
-// noAliases fails a test that resolves an alias it never needed.
-type noAliases struct{ t *testing.T }
-
-func (n noAliases) ListAliases(context.Context, *kms.ListAliasesInput, ...func(*kms.Options)) (*kms.ListAliasesOutput, error) {
-	n.t.Error("ListAliases called, but no secret names its key by an alias")
-	return &kms.ListAliasesOutput{}, nil
-}
-
-// onlyCurrent is a listing's SecretVersionsToStages for a secret holding a value: one version,
-// labelled AWSCURRENT.
-var onlyCurrent = map[string][]string{"v1": {"AWSCURRENT"}}
-
-// listEntry is the ListSecrets entry for the secret named name (its whole Secrets Manager name),
-// shared, agent tier, on the agent-secrets key, with its ARN and its versions' stages.
-func listEntry(name, arn string, versionsToStages map[string][]string) smtypes.SecretListEntry {
-	return smtypes.SecretListEntry{
-		Name: aws.String(name), ARN: aws.String(arn), KmsKeyId: aws.String(policytest.KeyARN),
-		Tags: []smtypes.Tag{
-			{Key: aws.String(policy.TagOwner), Value: aws.String(policy.OwnerShared)},
-			{Key: aws.String(policy.TagTier), Value: aws.String(policy.TierAgent)},
-		},
-		SecretVersionsToStages: versionsToStages,
-	}
-}
-
-// TestLoadReadsEveryPageOfThePrefixOnly pins that the loader asks Secrets Manager for the
-// namespace prefix alone, reads every page, skips a name the lister answered outside the namespace
-// (here the prefix in upper case: the namespace is the prefix as written) without refusing it (it
-// is not in the namespace, so no line and no broker_unservable_secrets series is its), and never
-// resolves aliases nobody used.
-func TestLoadReadsEveryPageOfThePrefixOnly(t *testing.T) {
-	entry := func(name string) smtypes.SecretListEntry { return listEntry(name, "arn:"+name, onlyCurrent) }
-	loader, sm := pagedLoader(t,
-		entry(policytest.Prefix+"first"), entry(policytest.Prefix+"second"),
-		entry(strings.ToUpper(policytest.Prefix)+"third"), entry(policytest.Prefix+"fourth"),
-	)
-	set, err := loader.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(set.Secrets) != 3 || set.Secrets["FIRST"].Source != "arn:"+policytest.Prefix+"first" || set.Secrets["FOURTH"].Name != "FOURTH" {
-		t.Fatalf("served %+v, want FIRST, SECOND and FOURTH", set.Secrets)
-	}
-	if len(set.Refused) != 0 {
-		t.Fatalf("a name outside the namespace was refused rather than skipped: %+v", set.Refused)
-	}
-	if len(sm.filters) != 4 {
-		t.Fatalf("asked for %d pages, want 4", len(sm.filters))
-	}
-	for _, f := range sm.filters {
-		if len(f) != 1 || f[0].Key != smtypes.FilterNameStringTypeName || len(f[0].Values) != 1 || f[0].Values[0] != policytest.Prefix {
-			t.Fatalf("ListSecrets filters = %+v, want name=%s alone", f, policytest.Prefix)
-		}
-	}
-}
-
-// TestLoadServesASecretOnlyWhileAVersionIsCurrent pins the value check on what ListSecrets reports,
-// with no call per secret: a secret is served when one of its versions carries AWSCURRENT, the
-// label GetSecretValue reads, mid-rotation included, and refused with no-current-value when none
-// does: created without a value, or holding only a pending or a previous version.
-func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
-	entry := func(name string, versionsToStages map[string][]string) smtypes.SecretListEntry {
-		return listEntry(policytest.ID(name), "arn:"+name, versionsToStages)
-	}
-	loader, _ := pagedLoader(t,
-		entry("CURRENT", onlyCurrent),
-		entry("ROTATING", map[string][]string{"v1": {"AWSPREVIOUS"}, "v2": {"AWSCURRENT"}, "v3": {"AWSPENDING"}}),
-		entry("NEVER_GIVEN_A_VALUE", nil),
-		entry("NO_STAGES", map[string][]string{}),
-		entry("PENDING_ONLY", map[string][]string{"v1": {"AWSPENDING"}}),
-		entry("PREVIOUS_ONLY", map[string][]string{"v1": {"AWSPREVIOUS"}}),
-	)
-	set, err := loader.Load(context.Background())
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if _, current := set.Secrets["CURRENT"]; !current || len(set.Secrets) != 2 || set.Secrets["ROTATING"].Name != "ROTATING" {
-		t.Fatalf("served %+v, want CURRENT and ROTATING alone", set.Secrets)
-	}
-	noValue := policy.Refusal{Reason: policy.ReasonNoCurrentValue, Owner: policy.OwnerShared}
-	want := map[string]policy.Refusal{
-		policytest.ID("NEVER_GIVEN_A_VALUE"): noValue,
-		policytest.ID("NO_STAGES"):           noValue,
-		policytest.ID("PENDING_ONLY"):        noValue,
-		policytest.ID("PREVIOUS_ONLY"):       noValue,
-	}
-	if !maps.Equal(set.Refused, want) {
-		t.Fatalf("refused %+v, want %+v", set.Refused, want)
-	}
-}
-
 // TestReloadServesASecretOnceItIsGivenAValue pins that a secret created and tagged without a value
 // is left out of the live policy, and that the reload after its value is put serves it, with no
 // restart. The first load writes its refusal once, marked first_load, the reloads that find it
@@ -330,7 +123,7 @@ func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
 // says so (now=servable). Its synctest bubble waits for the reload goroutine to return.
 func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := awstest.NewLocal(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, ""))
+		store := memory.New(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, ""))
 		logged := policytest.CaptureLog(t)
 		cur, err := policy.NewCurrent(t.Context(), policytest.Loader(store), 10*time.Millisecond)
 		if err != nil {
@@ -354,21 +147,22 @@ func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 	})
 }
 
-// failingSecrets fails ListSecrets once failing is set.
+// failingSecrets fails List once failing is set, with the error AWS Secrets Manager answers a
+// caller over its rate, as the AWS store words a failed listing.
 type failingSecrets struct {
-	*awstest.Local
+	*memory.Store
 	mu      sync.Mutex
 	failing bool
 }
 
-func (f *failingSecrets) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+func (f *failingSecrets) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	f.mu.Lock()
 	failing := f.failing
 	f.mu.Unlock()
 	if failing {
-		return nil, errors.New("ThrottlingException: Rate exceeded")
+		return nil, fmt.Errorf("list secrets under %s: %w", prefix, errors.New("ThrottlingException: Rate exceeded"))
 	}
-	return f.Local.ListSecrets(ctx, in, opts...)
+	return f.Store.List(ctx, prefix, opts)
 }
 
 // TestReloadKeepsThePolicyWhenSecretsManagerFails pins the live policy across reloads: a tag edit
@@ -378,8 +172,8 @@ func (f *failingSecrets) ListSecrets(ctx context.Context, in *secretsmanager.Lis
 // reload logs into a later test's capture.
 func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := &failingSecrets{Local: awstest.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
-		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix}
+		store := &failingSecrets{Store: memory.New(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
+		loader := policy.Loader{Store: store, Prefix: policytest.Prefix}
 		logged := policytest.CaptureLog(t)
 		cur, err := policy.NewCurrent(t.Context(), loader, 10*time.Millisecond)
 		if err != nil {
@@ -416,31 +210,14 @@ func await(t *testing.T, done func() bool) {
 	}
 }
 
-// TestVersionNamesThePolicyNotItsListingOrder pins that the version is a function of the served
-// policy alone: the same secrets listed in another order give the same version, and any owner,
-// tier, name or ARN change gives another.
-func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
-	// Secrets Manager promises no listing order, so these listings come back in the order given.
-	listed := func(entries ...smtypes.SecretListEntry) string {
+// TestVersionNamesThePolicyNotItsValues pins that the version is a function of the served policy
+// alone: a value change gives the same version, and any owner, tier or name change gives another.
+// That the listing's order gives none and a source's change gives another is the AWS store's
+// half, over ListSecrets (secretstore/aws, TestVersionNamesThePolicyNotItsListingOrder).
+func TestVersionNamesThePolicyNotItsValues(t *testing.T) {
+	load := func(ss ...memory.Secret) string {
 		t.Helper()
-		loader, _ := pagedLoader(t, entries...)
-		set, err := loader.Load(context.Background())
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		return set.Version
-	}
-	first, second := listEntry(policytest.Prefix+"a-key", "arn:a-key-1", onlyCurrent), listEntry(policytest.Prefix+"b-key", "arn:b-key-1", onlyCurrent)
-	if listed(first, second) != listed(second, first) {
-		t.Fatal("the same secrets in another order gave another version")
-	}
-	if listed(first, listEntry(policytest.Prefix+"b-key", "arn:b-key-2", onlyCurrent)) == listed(first, second) {
-		t.Error("a secret created again under its name, with a new ARN, left the version unchanged")
-	}
-
-	load := func(ss ...awstest.LocalSecret) string {
-		t.Helper()
-		set, err := policytest.Loader(awstest.NewLocal(ss...)).Load(context.Background())
+		set, err := policytest.Loader(memory.New(ss...)).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -454,7 +231,7 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 	if load(a, value) != base {
 		t.Fatal("a value change gave another version; the version names the policy, not the values")
 	}
-	for name, changed := range map[string]awstest.LocalSecret{
+	for name, changed := range map[string]memory.Secret{
 		"owner": policytest.Secret("B_KEY", other, policy.TierHuman, "v"),
 		"tier":  policytest.Secret("B_KEY", policy.OwnerShared, policy.TierAgent, "v"),
 		"name":  policytest.Secret("C_KEY", policy.OwnerShared, policy.TierHuman, "v"),
@@ -472,7 +249,7 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 // of one secret's own name, behind the kind its proxy string names, moves it, as an edit of that
 // entry moves it again, which is what ends the grants that entry affects.
 func TestTheProfileDigestIsInTheVersion(t *testing.T) {
-	store := awstest.NewLocal(
+	store := memory.New(
 		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
 		policytest.Secret("B_KEY", policy.OwnerShared, policy.TierHuman, "v"),
 	)
@@ -507,8 +284,8 @@ func TestTheProfileDigestIsInTheVersion(t *testing.T) {
 // goldenFixture is a fixed namespace whose Version a full Load produced at legion main 7544b767,
 // before NewSet existed. A change to the digest's bytes or order fails TestGoldenDigest, and the
 // production digests (requests.rules_version rows) would shift with it.
-func goldenFixture() *awstest.Local {
-	return awstest.NewLocal(
+func goldenFixture() *memory.Store {
+	return memory.New(
 		policytest.Secret("A0", "ada@example.com", policy.TierAgent, "v1"),
 		policytest.Secret("A_B", "ada@example.com", policy.TierHuman, "v1"),
 		policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierHuman, "v1"),
@@ -517,7 +294,7 @@ func goldenFixture() *awstest.Local {
 
 func TestGoldenDigest(t *testing.T) {
 	const want = "252a3be479774f1163b99a7fbeeec17d523eb5e7048d54f90b8cb5e702fc16ca"
-	set, err := policytest.Loader(goldenFixture()).Load(context.Background())
+	set, err := policytest.Loader(arnSourced{goldenFixture()}).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +321,7 @@ func TestGoldenDigestWithTypeAndMaxGrant(t *testing.T) {
 	app.Tags[policy.TagGitHubOwners] = "Ada  acme"
 	store.Put(app)
 	const want = "2baba37d254f41d900fc8e07b45a97c870e2049d9ee96ecaef7c20fab84af71d"
-	set, err := policytest.Loader(store).Load(context.Background())
+	set, err := policytest.Loader(arnSourced{store}).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,14 +343,14 @@ func TestGoldenDigestWithTypeAndMaxGrant(t *testing.T) {
 // arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets and <tail> empty,
 // "\tscopes=admin.directory.group apps.groups.settings" or "\tadmin=true".
 func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
-	version := func(edit func(*awstest.LocalSecret)) string {
+	version := func(edit func(*memory.Secret)) string {
 		t.Helper()
 		store := goldenFixture()
 		account := policytest.TypeSecret("GOLDEN_ACCOUNT", "ada@example.com", policy.TierHuman,
 			policy.TypeGoogleServiceAccount, `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
 		edit(&account)
 		store.Put(account)
-		set, err := policytest.Loader(store).Load(context.Background())
+		set, err := policytest.Loader(arnSourced{store}).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -583,13 +360,13 @@ func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
 	// canonical form ParseScopes answers and not the tag as a person typed it.
 	for name, tc := range map[string]struct {
 		want string
-		edit func(*awstest.LocalSecret)
+		edit func(*memory.Secret)
 	}{
-		"neither tag": {"e918b72687a566e455b7d59585df0e5ac6edd7529ac1d9822ff7b8a7115c20e8", func(*awstest.LocalSecret) {}},
-		"scopes": {"04a5ed5dd44be3bfa0f6bf2b28d9035ad8976b3a48cac2899d2dce10e4922130", func(s *awstest.LocalSecret) {
+		"neither tag": {"e918b72687a566e455b7d59585df0e5ac6edd7529ac1d9822ff7b8a7115c20e8", func(*memory.Secret) {}},
+		"scopes": {"04a5ed5dd44be3bfa0f6bf2b28d9035ad8976b3a48cac2899d2dce10e4922130", func(s *memory.Secret) {
 			s.Tags[policy.TagScopes] = "apps.groups.settings  admin.directory.group"
 		}},
-		"admin": {"3327086f9c271078a77058b80d6ac88623de5ae6f0ced1bc36bad6a737518b24", func(s *awstest.LocalSecret) {
+		"admin": {"3327086f9c271078a77058b80d6ac88623de5ae6f0ced1bc36bad6a737518b24", func(s *memory.Secret) {
 			s.Tags[policy.TagAdmin] = "true"
 		}},
 	} {
@@ -635,7 +412,7 @@ func TestALeftoverShapeTagIsIgnored(t *testing.T) {
 // full Load and by single-name merges gives byte-equal Versions — including names whose slug order
 // differs from their Name order ("A_B" vs "A0": '-' < '0' but '_' > '0').
 func TestMergedSetVersionEqualsAFullLoads(t *testing.T) {
-	store := awstest.NewLocal(policytest.Secret("A0", "ada@example.com", policy.TierAgent, "v1"))
+	store := memory.New(policytest.Secret("A0", "ada@example.com", policy.TierAgent, "v1"))
 	cur := policytest.Current(t, store)
 	store.Put(policytest.Secret("A_B", "ada@example.com", policy.TierAgent, "v1"))
 	if lk, err := cur.RefreshOne(context.Background(), "A_B"); err != nil || !lk.Served {
@@ -658,7 +435,7 @@ func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 	deleting.DeletedAt = new(time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
 	noOwner := policytest.Secret("NO_OWNER", owner, policy.TierAgent, "v")
 	delete(noOwner.Tags, policy.TagOwner)
-	store := awstest.NewLocal(
+	store := memory.New(
 		policytest.Secret("SERVED", owner, policy.TierHuman, "v"),
 		policytest.Secret("ADMIN_TIER", owner, "admin", "v"),
 		noOwner,
@@ -676,7 +453,7 @@ func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 	}
 
 	lk, err := loader.LoadOne(ctx, "SERVED")
-	if s := lk.Secret; err != nil || !lk.Served || lk.Reason != "" || s.Name != "SERVED" || s.Owner != owner || s.Tier != policy.TierHuman || s.Source != awstest.ARN(policytest.ID("SERVED")) {
+	if s := lk.Secret; err != nil || !lk.Served || lk.Reason != "" || s.Name != "SERVED" || s.Owner != owner || s.Tier != policy.TierHuman || s.Source != policytest.Source("SERVED") {
 		t.Fatalf("LoadOne(SERVED) = %+v, %v; want it served, %s's, human, read by its ARN", lk, err, owner)
 	}
 	for name, want := range map[string]policy.Refusal{
@@ -706,18 +483,17 @@ func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 // other, and one a character longer is ErrNameInvalid with no DescribeSecret made, since Secrets
 // Manager refuses a longer SecretId as invalid input rather than answering it not found.
 func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
-	store := awstest.NewLocal()
-	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
-	loader := policytest.Loader(store)
-	loader.Store = policytest.StoreThrough(store, count)
+	store := memory.New()
+	count := &secretstoretest.Counting{Store: store}
+	loader := policytest.Loader(count)
 	ctx := context.Background()
 
 	atLimit := "A" + strings.Repeat("B", 512-len(policytest.Prefix)-1)
-	if lk, err := loader.LoadOne(ctx, atLimit); err != nil || lk.Served || lk.Reason != policy.ReasonAbsent || count.Calls.Load() != 1 {
-		t.Fatalf("LoadOne(a name whose id is 512 characters) = %+v, %v after %d DescribeSecret calls; want absent after one", lk, err, count.Calls.Load())
+	if lk, err := loader.LoadOne(ctx, atLimit); err != nil || lk.Served || lk.Reason != policy.ReasonAbsent || count.Describes.Load() != 1 {
+		t.Fatalf("LoadOne(a name whose id is 512 characters) = %+v, %v after %d DescribeSecret calls; want absent after one", lk, err, count.Describes.Load())
 	}
-	if lk, err := loader.LoadOne(ctx, atLimit+"C"); !errors.Is(err, policy.ErrNameInvalid) || count.Calls.Load() != 1 {
-		t.Fatalf("LoadOne(a name whose id is 513 characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Calls.Load())
+	if lk, err := loader.LoadOne(ctx, atLimit+"C"); !errors.Is(err, policy.ErrNameInvalid) || count.Describes.Load() != 1 {
+		t.Fatalf("LoadOne(a name whose id is 513 characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Describes.Load())
 	}
 }
 
@@ -742,9 +518,9 @@ func samplesOf(t *testing.T, registry *metrics.Registry, metric string) string {
 // fails is counted all the same, since it was asked of the store, and a name no secret can carry
 // makes no call and counts nothing.
 func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
-	store := &failingSecrets{Local: awstest.NewLocal(policytest.Secret("SERVED", owner, policy.TierAgent, "v"))}
+	store := &failingSecrets{Store: memory.New(policytest.Secret("SERVED", owner, policy.TierAgent, "v"))}
 	registry := metrics.New()
-	loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
+	loader := policy.Loader{Store: store, Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
 	ctx := context.Background()
 
 	for _, step := range []struct {
@@ -799,51 +575,51 @@ func TestRequestersLoad(t *testing.T) {
 		daemon = "legion-daemon"
 	)
 	type refusal struct {
-		secret awstest.LocalSecret
+		secret memory.Secret
 		reason string
 	}
 	refusals := map[string]refusal{}
-	refuse := func(name, reason string, edit func(*awstest.LocalSecret)) {
+	refuse := func(name, reason string, edit func(*memory.Secret)) {
 		s := policytest.ListedSecret(name, person, policy.TierAgent, person, "v")
 		edit(&s)
 		refusals[name] = refusal{s, reason}
 	}
-	refuseType := func(name, reason string, edit func(*awstest.LocalSecret)) {
+	refuseType := func(name, reason string, edit func(*memory.Secret)) {
 		s := policytest.TypeSecret(name, person, policy.TierAgent, policy.TypeGoogleServiceAccount,
 			`{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
 		edit(&s)
 		refusals[name] = refusal{s, reason}
 	}
-	refuse("COMMA_LIST", policy.ReasonRequestersMalformed, func(s *awstest.LocalSecret) {
+	refuse("COMMA_LIST", policy.ReasonRequestersMalformed, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = person + "," + daemon
 	})
-	refuse("EMPTY_LIST", policy.ReasonRequestersMalformed, func(s *awstest.LocalSecret) {
+	refuse("EMPTY_LIST", policy.ReasonRequestersMalformed, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = "  "
 	})
-	refuse("CASED_EMAIL", policy.ReasonRequestersMalformed, func(s *awstest.LocalSecret) {
+	refuse("CASED_EMAIL", policy.ReasonRequestersMalformed, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = "Person@Example.com"
 	})
-	refuse("UNKNOWN_SERVICE", policy.ReasonRequestersMalformed, func(s *awstest.LocalSecret) {
+	refuse("UNKNOWN_SERVICE", policy.ReasonRequestersMalformed, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = "dispatch"
 	})
-	refuseType("ACCOUNT_NO_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *awstest.LocalSecret) {
+	refuseType("ACCOUNT_NO_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagMaxGrant)
 	})
-	refuseType("ACCOUNT_LONG_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *awstest.LocalSecret) {
+	refuseType("ACCOUNT_LONG_MAX_GRANT", policy.ReasonMaxGrantRequired, func(s *memory.Secret) {
 		s.Tags[policy.TagMaxGrant] = "2h"
 	})
-	refuseType("ACCOUNT_NO_LIST", policy.ReasonRequestersNotOwner, func(s *awstest.LocalSecret) {
+	refuseType("ACCOUNT_NO_LIST", policy.ReasonRequestersNotOwner, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagRequesters)
 	})
-	refuseType("ACCOUNT_TWO_PEOPLE", policy.ReasonRequestersNotOwner, func(s *awstest.LocalSecret) {
+	refuseType("ACCOUNT_TWO_PEOPLE", policy.ReasonRequestersNotOwner, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = person + " " + other
 	})
-	refuseType("ACCOUNT_ANOTHER_PERSON", policy.ReasonRequestersNotOwner, func(s *awstest.LocalSecret) {
+	refuseType("ACCOUNT_ANOTHER_PERSON", policy.ReasonRequestersNotOwner, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = other
 	})
 
 	served := policytest.ListedSecret("SERVED_KEY", person, policy.TierAgent, person, "v")
-	store := awstest.NewLocal(served)
+	store := memory.New(served)
 	for _, r := range refusals {
 		store.Put(r.secret)
 	}
@@ -868,7 +644,7 @@ func TestRequestersLoad(t *testing.T) {
 	// requesters-malformed, exactly as an owner tag naming an unregistered service is refused,
 	// since no pod can prove a name the deployment does not register.
 	unregistered := policytest.ListedSecret("SERVICE_LIST_KEY", person, policy.TierAgent, daemon, "v")
-	bare, err := policytest.Loader(awstest.NewLocal(unregistered)).Load(context.Background())
+	bare, err := policytest.Loader(memory.New(unregistered)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load with no registered services: %v", err)
 	}
@@ -900,85 +676,85 @@ func TestAdminCap(t *testing.T) {
 	)
 	// An admin secret as the rules want it (ListedSecret's max-grant is an hour), a secret that
 	// only lists its requesters, and a google-service-account one, each before a row's edit.
-	adminSecret := func(name, tier string, edit func(*awstest.LocalSecret)) awstest.LocalSecret {
+	adminSecret := func(name, tier string, edit func(*memory.Secret)) memory.Secret {
 		s := policytest.ListedSecret(name, person, tier, person, "v")
 		s.Tags[policy.TagAdmin] = "true"
 		edit(&s)
 		return s
 	}
-	loginSecret := func(name, tier string, edit func(*awstest.LocalSecret)) awstest.LocalSecret {
+	loginSecret := func(name, tier string, edit func(*memory.Secret)) memory.Secret {
 		s := policytest.TypeSecret(name, person, tier, policy.TypeGoogleLogin, "v")
 		s.Tags[policy.TagRequesters] = person
 		edit(&s)
 		return s
 	}
-	accountSecret := func(name, tier string, edit func(*awstest.LocalSecret)) awstest.LocalSecret {
+	accountSecret := func(name, tier string, edit func(*memory.Secret)) memory.Secret {
 		s := policytest.TypeSecret(name, person, tier, policy.TypeGoogleServiceAccount, accountValue)
 		edit(&s)
 		return s
 	}
-	unedited := func(*awstest.LocalSecret) {}
+	unedited := func(*memory.Secret) {}
 	// The name a session asks for the fixture by, which the refusals are keyed under.
-	nameOf := func(s awstest.LocalSecret) string {
+	nameOf := func(s memory.Secret) string {
 		return policy.SlugToName(strings.TrimPrefix(s.Name, policytest.Prefix))
 	}
 
-	served := []awstest.LocalSecret{
+	served := []memory.Secret{
 		adminSecret("ADMIN_KEY", policy.TierHuman, unedited),
 		loginSecret("LISTED_HUMAN", policy.TierHuman, unedited),
 		loginSecret("LISTED_AGENT", policy.TierAgent, unedited),
-		loginSecret("LISTED_LONG_CAP", policy.TierHuman, func(s *awstest.LocalSecret) {
+		loginSecret("LISTED_LONG_CAP", policy.TierHuman, func(s *memory.Secret) {
 			s.Tags[policy.TagMaxGrant] = "12h"
 		}),
-		accountSecret("ACCOUNT_DAEMON", policy.TierHuman, func(s *awstest.LocalSecret) {
+		accountSecret("ACCOUNT_DAEMON", policy.TierHuman, func(s *memory.Secret) {
 			s.Tags[policy.TagRequesters] = person + " " + daemon
 		}),
 	}
 	refusals := map[string]struct {
-		secret awstest.LocalSecret
+		secret memory.Secret
 		reason string
 	}{}
-	refuse := func(secret awstest.LocalSecret, reason string) {
+	refuse := func(secret memory.Secret, reason string) {
 		refusals[nameOf(secret)] = struct {
-			secret awstest.LocalSecret
+			secret memory.Secret
 			reason string
 		}{secret, reason}
 	}
-	refuse(adminSecret("ADMIN_NO_CAP", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(adminSecret("ADMIN_NO_CAP", policy.TierHuman, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagMaxGrant)
 	}), policy.ReasonMaxGrantRequired)
-	refuse(adminSecret("ADMIN_LONG_CAP", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(adminSecret("ADMIN_LONG_CAP", policy.TierHuman, func(s *memory.Secret) {
 		s.Tags[policy.TagMaxGrant] = "2h"
 	}), policy.ReasonMaxGrantRequired)
 	refuse(adminSecret("ADMIN_AGENT_TIER", policy.TierAgent, unedited), policy.ReasonAdminTier)
-	refuse(adminSecret("ADMIN_NO_LIST", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(adminSecret("ADMIN_NO_LIST", policy.TierHuman, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagRequesters)
 	}), policy.ReasonAdminRequesters)
-	refuse(adminSecret("ADMIN_YES", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(adminSecret("ADMIN_YES", policy.TierHuman, func(s *memory.Secret) {
 		s.Tags[policy.TagAdmin] = "yes"
 	}), policy.ReasonAdminMalformed)
-	refuse(accountSecret("ACCOUNT_NO_CAP", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(accountSecret("ACCOUNT_NO_CAP", policy.TierHuman, func(s *memory.Secret) {
 		delete(s.Tags, policy.TagMaxGrant)
 	}), policy.ReasonMaxGrantRequired)
-	refuse(accountSecret("ACCOUNT_SERVICE_AGENT", policy.TierAgent, func(s *awstest.LocalSecret) {
+	refuse(accountSecret("ACCOUNT_SERVICE_AGENT", policy.TierAgent, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = person + " " + daemon
 	}), policy.ReasonRequestersNotOwner)
-	refuse(accountSecret("ACCOUNT_TWO_PEOPLE", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(accountSecret("ACCOUNT_TWO_PEOPLE", policy.TierHuman, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = person + " " + other
 	}), policy.ReasonRequestersNotOwner)
 	// The same list ACCOUNT_DAEMON is served for, on a secret the deployment binds to one
 	// person's own dev-<name> account: that token is theirs, so no service may ask for it.
-	refuse(accountSecret("ACCOUNT_DEV_BOUND", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(accountSecret("ACCOUNT_DEV_BOUND", policy.TierHuman, func(s *memory.Secret) {
 		s.Tags[policy.TagRequesters] = person + " " + daemon
 	}), policy.ReasonRequestersNotOwner)
 	appScopes := policytest.TypeSecret("APP_SCOPES", person, policy.TierAgent, policy.TypeGitHubApp, "v")
 	appScopes.Tags[policy.TagScopes] = "cloud-platform"
 	refuse(appScopes, policy.ReasonScopesType)
-	refuse(accountSecret("ACCOUNT_BAD_SCOPES", policy.TierHuman, func(s *awstest.LocalSecret) {
+	refuse(accountSecret("ACCOUNT_BAD_SCOPES", policy.TierHuman, func(s *memory.Secret) {
 		s.Tags[policy.TagScopes] = "cloud-platform,bigquery"
 	}), policy.ReasonScopesMalformed)
 
-	store := awstest.NewLocal(served...)
+	store := memory.New(served...)
 	for _, r := range refusals {
 		store.Put(r.secret)
 	}
@@ -1025,7 +801,7 @@ func TestNewSetDigest(t *testing.T) {
 	version := func(requesters string) string {
 		t.Helper()
 		s := policytest.ListedSecret("LISTED_KEY", person, policy.TierAgent, requesters, "v1")
-		set, err := policytest.Loader(awstest.NewLocal(s), daemon).Load(context.Background())
+		set, err := policytest.Loader(arnSourced{memory.New(s)}, daemon).Load(context.Background())
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -1042,7 +818,7 @@ func TestNewSetDigest(t *testing.T) {
 	limited := policytest.Secret("LIMITED_KEY", "ada@example.com", policy.TierHuman, "v1")
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-	set, err := policytest.Loader(awstest.NewLocal(limited, plain)).Load(context.Background())
+	set, err := policytest.Loader(arnSourced{memory.New(limited, plain)}).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

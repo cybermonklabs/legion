@@ -189,7 +189,7 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 
 func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, "stored-value")
@@ -362,7 +362,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 	}
 	t.Run("aws", func(t *testing.T) {
 		// PLAIN_KEY holds an App's value, which the retag to github-app below decodes.
-		local := awstest.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
+		local := awstest.NewLocal(awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -438,7 +438,7 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	// LISTED_KEY holds a service account, which the retag to that type below decodes.
-	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+	listed := awstest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	listed.Tags[policy.TagRequesters] = "ada@example.com"
 	listed.Tags[policy.TagMaxGrant] = "1h"
 	local := awstest.NewLocal(listed)
@@ -524,7 +524,7 @@ func TestSecretCreateWritesTheGroupForm(t *testing.T) {
 // beside the registered services the list already names. Control: that write lands.
 func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	held := policytest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+	held := awstest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	local := awstest.NewLocal(held)
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
@@ -558,7 +558,7 @@ func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *test
 // written.
 func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -700,7 +700,7 @@ func (c *countingTagWrites) UntagResource(ctx context.Context, in *secretsmanage
 // typeTaggedSecret is a github-app secret name holding an App's value, with a max grant of an hour.
 func typeTaggedSecret(t *testing.T, name string) awstest.LocalSecret {
 	t.Helper()
-	secret := policytest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+	secret := awstest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	secret.Tags[policy.TagMaxGrant] = "1h"
 	return secret
 }
@@ -1125,7 +1125,7 @@ func (v *valueReads) RestoreSecret(ctx context.Context, in *secretsmanager.Resto
 type awsTypeStore struct{ sm *valueReads }
 
 func (s awsTypeStore) put(_ *testing.T, name string, tags map[string]string, value string) {
-	s.sm.Put(awstest.LocalSecret{Name: policytest.ID(name), KmsKeyID: policytest.KeyARN, Tags: maps.Clone(tags), Value: value})
+	s.sm.Put(awstest.LocalSecret{Name: policytest.ID(name), KmsKeyID: awstest.KeyARN, Tags: maps.Clone(tags), Value: value})
 }
 
 func (s awsTypeStore) has(_ *testing.T, name string) bool {
@@ -1263,8 +1263,8 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 		for _, row := range refusedTypeValues(t) {
 			t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
 				says := mintRefusal(t, row.secretType, row.value)
-				store.put(t, "HELD_KEY", policytest.TypeSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.secretType, "").Tags, policytest.TypeValue(row.secretType))
-				plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags
+				store.put(t, "HELD_KEY", awstest.TypeSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.secretType, "").Tags, policytest.TypeValue(row.secretType))
+				plain := awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags
 				store.put(t, "PLAIN_KEY", plain, row.value)
 				// The refusal names the type after the article it takes, written out here rather
 				// than derived by the rule that writes it: "an azure-login", never "a azure-login".
@@ -1326,8 +1326,8 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.TypeGitHubApp, noAppID)
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
-		store.put(t, "APP_KEY", policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, "").Tags, noAppID)
-		store.put(t, "PLAIN_KEY", policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, noAppID)
+		store.put(t, "APP_KEY", awstest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, "").Tags, noAppID)
+		store.put(t, "PLAIN_KEY", awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, noAppID)
 		toApp := []string{"retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org"}
 		rereads := func() int {
 			asked, _ := broker.recorded()
@@ -1402,7 +1402,7 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 // exiting 2 and naming that reason, before it reads the value.
 func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
-	local := awstest.NewLocal(policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
+	local := awstest.NewLocal(awstest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	refuseValueReads(t)

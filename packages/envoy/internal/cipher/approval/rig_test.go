@@ -34,7 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -90,7 +90,7 @@ type rig struct {
 // and the hold gate (withHold). A rig holding a client serves a secret tagged with a project, as
 // cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
-	secrets  []awstest.LocalSecret
+	secrets  []memory.Secret
 	projects projectaccess.Access
 	profiles string
 	groups   record.Directory
@@ -118,7 +118,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	if setup.hold != nil {
 		gate = setup.hold(st)
 	}
-	local := awstest.NewLocal(append([]awstest.LocalSecret{
+	local := memory.New(append([]memory.Secret{
 		policytest.Secret("TEST_SECRET", ada, policy.TierHuman, "test-v1"),
 		policytest.Secret("SECOND_SECRET", ada, policy.TierHuman, "second-v1"),
 		policytest.Secret("THIRD_SECRET", ada, policy.TierHuman, "third-v1"),
@@ -153,7 +153,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	enr := &enroll.Service{Store: st, Lease: time.Hour, Projects: setup.projects}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	reqMachine := &requests.Machine{
-		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
+		Store: st, Policy: current, Secrets: local, PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
 		Groups: setup.groups,
 	}
@@ -194,9 +194,9 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 // retag puts changed into the rig's secret store, replacing each secret of the same name, and
 // reloads the policy, as the broker's next refresh does after someone edits a secret in Secrets
 // Manager. It is how a test moves the policy under a request that is already pending.
-func (r *rig) retag(t *testing.T, changed ...awstest.LocalSecret) {
+func (r *rig) retag(t *testing.T, changed ...memory.Secret) {
 	t.Helper()
-	local := r.machine.Secrets.(aws.Store).Client.(*awstest.Local)
+	local := r.machine.Secrets.(*memory.Store)
 	for _, s := range changed {
 		local.Put(s)
 	}

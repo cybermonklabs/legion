@@ -19,8 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -44,12 +43,12 @@ const groupOwner = "owner@example.com"
 // TEAM_TOKEN, agent tier with no requesters tag, which a member's session gets at once; and two
 // secrets whose requesters name the group, LISTED_TOKEN, shared at agent tier, which a member's
 // session gets at once, and OWNER_KEY, groupOwner's at human tier, which groupOwner approves.
-func groupSecrets() []awstest.LocalSecret {
+func groupSecrets() []memory.Secret {
 	listed := policytest.Secret("LISTED_TOKEN", policy.OwnerShared, policy.TierAgent, "listed-v1")
 	listed.Tags[policy.TagRequesters] = approversForm
 	owned := policytest.Secret("OWNER_KEY", groupOwner, policy.TierHuman, "owner-v1")
 	owned.Tags[policy.TagRequesters] = approversForm
-	return []awstest.LocalSecret{
+	return []memory.Secret{
 		policytest.Secret("TEAM_KEY", approversForm, policy.TierHuman, "team-v1"),
 		policytest.Secret("TEAM_TOKEN", approversForm, policy.TierAgent, "token-v1"),
 		listed,
@@ -62,7 +61,7 @@ func groupSecrets() []awstest.LocalSecret {
 // session of groupMember's and one of groupAsker's, and the store its policy is read from.
 type groupFixture struct {
 	m                   *Machine
-	local               *awstest.Local
+	local               *memory.Store
 	directory           *groupstest.Directory
 	member, asker       string
 	memberKey, askerKey *ecdsa.PrivateKey
@@ -71,7 +70,7 @@ type groupFixture struct {
 func newGroupFixture(t *testing.T) *groupFixture {
 	t.Helper()
 	st := storetest.Open(t)
-	local := awstest.NewLocal(groupSecrets()...)
+	local := memory.New(groupSecrets()...)
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember, secondMember)
 	loader := policytest.Loader(local)
@@ -83,7 +82,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 	m := &Machine{
 		Store:      st,
 		Policy:     current,
-		Secrets:    policytest.Store(local),
+		Secrets:    local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   testAudience,
 		Skew:       time.Minute,
@@ -127,7 +126,7 @@ func (f *groupFixture) approvedTeamKey(t *testing.T) (recordID, grantID string) 
 // stale group, are refused as not live, with the plain refusal: the typed lapse of a
 // group-approved record is the chain check's to answer and log, never this one's.
 func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
-	local := awstest.NewLocal(groupSecrets()...)
+	local := memory.New(groupSecrets()...)
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
 	loader := policytest.Loader(local)
@@ -529,7 +528,7 @@ func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
 func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) {
 	f := newGroupFixture(t)
 	ctx := context.Background()
-	policytest.JudgeTags(t, f.m.Secrets.(aws.Store).Client.(*awstest.Local), f.m.Policy, "TEAM_KEY", 900, "")
+	policytest.JudgeTags(t, f.m.Secrets.(*memory.Store), f.m.Policy, "TEAM_KEY", 900, "")
 	f.m.Chain = NewChainVerifier(f.m.Store, testAudience, time.Minute, f.m.Policy)
 	f.m.Chain.Groups = f.directory
 	f.m.Judge = func(PendingRequest) {}
@@ -563,7 +562,7 @@ func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) 
 
 // retag stores secret, the store's form of the policy's secret name, and rereads name, as an
 // owner's retag and the reread after it do.
-func (f *groupFixture) retag(t *testing.T, name string, secret awstest.LocalSecret) {
+func (f *groupFixture) retag(t *testing.T, name string, secret memory.Secret) {
 	t.Helper()
 	f.local.Put(secret)
 	if _, err := f.m.Policy.RefreshOne(context.Background(), name); err != nil {

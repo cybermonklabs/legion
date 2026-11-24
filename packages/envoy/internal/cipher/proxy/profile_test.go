@@ -39,7 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -84,7 +84,7 @@ func readProfile(value, permissions, allow string) string {
 
 // profiledSource is the github-app secret stored as source holds it: of profileOperator at agent
 // tier, holding value, behind profileKind by its proxy tag and narrowed by its one profile.
-func profiledSource(source, secretType, value string) awstest.LocalSecret {
+func profiledSource(source, secretType, value string) memory.Secret {
 	return policytest.Narrowed(policytest.Proxied(policytest.TypeSecret(source, profileOperator, policy.TierAgent, secretType, value), profileKind))
 }
 
@@ -122,7 +122,7 @@ func (g *rolledGrants) AirlockRules() proxyrules.Rules { return g.machine.Load()
 type profileRig struct {
 	*rig
 	st           *store.Store
-	local        *awstest.Local
+	local        *memory.Store
 	stand        *proxyrulestest.GitHubStand
 	minting      *proxyrulestest.Service
 	grants       *rolledGrants
@@ -136,7 +136,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	t.Helper()
 	pr := &profileRig{
 		st:     storetest.Open(t),
-		local:  awstest.NewLocal(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
+		local:  memory.New(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
 		stand:  proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: profileInstallations, DistinctTokens: true}),
 		grants: &rolledGrants{},
 	}
@@ -161,7 +161,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 	t.Helper()
 	m := &requests.Machine{
-		Store: pr.st, Policy: policytest.ProfiledCurrent(t, pr.local, file), Secrets: policytest.Store(pr.local),
+		Store: pr.st, Policy: policytest.ProfiledCurrent(t, pr.local, file), Secrets: pr.local,
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:  (&enroll.Service{Store: pr.st}).Replay,
 		Minters: map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: pr.minting.URL()}.Mint},

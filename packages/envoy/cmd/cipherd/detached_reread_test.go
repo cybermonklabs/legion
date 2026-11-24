@@ -12,7 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -29,11 +30,10 @@ const thePeersTold = "the other pods were told to reread"
 //
 // The named revert: drop the WaitDetached call from stop.
 func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
-	local := awstest.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
+	local := memory.New(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	entered := make(chan string, 1)
 	release := make(chan struct{})
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, policytest.HeldDescriber{SecretsManagerAPI: local, Entered: entered, Release: release})
+	loader := policytest.Loader(secretstoretest.Held{Store: local, Entered: entered, Release: release})
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)

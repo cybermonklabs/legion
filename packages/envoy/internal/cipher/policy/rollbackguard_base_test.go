@@ -29,7 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 var writeRollbackGolden = flag.Bool("write-rollback-golden", false, "write testdata/rollback-guard-merge-base.json; run only at the merge base, as rollbackguard_base_test.go's head comment says")
@@ -69,7 +69,7 @@ const (
 // carries the guard, and list, the requesters list it carries beside the guard ("" for none).
 type rollbackCase struct {
 	name    string
-	secret  awstest.LocalSecret
+	secret  memory.Secret
 	guarded bool
 	list    string
 }
@@ -93,29 +93,29 @@ type rollbackAnswer struct {
 func rollbackGuardCases() []rollbackCase {
 	shapes := []struct {
 		shape string
-		make  func(name string) awstest.LocalSecret
+		make  func(name string) memory.Secret
 		list  string
 		tags  map[string]string
 	}{
-		{"STORED", func(name string) awstest.LocalSecret {
+		{"STORED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProject: "PRIV"}},
-		{"LISTED", func(name string) awstest.LocalSecret {
+		{"LISTED", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProject: "PRIV"}},
-		{"ADMIN", func(name string) awstest.LocalSecret {
+		{"ADMIN", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
-		{"APP", func(name string) awstest.LocalSecret {
+		{"APP", func(name string) memory.Secret {
 			return baseKindSecret(name, policy.OwnerShared, policy.TierAgent, baseKindApp)
 		}, "", map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
-		{"ACCOUNT", func(name string) awstest.LocalSecret {
+		{"ACCOUNT", func(name string) memory.Secret {
 			return baseKindSecret(name, guardOwner, policy.TierHuman, baseKindAccount)
 		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
-		{"CHANNELS", func(name string) awstest.LocalSecret {
+		{"CHANNELS", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProjectChannels: "slack"}},
-		{"SLACK", func(name string) awstest.LocalSecret {
+		{"SLACK", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProject: "PRIV", baseTagProjectChannels: "slack", policy.TagDefaultGrant: policy.DefaultGrantSession, baseTagShape: baseShapeToken}},
 	}
@@ -148,7 +148,7 @@ func rollbackGuardCases() []rollbackCase {
 // baseKindSecret is the merge base's policytest.KindSecret, spelled with this file's literals: a
 // secret tagged kind, with the github-owners a github-app one needs and the requesters list and
 // hour's cap a google-service-account one needs.
-func baseKindSecret(name, owner, tier, kind string) awstest.LocalSecret {
+func baseKindSecret(name, owner, tier, kind string) memory.Secret {
 	secret := policytest.Secret(name, owner, tier, "v")
 	secret.Tags[baseTagKind] = kind
 	switch kind {
@@ -162,8 +162,8 @@ func baseKindSecret(name, owner, tier, kind string) awstest.LocalSecret {
 }
 
 // rollbackGuardStore is a store holding every case.
-func rollbackGuardStore() *awstest.Local {
-	store := awstest.NewLocal()
+func rollbackGuardStore() *memory.Store {
+	store := memory.New()
 	for _, c := range rollbackGuardCases() {
 		store.Put(c.secret)
 	}

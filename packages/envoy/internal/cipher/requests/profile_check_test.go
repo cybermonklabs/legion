@@ -36,7 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -173,7 +173,7 @@ func newProfileFixture(t *testing.T, installations map[string]int64, github map[
 	value := standInAppValue(t)
 	unlisted := policytest.TypeSecret("UNLISTED_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value)
 	unlisted.Tags[policy.TagRequesters] = checkOutsider
-	local := awstest.NewLocal(
+	local := memory.New(
 		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
 		policytest.TypeSecret("OTHER_APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
 		policytest.TypeSecret("AUTO_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value),
@@ -192,7 +192,7 @@ func newProfileFixture(t *testing.T, installations map[string]int64, github map[
 	machine := &requests.Machine{
 		Store:      st,
 		Policy:     policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(profiles...)),
-		Secrets:    policytest.Store(local),
+		Secrets:    local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,
 		Skew:       time.Minute,

@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -28,7 +28,7 @@ import (
 func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 	ctx := context.Background()
 	st := storetest.Open(t)
-	local := awstest.NewLocal(append(fixtureSecrets(),
+	local := memory.New(append(fixtureSecrets(),
 		taggedSecret("PRIV_GROUP_KEY", approversForm, policy.TierHuman, privProject, "priv-group-v1"))...)
 	enrollmentID, key := newEnrollment(t, st, "session", "box-pg-"+t.Name(), new(fixtureOperator), nil)
 	directory := groupstest.New()
@@ -40,7 +40,7 @@ func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 		t.Fatalf("policy.NewCurrent: %v", err)
 	}
 	m := &Machine{
-		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
+		Store: st, Policy: current, Secrets: local, PendingTTL: 12 * time.Hour,
 		Audience: testAudience, Skew: time.Minute, Replay: replayer(st), Groups: directory,
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}

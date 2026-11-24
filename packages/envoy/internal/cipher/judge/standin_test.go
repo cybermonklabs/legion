@@ -26,7 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -66,7 +66,7 @@ func judgedPolicy(t *testing.T, guidance string) *policy.Current {
 // shortJudgeSecret's. Both keys are testApprover's own.
 func guidedPolicy(t *testing.T, first, second string) *policy.Current {
 	t.Helper()
-	return policytest.Current(t, awstest.NewLocal(
+	return policytest.Current(t, memory.New(
 		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, first),
 		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, second),
 		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),

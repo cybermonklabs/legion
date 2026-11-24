@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // The profiles of a file written before the kinds, one proxy block of each kind a block took then
@@ -33,8 +33,8 @@ const (
 // legacySources is the store behind the legacy profiles: each profile's source, none with a proxy
 // tag, as no secret carried one before the kinds, and UNPROXIED_TOKEN, a stored token no profile
 // names.
-func legacySources() []awstest.LocalSecret {
-	return []awstest.LocalSecret{
+func legacySources() []memory.Secret {
+	return []memory.Secret{
 		policytest.Secret("GITHUB_ADMIN_PAT", appOwner, policy.TierAgent, "pat-v1"),
 		policytest.Secret("ADMIN_ROWS", appOwner, policy.TierAgent, "rows-v1"),
 		policytest.Secret("AIRLOCK_AWS_PROBE", appOwner, policy.TierAgent, "aws-pair-v1"),
@@ -58,7 +58,7 @@ func TestAFileOfNoKindsServesItsProxyBlocksAsBefore(t *testing.T) {
 	if kinds := policytest.Profiles(t, file, daemonService).Kinds(); len(kinds) != 0 {
 		t.Errorf("Kinds() = %+v; a file that declares no kind declares none", kinds)
 	}
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(legacySources()...), file, daemonService).Get()
+	set := policytest.ProfiledCurrent(t, memory.New(legacySources()...), file, daemonService).Get()
 	rules := set.ProxyRules()
 	if err := proxyrules.Validate(rules); err != nil {
 		t.Fatalf("the set's rules are not valid: %v", err)
@@ -117,7 +117,7 @@ func TestAFileOfNoKindsServesItsProxyBlocksAsBefore(t *testing.T) {
 	t.Run("a proxy tag naming the kind a block is served behind", func(t *testing.T) {
 		kind := set.Secrets["GITHUB_ADMIN_PAT"].Proxy
 		tagged := policytest.Proxied(policytest.Secret("OTHER_TOKEN", appOwner, policy.TierAgent, "other-v1"), kind)
-		tagSet := policytest.ProfiledCurrent(t, awstest.NewLocal(append(legacySources(), tagged)...), file, daemonService).Get()
+		tagSet := policytest.ProfiledCurrent(t, memory.New(append(legacySources(), tagged)...), file, daemonService).Get()
 		if refusal := refusedSecret(t, tagSet, "OTHER_TOKEN", policy.ReasonProxyKindUnknown); !strings.Contains(refusal.Detail, kind) {
 			t.Errorf("the refusal's detail %q does not name the tag's value %q", refusal.Detail, kind)
 		}
@@ -138,18 +138,18 @@ func TestAProxyBlockOfAFileOfNoKindsIsFingerprintedWhole(t *testing.T) {
 		headers = `"headers": ["Authorization"]`
 		allow   = `"allow": [{"method": "GET", "pathPrefix": "/v1/"}]`
 	)
-	token := func() awstest.LocalSecret {
+	token := func() memory.Secret {
 		return policytest.Secret("BLOCK_TOKEN", appOwner, policy.TierAgent, "block-v1")
 	}
-	served := func(t *testing.T, block string, source awstest.LocalSecret) string {
+	served := func(t *testing.T, block string, source memory.Secret) string {
 		t.Helper()
 		file := policytest.ProfilesFile(`{"name": "BLOCK_TOKEN", "proxy": {` + block + `}}`)
-		return servedProfile(t, policytest.ProfiledCurrent(t, awstest.NewLocal(source), file, daemonService).Get(), "BLOCK_TOKEN").ProfileDigest
+		return servedProfile(t, policytest.ProfiledCurrent(t, memory.New(source), file, daemonService).Get(), "BLOCK_TOKEN").ProfileDigest
 	}
 	was := served(t, hosts+", "+headers+", "+allow, token())
 	for _, c := range []struct {
 		name, block string
-		source      awstest.LocalSecret
+		source      memory.Secret
 	}{
 		{"its kind, none to aws: the stored value is signed with, not swapped in", hosts + ", " + headers + ", " + allow + `, "kind": "aws"`, token()},
 		{"a host added", `"hosts": ["api.example.com", "uploads.example.com", "files.example.com"], ` + headers + ", " + allow, token()},
@@ -279,7 +279,7 @@ func TestAFileOfKindsServesItsProfilesByTheKinds(t *testing.T) {
 	if len(declared) != 6 {
 		t.Fatalf("Kinds() = %+v; want the file's 6", declared)
 	}
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(policytest.Secret("GITHUB_ADMIN_PAT", appOwner, policy.TierAgent, "pat-v1"), appSource()), file, daemonService).Get()
+	set := policytest.ProfiledCurrent(t, memory.New(policytest.Secret("GITHUB_ADMIN_PAT", appOwner, policy.TierAgent, "pat-v1"), appSource()), file, daemonService).Get()
 	rules := set.ProxyRules()
 	if !reflect.DeepEqual(rules.Kinds, declared) {
 		t.Errorf("the rules' kinds = %+v; want the file's %+v", rules.Kinds, declared)

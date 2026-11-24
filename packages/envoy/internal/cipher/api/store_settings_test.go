@@ -8,8 +8,12 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 )
 
-// gcpKeyName is the Cloud KMS key the GCP store of these tests is on.
-const gcpKeyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+// gcpKeyName is the Cloud KMS key the GCP store of these tests is on, and awsKeyARN the AWS KMS
+// key the AWS store's settings name (an AWS documentation account's).
+const (
+	gcpKeyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	awsKeyARN  = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+)
 
 // storeEnv is one store's configuration in these tests, by its registry ID: its prefix, the
 // variables its registry entry parses, and the settings field that names its key or file.
@@ -20,7 +24,7 @@ type storeEnv struct {
 }
 
 var storeEnvs = map[string]storeEnv{
-	"aws":    {policytest.Prefix, map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": policytest.KeyARN}, "kms_key_arn", policytest.KeyARN},
+	"aws":    {policytest.Prefix, map[string]string{"BROKER_SECRETS_KMS_KEY_ARN": awsKeyARN}, "kms_key_arn", awsKeyARN},
 	"gcp":    {"projects/000000000000/secrets/agent-secrets-", map[string]string{"BROKER_SECRETS_KMS_KEY_NAME": gcpKeyName}, "kms_key_name", gcpKeyName},
 	"memory": {policytest.Prefix, map[string]string{"BROKER_MEMORY_SECRETS_FILE": "memory-secrets.json"}, "memory_secrets_file", "memory-secrets.json"},
 }

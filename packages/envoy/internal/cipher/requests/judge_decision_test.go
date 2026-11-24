@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // judgeModel is the model deciding in these tests; every judge actor they expect is
@@ -31,7 +31,7 @@ const judgeModel = "claude-opus-4-6"
 // it has always been.
 const adminSecretName = "ADMIN_CONSOLE_KEY"
 
-func adminSecret() awstest.LocalSecret {
+func adminSecret() memory.Secret {
 	s := policytest.ListedSecret(adminSecretName, fixtureOperator, policy.TierHuman, fixtureOperator, "admin-v1")
 	s.Tags[policy.TagAdmin] = policy.AdminTrue
 	return policytest.Judged(s, 900, "")
@@ -42,7 +42,7 @@ func adminSecret() awstest.LocalSecret {
 // all the same.
 const federationSecretName = "FEDERATION_ADMIN_KEY"
 
-func federationSecret() awstest.LocalSecret {
+func federationSecret() memory.Secret {
 	return policytest.Judged(policytest.TypeSecret(federationSecretName, fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), 900, "")
 }
 

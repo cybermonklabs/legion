@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -63,12 +64,11 @@ func TestSecretRetagOfAValueItCannotReadIsRefusedByTheBrokerUntilOneDecodes(t *t
 	t.Cleanup(github.Close)
 
 	profile := `{"name": "APP_KEY", "github": {"accounts": ["acme-org"], "permissions": {"metadata": "read"}}}`
-	rig := ciphertest.NewRig(t, ciphertest.WithProfiles(policytest.ProfilesFile(profile)), ciphertest.WithMinters(map[string]requests.Minter{
+	rig, local := awsRig(t, ciphertest.WithProfiles(policytest.ProfilesFile(profile)), ciphertest.WithMinters(map[string]requests.Minter{
 		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,
 	}))
-	local := rig.Secrets
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
-	local.Put(policytest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
+	local.Put(awstest.Secret("APP_KEY", rig.Operator, policy.TierAgent, noAppID))
 	// The person's own sign-in reads through valueReads, which refuses every GetSecretValue as
 	// IAM refuses a role that holds no read; the broker reads local itself.
 	signedIn := &valueReads{Local: local}

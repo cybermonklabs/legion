@@ -82,6 +82,17 @@ func (s *Store) Put(secret Secret) {
 	s.hold(secret)
 }
 
+// Get answers the secret held at the full name id, with tags of its own, and false for a name the
+// store does not hold: what the last Put held, or an Open store's file as its last call read it.
+// A test that retags a secret reads it here and Puts it back.
+func (s *Store) Get(id string) (Secret, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	secret, ok := s.secrets[id]
+	secret.Tags = maps.Clone(secret.Tags)
+	return secret, ok
+}
+
 // Delete removes the secret whose full name is id outright.
 func (s *Store) Delete(id string) {
 	s.mu.Lock()

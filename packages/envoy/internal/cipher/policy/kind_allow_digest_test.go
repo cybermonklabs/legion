@@ -6,7 +6,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // TestAKindsAllowIsInTheFingerprintOfEachNameBehindIt: a request records the fingerprint of each
@@ -34,7 +34,7 @@ func TestAKindsAllowIsInTheFingerprintOfEachNameBehindIt(t *testing.T) {
 	// served is the live set under kinds, failing t unless it serves each of want and OTHER_KEY.
 	served := func(t *testing.T, kinds string, want ...string) *policy.Set {
 		t.Helper()
-		store := awstest.NewLocal(
+		store := memory.New(
 			policytest.Proxied(policytest.Secret("TAG_ONLY", appOwner, policy.TierAgent, "tag-v1"), "api"),
 			policytest.Narrowed(policytest.Proxied(policytest.Secret("NARROWED_KEY", appOwner, policy.TierAgent, "narrowed-v1"), "api")),
 			policytest.Secret("STRING_KEY", appOwner, policy.TierAgent, "string-v1"),

@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // TestAProfileChangedRefusalNamesTheSourcesTagsItsFingerprintHolds: a profile behind the proxy
@@ -30,7 +30,7 @@ func TestAProfileChangedRefusalNamesTheSourcesTagsItsFingerprintHolds(t *testing
 	stored := policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierHuman, "v")
 	taggedStored := policytest.Proxied(policytest.Secret("TAGGED_KEY", fixtureOperator, policy.TierHuman, "v"), "example")
 	app := policytest.TypeSecret("APP_KEY", fixtureOperator, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
-	set := policytest.ProfiledCurrent(t, awstest.NewLocal(judgedSource, plainSource, taggedSource, taggedJudgedSource, stored, taggedStored, app), policytest.KindsFile(
+	set := policytest.ProfiledCurrent(t, memory.New(judgedSource, plainSource, taggedSource, taggedJudgedSource, stored, taggedStored, app), policytest.KindsFile(
 		`{"name": "RELEASE_READ", "source": "RELEASE_PAT", "proxy": "github"}`,
 		`{"name": "PLAIN_READ", "source": "PLAIN_PAT", "proxy": "github"}`,
 		`{"name": "TAGGED_READ", "source": "TAGGED_PAT"}`,

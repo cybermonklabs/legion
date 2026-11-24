@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -34,7 +34,7 @@ func newPrivateProfileCheckFixture(t *testing.T, named ...string) *profileFixtur
 	st := storetest.Open(t)
 	app := policytest.TypeSecret("PRIV_APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, standInAppValue(t))
 	app.Tags[policy.TagProject] = privateAppProject
-	local := awstest.NewLocal(app)
+	local := memory.New(app)
 	loader := policytest.Loader(local)
 	loader.ProjectChecks = true
 	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(
@@ -60,7 +60,7 @@ func newPrivateProfileCheckFixture(t *testing.T, named ...string) *profileFixtur
 	machine := &requests.Machine{
 		Store:      st,
 		Policy:     current,
-		Secrets:    policytest.Store(local),
+		Secrets:    local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,
 		Skew:       time.Minute,

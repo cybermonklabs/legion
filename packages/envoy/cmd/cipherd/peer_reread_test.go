@@ -8,37 +8,36 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
-// abandoningCall is a awstest.Local behind which the caller of one kind of call goes away while
-// it is in flight: once cut names it ("GetSecretValue" or "DescribeSecret"), that call ends its
-// caller's context through cancel and fails as the AWS SDK does once a context has ended. Every
-// other call is Local's.
+// abandoningCall is a memory store behind which the caller of one kind of call goes away while it
+// is in flight: once cut names it ("Read" or "Describe"), that call ends its caller's context
+// through cancel and fails as the AWS SDK does once a context has ended. Every other call is the
+// store's own.
 type abandoningCall struct {
-	*awstest.Local
+	*memory.Store
 	cut    string
 	cancel context.CancelFunc
 }
 
-func (s *abandoningCall) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
-	if s.cut == "GetSecretValue" {
+func (s *abandoningCall) Read(ctx context.Context, source string) (string, error) {
+	if s.cut == "Read" {
 		s.cancel()
-		return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
+		return "", fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
 	}
-	return s.Local.GetSecretValue(ctx, in, opts...)
+	return s.Store.Read(ctx, source)
 }
 
-func (s *abandoningCall) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	if s.cut == "DescribeSecret" {
+func (s *abandoningCall) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+	if s.cut == "Describe" {
 		s.cancel()
-		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", ctx.Err())
+		return secretstore.Listing{}, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", ctx.Err())
 	}
-	return s.Local.DescribeSecret(ctx, in, opts...)
+	return s.Store.Describe(ctx, id, opts)
 }
 
 // TestAPeersRereadThatMergedTheTagsItReadRan: the reread listener's Refresh (peerReread) answers
@@ -63,15 +62,14 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 		// dropped is what the reread drops from the airlock proxy's cache.
 		dropped []string
 	}{
-		{"its value read", "GetSecretValue", true, []string{"APP_KEY"}},
-		{"its metadata read", "DescribeSecret", false, nil},
+		{"its value read", "Read", true, []string{"APP_KEY"}},
+		{"its metadata read", "Describe", false, nil},
 	} {
 		t.Run("ended during "+row.name, func(t *testing.T) {
 			driven++
-			local := awstest.NewLocal(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-			store := &abandoningCall{Local: local}
-			loader := policytest.Loader(local)
-			loader.Store = policytest.StoreThrough(local, store)
+			local := memory.New(policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+			store := &abandoningCall{Store: local}
+			loader := policytest.Loader(store)
 			loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")))
 			current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 			if err != nil {
@@ -112,7 +110,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 // source is behind a kind (policytest.Proxied), so its profiles are behind it too, as the names the
 // proxy holds values of are.
 func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
-	local := awstest.NewLocal(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
+	local := memory.New(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(
 		`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN"}`,
@@ -148,7 +146,7 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 // The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
 func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *testing.T) {
-	local := awstest.NewLocal(
+	local := memory.New(
 		policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)

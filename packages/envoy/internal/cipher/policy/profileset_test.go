@@ -12,13 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // The sources of the profile tests: secrets in the store, each owned by appOwner.
@@ -49,18 +46,18 @@ const acmeRead = `"github": {"accounts": ["acme"], "permissions": {"metadata": "
 const apiProxy = `"proxy": "example"`
 
 // appSource is appSourceName holding a value the decoder reads.
-func appSource() awstest.LocalSecret {
+func appSource() memory.Secret {
 	return policytest.TypeSecret(appSourceName, appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 }
 
 // humanApp is HUMAN_APP, a human-tier GitHub App of acme and ada.
-func humanApp() awstest.LocalSecret {
+func humanApp() memory.Secret {
 	return policytest.TypeSecret("HUMAN_APP", appOwner, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 }
 
 // listedApp is LISTED_APP, an agent-tier GitHub App that only its owner and the daemon service
 // may ask for, for an hour at most.
-func listedApp() awstest.LocalSecret {
+func listedApp() memory.Secret {
 	app := policytest.TypeSecret("LISTED_APP", appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	app.Tags[policy.TagRequesters] = listedRequesters
 	app.Tags[policy.TagMaxGrant] = "1h"
@@ -69,7 +66,7 @@ func listedApp() awstest.LocalSecret {
 
 // robotKey is ROBOT_KEY, a google-service-account secret whose token carries bigquery and
 // cloud-platform.
-func robotKey() awstest.LocalSecret {
+func robotKey() memory.Secret {
 	robot := policytest.TypeSecret("ROBOT_KEY", appOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	robot.Tags[policy.TagScopes] = "bigquery cloud-platform"
 	return robot
@@ -78,8 +75,8 @@ func robotKey() awstest.LocalSecret {
 // everySource is one source of each kind a profile names: the three Apps, a stored value, a second
 // stored value whose name a profile may take, a google-login and an azure-login secret, and a
 // google-service-account one.
-func everySource() []awstest.LocalSecret {
-	return []awstest.LocalSecret{
+func everySource() []memory.Secret {
+	return []memory.Secret{
 		appSource(), humanApp(), listedApp(), robotKey(),
 		policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1"),
 		policytest.Secret("TAKEN_KEY", appOwner, policy.TierAgent, "taken-v1"),
@@ -90,9 +87,9 @@ func everySource() []awstest.LocalSecret {
 
 // profiled is the live policy of a store holding stored, under the profiles file holding
 // profiles and the test kinds (policytest.KindsFile), with daemonService registered.
-func profiled(t *testing.T, stored []awstest.LocalSecret, profiles ...string) (*policy.Current, *awstest.Local) {
+func profiled(t *testing.T, stored []memory.Secret, profiles ...string) (*policy.Current, *memory.Store) {
 	t.Helper()
-	store := awstest.NewLocal(stored...)
+	store := memory.New(stored...)
 	return policytest.ProfiledCurrent(t, store, policytest.KindsFile(profiles...), daemonService), store
 }
 
@@ -128,7 +125,7 @@ func servedProfile(t *testing.T, set *policy.Set, name string) policy.Secret {
 // profile's own scope (its accounts, as GitHubOwners), its entry's digest, the profile itself, and
 // its source's value version, by which a mint the decoder refuses refuses that source.
 func TestAPassingProfileIsServedByItsName(t *testing.T) {
-	cur, store := profiled(t, []awstest.LocalSecret{appSource()}, readProfile)
+	cur, store := profiled(t, []memory.Secret{appSource()}, readProfile)
 	base, err := policytest.Loader(store, daemonService).Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +292,7 @@ func TestAProfileNamedForAnotherStoredSecretRefusesBoth(t *testing.T) {
 func TestAProfileOfAnAdminSourceIsAdmin(t *testing.T) {
 	admin := policytest.ListedSecret("ADMIN_PAT", appOwner, policy.TierHuman, appOwner, "pat-v1")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
-	cur, _ := profiled(t, []awstest.LocalSecret{appSource(), admin}, readProfile,
+	cur, _ := profiled(t, []memory.Secret{appSource(), admin}, readProfile,
 		`{"name": "ADMIN_READ", "source": "ADMIN_PAT", `+apiProxy+`}`,
 		`{"name": "ADMIN_AGENT", "source": "ADMIN_PAT", "tier": "agent", `+apiProxy+`}`)
 	set := cur.Get()
@@ -379,7 +376,7 @@ func TestAWithholdDecidesBySource(t *testing.T) {
 // policy version and the profile's digest, which a release compares its grant against; a guidance
 // tag written on its source, which tells the judge how to decide requests to come, moves neither.
 func TestAnEditedProfileEndsItsGrants(t *testing.T) {
-	served := func(stored []awstest.LocalSecret, profile string) (version, digest string) {
+	served := func(stored []memory.Secret, profile string) (version, digest string) {
 		t.Helper()
 		cur, _ := profiled(t, stored, profile)
 		set := cur.Get()
@@ -486,8 +483,8 @@ func TestAGitHubAppWithNoProfileIsRefusedByName(t *testing.T) {
 	app := policytest.TypeSecret("APP_KEY", appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	plain := policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1")
 	for name, cur := range map[string]*policy.Current{
-		"an empty profiles file": policytest.ProfiledCurrent(t, awstest.NewLocal(app, plain), policytest.ProfilesFile()),
-		"no profiles file":       policytest.Current(t, awstest.NewLocal(app, plain)),
+		"an empty profiles file": policytest.ProfiledCurrent(t, memory.New(app, plain), policytest.ProfilesFile()),
+		"no profiles file":       policytest.Current(t, memory.New(app, plain)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			set := cur.Get()
@@ -515,7 +512,7 @@ func TestAGitHubAppWithNoProfileIsRefusedByName(t *testing.T) {
 func TestAProfileOfAValueRefusedSourceNamesTheSourcesReason(t *testing.T) {
 	broken := appSource()
 	broken.Value = "not an App's value"
-	cur, _ := profiled(t, []awstest.LocalSecret{broken}, readProfile)
+	cur, _ := profiled(t, []memory.Secret{broken}, readProfile)
 	set := cur.Get()
 	if refusal := set.Refused[policytest.ID(appSourceName)]; refusal.Reason != policy.ReasonValueMalformed {
 		t.Fatalf("the source's refusal = %+v; want %s", refusal, policy.ReasonValueMalformed)
@@ -529,18 +526,18 @@ func TestAProfileOfAValueRefusedSourceNamesTheSourcesReason(t *testing.T) {
 	}
 }
 
-// describedIDs records the secret id of every DescribeSecret call made through it.
+// describedIDs records the secret id of every Describe call made through it.
 type describedIDs struct {
-	awsstore.SecretsManagerAPI
+	secretstore.Store
 	mu  sync.Mutex
 	ids []string
 }
 
-func (d *describedIDs) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (d *describedIDs) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	d.mu.Lock()
-	d.ids = append(d.ids, aws.ToString(in.SecretId))
+	d.ids = append(d.ids, id)
 	d.mu.Unlock()
-	return d.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
+	return d.Store.Describe(ctx, id, opts)
 }
 
 func (d *describedIDs) take() []string {
@@ -554,10 +551,9 @@ func (d *describedIDs) take() []string {
 // TestRereadingAProfileNameRereadsItsSource: a reread of a profile's name reads its source, which
 // is the only secret a store holds for it, and answers for the profile as the policy then serves it.
 func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
-	store := awstest.NewLocal(appSource())
-	described := &describedIDs{SecretsManagerAPI: store}
-	loader := policytest.Loader(store, daemonService)
-	loader.Store = policytest.StoreThrough(store, described)
+	store := memory.New(appSource())
+	described := &describedIDs{Store: store}
+	loader := policytest.Loader(described, daemonService)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(readProfile), daemonService)
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
@@ -589,7 +585,7 @@ func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
 func TestTheFirstPublishWritesTheProfilesLine(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	file := policytest.KindsFile(readProfile, `{"name": "GHOST_READ", "source": "NO_SUCH_APP", `+acmeRead+`, `+apiProxy+`}`)
-	store := awstest.NewLocal(everySource()...)
+	store := memory.New(everySource()...)
 	cur := policytest.ProfiledCurrent(t, store, file, daemonService)
 	sum := sha256.Sum256([]byte(file))
 	want := "INFO " + policy.ProfilesAppliedMessage + " served=1 refused=1 file_digest=" + hex.EncodeToString(sum[:]) + "\n"
@@ -681,7 +677,7 @@ func TestEveryPublishedSetHoldsTheProfiles(t *testing.T) {
 // profile's reread names its source and its siblings, a source's names its profiles, and a name
 // no profile is of names itself alone, as does a name the policy has never heard of.
 func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
-	store := awstest.NewLocal(appSource(),
+	store := memory.New(appSource(),
 		policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"),
 		policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1"))
 	cur := policytest.ProfiledCurrent(t, store, policytest.KindsFile(
@@ -736,7 +732,7 @@ func TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion(t *te
 		{"a profile of a stored value, which lists no version", "STORED_TOKEN_READ", false, stored},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			store := awstest.NewLocal(appSource(), policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"))
+			store := memory.New(appSource(), policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"))
 			cur := policytest.ProfiledCurrent(t, store, policytest.KindsFile(
 				`{"name": "STORED_TOKEN_READ", "source": "STORED_TOKEN", `+apiProxy+`}`,
 				`{"name": "STORED_TOKEN_SECOND", "source": "STORED_TOKEN", "proxy": "github"}`,

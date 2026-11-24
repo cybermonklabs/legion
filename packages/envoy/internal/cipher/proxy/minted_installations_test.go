@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -89,9 +89,9 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 	file := policytest.KindsFileOf(profileKindsJSON, `{"name": "`+profileName+`", "source": "`+mintedSource+`", "github": {"accounts": ["acme", "ada"], "permissions": `+readOnly+`, "value": "token"}, `+
 		`"allow": [{"method": "GET", "pathPrefix": "/repos/"}]}`)
 	st := storetest.Open(t)
-	local := awstest.NewLocal(profiledSource(mintedSource, policy.TypeGitHubInstallations, value))
+	local := memory.New(profiledSource(mintedSource, policy.TypeGitHubInstallations, value))
 	m := &requests.Machine{
-		Store: st, Policy: policytest.ProfiledCurrent(t, local, file), Secrets: policytest.Store(local),
+		Store: st, Policy: policytest.ProfiledCurrent(t, local, file), Secrets: local,
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:          (&enroll.Service{Store: st}).Replay,
 		Minters:         map[string]requests.Minter{policy.TypeGitHubInstallations: secrets.GitHubInstallations{}.Mint},

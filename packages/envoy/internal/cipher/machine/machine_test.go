@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -50,7 +50,7 @@ func newFixture(t *testing.T) *Service {
 	enr.Chain = enroll.NewChainVerifier(st, testAudience, time.Minute)
 
 	return &Service{
-		Store: st, Enroll: enr, Policy: policytest.Current(t, awstest.NewLocal()),
+		Store: st, Enroll: enr, Policy: policytest.Current(t, memory.New()),
 		Audience: testAudience, Skew: time.Minute, PendingTTL: 10 * time.Minute, CredentialLifetime: 24 * time.Hour,
 		Replay: enr.Replay,
 	}

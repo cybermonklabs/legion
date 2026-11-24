@@ -7,14 +7,10 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
-	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -27,7 +23,7 @@ func pendingLine(id, owner string, firstLoad bool) string {
 // createdWithoutValue is a secret owned by owner at tier agent, holding no value, that the store
 // created at created, carrying the create label `agent-secrets secret create` gives a secret it
 // makes before its value (secretstore.CreateLabel).
-func createdWithoutValue(name string, created time.Time) awstest.LocalSecret {
+func createdWithoutValue(name string, created time.Time) memory.Secret {
 	s := policytest.Secret(name, owner, policy.TierAgent, "")
 	s.Tags[secretstore.CreateLabel] = "0123456789abcdef0123456789abcdef"
 	s.CreatedAt = &created
@@ -46,7 +42,7 @@ func createdWithoutValue(name string, created time.Time) awstest.LocalSecret {
 func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		created := time.Now()
-		store := awstest.NewLocal(createdWithoutValue("WAITING_KEY", created))
+		store := memory.New(createdWithoutValue("WAITING_KEY", created))
 		registry := metrics.New()
 		logged := policytest.CaptureLog(t)
 		cur := policytest.MeteredCurrent(t, store, registry)
@@ -104,7 +100,7 @@ func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
 func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
-		store := awstest.NewLocal(createdWithoutValue("STRANDED_KEY", time.Now()))
+		store := memory.New(createdWithoutValue("STRANDED_KEY", time.Now()))
 		cur := policytest.Current(t, store)
 		id := policytest.ID("STRANDED_KEY")
 
@@ -116,8 +112,8 @@ func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
 		if refusal := set.Refused[id]; refusal.Reason != policy.ReasonNoCurrentValue || len(set.Pending) != 0 {
 			t.Fatalf("past the window: refused %+v, pending %+v; want STRANDED_KEY refused no-current-value", set.Refused, set.Pending)
 		}
-		held, err := store.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(id)})
-		if err != nil || held.DeletedDate != nil || awsstore.HasCurrentVersion(held.VersionIdsToStages) {
+		held, err := store.Describe(ctx, id, secretstore.ReadOptions{IncludeDeleted: true})
+		if err != nil || !held.Deleted.IsZero() || held.HasCurrentValue {
 			t.Fatalf("the store answers %+v, %v; want it still holding STRANDED_KEY with no current value, since the broker deletes nothing", held, err)
 		}
 	})
@@ -129,7 +125,7 @@ func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
 func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
-		store := awstest.NewLocal(createdWithoutValue("FILLED_KEY", now), createdWithoutValue("DROPPED_KEY", now))
+		store := memory.New(createdWithoutValue("FILLED_KEY", now), createdWithoutValue("DROPPED_KEY", now))
 		logged := policytest.CaptureLog(t)
 		cur := policytest.Current(t, store)
 		want := pendingLine(policytest.ID("DROPPED_KEY"), owner, true) + pendingLine(policytest.ID("FILLED_KEY"), owner, true) + noProfilesLine
@@ -140,9 +136,11 @@ func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
 		filled := policytest.Secret("FILLED_KEY", owner, policy.TierAgent, "v1")
 		filled.CreatedAt = &now
 		store.Put(filled)
-		if _, err := store.DeleteSecret(context.Background(), &secretsmanager.DeleteSecretInput{SecretId: aws.String(policytest.ID("DROPPED_KEY"))}); err != nil {
-			t.Fatal(err)
-		}
+		// Scheduled for deletion, as `agent-secrets secret delete` leaves a secret in its recovery
+		// window.
+		dropped, _ := store.Get(policytest.ID("DROPPED_KEY"))
+		dropped.DeletedAt = &now
+		store.Put(dropped)
 		for _, name := range []string{"FILLED_KEY", "DROPPED_KEY"} {
 			if _, err := cur.RefreshOne(context.Background(), name); err != nil {
 				t.Fatalf("RefreshOne(%s): %v", name, err)
@@ -163,7 +161,7 @@ func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
 // listing that left it out - gives the policy no way to tell a create in flight from an abandoned
 // one, so it refuses the secret no-current-value at once, as it always did.
 func TestASecretWithoutAValueOrACreationTimeIsRefusedAtOnce(t *testing.T) {
-	store := awstest.NewLocal(policytest.Secret("UNDATED_KEY", owner, policy.TierAgent, ""))
+	store := memory.New(policytest.Secret("UNDATED_KEY", owner, policy.TierAgent, ""))
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +178,7 @@ func TestAYoungSecretWithoutAValueOrTheCreateLabelIsRefusedAtOnce(t *testing.T) 
 	unlabelled := policytest.Secret("UNLABELLED_KEY", owner, policy.TierAgent, "")
 	now := time.Now()
 	unlabelled.CreatedAt = &now
-	set, err := policytest.Loader(awstest.NewLocal(unlabelled)).Load(context.Background())
+	set, err := policytest.Loader(memory.New(unlabelled)).Load(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +193,7 @@ func TestAYoungSecretWithoutAValueOrTheCreateLabelIsRefusedAtOnce(t *testing.T) 
 // it is pending, at ten minutes it is not, with the same set.
 func TestAPendingAnswerEndsAtTenMinutesWithoutAReload(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		store := awstest.NewLocal(createdWithoutValue("WAITING_KEY", time.Now()))
+		store := memory.New(createdWithoutValue("WAITING_KEY", time.Now()))
 		cur := policytest.Current(t, store)
 		set := cur.Get()
 		time.Sleep(10*time.Minute - time.Second)
@@ -216,7 +214,7 @@ func TestAPendingAnswerEndsAtTenMinutesWithoutAReload(t *testing.T) {
 // clock has not moved.
 func TestTheLoadAndThePendingAnswerReadOneClock(t *testing.T) {
 	created := time.Now()
-	store := awstest.NewLocal(createdWithoutValue("WAITING_KEY", created))
+	store := memory.New(createdWithoutValue("WAITING_KEY", created))
 	cur := policytest.Current(t, store)
 	id := policytest.ID("WAITING_KEY")
 	if _, waits := cur.Get().Pending[id]; !waits {

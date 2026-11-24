@@ -53,7 +53,7 @@ func TestATypedWriteOnALapsedSignInRegistersItAgainAndIsChecked(t *testing.T) {
 
 			local := awstest.NewLocal()
 			broker.mu.Lock()
-			broker.settings = map[string]any{"secrets_prefix": policytest.Prefix, "kms_key_arn": policytest.KeyARN,
+			broker.settings = map[string]any{"secrets_prefix": policytest.Prefix, "kms_key_arn": awstest.KeyARN,
 				"aws_account_id": testAccount, "aws_region": "us-east-1", "secret_type_tag": true}
 			broker.rereadAnswer = servedBy(local)
 			registered := broker.enrollments

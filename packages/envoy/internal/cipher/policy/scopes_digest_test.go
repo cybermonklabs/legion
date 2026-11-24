@@ -5,7 +5,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // TestAGoogleServiceAccountsScopesAreInItsFingerprint: the scopes tag of a google-service-account
@@ -17,7 +17,7 @@ import (
 // control is a profile with a google block, whose scopes are its entry's and in its fingerprint
 // already: its source's tag changing around them moves nothing.
 func TestAGoogleServiceAccountsScopesAreInItsFingerprint(t *testing.T) {
-	source := func(scopes string, kind string) awstest.LocalSecret {
+	source := func(scopes string, kind string) memory.Secret {
 		s := policytest.TypeSecret("GCP_FLEET", appOwner, policy.TierAgent, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 		if scopes != "" {
 			s.Tags[policy.TagScopes] = scopes
@@ -27,9 +27,9 @@ func TestAGoogleServiceAccountsScopesAreInItsFingerprint(t *testing.T) {
 		}
 		return s
 	}
-	served := func(t *testing.T, name string, s awstest.LocalSecret, profiles ...string) string {
+	served := func(t *testing.T, name string, s memory.Secret, profiles ...string) string {
 		t.Helper()
-		set := policytest.ProfiledCurrent(t, awstest.NewLocal(s), policytest.KindsFile(profiles...), daemonService).Get()
+		set := policytest.ProfiledCurrent(t, memory.New(s), policytest.KindsFile(profiles...), daemonService).Get()
 		secret, ok := set.Secrets[name]
 		if !ok {
 			t.Fatalf("%s is not served: %+v", name, set.Refused)

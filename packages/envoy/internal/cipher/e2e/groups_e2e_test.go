@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -47,14 +47,14 @@ const (
 // session gets at once; its human-tier secret, which a member approves; a shared agent-tier
 // secret whose requesters name the group; and the group's anthropic-federation secret, bound to
 // federationAccount.
-func groupSecrets() []awstest.LocalSecret {
+func groupSecrets() []memory.Secret {
 	listed := policytest.Secret("LISTED_TOKEN", policy.OwnerShared, policy.TierAgent, "listed-v1")
 	listed.Tags[policy.TagRequesters] = approversForm
 	value, _ := json.Marshal(map[string]string{
 		"organization_id": "00000000-0000-4000-8000-000000000000", "federation_rule_id": "fdrl_01examplerule",
 		"service_account_id": "svac_01exampletarget", "service_account": federationAccount,
 	})
-	return []awstest.LocalSecret{
+	return []memory.Secret{
 		policytest.Secret("TEAM_TOKEN", approversForm, policy.TierAgent, "team-token-v1"),
 		policytest.Secret("TEAM_KEY", approversForm, policy.TierHuman, "team-key-v1"),
 		listed,
