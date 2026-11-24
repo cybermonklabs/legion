@@ -100,7 +100,7 @@ fixture() {
     echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
     return 1
   fi
-  mkdir -p "$root/.github/scripts" "$root/packages/daemon/internal/api" "$root/stub/refs" "$root/bin"
+  mkdir -p "$root/.github/scripts" "$root/packages/daemon/internal/api" "$root/stub/refs" "$root/bin" "$root/kept"
   ln -s "$check_script" "$root/.github/scripts/check-daemon-api-contract.sh"
   ln -s "$python" "$root/bin/python3"
   : > "$root/stub/pr-queries"
@@ -109,8 +109,11 @@ fixture() {
 # The GitHub reads the check makes, served out of $STUB_DIR: refs/<ref, slashes as underscores>
 # holds that ref's version.go, and open-prs.json is the one answer to the open-pull-request
 # query, every read of which this stub counts a line of pr-queries. A ref with no file is a read
-# that fails, which is how the cases that cannot read a base build it.
+# that fails, which is how the cases that cannot read a base build it: it says says-err on stderr
+# (GitHub's 404 as gh prints it, where the case wrote none) and says-out on stdout, as gh prints a
+# failed answer's body. Every call is logged to calls.
 set -euo pipefail
+printf '%s\n' "$*" >> "$STUB_DIR/calls"
 [ "${1:-}" = "api" ] || { echo "stub gh: not an api call: $*" >&2; exit 2; }
 shift
 if [ "${1:-}" = "graphql" ]; then
@@ -131,7 +134,8 @@ ref=${endpoint##*\?ref=}
 ref=${ref//%2F/\/}
 file="$STUB_DIR/refs/${ref//\//_}"
 if [ ! -f "$file" ]; then
-  echo "gh: Not Found (HTTP 404)" >&2
+  if [ -f "$STUB_DIR/says-out" ]; then cat "$STUB_DIR/says-out"; fi
+  if [ -f "$STUB_DIR/says-err" ]; then cat "$STUB_DIR/says-err" >&2; else echo "gh: Not Found (HTTP 404)" >&2; fi
   exit 1
 fi
 cat "$file"
@@ -204,11 +208,12 @@ merge_group_event() {
 }
 
 # run_check <root> <event name>: runs the real script over the fixture, with the stub gh first on
-# PATH. Sets out, status, and queries — the stub's count of its open-pull-request reads.
+# PATH and RUNNER_TEMP, where the check keeps gh's words, the fixture's kept/. Sets out, status, and
+# queries — the stub's count of its open-pull-request reads.
 run_check() {
   local root=$1
   set +e
-  out=$(PATH="$root/bin:$PATH" STUB_DIR="$root/stub" GITHUB_EVENT_NAME="$2" \
+  out=$(PATH="$root/bin:$PATH" STUB_DIR="$root/stub" GITHUB_EVENT_NAME="$2" RUNNER_TEMP="$root/kept" \
     GITHUB_EVENT_PATH="$root/event.json" GITHUB_REPOSITORY="example-owner/example-repo" \
     "$root/.github/scripts/check-daemon-api-contract.sh" 2>&1)
   status=$?
@@ -672,5 +677,100 @@ set -e
 check "exits 0" "$(is "$status" 0)"
 check "reads the base through the stub" \
   "$(contains "$out" "daemon API contract 8 is above the 7 the base carries (the commit the queue built this group on ($base_sha))")"
+
+# --- What gh said and answered. Whatever answers gh's call in GitHub's place holds gh's token and
+# writes gh's words and its answer, so each case puts the marker not-a-secret-token in one, and no
+# run of eight of its characters (the run the redaction rule's gate reads) may be in what the check
+# prints. The twin: the file the refusal names holds the marker; the control: the stub was called.
+marker=not-a-secret-token
+holds_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && return 0
+  done
+  return 1
+}
+prints_no_marker() { holds_marker "$1" && echo false || echo true; }
+# kept_in <text>: the file the check's line names after <text>, a pattern for sed.
+kept_in() { sed -n "s/^.*$1\([^ ,;)]*\).*\$/\1/p" <<<"$out" | tail -n 1; }
+kept_holds_marker() {
+  local file
+  file=$(kept_in "$1")
+  [ -n "$file" ] && grep -q -F "$marker" -- "$file" && echo true || echo false
+}
+
+echo "case: a base read that fails, gh saying the marker"
+root=$(fixture said-marker)
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+printf 'gh: Server Error %s (HTTP 502)\n' "$marker" > "$root/stub/says-err"
+merge_group_event "$root" dddddddddddddddddddddddddddddddddddddddd
+run_check "$root" merge_group
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "names gh's exit, the HTTP status and the file that keeps gh's words" \
+  "$(contains "$out" ': gh api exited 1 (HTTP 502); gh.s own words and its answer are in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker "gh's own words and its answer are in ")"
+check "control: the stub was asked for the base" "$(contains "$(<"$root/stub/calls")" 'ref=dddddddddddddddddddddddddddddddddddddddd$')"
+
+echo "case: a base read that fails, gh saying nothing and answering the marker"
+root=$(fixture answered-marker)
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+: > "$root/stub/says-err"
+printf '{"message": "Not Found %s"}\n' "$marker" > "$root/stub/says-out"
+merge_group_event "$root" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+run_check "$root" merge_group
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "twin: the file the refusal names holds the marker" "$(kept_holds_marker "gh's own words and its answer are in ")"
+check "control: the stub was asked for the base" "$(contains "$(<"$root/stub/calls")" 'ref=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee$')"
+
+# open_pull_requests_marker <name> <answer> [<ref>]: a tree that touches the declaration on its
+# base's number, so the check reads the open pull requests, which answer <answer>; <ref>, a stub
+# refs/ file name, then serves a declaration of 8.
+open_pull_requests_marker() {
+  root=$(fixture "$1")
+  built_on "$root" 7 > /dev/null
+  declaration 7 > "$root/stub/refs/main"
+  declaration 7 "LEGION-5: a shape that needs a number" > "$root/packages/daemon/internal/api/version.go"
+  sites "$root" 7
+  printf '%s\n' "$2" > "$root/stub/open-prs.json"
+  if [ -n "${3:-}" ]; then declaration 8 > "$root/stub/refs/$3"; fi
+  pull_request_event "$root" main
+  run_check "$root" pull_request
+}
+
+echo "case: an open pull request answer that is no page, holding the marker"
+open_pull_requests_marker no-page-marker "{\"data\": {\"message\": \"$marker\"}}"
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "says the answer carries no page and names the file that keeps it" \
+  "$(contains "$out" 'the answer carries no data\.repository\.pullRequests\.nodes; it is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'it is in ')"
+check "control: the stub was asked for the open pull requests" "$(is "$queries" 1)"
+
+echo "case: an open pull request whose head is the marker, its declaration unreadable"
+open_pull_requests_marker head-marker "{\"data\":{\"repository\":{\"pullRequests\":{
+  \"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},
+  \"nodes\":[{\"number\":14,\"isDraft\":false,\"headRefOid\":\"$marker\",
+    \"files\":{\"pageInfo\":{\"hasNextPage\":false},\"nodes\":[{\"path\":\"packages/daemon/internal/api/version.go\"}]}}]}}}}"
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "says the head is no commit id and names the file that keeps the answer" \
+  "$(contains "$out" '#14 answers no 40-hex commit id as its head; the answer is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'the answer is in ')"
+check "control: the stub was asked for the open pull requests" "$(is "$queries" 1)"
+
+echo "case: an open pull request whose number is the marker, declaring a number the free one passes"
+open_pull_requests_marker number-marker "{\"data\":{\"repository\":{\"pullRequests\":{
+  \"pageInfo\":{\"hasNextPage\":false,\"endCursor\":null},
+  \"nodes\":[{\"number\":\"$marker\",\"isDraft\":false,\"headRefOid\":\"3333333333333333333333333333333333333333\",
+    \"files\":{\"pageInfo\":{\"hasNextPage\":false},\"nodes\":[{\"path\":\"packages/daemon/internal/api/version.go\"}]}}]}}}}" \
+  "refs_pull_${marker}_head"
+check "exits 1, as it did" "$(is "$status" 1)"
+check "prints no run of the marker" "$(prints_no_marker "$out")"
+check "says the number is no whole number and names the file that keeps the answer" \
+  "$(contains "$out" 'answers no whole number as its number; the answer is in ')"
+check "twin: that file holds the marker" "$(kept_holds_marker 'the answer is in ')"
+check "control: the stub was asked for the open pull requests" "$(is "$queries" 1)"
 
 summary "check-daemon-api-contract.sh"
