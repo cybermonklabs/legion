@@ -221,6 +221,42 @@ itself, whose tests import its sources by relative path.
   running. A request with a JSON object body, an empty body or no body is recorded and answered as
   the case's own answer decides.
 
+## A Bun test waits for its fact, and its command sets its one guard
+
+- Wait for a fact through `@legion/test-fixtures/wait` (`until`, `settled`), and give the wait no
+  duration. Each wait ends at its row's deadline: the newest mark of the row-deadline preload plus
+  the command's `--timeout`, less a margin, so that the wait's own failure prints before Bun's
+  timeout ends the row (`packages/test-fixtures/src/wait.ts`). A probe that throws ends the wait at
+  once, so a probe that reads a report which makes its fact impossible throws. A wait under
+  `jest.useFakeTimers()` refuses to start, because those timers hold `performance.now()` and every
+  timer still until the test advances them. Outside `bun test`, a Bun driver takes its deadline
+  from `LEGION_PROOF_DEADLINE_MS`, epoch milliseconds its script sets, and with neither a wait
+  refuses to start.
+
+- A command whose rows wait through it loads the row-deadline preload,
+  `--preload @legion/test-fixtures/row-deadline`, as `packages/test-fixtures`' own `test` script
+  does. The preload marks the start of each row, the end of each row's body, the end of each row
+  and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in
+  a `beforeAll` or in a row's first `afterEach`. Without it a wait counts from its own start, and
+  its failure says so. A hook that no mark directly precedes counts from an earlier mark, so its
+  waits end earlier than its own clock would allow, never later
+  (`packages/test-fixtures/src/row-deadline.ts`). So a row's second `afterEach` counts from the mark
+  before its first, and the time the first took is gone from it.
+
+- A command sets one guard, its `--timeout`. A row or a hook sets no timeout of its own, neither a
+  third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads
+  the command's guard and not a row's. The exceptions are a row of `packages/dispatch/e2e/__tests__`
+  that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through
+  `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one
+  measured download or one measured process run with no shared wait in it: such a hook or row
+  takes a guard of its own, at least twice its slowest reading on a machine that runs the suite
+  (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's
+  guards are written, gives that number with the readings and their runs. A file whose rows need a
+  much larger guard than the rest runs in a second `bun test` command of the same script, with its
+  own `--timeout` and the same preload. Tests written before this rule still set guards of their
+  own (`git grep -n setDefaultTimeout -- '*.ts'` lists the files); each moves to its command's
+  guard as it is carried to the shared wait.
+
 ## A test that looks for a process it started
 
 A test, and each script library that a test runs, reads one process by its pid: its command line

@@ -7420,6 +7420,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   Agent Sandbox recreates a `Running` Sandbox's pod under the same name at once, and that pod brings a claim of its own:
   the same name, a new uid, the new pod as its owner.
   Nothing waits for a detach, since the replacement mounts no volume the pod it replaces held, so the `FailedAttachVolume` and `Multi-Attach` events a reattached `ReadWriteOnce` volume used to produce do not arise for an issue's disk.
+  Its role launchers' first hello binds the role Secrets to it, so the roles' next launches keep it rather than replace it again ([The daemon's Kubernetes request rate](#the-daemons-kubernetes-request-rate)).
 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
@@ -8668,6 +8669,16 @@ A read that fails is logged (`sandbox runtime: a launcher Secret could not
 be read; …`, naming the Secret and the error) and is not repeated for that Sandbox for 10 s;
 a hello meanwhile is refused without a request, so three hundred launchers whose reads fail ask for at most thirty a second.
 A launch into a kept pod reads its roles' Secrets to check their binding, and holds each bound one, so its launcher is not refused for an earlier failed read.
+A pod that Agent Sandbox made again outside a launch, after an eviction or a node loss, projects the Secrets that a launch bound to the pod before it.
+Its launchers hold their roles' current tokens and name a pod that no Secret binds.
+The first such hello binds each role's Secret of the pod to that pod, and the launcher is accepted (`bindAtHello`, `internal/runtime/sandbox/launcher_auth.go`), when the pod is the Sandbox's current pod, the Sandbox is not Suspended, and the pod is neither being deleted nor ended.
+The daemon logs `sandbox runtime: bound the role launchers of a pod made outside a launch to that pod`.
+It writes each Secret once for the pod, however many of its launchers say hello, and the roles' next launches keep the pod.
+Before it writes anything, it reads the hello's role Secret again and checks the hello's token against the token that Secret holds now, not against the copy the daemon keeps.
+Each pod, role and token gets one binding flight of its own, and a hello never waits on a flight that another role or token started; the flights of one pod run one at a time, serialized by the pod's launch turn.
+While a launch, a suspension, a release or another binding flight holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
+A binding holds the turn for at most 30 s: at that deadline its requests are cancelled and the turn is given back, and each Secret it bound by then stays bound.
+A binding that fails is logged (`sandbox runtime: binding the role launchers of a pod made outside a launch failed; …`) and is not tried again for that pod for 10 s.
 The daemon reads each Secret by name because its RBAC grants `get` and never `list` on Secrets (next section).
 
 ### RBAC the Go daemon needs
