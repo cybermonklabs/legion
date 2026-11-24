@@ -177,6 +177,37 @@ func TestABootRelaunchesRecordedDeathsInOneOrderWithTheUnfinishedLaunches(t *tes
 	}
 }
 
+// A recorded death whose claim holds a suspension is reserved no turn. The death's own report
+// ends that hold as a suspension, and the replay leaves it to that report (supervise's
+// relaunchRecordedDeath), so a turn handed to it would be left spent and every wake behind it
+// would run an interval late.
+func TestABootReservesNoTurnForARecordedDeathWithAHeldSuspension(t *testing.T) {
+	t.Parallel()
+	const n = 4
+	r := newBootRig(t, n, &outboxClaimStore{}, recordedDeathOwed(t, time.Now().UTC().Add(-150*time.Second)))
+	dead := r.claims[n].Token
+	m, _ := r.sup.Machine(dead)
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: dead, By: supervise.SuspendedByOperator}); err != nil && !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatal(err)
+	}
+	if !m.View().Claim.SuspensionHeld {
+		t.Fatalf("the operator's suspension of the restored working claim is not held, state %s", m.View().Claim.State)
+	}
+
+	if refused := r.s.launchUnfinished(context.Background(), waitingLaunches(unfinishedOf(r.claims[:n])), dead); len(refused) != 0 {
+		t.Fatalf("the relaunch refused %v", refused)
+	}
+
+	r.wantSpawned(n - 1)
+	for i := n - 2; i >= 0; i-- {
+		r.wantWaitingAt(i, n-1-i)
+	}
+	r.wantNextTurn(n)
+	if held := m.View().WakeWaiting; held != nil {
+		t.Fatalf("the suspended claim waits on wake %+v, want none: its death's report ends the hold", *held)
+	}
+}
+
 // recordedDeathOwed is a claim the previous daemon left working over a process it found dead, the
 // death charged and its relaunch lost with that daemon's memory, holding the task it was working,
 // queued to it at owed.

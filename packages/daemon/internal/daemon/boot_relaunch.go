@@ -173,10 +173,13 @@ func recordedDeaths(claims []supervise.Claim) []claim.Token {
 // recordedDeath is token's relaunch for the death its record charges, as the boot's pass takes it
 // (launchUnfinished), and false for a claim that no longer stands over that death as the machine
 // holds it now: a report of the death that came first and raised its relaunch already (a wake
-// waiting), a launch since, or a report that found the process running. Each of those decides the
-// replay nothing (supervise's relaunchRecordedDeath), so the pass reserves such a claim no turn,
-// which would be left spent. What a decision changes between this read and the post is decided by
-// the machine's own read, at the cost of the turn alone.
+// waiting), a launch since, a report that found the process running, or a suspension held for the
+// claim, whose end the death's own report decides. The replay decides each of those nothing
+// (supervise's relaunchRecordedDeath), so the pass reserves such a claim no turn, which would be
+// left spent and put every wake behind it an interval late. A report that comes between this read
+// and the replay's post parks its relaunch behind every turn the pass reserved; the replay then
+// moves that wake to the turn the pass handed it (supervise's takeEarlierTurn), so the owed order
+// holds, and it is the report's later turn that is left spent.
 func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
@@ -184,7 +187,7 @@ func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 	}
 	v := m.View()
 	c := v.Claim
-	if !c.DeathCharged || c.Locator == nil || !slices.Contains(supervise.LiveStates(), c.State) || v.WakeWaiting != nil {
+	if !c.DeathCharged || c.Locator == nil || !slices.Contains(supervise.LiveStates(), c.State) || c.SuspensionHeld || v.WakeWaiting != nil {
 		return nil, false
 	}
 	return &bootRelaunch{token: token, m: m, release: releaseQueued, death: true, generation: c.Generation}, true
@@ -295,8 +298,10 @@ func compareOwed(a, b time.Time) int {
 // deaths is the claims whose record says their process died (recordedDeaths). They join the first
 // pass, in one order with the unfinished launches. A recorded death needs no reconciliation, since
 // its claim records the process it replaces, so where the boot's reconciliation failed their pass
-// runs at once all the same, alone, in their own owed order: the unfinished launches cannot launch
-// before a sweep reconciles, so no order with them is lost.
+// runs at once all the same, alone, in their own owed order. The unfinished launches cannot launch
+// before a sweep reconciles, and the sweep that does reserves their turns behind every death turn
+// still to come: on that path a death goes ahead of an unfinished launch owed before it, which is
+// the price of not holding a relaunch that needs no reconciliation behind one that may never come.
 func (s *supervision) relaunchUnfinished(tokens, deaths []claim.Token, reconciled bool) {
 	s.wg.Add(1)
 	go func() {

@@ -1508,6 +1508,40 @@ func TestTheBootsReplayOfAnEarlierGenerationRelaunchesNothing(t *testing.T) {
 	h.wantStarts(h.token, 2)
 }
 
+// A report of a recorded death that reaches the machine after the boot's pass reserved that
+// death's turn and before the pass's replay parks the relaunch at a turn of its own, behind every
+// turn the pass reserved. The replay moves that wake to the turn the pass handed it, so the owed
+// order holds whichever of the two reaches the machine first, and the relaunch is charged no
+// second launch failure and launches once.
+//
+// The negative control is the replay deciding nothing over the waiting wake, as it does for a
+// relaunch it finds parked at an earlier turn: the wake stays at the report's later turn.
+func TestTheBootsReplayMovesARelaunchItsReportParkedLaterToTheReplaysTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	dead := h.locator()
+	h.observe(runtime.Gone)
+	h.restart()
+	queueAhead(h, 3)
+	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+	late := h.wantWaitingWake(WakeLaunch)
+	turn := h.clock.Now().Add(wakeInterval)
+	if !turn.Before(late.At) {
+		t.Fatalf("the report's relaunch waits for %s, want a turn after %s: the queue ahead of it is too short", late.At, turn)
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation, Turn: turn})
+
+	h.wantWakeDueAt(WakeWaiting{Kind: WakeLaunch, At: turn})
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.advance(wakeInterval)
+	h.wantStarts(h.token, 2)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim still waits on wake %+v after its turn, want none: the report's later turn is spent, not run", *held)
+	}
+}
+
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside
 // the wait. The probe interval was the one of the four timers that could still be armed there:
 // the park disarms the others (parkWake), and a closed connection whose probe the runtime could
