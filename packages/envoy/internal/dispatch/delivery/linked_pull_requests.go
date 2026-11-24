@@ -109,11 +109,13 @@ type LinkedHead struct {
 
 // LinkedHeadsUnread is each pull request the external links of issueKey name, in any repository
 // (the issue's own one too, unlike LinkedPullRequests), whose head Dispatch does not hold: no head
-// row under its canonical name in any letter case, or a row while a read of GitHub is owed for it.
-// A read owed that GitHub refused and that is recorded unreadable at its revision is left out:
-// nothing can change GitHub's answer until a write gives the row a new revision
-// (pull_request_reads_unreadable.go), and UnreadableLinksOf names it. The list is in the order of
-// the owed names, at most LinkedHeadReadsPerRead of them.
+// row under its canonical name in any letter case. A row Dispatch holds is a head the results read
+// compares with, whether or not a read of GitHub is owed for it, and the reconcile reads every
+// owed one (Reconcile.readOwedPullRequests), so the results read rewrites no row it holds and asks
+// GitHub nothing for it. A read owed that GitHub refused and that is recorded unreadable at its
+// revision is left out: nothing can change GitHub's answer until a write gives the row a new
+// revision (pull_request_reads_unreadable.go), and UnreadableLinksOf names it. The list is in the
+// order of the owed names, at most LinkedHeadReadsPerRead of them.
 func (a *Attributor) LinkedHeadsUnread(ctx context.Context, pool *store.Pool, issueKey string) ([]LinkedHead, error) {
 	rows, err := pool.Query(ctx, `select url from issue_external_links where issue_key = $1`, issueKey)
 	if err != nil {
@@ -161,7 +163,7 @@ func (a *Attributor) LinkedHeadsUnread(ctx context.Context, pool *store.Pool, is
 		`, link.Repo, link.Number).Scan(&held, &owedRepo, &revision, &unreadable); err != nil {
 			return nil, fmt.Errorf("read whether the head of %s#%d is held: %w", link.Repo, link.Number, err)
 		}
-		if unreadable || (held && owedRepo == nil) {
+		if unreadable || held {
 			continue
 		}
 		if owedRepo != nil {

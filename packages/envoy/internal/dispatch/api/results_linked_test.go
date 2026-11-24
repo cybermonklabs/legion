@@ -70,11 +70,10 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 		unheldCommit = "9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b9b"
 	)
 	linked := &linkedGitHub{
-		held:      map[string][]string{"acme/tools": {toolsMerge}},
-		pulls:     map[string]string{"acme/tools#9": "merged"},
-		pullHeads: map[string]linkedPullHead{"acme/tools#9": {sha: headCommit, base: "main"}},
-		branches:  map[string][]string{"acme/tools:main": {toolsMerge}},
-		failing:   []string{"acme/widgets"},
+		held:     map[string][]string{"acme/tools": {toolsMerge}},
+		pulls:    map[string]string{"acme/tools#9": "merged"},
+		branches: map[string][]string{"acme/tools:main": {toolsMerge}},
+		failing:  []string{"acme/widgets"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELF", "acme/widgets", "Own repository unread").Key
@@ -203,7 +202,6 @@ func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T
 		held:        map[string][]string{"acme/tools": {oldCommit, headCommit}},
 		pulls:       map[string]string{"acme/tools#7": "open"},
 		heads:       map[string]int{},
-		pullHeads:   map[string]linkedPullHead{"acme/tools#7": {sha: headCommit, base: "main"}},
 		uninstalled: []string{"acme/widgets"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
