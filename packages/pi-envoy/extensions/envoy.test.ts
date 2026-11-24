@@ -24247,6 +24247,9 @@ describe("consumer delivery", () => {
   for (const refusal of [
     { status: 503, reason: "no_grant" },
     { status: 409, reason: "not_requested" },
+    // A consumer filter past the server's max payload, which the listener used to answer 503
+    // consumer_error and now answers 413: the session is told the same way.
+    { status: 413, reason: "too_large" },
   ] as const) {
     test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, and the next heartbeat asks again`, async () => {
       const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
@@ -24519,7 +24522,10 @@ describe("consumer delivery", () => {
       expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
         {
           message: "envoy: a message's payload is shown as its text; the card could not lay it out",
-          context: { event_id: "evt-deep", error: "Maximum call stack size exceeded." },
+          context: {
+            event_id: "evt-deep",
+            error: "its layout is larger than the 1048576 bytes a card holds",
+          },
         },
       ]);
     } finally {

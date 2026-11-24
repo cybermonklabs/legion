@@ -114,8 +114,8 @@ func TestALauncherLeakCheckRefusesItsMalformedForms(t *testing.T) {
 		t.Fatalf("the good slice: %v", err)
 	}
 	largest := good
-	largest.Count = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
-	largest.Payload = make([]byte, LauncherBundlePayloadBytes)
+	largest.Count = MaxLauncherSequenceBytes / LauncherSlicePayloadBytes
+	largest.Payload = make([]byte, LauncherSlicePayloadBytes)
 	if err := largest.Validate(); err != nil {
 		t.Fatalf("a full slice of a sequence at the bound: %v", err)
 	}
@@ -128,14 +128,14 @@ func TestALauncherLeakCheckRefusesItsMalformedForms(t *testing.T) {
 		{"a count of none", func(f *LauncherLeakCheck) { f.Count = 0 }, "count is 0"},
 		{"a negative count", func(f *LauncherLeakCheck) { f.Count = -1 }, "count is -1"},
 		{"a count whose slices pass the body bound", func(f *LauncherLeakCheck) {
-			f.Count = MaxWorkspaceBundleBodyBytes/LauncherBundlePayloadBytes + 1
+			f.Count = MaxLauncherSequenceBytes/LauncherSlicePayloadBytes + 1
 		}, "could pass"},
 		{"a negative index", func(f *LauncherLeakCheck) { f.Index = -1 }, "index -1 of 2"},
 		{"an index at the count", func(f *LauncherLeakCheck) { f.Index = 2 }, "index 2 of 2"},
 		{"no tag", func(f *LauncherLeakCheck) { f.Tag = "" }, "tag"},
 		{"a tag of another shape", func(f *LauncherLeakCheck) { f.Tag = "leak-check-latest" }, "leak-check-latest"},
 		{"no payload", func(f *LauncherLeakCheck) { f.Payload = nil }, "no payload"},
-		{"a payload over a slice", func(f *LauncherLeakCheck) { f.Payload = make([]byte, LauncherBundlePayloadBytes+1) }, "limit"},
+		{"a payload over a slice", func(f *LauncherLeakCheck) { f.Payload = make([]byte, LauncherSlicePayloadBytes+1) }, "limit"},
 		{"no digest", func(f *LauncherLeakCheck) { f.SHA256 = "" }, "sha256"},
 		{"an upper-case digest", func(f *LauncherLeakCheck) { f.SHA256 = strings.ToUpper(good.SHA256) }, "sha256"},
 		{"a short digest", func(f *LauncherLeakCheck) { f.SHA256 = good.SHA256[:63] }, "sha256"},
@@ -198,7 +198,7 @@ func TestALeakCheckBodySlicesIntoFramesUnderTheLineLimit(t *testing.T) {
 	if len(frames) != 2 {
 		t.Fatalf("a %d-byte body sliced into %d frames, want 2", len(body), len(frames))
 	}
-	digest := BundleDigest(body)
+	digest := SequenceDigest(body)
 	var rebuilt []byte
 	for index, frame := range frames {
 		if err := frame.Validate(); err != nil {
@@ -227,7 +227,7 @@ func TestALeakCheckBodySlicesIntoFramesUnderTheLineLimit(t *testing.T) {
 	if !bytes.Equal(rebuilt, body) {
 		t.Fatalf("the slices rebuild %d bytes, not the %d-byte body", len(rebuilt), len(body))
 	}
-	if got := BundleDigest(rebuilt); got != digest {
+	if got := SequenceDigest(rebuilt); got != digest {
 		t.Fatalf("the slices rebuild to %s, not the %s they declared", got, digest)
 	}
 	// The same check pushed again is the same sequence; another body at that tag is another.
@@ -254,7 +254,7 @@ func TestSplitLeakCheckRefusesWhatTheLauncherWouldRefuse(t *testing.T) {
 	}{
 		{"a tag of another shape", "leak-check-latest", []byte("foo")},
 		{"no body", "leak-check-v15", nil},
-		{"a body over the bound", "leak-check-v15", make([]byte, MaxWorkspaceBundleBodyBytes+1)},
+		{"a body over the bound", "leak-check-v15", make([]byte, MaxLauncherSequenceBytes+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if frames, err := SplitLeakCheck(tc.tag, tc.body); !errors.Is(err, ErrMalformedFrame) {
@@ -262,8 +262,8 @@ func TestSplitLeakCheckRefusesWhatTheLauncherWouldRefuse(t *testing.T) {
 			}
 		})
 	}
-	frames, err := SplitLeakCheck("leak-check-v15", make([]byte, MaxWorkspaceBundleBodyBytes))
-	if err != nil || len(frames) != MaxWorkspaceBundleBodyBytes/LauncherBundlePayloadBytes {
+	frames, err := SplitLeakCheck("leak-check-v15", make([]byte, MaxLauncherSequenceBytes))
+	if err != nil || len(frames) != MaxLauncherSequenceBytes/LauncherSlicePayloadBytes {
 		t.Fatalf("a body at the bound sliced into %d frames, %v", len(frames), err)
 	}
 	if err := frames[len(frames)-1].Validate(); err != nil {

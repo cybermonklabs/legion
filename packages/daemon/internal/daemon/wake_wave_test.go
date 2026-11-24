@@ -44,11 +44,11 @@ import (
 // waveSize is how many claims each wave wakes at once.
 const waveSize = 40
 
-// waveClock is the machines' time, held still until a test moves it: a timer is due at a moment
-// rather than after a wait, because a paced wake is armed for the turn the limiter gave it and a
-// test that advances to that turn must fire that timer and no other. heldClock
-// (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can name: the
-// daemon jitters every paced release, so the forty waits of one wave are forty different numbers.
+// waveClock is the machines' time, held still until a test moves it, with each timer due at a
+// moment: a test that advances to a paced wake's turn fires that timer and no other. heldClock
+// (supervision_test.go) fires by the exact wait a timer was armed for, and no wave can name its
+// waits, since the daemon jitters every paced release: the forty turns of one wave are forty
+// different moments.
 type waveClock struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -82,7 +82,18 @@ func (c *waveClock) Sleep(ctx context.Context, _ time.Duration) error { return c
 func (c *waveClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &waveTimer{clock: c, due: c.now.Add(d), f: f}
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *waveClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for due. The caller holds mu.
+func (c *waveClock) armLocked(due time.Time, f func()) supervise.Cancel {
+	timer := &waveTimer{clock: c, due: due, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -1982,7 +1993,7 @@ func pacedLaneTree(t *testing.T, log *slog.Logger) (*laneTree, *wakepace.Limiter
 	tree := startLaneTree(t, log)
 	limiter := pacedWakes()
 	tree.runner.supervisor.deps.Clock = tree.clock
-	tree.runner.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	tree.runner.supervisor.deps.WakePace = wakePaceOf(limiter)
 	for range waveSize {
 		limiter.Reserve(tree.clock.Now())
 	}
