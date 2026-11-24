@@ -152,9 +152,9 @@ func TestTheBrokerStartsWithNoVerifiedRow(t *testing.T) {
 	)
 	issuer := oidctest.New(t)
 	signer := issuer.PublishKey(t, "signing-key")
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": [
-		{"name": "`+testSecretsPrefix+`service-key", "kms_key_id": "`+testSecretsKMSKeyARN+`", "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "`+secretValue+`"}
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": [
+		{"name": "`+testSecretsPrefix+`service-key", "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "`+secretValue+`"}
 	]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,8 @@ func TestTheBrokerStartsWithNoVerifiedRow(t *testing.T) {
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE="+memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER="+issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE="+podAudience,
 		"BROKER_SERVICE_LOGINS="+service+"="+loginAccount,

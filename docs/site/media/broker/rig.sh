@@ -4,7 +4,7 @@
 # The secrets broker's demo rig: every surface the broker's screenshots and walkthrough show,
 # running on one machine on example data. It starts
 #
-#   - the broker (packages/envoy/cmd/cipherd) on its fake secrets file (internal/cipher/secrets'
+#   - the broker (packages/envoy/cmd/cipherd) on its memory secrets file (internal/cipher/secrets'
 #     development stand-in for Secrets Manager), holding one secret, DEMO_API_KEY, owned by
 #     alice@example.com at the human tier, whose value is made up, in a database of its own beside
 #     DATABASE_URL's, created and dropped by this run, trusting the ServiceAccount tokens of
@@ -182,12 +182,11 @@ broker_database=$run_database
 # --- The broker, on a made-up secret of the operator's at the human tier, so the operator approves
 # every request for it, and a grant lasts until its session ends. --------------------------------
 secrets_prefix="example/agent-secrets/"
-secrets_key="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-cat >"$work/fake-secrets.json" <<EOF
-{"secrets": [{"name": "${secrets_prefix}demo-api-key", "kms_key_id": "${secrets_key}",
+cat >"$work/memory-secrets.json" <<EOF
+{"secrets": [{"name": "${secrets_prefix}demo-api-key",
   "tags": {"owner": "${OPERATOR}", "tier": "human"}, "value": "demo-key-not-a-real-secret-7f3a"}]}
 EOF
-chmod 600 "$work/fake-secrets.json"
+chmod 600 "$work/memory-secrets.json"
 # Dispatch calls the broker as its own ServiceAccount, whose token dev-oidc-issuer keeps in a file
 # Dispatch's server reads, never an argv; the broker lists that account as the caller "dispatch".
 # The issuer writes the file before it logs its URL, the issuer the broker discovers at boot.
@@ -230,8 +229,8 @@ start_process broker exec_with_env PATH="$PATH" \
   BROKER_K8S_OIDC_AUDIENCE="$broker_audience" \
   BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
   BROKER_SECRETS_PREFIX="$secrets_prefix" \
-  BROKER_SECRETS_KMS_KEY_ARN="$secrets_key" \
-  BROKER_FAKE_SECRETS_FILE="$work/fake-secrets.json" \
+  BROKER_SECRETS_STORE=memory \
+  BROKER_MEMORY_SECRETS_FILE="$work/memory-secrets.json" \
   BROKER_SIGNIN_ISSUER="$issuer_url" \
   BROKER_SIGNIN_CLIENT_ID="$signin_client" \
   BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \

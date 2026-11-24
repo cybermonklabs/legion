@@ -320,7 +320,7 @@ echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOU
 echo "fake broker jobs: job-accounts=${BROKER_EXCHANGE_JOB_ACCOUNTS:-} job-workflows=${BROKER_EXCHANGE_JOB_WORKFLOWS:-} github-issuer=${BROKER_EXCHANGE_GITHUB_ISSUER:-} github-audience=${BROKER_EXCHANGE_GITHUB_AUDIENCE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
-echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
+echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} memory-secrets=${BROKER_MEMORY_SECRETS_FILE:-}" >&2
 echo "fake broker airlock: profiles=${BROKER_PROFILES_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_PROFILES_FILE:-}" ]] && jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
@@ -623,13 +623,16 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s points its broker at its own database\n' "$label"
-  # With no DEV_BROKER_GCP_* the store is the AWS-shaped fake one, as before those settings.
-  if ! grep -qF "fake broker: store= prefix=example/agent-secrets/ key-arn=arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab key-name= " "$log_file"; then
+  # With no DEV_BROKER_GCP_* the store is the memory one over the file this run wrote, and no
+  # AWS key is set: the memory store refuses a variable of another store.
+  local workdir signin_file
+  workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
+  if ! grep -qF "fake broker: store=memory prefix=example/agent-secrets/ key-arn= key-name= memory-secrets=${workdir}/memory-secrets.json" "$log_file"; then
     cat "$log_file" >&2
-    echo "FAIL: $label's broker is not started on the AWS-shaped fake store" >&2
+    echo "FAIL: $label's broker is not started on the memory store over its own file" >&2
     exit 1
   fi
-  printf 'PASS: %s starts its broker on the AWS-shaped fake store\n' "$label"
+  printf 'PASS: %s starts its broker on the memory store over its own file\n' "$label"
   # Its broker trusts the issuer this instance started, lists the dev account as the caller
   # "dispatch" and the listener account as the caller "listener" (introspection alone), the
   # worker account at the exchange and the reader account as the exchange's read entry, and the
@@ -653,8 +656,7 @@ assert_instance_isolated() {
   # signs in the approver whose own domain the broker holds a signed-in person to; the secret
   # itself is never printed; and the banner tells a person to approve a secret on this broker's
   # own page.
-  local workdir signin_file
-  workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log_file" | head -n1 | cut -d' ' -f3 || true)"
+  # The sign-in settings and the files this run wrote (the workdir above).
   signin_file="${workdir}/signin-client-secret"
   if [[ -z "$workdir" ]] \
     || ! grep -qF "fake issuer: code-flow client=dev-broker secret-file=${signin_file} secret-mode=600 redirect-uri=http://127.0.0.1/signin/callback sign-in-as=ada@example.com" "$log_file" \
@@ -784,18 +786,18 @@ assert_instance_isolated() {
   tags="$(jq -r '
     [.secrets[] | select(.tags.type == "github-app")
      | "\(.name) \(.tags.type) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.tags.proxy // "-") \(.tags["proxy-narrowed"] // "-") \(.value | fromjson | .app_id)"] | sort | join("; ")
-    ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
+    ' "${workdir}/memory-secrets.json" 2>/dev/null || true)"
   want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org - - 123456"
   want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada - - 123456"
   want_tags="${want_tags}; example/agent-secrets/demo-github-app-human github-app human ada@example.com acme-org - - 123456"
   want_tags="${want_tags}; example/agent-secrets/demo-github-app-proxied github-app agent legion-daemon acme-org github - 123456"
   if [[ "$tags" != "$want_tags" ]]; then
-    echo "FAIL: $label's fake store holds no such four github-app secrets: ${tags:-none}" >&2
+    echo "FAIL: $label's memory store holds no such four github-app secrets: ${tags:-none}" >&2
     exit 1
   fi
   keyed="$(jq -r --arg prefix "example/agent-secrets/" '
     [.secrets[] | select(.name == ($prefix + "demo-github-app") or .name == ($prefix + "demo-github-app-proxied"))
-     | select(.value | fromjson | .private_key | contains("-----BEGIN " + "PRIVATE KEY-----"))] | length' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
+     | select(.value | fromjson | .private_key | contains("-----BEGIN " + "PRIVATE KEY-----"))] | length' "${workdir}/memory-secrets.json" 2>/dev/null || true)"
   if [[ "$keyed" != 2 ]]; then
     echo "FAIL: $label's DEMO_GITHUB_APP and its copy do not each hold an App key from the stands' report (${keyed:-none} do)" >&2
     exit 1
@@ -826,7 +828,7 @@ assert_instance_isolated() {
   # the stand's own.
   local kinds profiles want_profiles unnamed
   kinds="$(jq -r '[(.kinds // [])[].name] | join(",")' "${workdir}/profiles.json" 2>/dev/null || true)"
-  profiles="$(jq -rn --slurpfile store "${workdir}/fake-secrets.json" --slurpfile file "${workdir}/profiles.json" '
+  profiles="$(jq -rn --slurpfile store "${workdir}/memory-secrets.json" --slurpfile file "${workdir}/profiles.json" '
     def words: if length == 0 then "-" else join(",") end;
     ([$store[0].secrets[] | {key: (.name | sub("^example/agent-secrets/"; "") | ascii_upcase | gsub("-"; "_")), value: .tags}] | from_entries) as $tags
     | ([($file[0].kinds // [])[] | {key: .name, value: .}] | from_entries) as $kinds
@@ -848,7 +850,7 @@ assert_instance_isolated() {
   want_profiles="${want_profiles}; DEMO_GITHUB_ADMIN_READ DEMO_GITHUB_APP_PROXIED token github api.github.test authorization mint GET/,HEAD/ - - -"
   want_profiles="${want_profiles}; DEMO_GITHUB_APP_CASE_PAIR DEMO_GITHUB_APP_CASE_PAIR installations - - - - - - - -"
   want_profiles="${want_profiles}; DEMO_GITHUB_APP_HUMAN DEMO_GITHUB_APP_HUMAN installations - - - - - - - -"
-  unnamed="$(jq -rn --slurpfile store "${workdir}/fake-secrets.json" --slurpfile file "${workdir}/profiles.json" '
+  unnamed="$(jq -rn --slurpfile store "${workdir}/memory-secrets.json" --slurpfile file "${workdir}/profiles.json" '
     ([$file[0].profiles[] | (.source // .name)]) as $named
     | [$store[0].secrets[] | select(.tags.type == "github-app") | .name | sub("^example/agent-secrets/"; "") | ascii_upcase | gsub("-"; "_")
        | select(. as $n | $named | index($n) | not)] | join(" ")' 2>/dev/null || echo unread)"
@@ -1085,7 +1087,7 @@ fi
 printf 'PASS: a dispatch-pg on another image than the pinned one is refused through dev-postgres.sh, before any database or broker\n'
 
 # --- DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME give the broker Google Cloud Secret
-# Manager as its store under that prefix and key, with no AWS key and an empty fake secrets file,
+# Manager as its store under that prefix and key, with no memory secrets file and no AWS key,
 # and the banner says so; either one alone is refused before anything is created. ---
 gcp_prefix="projects/100000000001/secrets/agent-secrets-"
 gcp_key="projects/acme-deployment/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
@@ -1097,15 +1099,15 @@ if ! wait_for_ready "$log1"; then
   exit 1
 fi
 gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
-if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} fake-secrets=${gcp_workdir}/fake-secrets.json" "$log1" \
-  || [[ "$(jq -c . "${gcp_workdir}/fake-secrets.json" 2>/dev/null || true)" != '{"secrets":[]}' ]] \
+if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-arn= key-name=${gcp_key} memory-secrets=" "$log1" \
+  || [[ -e "${gcp_workdir}/memory-secrets.json" ]] \
   || [[ "$(jq -c . "${gcp_workdir}/profiles.json" 2>/dev/null || true)" != '{"profiles":[]}' ]] \
   || ! grep -qF "  secret store:        gcp-secret-manager under ${gcp_prefix}, key ${gcp_key}" "$log1"; then
   cat "$log1" >&2
-  echo "FAIL: a DEV_BROKER_GCP_* run does not start its broker on Secret Manager under that prefix and key, with an empty fake secrets file and a profiles file naming none, and say so" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run does not start its broker on Secret Manager under that prefix and key, with no memory secrets file and a profiles file naming none, and say so" >&2
   exit 1
 fi
-printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with an empty fake secrets file and a profiles file naming no profile\n'
+printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with no memory secrets file and a profiles file naming no profile\n'
 
 # --- A profiles file that declares no kind and holds no dpop block, as the one under
 # DEV_BROKER_GCP_* is: the broker binds no proxy port for it and logs no line for one (the fake

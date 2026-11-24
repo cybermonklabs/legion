@@ -117,7 +117,7 @@ if [ -z "$placeholder" ] || [ -z "$proxy_password" ]; then
   echo "dev-airlock-lease: the release of grant $grant_id carried no placeholder or no proxy password" >&2
   exit 1
 fi
-demo_value="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token")) | .value' "$AIRLOCK_FAKE_SECRETS_FILE")"
+demo_value="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token")) | .value' "$AIRLOCK_MEMORY_SECRETS_FILE")"
 
 # call_s calls S's /ok through the proxy front with the grant's placeholder, and answers the
 # status, or curl's own words when there was none, followed by the Authorization S recorded for

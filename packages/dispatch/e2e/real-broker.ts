@@ -19,7 +19,7 @@ export const realBrokerOrigin = () => `http://127.0.0.1:${harnessPorts().realBro
 export const devIssuerOrigin = () => `http://127.0.0.1:${harnessPorts().devIssuer.port}`;
 
 /** The broker logins of the suite's people (every one in the issuer's `example.com`), and the
- *  human-tier secret run-broker.sh's fake secrets file gives alice, which a pod's request waits on
+ *  human-tier secret run-broker.sh's memory secrets file gives alice, which a pod's request waits on
  *  her to approve. */
 export const aliceBrokerLogin = "alice@example.com";
 export const bobBrokerLogin = "bob@example.com";

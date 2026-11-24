@@ -35,7 +35,7 @@
 #     names through scripts/airlock-mutants.sh.
 #
 # Where a check needs a secret the stack does not hold, this script extends the stack's own
-# fake Secrets Manager (the file AIRLOCK_FAKE_SECRETS_FILE names) at run time and makes every
+# memory store (the file AIRLOCK_MEMORY_SECRETS_FILE names) at run time and makes every
 # broker reread it; a plain stored value with no proxy tag and no profile is served by its own
 # name. It never edits the stack's profiles file (AIRLOCK_PROFILES_FILE, which dev-airlock.sh
 # writes and each broker reads once, at boot): a control that needs other kinds, other profiles,
@@ -364,7 +364,7 @@ broker_env() { # <VAR=value>...
 # command's HTTPS_PROXY is pointed at this one for that step alone. EXTRA_BROKER_BIN is the binary
 # it runs, the stack's own when the caller sets none: k47's controls are brokers built from a copy
 # of this module with one defect put in, which no setting stands in for, and everything else
-# about that process - the database, the profiles file, the fake store, the identities - has to
+# about that process - the database, the profiles file, the memory store, the identities - has to
 # stay the stack's. judge-check.sh's start_extra_broker is the same device.
 start_extra_broker() { # <name> <VAR=value>...
 	local name="$1"
@@ -416,7 +416,7 @@ bound_call_lines() { # <log>...
 	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
 }
 
-# stack_facts reads the few settings a second broker and the fake store need and that the
+# stack_facts reads the few settings a second broker and the memory store need and that the
 # banner does not name: the namespace prefix and key the brokers serve (their own /v1/settings
 # route), and the resolve and dial-allow lists, which are the stack's bound hosts on their own
 # loopback addresses.
@@ -540,43 +540,43 @@ reread_all() { # <name>
 	done
 }
 
-# add_fake_secret appends one secret to the stack's fake Secrets Manager and makes every broker
+# add_fake_secret appends one secret to the stack's memory store and makes every broker
 # read it. It is how a check gets a name the profiles file does not hold without writing a
 # profiles file of its own: a plain stored value no profile names is served by its own name.
 add_fake_secret() { # <store name> <tags json> <value>
-	local tmp="$WORK_DIR/fake-secrets.json"
+	local tmp="$WORK_DIR/memory-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
-		'.secrets += [{name: $name, kms_key_id: $kms, tags: $tags, value: $value}]' \
-		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
-	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+		'.secrets += [{name: $name, tags: $tags, value: $value}]' \
+		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
 	rm -f "$tmp"
 }
 
 # set_fake_value replaces one stored secret's value, which is the local stack's way of adding a
-# new version and disabling the old: the fake store holds one value for each name.
+# new version and disabling the old: the memory store holds one value for each name.
 set_fake_value() { # <store name> <value>
-	local tmp="$WORK_DIR/fake-secrets.json"
+	local tmp="$WORK_DIR/memory-secrets.json"
 	jq --arg name "$1" --arg value "$2" \
 		'.secrets = [.secrets[] | if .name == $name then .value = $value else . end]' \
-		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
-	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
 	rm -f "$tmp"
 }
 
 # set_fake_tags replaces one stored secret's tags, which is how a check moves a key's judge tag
 # at run time; every broker reads it at its next reread of the name.
 set_fake_tags() { # <store name> <tags json>
-	local tmp="$WORK_DIR/fake-secrets.json"
+	local tmp="$WORK_DIR/memory-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" \
 		'.secrets = [.secrets[] | if .name == $name then .tags = $tags else . end]' \
-		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
-	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
 	rm -f "$tmp"
 }
 
-# stored_value is what the fake store holds for one name, read straight out of the file so a
+# stored_value is what the memory store holds for one name, read straight out of the file so a
 # comparison is against the store and not against a string this script carries.
-stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' "$AIRLOCK_FAKE_SECRETS_FILE"; }
+stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' "$AIRLOCK_MEMORY_SECRETS_FILE"; }
 
 # header_of is one recorded request's header, and body_of its body: the two a check reads a
 # result back from. The index is jq's, so -1 is the last record.
@@ -747,7 +747,7 @@ check_k1() {
 
 	# The negative control: the same two runs for names no profile has a proxy block for. A
 	# plain stored value no profile names is served by its own name, so the control adds one to
-	# the stack's fake store. A github-app secret no profile names is refused
+	# the stack's memory store. A github-app secret no profile names is refused
 	# (github-app-no-profile), and a broker reads its profiles only at boot, so the github-app
 	# half is the stack's own AIRLOCK_PLAIN_GITHUB: a profile of the stack's github-app secret
 	# with no proxy block, whose value, the JSON object of installations, is released to the
@@ -2050,7 +2050,7 @@ check_k8() {
 	# tag, which the file alone does not hold, so a run without them answers 3 (UNKNOWN) for a
 	# file it refuses nothing of. The second list is the same store with the aws kind's secrets
 	# untagged, the retag that a removal of that kind comes with.
-	k47_secrets_json "$AIRLOCK_FAKE_SECRETS_FILE" >"$d/secrets.json"
+	k47_secrets_json "$AIRLOCK_MEMORY_SECRETS_FILE" >"$d/secrets.json"
 	k8_untagged "$d/secrets.json" aws >"$d/secrets-aws-untagged.json"
 	local aws_tagged
 	aws_tagged="$(jq -r '[.[] | select(.annotations.proxy == "aws") | .name] | length' "$d/secrets.json")"
@@ -2564,12 +2564,12 @@ k47_hits() { # <file>...
 	printf 'hits=%s bytes=%s' "$(cat "$@" 2>/dev/null | grep -o 'sk-ant-oat01-' | wc -l | tr -d ' ')" "$(cat "$@" 2>/dev/null | wc -c | tr -d ' ')"
 }
 
-# k47_secrets_json writes the fake store's secrets as `gcloud secrets list
+# k47_secrets_json writes the memory store's secrets as `gcloud secrets list
 # --format='json(name,annotations)'` lists them, which `envoy-broker profiles check
 # --secrets-json` reads: each a name ending in /secrets/agent-secrets-<slug> and its tags as its
 # annotations. A profile with no proxy string takes its kind from its source's proxy tag, which
 # only that list gives the rules test.
-k47_secrets_json() { # <fake secrets file>
+k47_secrets_json() { # <memory secrets file>
 	jq '[.secrets[] | {name: ("projects/000000000000/secrets/agent-secrets-" + (.name | sub("^.*/"; ""))), annotations: .tags}]' "$1"
 }
 
@@ -2901,7 +2901,7 @@ check_k47() {
 	# --- The rules test on a copy whose anthropic kind allows GET alone. ---
 	local copy_out copy_status head_status
 	jq '(.kinds[] | select(.name == "anthropic") | .allow) = [{"method": "GET", "pathPrefix": "/v1/organizations/"}]' "$AIRLOCK_PROFILES_FILE" >"$d/get-only.json"
-	k47_secrets_json "$AIRLOCK_FAKE_SECRETS_FILE" >"$d/secrets.json"
+	k47_secrets_json "$AIRLOCK_MEMORY_SECRETS_FILE" >"$d/secrets.json"
 	copy_out="$("$BROKER_BIN" profiles check "$d/get-only.json" --secrets-json "$d/secrets.json" 2>&1)"
 	copy_status=$?
 	"$BROKER_BIN" profiles check "$AIRLOCK_PROFILES_FILE" --secrets-json "$d/secrets.json" >"$d/head-check.txt" 2>&1

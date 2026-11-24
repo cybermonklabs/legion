@@ -454,7 +454,7 @@ AIRLOCK_PROXY_URL="${banner[DEV_STACK_AIRLOCK_PROXY_URL]}"
 AIRLOCK_BOUND_URL="${banner[DEV_STACK_AIRLOCK_BOUND_URL]}"
 AIRLOCK_CA_CERT_FILE="${banner[DEV_STACK_AIRLOCK_CA_CERT_FILE]}"
 BIN_DIR="$STACK_DIR/bin"
-FAKE_SECRETS_FILE="$STACK_DIR/fake-secrets.json"
+MEMORY_SECRETS_FILE="$STACK_DIR/memory-secrets.json"
 signin_client_env=(AGENT_SECRETS_SIGNIN_ISSUER="${banner[AGENT_SECRETS_SIGNIN_ISSUER]}"
   AGENT_SECRETS_SIGNIN_CLIENT_ID="${banner[AGENT_SECRETS_SIGNIN_CLIENT_ID]}"
   AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE="${banner[AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE]}")
@@ -509,10 +509,10 @@ store_name() { printf 'example/agent-secrets/%s' "$(printf '%s' "$1" | tr '[:upp
 jq --arg priv "$(store_name "$PRIV_SECRET")" --arg pub "$(store_name "$PUB_SECRET")" --argjson tags "$priv_tags" '
   .secrets |= map(select(.name != $priv and .name != $pub))
   | .secrets += [
-      {name: $priv, kms_key_id: "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab", tags: $tags, value: "priv-key-value"},
-      {name: $pub, kms_key_id: "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab", tags: {owner: "shared", tier: "agent"}, value: "pub-key-value"}
-    ]' "$FAKE_SECRETS_FILE" >"$WORK_DIR/fake-secrets.json" || setup_fail "could not rewrite $FAKE_SECRETS_FILE"
-cat "$WORK_DIR/fake-secrets.json" >"$FAKE_SECRETS_FILE"
+      {name: $priv, tags: $tags, value: "priv-key-value"},
+      {name: $pub, tags: {owner: "shared", tier: "agent"}, value: "pub-key-value"}
+    ]' "$MEMORY_SECRETS_FILE" >"$WORK_DIR/memory-secrets.json" || setup_fail "could not rewrite $MEMORY_SECRETS_FILE"
+cat "$WORK_DIR/memory-secrets.json" >"$MEMORY_SECRETS_FILE"
 for secret in "$PRIV_SECRET" "$PUB_SECRET"; do
   curl -sf -X POST "$BROKER_URL/v1/secrets/$secret/reread" >/dev/null || setup_fail "the broker would not reread $secret"
 done

@@ -19,7 +19,7 @@
 #
 # The fakes hold what the real programs hold to the driver: the trade's answer depends on the
 # sign-in the driver's login wrote and on AGENT_SECRETS_PROJECTS; a session's projects come from
-# register --projects or AGENT_SECRETS_PROJECTS; a request's answer reads the fake secrets file the
+# register --projects or AGENT_SECRETS_PROJECTS; a request's answer reads the memory secrets file the
 # driver rewrote, so an untagged PRIV_KEY goes to every caller as it would; the issuer approves a
 # device code only after the person was queued; psql answers only for the Dispatch database; the
 # proxy serves PRIV_KEY only when its proxy tag names the kind the banner exports, as the real
@@ -62,7 +62,7 @@ fake() { # <path>
 }
 
 # --- dev-stack.sh: refuses a start without --project-access, makes a work directory of its own
-# holding what the real one's holds (the bin directory, the token files, the fake secrets file),
+# holding what the real one's holds (the bin directory, the token files, the memory secrets file),
 # prints the banner, and stays up until it is signalled. In the scenario empty-banner it prints a
 # banner from before --project-access, with none of PRIV's exports. ---
 fake "$repo/packages/envoy/scripts/dev-stack.sh" <<'EOF'
@@ -92,9 +92,9 @@ for file in account-token priv-exchange-token priv-pod-token device-client-secre
 done
 printf 'fake-ca\n' >"$work/ca.crt"
 : >"$work/dev-metadata.py"
-cat >"$work/fake-secrets.json" <<JSON
+cat >"$work/memory-secrets.json" <<JSON
 {"secrets": [
-  {"name": "example/agent-secrets/demo-read-token", "kms_key_id": "k", "tags": {"owner": "ada@example.com", "tier": "agent"}, "value": "v"}
+  {"name": "example/agent-secrets/demo-read-token", "tags": {"owner": "ada@example.com", "tier": "agent"}, "value": "v"}
 ]}
 JSON
 trap 'exit 0' TERM INT
@@ -152,7 +152,7 @@ fake "$stackbin/agent-secrets" <<'EOF'
 set -euo pipefail
 scenario="$(cat "$state/scenario")"
 printf 'agent-secrets %s | home=%s projects=%s session=%s\n' "$*" "${HOME:-}" "${AGENT_SECRETS_PROJECTS:-}" "${FAKE_SESSION:-}" >>"$state/agent-secrets.log"
-secrets="$(dirname "$0")/../fake-secrets.json"
+secrets="$(dirname "$0")/../memory-secrets.json"
 tagged="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // ""][0] // ""' "$secrets")"
 sees_priv() { # <person>
   case "$1" in
@@ -447,7 +447,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 if [ -n "$proxy" ]; then
-  secrets="$(cat "$state/current-stack")/fake-secrets.json"
+  secrets="$(cat "$state/current-stack")/memory-secrets.json"
   tagged="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // ""][0] // ""' "$secrets")"
   behind="$(jq -r '[.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // ""][0] // ""' "$secrets")"
   refused=false
@@ -631,13 +631,13 @@ check "before F: the airlock refuses the next proxied request once carol is off 
 check "before F: the write making PRIV private is marked as the stand-in for avenue A's route" says "the stand-in for PATCH /api/v1/projects/PRIV/access {\"visibility\":\"private\"}"
 check "before F: the write taking carol off PRIV is marked as the stand-in for avenue A's route" says "the stand-in for PATCH /api/v1/projects/PRIV/access {\"owner\":\"bob@example.com\"}"
 check "before F: PRIV_KEY was written tagged dispatch-project=PRIV" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"]' "$(cat "$state/current-stack")/fake-secrets.json")" = PRIV
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"]' "$(cat "$state/current-stack")/memory-secrets.json")" = PRIV
 check "before F: PUB_KEY was written with no project" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
+  test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/memory-secrets.json")" = none
 check "before F: PRIV_KEY was written tagged proxy=priv, the kind the banner exports" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = priv
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/memory-secrets.json")" = priv
 check "before F: PUB_KEY was written with no proxy tag, so it is released as its value" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
+  test "$(jq -r '.secrets[] | select(.name | endswith("/pub-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/memory-secrets.json")" = none
 check "before F: the driver waited out the broker's 30 s K3 cache before the refused request" grep -qx '35' "$state/sleeps"
 check "before F: alice's session named PRIV at enrollment" grep -qF 'register person=alice@example.com projects=PRIV' "$state/register.log"
 check "before F: carol's session naming nothing named no project" grep -qx 'register person=carol@example.com projects=' "$state/register.log"
@@ -683,9 +683,9 @@ ROWS
 run_driver control before-f --database-url "$admin_url" --control untagged
 check "control: the run exits 1" exits 1
 check "control: PRIV_KEY was written with no project" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = none
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags["dispatch-project"] // "none"' "$(cat "$state/current-stack")/memory-secrets.json")" = none
 check "control: PRIV_KEY was still written behind the kind, proxy=priv" \
-  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/fake-secrets.json")" = priv
+  test "$(jq -r '.secrets[] | select(.name | endswith("/priv-key")) | .tags.proxy // "none"' "$(cat "$state/current-stack")/memory-secrets.json")" = priv
 check "control: the first caller that got PRIV_KEY is named" says "control: the first caller that got PRIV_KEY although it should have been refused: carol's session naming nothing"
 check "control: that caller's row fails on PRIV_KEY" says "FAIL: carol's session naming nothing: PRIV_KEY:"
 
@@ -736,7 +736,7 @@ printf 'key\n' >"$live/pod-keys/key.pem"
 printf 'enr-pod\n' >"$live/pod-keys/enrollment"
 printf '{"person": "carol@example.com"}\n' >"$live/signins/carol@example.com.json"
 printf '%s\n' "$live/signins" >"$live/helper.sock"
-cat >"$temporary_dir/fake-secrets.json" <<'JSON'
+cat >"$temporary_dir/memory-secrets.json" <<'JSON'
 {"secrets": [{"name": "example/agent-secrets/priv-key", "tags": {"dispatch-project": "PRIV", "owner": "shared", "tier": "agent"}}]}
 JSON
 printf '%s\n' "$temporary_dir" >"$state/current-stack"
