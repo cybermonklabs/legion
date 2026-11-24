@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // HTTPServer connects to a pre-existing MCP server over HTTP/SSE transport.
@@ -58,21 +59,29 @@ func (s *HTTPServer) Stopped() bool {
 
 // Start connects to the MCP server's SSE endpoint, performs the handshake, and subscribes.
 func (s *HTTPServer) Start() error {
-	// 1. Connect to {url}/sse.
+	// 1. Connect to {url}/sse. The configured URL can carry a credential, in its user information,
+	// which net/http sends as the request's Basic Authorization, or in a query value. So the URL
+	// prints as redact.URL allows, and the client follows a redirect only on the server's own
+	// origin (redirects.SameOrigin): the server is any MCP server a person configures, which may
+	// move its stream on its own origin (a trailing slash, say), and a Location naming another
+	// host is the answering party's words. net/http's error can quote a Location it could not
+	// parse (Go reads one before any redirect policy), so it prints through redact.Cause: the
+	// failure's own text beside a clean URL, and its class beside any other.
 	sseURL := strings.TrimRight(s.cfg.URL, "/") + "/sse"
+	shown := redact.URL(sseURL)
 	req, err := http.NewRequest("GET", sseURL, nil)
 	if err != nil {
 		return fmt.Errorf("create SSE request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := redirects.SameOrigin(http.DefaultClient).Do(req)
 	if err != nil {
-		return fmt.Errorf("SSE connect to %s: %w", sseURL, err)
+		return fmt.Errorf("SSE connect to %s: %w", shown, redact.Cause(err, sseURL))
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return fmt.Errorf("SSE connect to %s: status %d", sseURL, resp.StatusCode)
+		return fmt.Errorf("SSE connect to %s: status %d", shown, resp.StatusCode)
 	}
 	s.sseResp = resp
 
