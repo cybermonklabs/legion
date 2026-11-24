@@ -1,5 +1,20 @@
 package textcheck
 
+//ci:reads packages/daemon/internal/api/waiting_line_contract_extract.txt readExtract reads it as ../api/waiting_line_contract_extract.txt
+//ci:reads packages/daemon/internal/workflow/waiting_line_words_extract.txt readExtract reads it as ../workflow/waiting_line_words_extract.txt
+//ci:reads packages/daemon/cmd/legion/awaiting_summary_extract.txt readExtract reads it as ../../cmd/legion/awaiting_summary_extract.txt
+//ci:reads packages/daemon/cmd/legion/waiting_line_block_extract.txt readExtract reads it as ../../cmd/legion/waiting_line_block_extract.txt
+//ci:reads docs/site/src/content/docs/legion/concepts.md shippedText reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/running-legion.md shippedText reads it under ../../../..
+//ci:reads docs/site/src/content/docs/legion/troubleshooting.md shippedText reads it under ../../../..
+//ci:reads packages/contracts/src/legion-api.ts shippedText reads it under ../../../..
+//ci:reads packages/pi-legion/AGENTS.md shippedText reads it under ../../../..
+//ci:reads packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml shippedText reads that one fragment under ../../../..
+//ci:reads packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml shippedText reads that one fragment under ../../../..
+//ci:reads packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml shippedText reads that one fragment under ../../../..
+//ci:reads skills/legion-controller/references/admission.md shippedText reads it under ../../../..
+//ci:reads skills/legion-controller/references/wakes.md shippedText reads it under ../../../..
+
 import (
 	"errors"
 	"fmt"

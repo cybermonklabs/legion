@@ -2091,8 +2091,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
 // any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// stale-plugin relaunch (refreshStalePlugins) before any claim is relaunched, but for one whose
+// record says its process died (recordedDeaths), which is relaunched for that death in the
+// unfinished launches' own pass and order, on this daemon's contract; a claim a refused attempt
+// leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2184,9 +2186,19 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
-	s.refreshStalePlugins(s.claims, "boot")
-	if len(unfinished) > 0 {
-		s.relaunchUnfinished(unfinished, reconciled)
+	// A claim whose record says its process died is relaunched for that death in the boot's pass
+	// over the unfinished launches, in their order (relaunchUnfinished), and that launch is on this
+	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
+	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
+	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	deaths := recordedDeaths(s.claims)
+	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	if len(deaths) > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", len(deaths))
+	}
+	if len(unfinished) > 0 || len(deaths) > 0 {
+		s.relaunchUnfinished(unfinished, deaths, reconciled)
 	}
 	return nil
 }

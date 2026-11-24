@@ -426,16 +426,16 @@ func TestConfirmedContractReadsOnlyTheContractTokenOnAnOKLine(t *testing.T) {
 // prefix anywhere but at a line's start is no such line, so another line that quotes it is not
 // read as one.
 func TestNoVerdictReadsOnlyALineOfItsOwn(t *testing.T) {
-	const detail = "aws emSign: its 40s limit ended it after 40.0s: signal: terminated; role overlays: implementer: signal: terminated"
+	const detail = "capability browser: not checked; role overlays: implementer: signal: terminated"
 	for _, testCase := range []struct {
 		name, output, detail string
 		ok                   bool
 	}{
-		{"the line among other output", "probe-image: TLS client aws emSign: no verdict (its 20s limit ended it after 20.0s: signal: terminated)\n" + NoVerdictPrefix + detail + "\nlegion probe-image: exiting\n", detail, true},
+		{"the line among other output", "probe-image: capability browser: unanswered (not checked: context deadline exceeded)\n" + NoVerdictPrefix + detail + "\nlegion probe-image: exiting\n", detail, true},
 		{"the line last, with no line break", NoVerdictPrefix + detail, detail, true},
-		{"the first of two lines", NoVerdictPrefix + "node emSign: first\n" + NoVerdictPrefix + "node AAA: second\n", "node emSign: first", true},
+		{"the first of two lines", NoVerdictPrefix + "capability lsp: first\n" + NoVerdictPrefix + "capability browser: second\n", "capability lsp: first", true},
 		{"the prefix inside another line", "probe-image: quoted " + NoVerdictPrefix + detail + "\n", "", false},
-		{"the failure's line", "legion probe-image: worker TLS probe failed: aws cannot verify refusal of the emSign chain: signal: killed\n", "", false},
+		{"the failure's line", "legion probe-image: capability browser is missing: chromium is not on PATH, and PUPPETEER_EXECUTABLE_PATH names no executable\n", "", false},
 		{"nothing", "", "", false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

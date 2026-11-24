@@ -77,6 +77,7 @@ const raceRounds = 300
 // row-first writer does not, so its rounds must lose an update or deadlock at least once. A race
 // that broke neither would hold the safe pairs to nothing.
 func TestTheOwnerLockModesRaceEachOtherAndTheEarlierBuildsWriter(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	registerFleetProcess(t, s, 0, 0)
 	pairs := []struct {
@@ -130,6 +131,7 @@ const (
 // its own transaction allows, until shortly before the test binary's deadline, and one that waits
 // longer behind a slow writer is no failure here.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
+	t.Parallel()
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	waitRegistrationsOut(ctx, t, s)

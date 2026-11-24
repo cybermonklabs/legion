@@ -34,6 +34,7 @@ func (kv *writingOnDelete) Delete(key string, opts ...nats.DeleteOpt) error {
 // delete read none of and judged nothing about. The handle writes the row as any delete reaches
 // it, so a delete at no revision would take that row and the row would fail.
 func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
+	t.Parallel()
 	client, err := Connect([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -140,6 +141,7 @@ func TestADeleteAtReadTakesTheRecordACopyBehindAnswersAbsent(t *testing.T) {
 // key's record between the read and the delete still answers that refusal and keeps that writer's
 // record: the leader's answer is no message the server wrote.
 func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
+	t.Parallel()
 	const bucket = "kv_delete_at_read_copy"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()

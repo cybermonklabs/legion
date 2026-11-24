@@ -596,11 +596,11 @@ func (m *Machine) adoptPodLoad() {
 // the gate first (endPodPark), so a claim asks for one start at a time. The phase is read only for
 // a start no request raised, since the order reads it of no other (podQueue.next).
 //
-// A try that waits stops the process its launch let go before it parks (stopPrevious), as a try
-// whose start failed stops it: that process is let go and still running (letGo, previous), and
-// what replaces it in the runtime is the grant's start, so a park that something ends before its
-// grant — a suspension, a retirement, a relaunch — would leave it running with no claim recording
-// it, and while the park lasts it would hold what the other role's load needs. A stop the runtime
+// A try that waits stops the process its launch let go as it parks (stopLetGo), as a try whose
+// start failed stops it: that process is let go and still running (letGo, previous), and what
+// replaces it in the runtime is the grant's start, so a park that something ends before its grant
+// — a suspension, a retirement, a relaunch — would leave it running with no claim recording it,
+// and while the park lasts it would hold what the other role's load needs. A stop the runtime
 // refuses, or that the try's own context cuts short, leaves the try parked all the same, as every
 // caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
 // and launchTries returns no error at the park. The launch has not failed — it waits at the gate
@@ -625,14 +625,14 @@ func (m *Machine) adoptPodLoad() {
 // with the daemon, and a grant that reaches the machine after that stop starts nothing
 // (podStartDue).
 //
-// The wake's run is the launch from that grant on while the wake carries the hold, and a fresh try
-// of the same launch, asked of the gate anew, once it carries none: the pause's gate holds the
-// wake in the park's place where the project is paused at the grant (podStartDue), and its let-out
-// after the pause runs it (letOutHeldLaunch, runWake), without a second token or wake line, since
-// the launch passed the wake gate before it parked (wake.ran). Its again is the launch raised anew
-// from the top, which only that let-out's lifecycle recheck reads (relaunchRefused), as
-// relaunchAtProbe raises it. Its state is the claim's as the park leaves it, launching, which a
-// request that does not wait restores once the pause's gate holds the wake (dropWakeFor).
+// The wake is a held try's (heldTryWake) with the park's hold: its run is the launch from that
+// grant on while the wake carries the hold, and a fresh try of the same launch, asked of the gate
+// anew, once it carries none: the pause's gate holds the wake in the park's place where the
+// project is paused at the grant (podStartDue), and its let-out after the pause runs it
+// (letOutHeldLaunch, runWake), without a second token or wake line, since the launch passed the
+// wake gate before it parked (wake.paid, wake.ran). Its state is the claim's as the park leaves
+// it, launching, which a request that does not wait restores once the pause's gate holds the wake
+// (dropWakeFor).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
@@ -655,22 +655,13 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	if now {
 		return hold, false
 	}
-	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	parked := &wake{kind: WakeLaunch, state: m.claim.State, ran: true, park: hold, again: m.launchFromTop(l)}
-	parked.run = func(ctx context.Context) error {
-		if parked.park == nil {
-			return m.launchTries(ctx, l, nil)
-		}
-		return m.launchTries(ctx, l, &podGrant{token: token, hold: parked.park})
-	}
+	parked := m.heldTryWake(l, token)
+	parked.park = hold
 	m.wake, m.podPark = parked, hold
 	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
 		"generation", m.claim.Generation, "pod", m.claim.Issue)
-	if stopped != nil {
-		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for its issue pod's start all the same",
-			"generation", m.claim.Generation, "error", stopped)
-	}
+	m.stopLetGo(ctx, "its issue pod's start")
 	return hold, true
 }
 

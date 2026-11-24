@@ -15,6 +15,7 @@ import (
 // The record keeps one row for each read, which every attempt overwrites with its own values: a
 // failed attempt's cause, then a succeeded attempt's none, at a later time.
 func TestGitHubReadAttemptsKeepOneRowPerReadWithTheNewestValues(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	attempts := NewGitHubReadAttempts(migratedEmptyStore(t).Pool)
 	if rows, err := attempts.All(ctx); err != nil || len(rows) != 0 {
@@ -69,6 +70,7 @@ func readAttempts(t *testing.T, attempts *GitHubReadAttempts) map[githubreads.Re
 // The table holds a row to what GET /healthz may answer: one of the four reads, a cause of at most
 // 1,024 bytes, a cause exactly when the attempt failed.
 func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
 	cases := []struct {
@@ -123,6 +125,7 @@ func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 // Each write of a row notifies githubreads.Channel with the read's name, the insert and the
 // update alike, so every process refreshes its copy whichever process recorded the attempt.
 func TestRecordingAGitHubReadAttemptNotifiesItsChannel(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	database := migratedEmptyStore(t)

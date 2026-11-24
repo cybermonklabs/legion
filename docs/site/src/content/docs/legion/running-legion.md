@@ -337,8 +337,10 @@ Dispatch read them, delete the files, then install every App from
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
   500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
-  booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
+  at a time and runs no lane, and a larger probe could keep the daemon from booting on a full
+  pool. Its 500m was set while the probe also ran a TLS check of the image's clients, which it no
+  longer makes, and is kept until its other checks are audited and measured. A pool with no room
+  even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
