@@ -4,7 +4,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -180,16 +183,16 @@ func basisSeedPending(generation uint64) record.PendingBasisSeed {
 }
 
 // The pending-basis seed reads Dispatch's state of the ancestor's document and of its issue
-// (readBasis), the read a cue's preparation makes, and the workflow judges it by the one verdict
-// it judges a cue's read by: the person's approval of the version, as the document's latest
-// review of its latest version, opens the step; a changes request as that latest review ends the
-// wait, also where the review list shows the person's approval of the version before it (decision
-// E1: the seed no longer opens on that earlier approval and passes the changes request on); a
-// newer version ends it whatever the list shows of the version before; and so does the request
-// closed with no approval, while a request still waiting changes nothing. The person's approval
-// opens no step on an ancestor that Dispatch shows accepted or without the legion label: the wait
-// ends instead. A read for another generation changes nothing, and the same read again is told
-// nothing new.
+// (readBasis), the one read that opens or ends a step's wait on the ancestor's request, and the
+// workflow judges it by its one verdict: the person's approval of the version, as the document's
+// latest review of its latest version, opens the step; a changes request as that latest review
+// ends the wait, also where the review list shows the person's approval of the version before it
+// (decision E1: the seed no longer opens on that earlier approval and passes the changes request
+// on); a newer version ends it whatever the list shows of the version before; and so does the
+// request closed with no approval, while a request still waiting changes nothing. The person's
+// approval opens no step on an ancestor that Dispatch shows accepted or without the legion label:
+// the wait ends instead. A read for another generation changes nothing, and the same read again is
+// told nothing new.
 func TestThePendingBasisSeedOpensOrEndsTheWaitAsDispatchShowsIt(t *testing.T) {
 	approvedAt, sentBackAt := basisSeedApprovedAt.Add(24*time.Hour), basisSeedApprovedAt.Add(25*time.Hour)
 	reason := "name the rollback path"
@@ -419,5 +422,275 @@ func TestTheBootQueuesAPendingBasisSeedForEachPendingStep(t *testing.T) {
 		return err
 	}); err != nil || stood == nil || !stood.OnBasis() || !record.GateOpen(*stood) || stood.Basis.Version != 3 {
 		t.Fatalf("the open step after the boot = %#v, %v; want it open on version 3 as it stood", stood, err)
+	}
+}
+
+// countedBasisDispatch is basisDispatch counting each document's approval reads and each issue's
+// reads, and answering failure to every read of the document or issue failing names.
+type countedBasisDispatch struct {
+	*basisDispatch
+	approvalReads map[string]int
+	issueReads    map[string]int
+	failing       string
+	failure       error
+}
+
+func newCountedBasisDispatch(client *basisDispatch) *countedBasisDispatch {
+	return &countedBasisDispatch{basisDispatch: client, approvalReads: map[string]int{}, issueReads: map[string]int{}}
+}
+
+func (d *countedBasisDispatch) Approval(ctx context.Context, artifactID string) (dispatch.Approval, error) {
+	d.approvalReads[artifactID]++
+	if artifactID == d.failing {
+		return dispatch.Approval{}, d.failure
+	}
+	return d.basisDispatch.Approval(ctx, artifactID)
+}
+
+func (d *countedBasisDispatch) GetIssue(ctx context.Context, key string) (dispatch.Issue, error) {
+	d.issueReads[key]++
+	if key == d.failing {
+		return dispatch.Issue{}, d.failure
+	}
+	return d.basisDispatch.GetIssue(ctx, key)
+}
+
+// cueReadsCounted is a record store counting its reads of the steps an event can be a cue for
+// (workflow.PendingBasisCues): the steps that name a document as their basis, that wait on a
+// request, and that rest on an issue.
+type cueReadsCounted struct {
+	record.Store
+	reads int
+}
+
+func (s *cueReadsCounted) GatesForBasisArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]record.DesignGate, error) {
+	s.reads++
+	return s.Store.GatesForBasisArtifact(ctx, tx, artifactID)
+}
+
+func (s *cueReadsCounted) GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]record.DesignGate, error) {
+	s.reads++
+	return s.Store.GatesByPendingAsk(ctx, tx, ask)
+}
+
+func (s *cueReadsCounted) GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestors ...string) ([]record.DesignGate, error) {
+	s.reads++
+	return s.Store.GatesRestingOn(ctx, tx, ancestors...)
+}
+
+// pendingBasisSeedsOf is every pending-basis seed the outbox holds for issue, oldest first.
+func pendingBasisSeedsOf(t *testing.T, pool *store.Pool, issue string) []record.PendingBasisSeed {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload from outbox where kind = $1 and issue = $2 order by id`,
+		string(record.OutboxKindPendingBasisSeed), issue)
+	if err != nil {
+		t.Fatalf("read the pending-basis seeds of %s: %v", issue, err)
+	}
+	defer rows.Close()
+	var seeds []record.PendingBasisSeed
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("scan a pending-basis seed of %s: %v", issue, err)
+		}
+		var seed record.PendingBasisSeed
+		if err := json.Unmarshal(payload, &seed); err != nil {
+			t.Fatalf("decode a pending-basis seed of %s: %v", issue, err)
+		}
+		seeds = append(seeds, seed)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the pending-basis seeds of %s: %v", issue, err)
+	}
+	return seeds
+}
+
+// The ancestor of TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues, its primary document
+// and its approval request: an issue the daemon does not record, so each of its events reaches the
+// steps that wait or rest on it and no record of its own.
+const (
+	cueAncestor = "LEGION-150"
+	cueDoc      = "artifact-150"
+	cueAsk      = "ask-150"
+)
+
+// An event of an ancestor's document, of its approval request or of its issue leads to a read of
+// Dispatch only for a step it is a cue for (workflow.PendingBasisCue), and only through that step's
+// pending-basis seed: it queues one seed for each step it cues and none for any other, and those
+// seeds are the only reads of Dispatch it leads to, of the document and of its issue once each. A
+// document event at the basis version or a newer one, other than that version's own version event,
+// a close of the request other than a person's answer, and an event that shows the ancestor leaving
+// R1's first condition are cues for the root's waiting step, and for no step that stands open on
+// the document. An event no step waits on queues no seed and leads to no read of Dispatch: the
+// version's own version event, an older version's review, another document's event, a close of
+// another request, another issue's leave, and every cue while no step waits. An event that can be
+// no cue at all (workflow.BasisCueEvent), a person's answer of the request, a close of a question
+// and an event that shows the ancestor at work, reads not even the store's steps.
+func TestAnEventReadsDispatchOnlyThroughTheSeedOfEachStepItCues(t *testing.T) {
+	const open, openDoc = "LEGION-209", "artifact-209"
+	person := dispatch.Actor{Kind: "user", ID: "alice"}
+	review := func(kind intake.DispatchArtifactKind, version int) intake.DispatchArtifact {
+		fact := intake.DispatchArtifact{Key: cueAncestor, ArtifactID: cueDoc, Kind: kind, Version: version, Mark: record.EventMark{Seq: 60}}
+		if kind != intake.DispatchArtifactVersion {
+			fact.Actor = person
+		}
+		return fact
+	}
+	closed := func(ask, state string) intake.DispatchAskClosed {
+		return intake.DispatchAskClosed{Key: cueAncestor, Ask: ask, Kind: record.AskApproval, Artifact: cueDoc, State: state, Actor: person,
+			Mark: record.EventMark{Seq: 61}}
+	}
+	issue := func(key, status string, labelled bool) intake.DispatchIssue {
+		return intake.DispatchIssue{Key: key, Seq: 62, Type: "issue.updated", Status: status, Title: key, Rank: "T", HandedOver: labelled}
+	}
+	question := closed("ask-q", "resolved")
+	question.Kind = record.AskQuestion
+	another := review(intake.DispatchArtifactApproved, 4)
+	another.ArtifactID = "artifact-other"
+	basis := func(version int) record.GateBasis {
+		return record.GateBasis{Issue: cueAncestor, ArtifactID: cueDoc, Version: version, Approval: record.EventMark{Seq: 40, At: basisSeedApprovedAt},
+			Approver: basisSeedPerson.Name(), Serves: []string{"dispatch://LEGION-150/spec#b-r1@v3"}, Reason: "The root delivers r1 of LEGION-150.",
+			Session: "session-architect", RegisteredAt: basisSeedApprovedAt.Add(time.Hour)}
+	}
+	waiting := record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: basisSeedRootDoc, BasisArtifactID: cueDoc, BasisVersion: 4, Ask: cueAsk,
+		Generation: 1}
+	for _, tc := range []struct {
+		name string
+		fact intake.Fact
+		// waits says the root's spec step waits on the request; open's step stands open on the
+		// document in every case.
+		waits bool
+		// cue says fact is a cue for the waiting step, and none that it can be a cue for no step
+		// at all.
+		cue, none bool
+	}{
+		{name: "a person's approval of the version", fact: review(intake.DispatchArtifactApproved, 4), waits: true, cue: true},
+		{name: "a changes request on the version", fact: review(intake.DispatchArtifactChangesRequested, 4), waits: true, cue: true},
+		{name: "a newer version", fact: review(intake.DispatchArtifactVersion, 5), waits: true, cue: true},
+		{name: "a close of the request", fact: closed(cueAsk, "resolved"), waits: true, cue: true},
+		{name: "the ancestor done", fact: issue(cueAncestor, "done", true), waits: true, cue: true},
+		{name: "the ancestor no longer labelled", fact: issue(cueAncestor, "in_progress", false), waits: true, cue: true},
+		{name: "the version's own version event", fact: review(intake.DispatchArtifactVersion, 4), waits: true},
+		{name: "an approval of an older version", fact: review(intake.DispatchArtifactApproved, 3), waits: true},
+		{name: "an event of another document", fact: another, waits: true},
+		{name: "a close of another request", fact: closed("ask-9", "resolved"), waits: true},
+		{name: "another issue done", fact: issue("LEGION-300", "done", true), waits: true},
+		{name: "a person's approval of the version, with no step waiting", fact: review(intake.DispatchArtifactApproved, 4)},
+		{name: "a close of the request, with no step waiting", fact: closed(cueAsk, "resolved")},
+		{name: "the ancestor done, with no step waiting", fact: issue(cueAncestor, "done", true)},
+		{name: "a person's answer of the request", fact: closed(cueAsk, "answered"), waits: true, none: true},
+		{name: "a close of a question", fact: question, waits: true, none: true},
+		{name: "the ancestor at work", fact: issue(cueAncestor, "in_progress", true), waits: true, none: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newBasisSeedRig(t)
+			putOutboxIssue(t, rig.pool, rig.records, record.Issue{Key: open, Tree: open, Project: "LEGION", Title: "open", Phase: phase.Admitted, Generation: 1,
+				Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main",
+				GitHubRepo: "acme/widgets"})
+			putOutboxGate(t, rig.pool, rig.records, record.OpenOnBasis(record.DesignGate{Issue: open, ArtifactID: openDoc, LatestVersion: 4}, basis(3)))
+			if tc.waits {
+				putOutboxGate(t, rig.pool, rig.records, record.PendOnBasis(record.DesignGate{Issue: basisSeedRoot, ArtifactID: basisSeedRootDoc, LatestVersion: 4},
+					basis(4), cueAsk))
+			}
+			// What Dispatch shows: the request open on version 4, and the ancestor at work.
+			rig.client.owners[cueDoc] = cueAncestor
+			rig.client.approvals[cueDoc] = dispatch.Approval{State: "awaiting", LatestVersion: 4, AskID: cueAsk, WaitingOn: "human"}
+			rig.client.issues[cueAncestor] = dispatch.Issue{Key: cueAncestor, Status: "in_progress", Labels: []string{dispatch.LegionLabel}, HandedOver: true}
+			client := newCountedBasisDispatch(rig.client)
+			rig.runner.dispatch = client
+			counted := &cueReadsCounted{Store: rig.records}
+			engine := workflow.New(counted, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+
+			if _, err := intake.ApplyFact(context.Background(), rig.pool, "dispatch", "event", tc.fact, engine); err != nil {
+				t.Fatalf("apply the event: %v", err)
+			}
+
+			if tc.none && counted.reads != 0 {
+				t.Fatalf("the event read the store's steps %d times, want none: it can be a cue for no step", counted.reads)
+			}
+			var want []record.PendingBasisSeed
+			if tc.cue {
+				want = []record.PendingBasisSeed{waiting}
+			}
+			if seeds := pendingBasisSeedsOf(t, rig.pool, basisSeedRoot); !slices.Equal(seeds, want) {
+				t.Fatalf("pending-basis seeds of %s = %#v, want %#v", basisSeedRoot, seeds, want)
+			}
+			if seeds := pendingBasisSeedsOf(t, rig.pool, open); len(seeds) != 0 {
+				t.Fatalf("pending-basis seeds of %s = %#v, want none: the event is no cue for a step standing open", open, seeds)
+			}
+			for _, seed := range want {
+				rig.execute(seed)
+			}
+			if reads := len(want); client.approvalReads[cueDoc] != reads || client.issueReads[cueAncestor] != reads {
+				t.Fatalf("Dispatch was read for the document %d times and for the ancestor %d times, want %d each: the seeds' reads alone",
+					client.approvalReads[cueDoc], client.issueReads[cueAncestor], reads)
+			}
+			if tc.waits {
+				if gate := rig.gate(); !gate.PendingOnBasis() || record.GateOpen(gate) {
+					t.Fatalf("the spec step = %#v, want it still waiting on %s: Dispatch shows the request open and the ancestor at work", gate, cueAsk)
+				}
+			}
+		})
+	}
+}
+
+// A pending-basis seed whose read of Dispatch fails returns that failure as the row's error, and
+// the outbox retries the row on its backoff rather than finishing it refused, however the read
+// fails: Dispatch down, a coded refusal that would finish a status write's row, or no answer for
+// the ancestor's issue (permanentRefusal names no pending-basis seed). The seed's read alone opens
+// or ends the wait and no event waits on it, so a long outage puts the opening or the end off by
+// the seed's retries and nothing else: the step stays waiting, and nobody is told anything.
+func TestAFailedPendingBasisSeedIsRetriedOnItsBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		failing string
+		failure error
+	}{
+		{"Dispatch down for the document", basisSeedDoc, &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}},
+		{"Dispatch refusing the document", basisSeedDoc, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such artifact"}},
+		{"no answer for the ancestor's issue", basisSeedAncestor, &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			rig := newBasisSeedRig(t)
+			rig.pendingOnBasis(basisSeedRoot, basisSeedRootDoc)
+			// What Dispatch would answer: the person's approval of the version, which would open the
+			// step.
+			rig.client.approvals[basisSeedDoc] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), At: basisSeedApprovedAt.Add(24 * time.Hour),
+				Seq: 60, By: basisSeedPerson}
+			client := newCountedBasisDispatch(rig.client)
+			client.failing, client.failure = tc.failing, tc.failure
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			rig.runner.dispatch, rig.runner.now = client, func() time.Time { return now }
+			row := mustOutboxRow(t, basisSeedRoot, basisSeedPending(1), now)
+
+			if err := rig.runner.execute(ctx, row); !errors.Is(err, tc.failure) || permanentRefusal(row, err) {
+				t.Fatalf("the seed's run = %v, finished refused %t; want Dispatch's failure, retried", err, permanentRefusal(row, err))
+			}
+
+			enqueueOutbox(t, rig.pool, rig.records, row)
+			if err := rig.runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the outbox: %v", err)
+			}
+			var attempts int
+			var nextAt time.Time
+			var lastError string
+			if err := rig.pool.QueryRow(ctx, "select attempts, next_at, last_error from outbox where kind = $1 and issue = $2",
+				string(record.OutboxKindPendingBasisSeed), basisSeedRoot).Scan(&attempts, &nextAt, &lastError); err != nil {
+				t.Fatalf("read the seed after its failed run: %v; want it still queued, as a row finished refused is not", err)
+			}
+			if attempts != 1 || !nextAt.Equal(now.Add(record.RetryBackoff(0))) || !strings.Contains(lastError, tc.failure.Error()) {
+				t.Fatalf("the seed is on attempt %d, due at %s, with error %q; want attempt 1 due at %s, after its first backoff, keeping %q",
+					attempts, nextAt, lastError, now.Add(record.RetryBackoff(0)), tc.failure.Error())
+			}
+			if gate := rig.gate(); !gate.PendingOnBasis() || record.GateOpen(gate) {
+				t.Fatalf("the spec step = %#v, want it still waiting: no read opened or ended it", gate)
+			}
+			for _, kind := range []record.NoticeKind{"design-approved", "basis-ended"} {
+				if got := noticesOfKind(t, rig.pool, basisSeedRoot, kind); len(got) != 0 {
+					t.Fatalf("%s notices = %#v, want none", kind, got)
+				}
+			}
+		})
 	}
 }

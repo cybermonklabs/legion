@@ -161,16 +161,23 @@ func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 // A parent held before its retro by a root that rests on its approval, and by nothing else, is
 // released once that root's step stops waiting on its approval request while the root stays in
 // the workflow (dispatch://INFRA-3320 R8): here a session closes P's request ask-100 with no
-// approval, which ends R's wait (tellPendingEnded) and leaves R's step resting on nothing. The
+// approval, which queues R's pending-basis seed, and the seed's read of Dispatch, which shows the
+// request closed, ends R's wait (tellPendingEnded) and leaves R's step resting on nothing. That
 // fact writes no issue of P's tree, so its settle reads P's tree only because the end names P to
 // it (restEnded), and P's retro starts in that fact, with nobody acting.
 func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
 	pool, engine := heldForARestingRoot(t)
+	apply := applyFacts(t, pool, engine)
 
-	if result := applyFacts(t, pool, engine)("request-closed", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
-		Artifact: basisDoc, State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61),
-		BasisRead: readOf(requestClosed(), ancestorAtWork)}); result.Refusal != nil {
+	if result := apply("request-closed", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval,
+		Artifact: basisDoc, State: "resolved", Actor: dispatch.Actor{Kind: "session", ID: "session-other"}, Mark: askSeq(61)}); result.Refusal != nil {
 		t.Fatalf("the close of ask-100 was refused: %+v", result.Refusal)
+	}
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.PendingOnBasis() {
+		t.Fatalf("R's spec step after the close = %#v, want it still waiting: the close queues its seed and ends nothing", gate)
+	}
+	if result := apply("request-closed-read", seedRead(requestClosed(), ancestorAtWork)); result.Refusal != nil {
+		t.Fatalf("the seed's read of the closed request was refused: %+v", result.Refusal)
 	}
 
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Basis != nil || gate.RestsOnIssue(basisAncestor) {

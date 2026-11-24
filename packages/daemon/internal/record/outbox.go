@@ -1413,10 +1413,11 @@ func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 // a fact of its own rather than the gate seed's: a person's approval of the version opens the
 // step, a changes request, a newer version, the request's close with no approval or the
 // ancestor's leave ends the wait, and a request still waiting changes nothing. The row's issue is
-// the root. One is queued whenever the daemon must learn what Dispatch shows of such a wait and
-// cannot read it in the fact at hand: when the step is registered on the request, for every such
-// step of the project at the daemon's boot, whatever phase its root stands in, and when an event
-// reaches the step with no read of Dispatch on it.
+// the root. Its read is the one that opens or ends such a wait, and it is queued whenever the
+// daemon must learn what Dispatch shows of it: when the step is registered on the request, for
+// every such step of the project at the daemon's boot, whatever phase its root stands in, and on
+// every event that is a cue for the step (workflow's PendingBasisCue), which itself opens and ends
+// nothing.
 type PendingBasisSeed struct {
 	// Step and ArtifactID are the root's step and its own document the step was registered on.
 	Step       DesignStep `json:"step"`

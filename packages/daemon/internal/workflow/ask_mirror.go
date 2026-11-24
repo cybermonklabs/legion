@@ -231,9 +231,10 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 	return intake.Result{}, e.itemLeft(ctx, tx, *root, before, after, record.AnsweredByClosed, "Dispatch's settlement, which restored its earlier answer")
 }
 
-// dispatchAskClosed ends every step of a root that waits, closed, on the ask as an ancestor's
-// approval request, when the close carries no approval (endPendingOnRequest), whatever issue the
-// ask is on and whether or not the daemon records it; applies the close to the ask's mirror row
+// dispatchAskClosed queues the pending-basis seed of every step of a root that waits, closed, on
+// the ask as an ancestor's approval request, where the close is a cue for it (readBasisOnCue), so
+// the seed's read of Dispatch opens or ends that wait, whatever issue the ask is on and whether or
+// not the daemon records it; applies the close to the ask's mirror row
 // and the root's wait (closeAsk); and relays a person's answer or resolution of a question on a
 // tree Legion is not running to the controller (relayParkedDecision): nobody inside such a tree
 // hears it. An approval ask's answer arrives again as the document's review, which the gate
@@ -249,7 +250,7 @@ func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake
 // among those kept. A child's question has no such row, so its late close is still relayed, and
 // decidedAt keeps the newer decision in its place.
 func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) (intake.Result, error) {
-	if err := e.endPendingOnRequest(ctx, tx, fact); err != nil {
+	if err := e.readBasisOnCue(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
 	}
 	if err := e.closeAsk(ctx, tx, fact); err != nil || fact.Kind != record.AskQuestion {

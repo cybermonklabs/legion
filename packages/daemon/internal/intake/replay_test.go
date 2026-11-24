@@ -167,12 +167,10 @@ func (h *keysHandler) handled() []string {
 
 // A message given up while its handler failed is applied, once the cause is fixed, by a replay of
 // its record: the stored message runs through the handling a live delivery takes, the
-// preparation of its issue and the basis read among it (ConsumerSpec.PrepareBasis, whose read of
-// Dispatch now is what a late event of an ancestor is judged by), and its fact is applied once,
-// under its own event id. Nothing is published: the stream holds what it held. The record closes
-// as applied by its caller, in the fact's own transaction, on the daemon's guarded pool
-// (store.Pool), which would refuse the close a second connection while the fact's transaction
-// holds one.
+// preparation of its issue among it, and its fact is applied once, under its own event id. Nothing
+// is published: the stream holds what it held. The record closes as applied by its caller, in the
+// fact's own transaction, on the daemon's guarded pool (store.Pool), which would refuse the close a
+// second connection while the fact's transaction holds one.
 func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) {
 	ctx := context.Background()
 	raw := migratedPool(t)
@@ -180,14 +178,10 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 	js, stream := testJetStream(t)
 	spec := boundSpec(&lockedBuffer{}, 1, time.Nanosecond)
 	spec.AckWait = testwait.Remaining(t)
-	var prepared, basisRead atomic.Int32
+	var prepared atomic.Int32
 	spec.PrepareRepository = func(_ context.Context, issue DispatchIssue) (DispatchIssue, error) {
 		prepared.Add(1)
 		return issue, nil
-	}
-	spec.PrepareBasis = func(_ context.Context, fact Fact) (Fact, error) {
-		basisRead.Add(1)
-		return fact, nil
 	}
 	consumers, err := OpenConsumers(ctx, js, pool, spec)
 	if err != nil {
@@ -209,7 +203,7 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 	stop()
 
 	fixed.Store(true)
-	preparedBefore, basisBefore := prepared.Load(), basisRead.Load()
+	preparedBefore := prepared.Load()
 	giveUps, err := NewGiveUps(consumers.Records(), handler)
 	if err != nil {
 		t.Fatalf("NewGiveUps: %v", err)
@@ -230,9 +224,6 @@ func TestAReplayAppliesTheStoredMessageOnceThroughTheLiveHandling(t *testing.T) 
 	}
 	if calls := prepared.Load() - preparedBefore; calls != 1 {
 		t.Errorf("the replay prepared the issue %d times, want once, as a live delivery prepares it", calls)
-	}
-	if calls := basisRead.Load() - basisBefore; calls != 1 {
-		t.Errorf("the replay read Dispatch for the issue's event %d times, want once, as a live delivery reads it", calls)
 	}
 	info, err := stream.Info(ctx)
 	if err != nil {

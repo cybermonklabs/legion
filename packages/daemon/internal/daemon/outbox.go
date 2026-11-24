@@ -4274,22 +4274,24 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 
 // seedPendingBasis reads, for the row's issue, a root whose step waits, closed, on an ancestor's
 // approval request (record.PendingBasisSeed), Dispatch's state of the ancestor's document and
-// issue as a cue's preparation reads it (readBasis), and applies the read as a fact of its own
-// (intake.PendingBasisRead), never the gate seed's, so the read reaches the root's step alone and
-// not the ancestor's own gate. The workflow judges it by the one verdict it judges a cue's read by
-// (workflow's judgeBasisRead): the person's approval of the version, as the document's latest
-// review of its latest version, opens the step on an ancestor that still meets R1's first
-// condition, and a changes request on that version, a newer version of the document, the request
-// no longer open, or the ancestor's leave ends the wait. The workflow applies the fact only while
-// the step still waits on that request in that generation, so a read of a wait that has opened or
-// ended since changes nothing. The fact's id is the step, the request and what the read found
-// (basisReadFound), so the same read again is a duplicate, and a read that finds anything else is
-// a fact of its own.
+// issue (readBasis), and applies the read as a fact of its own (intake.PendingBasisRead), never the
+// gate seed's, so the read reaches the root's step alone and not the ancestor's own gate. It is the
+// one read that opens or ends such a wait: the registration queues it, the boot queues it for every
+// such step, and every event that is a cue for the step queues it (workflow's PendingBasisCue). The
+// workflow judges it by its one verdict (workflow's judgeBasisRead): the person's approval of the
+// version, as the document's latest review of its latest version, opens the step on an ancestor
+// that still meets R1's first condition, and a changes request on that version, a newer version of
+// the document, the request no longer open, or the ancestor's leave ends the wait. The workflow
+// applies the fact only while the step still waits on that request in that generation, so a read
+// of a wait that has opened or ended since changes nothing. The fact's id is the step, the request
+// and what the read found (basisReadFound), so the same read again is a duplicate, and a read that
+// finds anything else is a fact of its own. A failed read is the row's error, and the row is
+// retried on its backoff (permanentRefusal names no pending-basis seed): no event waits on it.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
 	}
-	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID, nil)
+	read, err := readBasis(ctx, r.dispatch, payload.BasisArtifactID)
 	if err != nil {
 		return err
 	}
@@ -4301,6 +4303,21 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// readBasis is Dispatch's state now of artifactID, an ancestor's document that a step waits on,
+// closed, for a person's approval of (intake.BasisRead): the document's approval, and the issue
+// Dispatch names the document on, read as register_gate reads it.
+func readBasis(ctx context.Context, client dispatch.Client, artifactID string) (intake.BasisRead, error) {
+	approval, err := client.Approval(ctx, artifactID)
+	if err != nil {
+		return intake.BasisRead{}, fmt.Errorf("read Dispatch approval %s: %w", artifactID, err)
+	}
+	ancestor, err := client.GetIssue(ctx, approval.IssueKey)
+	if err != nil {
+		return intake.BasisRead{}, fmt.Errorf("read Dispatch issue %s, the ancestor whose document %s is: %w", approval.IssueKey, artifactID, err)
+	}
+	return intake.BasisRead{Approval: approval, Ancestor: intake.AncestorRead{Status: ancestor.Status, HandedOver: ancestor.HandedOver}}, nil
 }
 
 // basisReadFound names what read found, for the id of the fact that carries it: the document's

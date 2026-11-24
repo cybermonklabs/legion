@@ -137,11 +137,10 @@ var reviewBoundedReads = map[string]string{
 // otherFactBoundedReads are the ConsumerSpec function fields some fact other than a review reads,
 // by field name, with the fact that makes the read and why that fact makes fewer of them than a
 // review does. They are bounded reads like the two above, and they are not counted, because
-// boundedReadsPerFact is the most any one fact makes and no fact here makes more than two.
+// boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
-	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: with PrepareBasis's read, two in all",
-	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else but PrepareBasis, for the same reason a DispatchIssue fact does not: two reads in all",
-	"PrepareBasis":      "a DispatchArtifact, DispatchAskClosed or DispatchIssue fact has Dispatch read for a step waiting on an ancestor's request before it is applied (prepareBasis); beside PrepareArtifact's or PrepareRepository's read that is two in all, and an ask's close makes it alone",
+	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: one read in all",
+	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read in all",
 }
 
 // consumerSpecNotReads are the ConsumerSpec function fields that are no read at all, by field
