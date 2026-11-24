@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { roleToken } from "@legion/contracts";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -338,7 +339,9 @@ describe("tester-reruns", () => {
   // `GITHUB_ACTIONS`, and no passing test lines under an agent's `CLAUDECODE`, `AGENT` or
   // `REPL_ID`. The record a score reads must not: the stand-in, run for real on c1 at H1, records
   // one report whichever of them its caller sets, and that report holds c1's file line and the
-  // summary line the score reads.
+  // summary line the score reads. `FORCE_COLOR=1`, with `NO_COLOR` unset, changes only how the
+  // report is drawn (escape sequences, inside the timings too, and `✓` for `(pass)`), so the
+  // comparison reads each report without them; a group marker or a missing passing line stays.
   test(
     "tester-reruns: the bun stand-in records one report of c1 whatever CI or agent variable its caller sets",
     () => {
@@ -359,7 +362,14 @@ describe("tester-reruns", () => {
       ]);
       expect(standIn.exitCode).toBe(0);
       expect(git(path.join(runDir, "src"), "rev-parse", "HEAD")).toBe(repo.h1);
-      const reportVariables = ["GITHUB_ACTIONS", "CLAUDECODE", "AGENT", "REPL_ID"];
+      const reportVariables = [
+        "GITHUB_ACTIONS",
+        "CLAUDECODE",
+        "AGENT",
+        "REPL_ID",
+        "FORCE_COLOR",
+        "NO_COLOR",
+      ];
       const base = Object.fromEntries(
         Object.entries(process.env).filter(([name]) => !reportVariables.includes(name))
       );
@@ -369,6 +379,7 @@ describe("tester-reruns", () => {
         { CLAUDECODE: "1" },
         { AGENT: "1" },
         { REPL_ID: "1" },
+        { FORCE_COLOR: "1" },
       ];
       for (const variant of variants) {
         const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), "test", "limits.test.ts"], {
@@ -377,11 +388,17 @@ describe("tester-reruns", () => {
         });
         expect(ran.exitCode).toBe(0);
       }
-      // Each report with its timings left out, one per variant, in order.
+      // Each report as it reads without color: escape sequences out, `✓` read as `(pass)` and
+      // `✗` as `(fail)`, then its timings left out; one per variant, in order.
       const reports = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map((line) => String(JSON.parse(line).stderr).replace(/\[[0-9.]+m?s\]/g, "[time]"));
+        .map((line) =>
+          stripVTControlCharacters(String(JSON.parse(line).stderr))
+            .replace(/^✓/gm, "(pass)")
+            .replace(/^✗/gm, "(fail)")
+            .replace(/\[[0-9.]+m?s\]/g, "[time]")
+        );
       expect(reports).toHaveLength(variants.length);
       expect(reports[0]).toMatch(/^limits\.test\.ts:$/m);
       expect(reports[0]).toMatch(/^Ran 1 test across 1 file\./m);
