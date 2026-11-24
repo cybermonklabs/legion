@@ -211,8 +211,9 @@ func ContainsFold(body []byte, phrase string) bool {
 // Decode fills v, which must point at a typed value, from the body as JSON, and holds every
 // RemoteText it decodes, at any depth of v, with the record of the answer's requests (Carried):
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
-// body, and compares as it came. A destination that would take the body whole - a string, a byte
-// slice, a json.RawMessage or an interface value, behind however many pointers (whole) - is
+// body, and compares as it came. A destination that would take the body whole - a string, or a
+// value encoding/json fills with the answer's text as it came (plainText: a byte slice, a
+// json.RawMessage, a byte array or an interface value), behind however many pointers (whole) - is
 // refused, since its text would leave the answer as plain text. So is one that holds anything
 // Decode's one walk of it refuses (refusal): a member encoding/json would fill with the answer's
 // text as it came, a box no record of the answer reaches, or an embedded pointer encoding/json
@@ -244,20 +245,14 @@ func (a Answer) Decode(v any) error {
 	return nil
 }
 
-// whole reports whether a value of t takes a JSON body whole as text: a string, a byte slice
-// (json.RawMessage among them) or an interface value, or a pointer to one, which encoding/json
-// allocates and fills.
+// whole reports whether a value of t takes a JSON body whole as text: a string, or a value
+// encoding/json fills with the answer's text as it came (plainText), or a pointer to one, which
+// encoding/json allocates and fills.
 func whole(t reflect.Type) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	switch t.Kind() {
-	case reflect.String, reflect.Interface:
-		return true
-	case reflect.Slice:
-		return t.Elem().Kind() == reflect.Uint8
-	}
-	return false
+	return t.Kind() == reflect.String || plainText(t) != ""
 }
 
 // walked is a value refusal has read: the target of a pointer it followed, at the pointer's
@@ -360,10 +355,11 @@ func refusal(v reflect.Value, json, made bool, seen map[walked]bool) string {
 	return ""
 }
 
-// plainText is how Decode's refusal names a value of t that encoding/json fills with the answer's
-// text as it came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills
-// from a JSON array of numbers that can spell the same text, and which fmt prints as text; or an
-// interface value.
+// plainText is how Decode names a value of t that encoding/json fills with the answer's text as it
+// came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills from a JSON
+// array of numbers that can spell the same text, and which fmt prints as text; or an interface
+// value. It is one rule for the destination itself (whole) and for each member Decode's walk
+// reads (refusal).
 func plainText(t reflect.Type) string {
 	switch {
 	case t.Kind() == reflect.Interface:
