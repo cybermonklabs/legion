@@ -6,6 +6,8 @@ import type {
   EditPreconditionCurrent,
   EditPreconditionMismatch,
   IssueDetails,
+  ParentStatusConflictIssue,
+  StatusChangeEntry,
   TargetCandidate,
   WriteAdvice,
 } from "./dispatch-api.generated";
@@ -128,6 +130,12 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** On a `409 PARENT_STATUS_CONFLICT`: each issue whose status the write would leave out of line
+   *  with its parent's or its children's, with its status and whether it is the parent or a child. */
+  readonly issues?: ParentStatusConflictIssue[] | null;
+  /** On every refusal of `POST /api/v1/issues/{key}/status-change`: the entry of each step that
+   *  wrote before the refusal, in the order the steps ran, and `[]` when none did. */
+  readonly changed?: StatusChangeEntry[] | null;
 }
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for
