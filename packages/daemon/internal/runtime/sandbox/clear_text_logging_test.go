@@ -30,31 +30,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// plantedToken is the made-up credential the mint rows plant in the request whose answer their
-// sink's error is built from, and that the cacheStreams row's stand-in quotes in its own words
-// (oauth2calltest.Reason holds it): one of the secrets oauth2calltest.RequireNone looks for
-// (redacttest's Token, one of its Secrets).
-const plantedToken = "not-a-secret-token"
-
 // TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCarried: each warning of
 // the Sandbox runtime whose error is built from another party's answer is driven through the
 // runtime's own function that logs it, with a stand-in in the far side's place whose answer
 // carries a credential outside any URL of the request. The line the daemon's own handler writes
 // (redact.HandlerOptions, as cmd/legion builds the log) and the text of the error the sink logged,
 // which the row keeps as the call passed it (logged), hold none of it. Each row checks that the
-// stand-in was asked and that each text it wrote holding a credential held plantedToken, that the
-// line's error is logged's text as the handler writes it, and that neither the line nor logged's
-// text holds a credential (oauth2calltest.RequireNone), and prints logged, and for a refused mint
-// the GitHub answer it keeps on appauth.AnswerError, under every fmt verb and a bad verb, at every
+// stand-in was asked and that each text it wrote holding a credential held oauth2calltest.Token
+// (the made-up credential the mint rows plant, and the cacheStreams row's stand-in quotes through
+// oauth2calltest.Reason), that the line's error is logged's text as the handler writes it, and
+// that neither the line nor logged's text holds a credential (oauth2calltest.RequireNone), and
+// prints logged, and for a refused mint the GitHub answer it keeps on appauth.AnswerError, under
+// every fmt verb and a bad verb, at every
 // holding, beside the first text the stand-in wrote as a plain string
 // (oauth2calltest.KeptPrintTest). Captures sink/sandbox/<file>/<function>, and
 // kept/sandbox/<file>/<function>/{error,answer}/<holding>/<verb>.
 //
 //   - refreshGitHubCredentials: the walk's mint of an issue pod's provisioning lease, through the
 //     daemon's token source over a real token manager in token mode (mintedTokens, as
-//     internal/daemon's implementTokens): the command releases plantedToken, and GitHub's stand-in
-//     refuses the identity read every release is checked by (appauth's viewerLogin) with a rate
-//     limit whose body and every rate-limit header written as text echo its Authorization. The
+//     internal/daemon's implementTokens): the command releases oauth2calltest.Token, and GitHub's
+//     stand-in refuses the identity read every release is checked by (appauth's viewerLogin) with
+//     a rate limit whose body and every rate-limit header written as text echo its Authorization. The
 //     echo sits in the kept field of the answer's words (RemoteText.carried: githubrest's
 //     limitHeaders reads each header through oauth2call.Header into Answer.Limit, and the body
 //     through Words into Answer.Body), carried on appauth.AnswerError. The sink's error prints
@@ -166,7 +162,7 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 				t.Logf("the sentence printed with the twin: %s", asCame)
 				t.Logf("that sentence as the daemon's handler writes it: %s", redact.URLCredentials(asCame))
 				for _, text := range []string{twin, asCame} {
-					for _, secret := range []string{"not-a-secret-user", "not-a-secret-password", plantedToken} {
+					for _, secret := range []string{"not-a-secret-user", "not-a-secret-password", oauth2calltest.Token} {
 						if !strings.Contains(text, secret) {
 							t.Errorf("%q holds no %q: the check would not see the header printed as it came", text, secret)
 						}
@@ -218,7 +214,7 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 				t.Fatal("the stand-in was asked nothing")
 			}
 			for _, echo := range sent {
-				if !strings.Contains(echo, plantedToken) {
+				if !strings.Contains(echo, oauth2calltest.Token) {
 					t.Errorf("the stand-in wrote %q, want the planted credential in it", echo)
 				}
 			}
@@ -281,7 +277,7 @@ func (m *mintedTokens) Token(ctx context.Context, repo ghrepo.Repository) (strin
 }
 
 // plantedApps is a real token manager in token mode, as mintedTokens of the daemon holds it, whose
-// token_command releases plantedToken as owner's installation token, and whose GitHub is a
+// token_command releases oauth2calltest.Token as owner's installation token, and whose GitHub is a
 // stand-in that refuses the identity read every release is checked by (appauth's viewerLogin, POST
 // /graphql under "token <token>") with a rate limit: 403 with X-RateLimit-Remaining 0, its
 // Authorization echoed verbatim in the body and in every other rate-limit header, each of which
@@ -304,7 +300,7 @@ func plantedApps(t *testing.T, owner string) (*mintedTokens, *echoes) {
 		_, _ = fmt.Fprintf(w, `{"message":"API rate limit exceeded for %s"}`, authorization)
 	}})
 	release := fmt.Sprintf(`{"installations":{%q:{"installation_id":7,"token":%q,"expires_at":%q}}}`,
-		owner, plantedToken, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		owner, oauth2calltest.Token, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 	apps := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: "printf '%s' '" + release + "'"}},
 		appauth.Options{BaseURL: github.URL, HTTPClient: github.Client(), Stderr: io.Discard})
 	t.Cleanup(apps.Close)

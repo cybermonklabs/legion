@@ -39,12 +39,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
-// plantedToken is the installation token the implement App's token_command releases for the
-// refused launch's owner, so the Authorization of the read appauth checks that release by carries
-// it: one of the made-up credentials oauth2calltest.RequireNone looks for (redacttest's Token), so
-// a line that held it fails its row.
-const plantedToken = "not-a-secret-token"
-
 // refusedRepository is the repository the refused launch provisions, on the owner the mint is
 // asked for.
 var refusedRepository = ghrepo.MustParse("acme/widgets")
@@ -68,7 +62,7 @@ func sinkClaim(t *testing.T) supervise.Claim {
 // mint of the launch's provisioning token is refused: the runtime itself (sandbox.New, Spawn),
 // over a Kubernetes API that holds nothing yet (kubeAPI), with the daemon's provisioning token
 // source over a real token manager (implementTokens, appauth.New) whose implement App is in token
-// mode. Its token_command releases plantedToken as the owner's installation token, and GitHub's
+// mode. Its token_command releases oauth2calltest.Token as the owner's installation token, and GitHub's
 // stand-in refuses the identity read every release is checked by (appauth's viewerLogin, POST
 // /graphql under that token) with a rate limit: 403 with X-RateLimit-Remaining 0, the
 // Authorization echoed verbatim in the body and in every other rate-limit header, each of which
@@ -78,7 +72,7 @@ func sinkClaim(t *testing.T) supervise.Claim {
 // the error is that refusal inside the two wraps of the runtime's own: provision's of the mint
 // (runtime/sandbox's podkind.go:517) and the launch's (relaunch.go:400).
 //
-// It fails t unless the stand-in was asked, every Authorization it was sent held plantedToken,
+// It fails t unless the stand-in was asked, every Authorization it was sent held oauth2calltest.Token,
 // the API was asked nothing the launch's path to the mint does not ask, and the error is that
 // refusal as the runtime wraps it, with the echo in each of the answer's kept fields as the rule
 // prints them, redacted: a row whose stand-in echoed nothing would hold none of the credential
@@ -105,7 +99,7 @@ func refusedLaunch(t *testing.T, c supervise.Claim) error {
 	}})
 	release := filepath.Join(t.TempDir(), "release.json")
 	if err := os.WriteFile(release, fmt.Appendf(nil, `{"installations":{%q:{"installation_id":7,"token":%q,"expires_at":%q}}}`,
-		refusedRepository.Owner(), plantedToken, time.Now().Add(time.Hour).UTC().Format(time.RFC3339)), 0o600); err != nil {
+		refusedRepository.Owner(), oauth2calltest.Token, time.Now().Add(time.Hour).UTC().Format(time.RFC3339)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	apps := appauth.New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: "cat '" + release + "'"}},
@@ -140,7 +134,7 @@ func refusedLaunch(t *testing.T, c supervise.Claim) error {
 		t.Fatalf("the launch asked GitHub's stand-in nothing (%v), so its refusal keeps no answer", refused)
 	}
 	for _, echo := range echoes {
-		if !strings.Contains(echo, plantedToken) {
+		if !strings.Contains(echo, oauth2calltest.Token) {
 			t.Errorf("the stand-in was sent %q, want the planted credential in it", echo)
 		}
 	}
@@ -731,7 +725,7 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 			}
 			oauth2calltest.RequireNone(t, row.capture, strings.Join(append(lines, text), "\n"))
 			name := strings.TrimPrefix(row.capture, "sink/")
-			echo := "token " + plantedToken
+			echo := "token " + oauth2calltest.Token
 			oauth2calltest.KeptPrintTest(t, name+"/logged", logged, echo)
 			oauth2calltest.KeptPrintTest(t, name+"/refusal", refused, echo)
 			// The refusal prints none of GitHub's answer (an AnswerError prints its Err alone), so

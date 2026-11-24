@@ -33,12 +33,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// plantedToken is the made-up credential every row's GitHub call carries: the installation token
-// the App's token_command releases for acme (releasingManager), so the Authorization of the
-// identity reads appauth makes of it and of the route's own read carries it. It is redacttest's
-// Token, one of the secrets oauth2calltest.RequireNone looks for.
-const plantedToken = "not-a-secret-token"
-
 // sinkAppID is the App id every row's App is configured with and the stand-in answers for the
 // implement App (echoingGitHub).
 const sinkAppID = "12345"
@@ -114,14 +108,15 @@ func refuseEchoing(w http.ResponseWriter, r *http.Request) {
 }
 
 // releasingManager is the daemon's token manager (appauth.New) with role's App in token mode,
-// reading GitHub at github: its token_command releases plantedToken as acme's installation token,
-// so every lease of acme is minted, and checked, through the stand-in.
+// reading GitHub at github: its token_command releases oauth2calltest.Token, the made-up
+// credential every row's GitHub call carries, as acme's installation token, so every lease of acme
+// is minted, and checked, through the stand-in.
 func releasingManager(t *testing.T, github *echoingGitHub, role appauth.AppRole) *appauth.Manager {
 	t.Helper()
 	release := filepath.Join(t.TempDir(), "release.json")
 	expires := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	if err := os.WriteFile(release, fmt.Appendf(nil, `{"installations":{"acme":{"installation_id":7,"token":%q,"expires_at":%q}}}`,
-		plantedToken, expires), 0o600); err != nil {
+		oauth2calltest.Token, expires), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	app := config.GitHubApp{AppID: sinkAppID, TokenCommand: "cat '" + release + "'"}
@@ -321,10 +316,10 @@ func controllerCredentialServer(t *testing.T, tokens appauth.Source, log *slog.L
 // TestACompletionsUnreadPullRequestLineHoldsNoCredential: an implementer's completion reads its
 // branch's open pull request as the implement App (implementationPullRequest), and GitHub, or
 // whatever answers in its place, refuses with its rate limit, echoing the call's Authorization,
-// which carries plantedToken, as the limit's resource, its Retry-After and the words of its body
-// (refuseEchoing). Refused at the mint (token mode's viewer read of the released token) or at the
-// read of the pull requests, the completion is applied unread and the line logUnread writes at
-// WARN names the failure. The echo sits in GitHub's answer the logged error carries
+// which carries oauth2calltest.Token, as the limit's resource, its Retry-After and the words of
+// its body (refuseEchoing). Refused at the mint (token mode's viewer read of the released token)
+// or at the read of the pull requests, the completion is applied unread and the line logUnread
+// writes at WARN names the failure. The echo sits in GitHub's answer the logged error carries
 // (githubrest.Answer's Body and Limit, read through oauth2call.Answer.Words and oauth2call.Header,
 // whose RemoteText keeps the credentials the request carried in its carried field), and the box's
 // printer subtracts them (RemoteText.String); the line holds none of the token. The mint's error
@@ -348,14 +343,14 @@ func TestACompletionsUnreadPullRequestLineHoldsNoCredential(t *testing.T) {
 		{
 			name:    "handoff.go:implementationPullRequest api: read the open pull request, the implement App token's mint",
 			capture: "sink/api/handoff.go/implementationPullRequest/mint",
-			refuse:  "/graphql", authorization: "token " + plantedToken,
+			refuse:  "/graphql", authorization: "token " + oauth2calltest.Token,
 			names:  "mint the implement App token for acme/widgets: read the implement App's bot login (GraphQL viewer) failed (403)",
 			answer: appauthAnswer,
 		},
 		{
 			name:    "handoff.go:implementationPullRequest api: read the open pull request, the pull request read",
 			capture: "sink/api/handoff.go/implementationPullRequest/read",
-			refuse:  "/repos/acme/widgets/pulls", authorization: "Bearer " + plantedToken,
+			refuse:  "/repos/acme/widgets/pulls", authorization: "Bearer " + oauth2calltest.Token,
 			names:  "GitHub answered GET /pulls with 403",
 			answer: githubrestAnswer,
 		},
@@ -392,8 +387,8 @@ func TestACompletionsUnreadPullRequestLineHoldsNoCredential(t *testing.T) {
 // route (controllerGitHubCredential) mints the review App's read lease of acme through the
 // daemon's token manager in token mode, and GitHub, or whatever answers in its place, refuses the
 // viewer read of the released token with its rate limit, echoing the read's Authorization, which
-// carries plantedToken, as the limit's resource, its Retry-After and the words of its body
-// (refuseEchoing). The route answers GITHUB_TOKEN_FAILED and logs the mint's error through
+// carries oauth2calltest.Token, as the limit's resource, its Retry-After and the words of its
+// body (refuseEchoing). The route answers GITHUB_TOKEN_FAILED and logs the mint's error through
 // logRequestFailure: at Error on a running daemon and at Info once its stop has begun
 // (logFailure), and at Warn where the request's own context ended and the error is that ending.
 // The echo sits in the kept fields of the answer appauth's error carries (appauth.AnswerError's
@@ -461,7 +456,7 @@ func TestTheControllerCredentialsFailureLinesHoldNoCredential(t *testing.T) {
 			h.handler.ServeHTTP(recorder, request)
 			refused(t, recorder, http.StatusBadGateway, "GITHUB_TOKEN_FAILED")
 
-			if calls := github.refusedCalls(); !slices.Equal(calls, []string{"token " + plantedToken}) {
+			if calls := github.refusedCalls(); !slices.Equal(calls, []string{"token " + oauth2calltest.Token}) {
 				t.Fatalf("GitHub refused calls carrying %q, want one carrying the released token", calls)
 			}
 			line, fields, value := kept.line(t, row.level, controllerMintLine, "error")
@@ -477,8 +472,8 @@ func TestTheControllerCredentialsFailureLinesHoldNoCredential(t *testing.T) {
 			answer := appauthAnswer(t, logged)
 			requireEchoKept(t, answer)
 			name := strings.TrimPrefix(row.capture, "sink/")
-			oauth2calltest.KeptPrintTest(t, name+"/error", logged, "token "+plantedToken)
-			oauth2calltest.KeptPrintTest(t, name+"/answer", answer, "token "+plantedToken)
+			oauth2calltest.KeptPrintTest(t, name+"/error", logged, "token "+oauth2calltest.Token)
+			oauth2calltest.KeptPrintTest(t, name+"/answer", answer, "token "+oauth2calltest.Token)
 		})
 	}
 }
