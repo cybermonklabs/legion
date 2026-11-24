@@ -41,8 +41,8 @@ import (
 // delivery is the commit the record held when the push arrived, and this walk is the last reader
 // of it. The reads it owes are asked for together, once the transaction commits
 // (Config.ReadBaseMergeStates): one batch of reads of the base for every pull request the push
-// owes one, where a read of each was asked for apiece before, so the daemon reads a base of a
-// hundred owed pull requests with one query rather than a hundred.
+// owes one, where a read of each was asked for apiece before, so the daemon reads the owed pull
+// requests of a base a few to a GraphQL query rather than one REST read each.
 func (e *Engine) basePush(ctx context.Context, tx pgx.Tx, fact intake.BasePush) (intake.Result, error) {
 	open, err := e.store.OpenPullRequestsOnBase(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil {

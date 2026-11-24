@@ -1,25 +1,26 @@
 kind: Changed
 body: |-
   After a push to a base branch, the daemon reads the merge state of the pull requests on that base
-  that the push owes a read in one batch: one GraphQL query for each page of a hundred of the
-  base's open pull requests, where it made one REST read, `GET /pulls/{number}`, of each pull
-  request before. Which pull requests a push owes a read is unchanged. A pull request GitHub still
-  answers `unknown` for is read again by the same query on the ladder's waits, five reads half a
-  minute apart and then after one, two, four and eight minutes and every ten minutes after, until
-  GitHub answers a state, its head moves or it closes, and one query covers every such pull request
-  of the base. A climb of one pull request, after a head push, a review round that waits on GitHub
-  or a restart, still reads that pull request alone, and hands a head GitHub still answers
-  `unknown` for to its base's batch. Each answer is stamped with the time its own page was read,
-  so an answer older than one the record holds changes nothing. A batch read that fails is read
-  again on the ladder, with every pull request it owed. A pull request the query does not list on
-  its recorded base, because it closed or moved to another base, is read alone; that read records
-  the base GitHub holds it on, and a pull request still `unknown` there is followed by that base's
-  batch. Each read is logged as before, and each batch logs
-  `github: read the merge state of the open pull requests on a base` with the base, how many pull
-  requests it owed a read and how many pages it read.
+  that the push owes a read in batches: GraphQL queries that ask for those pull requests alone, by
+  number, five to a query, where it made one REST read, `GET /pulls/{number}`, of each pull
+  request before. Which pull requests a push owes a read is unchanged. A query GitHub cannot answer
+  whole is asked again one pull request at a time, each query's answers are applied as they come,
+  and a pull request GitHub answers with an error of its own leaves the others in its query
+  answered. A pull request GitHub still answers `unknown` for is read again on its own ladder: five
+  reads half a minute apart in the push's climb, and then after one, two, four and eight minutes
+  and every ten minutes after, counted from its climb or from the moment a climb of its own handed
+  it over, until GitHub answers a state, its head moves or it closes; the pull requests of one base
+  that fall due together are read in the same query. A climb of one pull request, after a head
+  push, a review round that waits on GitHub or a restart, still reads that pull request alone.
+  Each answer is stamped with the time its own query was answered, so an answer older than one the
+  record holds changes nothing. The query asks GitHub for each pull request's base too, so a pull
+  request moved to another base is recorded and read on that base. A read GitHub's rate limit
+  refuses is read again no sooner than GitHub asks. Each read is logged as before, and each query
+  logs `github: read the merge state of pull requests on a base by number` with how many pull
+  requests it asked for and how many GitHub answered.
 
   The daemon's reads of a pull request (`GET /pulls/{number}`) and of its base's rules
   (`GET /rules/branches/{base}`, `GET /branches/{base}`) are conditional: each sends the ETag of
   the last answer for the same URL, and GitHub's `304 Not Modified`, which counts against no rate
-  limit, is read as that answer. The batch query spends the implement App installation's GraphQL
-  budget, which GitHub keeps apart from its REST budget.
+  limit, is read as that answer. The batch queries spend the implement App installation's GraphQL
+  budget, one point a query, which GitHub keeps apart from its REST budget.

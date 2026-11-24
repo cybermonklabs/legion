@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -528,73 +529,88 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	}
 }
 
-// batchRequest is the GraphQL query a read of a base's batch sends (openPullRequestsQuery), as the
-// stand-ins read it.
+// batchRequest is the GraphQL query a read of a base's batch sends (chunkQuery), as the stand-ins
+// read it.
 type batchRequest struct {
 	Query     string `json:"query"`
 	Variables struct {
-		Owner  string  `json:"owner"`
-		Name   string  `json:"name"`
-		Base   string  `json:"base"`
-		Cursor *string `json:"cursor"`
+		Owner string `json:"owner"`
+		Name  string `json:"name"`
 	} `json:"variables"`
 }
 
-// readBatchRequest decodes r as a read of a base's batch of acme/widgets, failing the test (from
-// the stand-in's own goroutine, so with Errorf) for any other request to the GraphQL endpoint.
-func readBatchRequest(t *testing.T, r *http.Request) batchRequest {
+// askedAlias is one pull request a batch query asks for: its alias and its number.
+var askedAlias = regexp.MustCompile(`p(\d+): pullRequest\(number: (\d+)\)`)
+
+// readBatchRequest decodes r as a read of acme/widgets's pull requests by number, failing the test
+// (from the stand-in's own goroutine, so with Errorf) for any other request to the GraphQL
+// endpoint, and answers the numbers it asks for, in order.
+func readBatchRequest(t *testing.T, r *http.Request) []int {
 	t.Helper()
 	var request batchRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		t.Errorf("decode the GraphQL request: %v", err)
-		return request
+		return nil
 	}
 	if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer outbox-token" ||
-		!strings.Contains(request.Query, "pullRequests(states: OPEN, baseRefName: $base") ||
-		request.Variables.Owner != "acme" || request.Variables.Name != "widgets" {
-		t.Errorf("GraphQL was sent %s %+v with %q, want the batch query of acme/widgets under the implement App's token",
+		request.Variables.Owner != "acme" || request.Variables.Name != "widgets" || strings.Contains(request.Query, "pullRequests(") {
+		t.Errorf("GraphQL was sent %s %+v with %q, want acme/widgets's pull requests by number under the implement App's token",
 			r.Method, request.Variables, r.Header.Get("Authorization"))
 	}
-	return request
+	var numbers []int
+	for _, match := range askedAlias.FindAllStringSubmatch(request.Query, -1) {
+		if match[1] != match[2] {
+			t.Errorf("the query asks for pull request %s under the alias p%s", match[2], match[1])
+		}
+		number, _ := strconv.Atoi(match[2])
+		numbers = append(numbers, number)
+	}
+	return numbers
 }
 
-// batchBase is the base a read of a base's batch asks for (readBatchRequest).
-func batchBase(t *testing.T, r *http.Request) string {
-	t.Helper()
-	return readBatchRequest(t, r).Variables.Base
-}
-
-// batchNode is one open pull request as the batch query answers it: its number and head, and
+// batchNode is one pull request as the by-number query answers it: open on main at head, with
 // GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals.
 func batchNode(number int, head, mergeable, state string) map[string]any {
-	return map[string]any{"number": number, "headRefOid": head, "headRefName": fmt.Sprintf("legion/CAPTURE-%d", number-85),
-		"mergeable": mergeable, "mergeStateStatus": state}
+	return map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": fmt.Sprintf("legion/CAPTURE-%d", number-85),
+		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state}
 }
 
-// batchPage is one page of the batch query's answer: nodes, and next, the cursor of the page after
-// it, "" for none.
-func batchPage(t *testing.T, next string, nodes ...map[string]any) string {
+// batchAnswer is the by-number query's answer to asked: each of nodes under its alias, and for
+// each number asked that nodes holds none of, null and a NOT_FOUND error naming its alias, as
+// GitHub answers a pull request it cannot resolve.
+func batchAnswer(t *testing.T, asked []int, nodes ...map[string]any) string {
 	t.Helper()
-	page := map[string]any{"hasNextPage": next != "", "endCursor": nil}
-	if next != "" {
-		page["endCursor"] = next
+	repository := map[string]any{}
+	var errs []map[string]any
+	for _, number := range asked {
+		alias := fmt.Sprintf("p%d", number)
+		repository[alias] = nil
+		for _, node := range nodes {
+			if node["number"] == number {
+				repository[alias] = node
+			}
+		}
+		if repository[alias] == nil {
+			errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"repository", alias},
+				"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", number)})
+		}
 	}
-	if nodes == nil {
-		nodes = []map[string]any{}
+	answer := map[string]any{"data": map[string]any{"repository": repository}}
+	if len(errs) > 0 {
+		answer["errors"] = errs
 	}
-	body, err := json.Marshal(map[string]any{"data": map[string]any{"repository": map[string]any{
-		"pullRequests": map[string]any{"nodes": nodes, "pageInfo": page}}}})
+	body, err := json.Marshal(answer)
 	if err != nil {
-		t.Errorf("encode the batch page: %v", err)
+		t.Errorf("encode the batch answer: %v", err)
 	}
 	return string(body)
 }
 
-// graphQLAnswerOf is rest, an answer to GET /pulls/86, as the batch query answers the same pull
-// request: GitHub's `mergeable` null, true and false are UNKNOWN, MERGEABLE and CONFLICTING, and its
-// `mergeStateStatus` is the `mergeable_state` in capitals. An answer that is no 2xx is the query's
-// own status and body.
-func graphQLAnswerOf(t *testing.T, rest pullAnswer) (int, string) {
+// graphQLAnswerOf is rest, an answer to GET /pulls/86, as the by-number query answers the same
+// pull request when asked: GitHub's `mergeable` null, true and false are UNKNOWN, MERGEABLE and
+// CONFLICTING, its `mergeStateStatus` is the `mergeable_state` in capitals, and its base and head
+// are the REST answer's. An answer that is no 2xx is the query's own status and body.
+func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 	t.Helper()
 	if rest.status >= http.StatusMultipleChoices {
 		return rest.status, rest.body
@@ -611,9 +627,64 @@ func graphQLAnswerOf(t *testing.T, rest pullAnswer) (int, string) {
 			mergeable = "MERGEABLE"
 		}
 	}
-	node := map[string]any{"number": pull.Number, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref,
-		"mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
-	return http.StatusOK, batchPage(t, "", node)
+	state := "OPEN"
+	if pull.State != "open" {
+		state = "CLOSED"
+	}
+	node := map[string]any{"number": pull.Number, "state": state, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref,
+		"baseRefName": pull.Base.Ref, "mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
+	return http.StatusOK, batchAnswer(t, asked, node)
+}
+
+// batchRig is a readRuntime whose GraphQL stand-in answers each query as answer says, given its
+// count among the queries, the numbers it asks for and the answer's headers to set, and counts both the queries and the
+// REST reads of a pull request, which a batch makes none of; and the log the runtime writes. Its
+// waits are cut to readRigWait and its reader runs until the test ends.
+type batchRig struct {
+	w       *workflowRuntime
+	logs    *syncBuffer
+	queries atomic.Int32
+	rest    atomic.Int32
+	mu      sync.Mutex
+	asked   [][]int
+}
+
+func newBatchRig(t *testing.T, pool *store.Pool, answer func(query int32, asked []int, header http.Header) (int, string)) *batchRig {
+	t.Helper()
+	rig := &batchRig{logs: &syncBuffer{}}
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			rig.rest.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		asked := readBatchRequest(t, r)
+		rig.mu.Lock()
+		rig.asked = append(rig.asked, asked)
+		rig.mu.Unlock()
+		status, body := answer(rig.queries.Add(1), asked, w.Header())
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}})
+	rig.w = readRuntime(pool, api, slog.New(slog.NewJSONHandler(rig.logs, nil)))
+	rig.w.mergeStateRetry = readRigWait
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go rig.w.readMergeStates(ctx)
+	return rig
+}
+
+// askedOf is every query's numbers, in the order the queries came.
+func (rig *batchRig) askedOf() [][]int {
+	rig.mu.Lock()
+	defer rig.mu.Unlock()
+	return slices.Clone(rig.asked)
+}
+
+// ended is whether no batch ladder runs and none waits to.
+func (rig *batchRig) ended() bool {
+	running, waiting := ladders(rig.w)
+	return running == 0 && waiting == 0
 }
 
 // seedOnMain records issue key of CAPTURE in at, with status, and its pull request number open on
@@ -665,66 +736,30 @@ func pushOntoMain(t *testing.T, pool *store.Pool, w *workflowRuntime, after stri
 }
 
 // A push to a base owes a read of the merge state of every open pull request on it whose issue
-// stands past implementing (classify.MergeStateReadOwed), and the daemon reads them all in one
-// batch: one GraphQL query a page of the base's open pull requests, however many are owed, where
-// it made one GET /pulls/{number} of each before. Each owed pull request's answer is applied as
-// that GET's would be - the record holds GitHub's state - and an answer the push owes no read,
-// a pull request in implementing or one Legion does not record, is answered and left alone. The
-// batch reads its pages until it has every owed pull request, and no further.
-func TestABasePushReadsItsOwedPullRequestsInOneQueryAPage(t *testing.T) {
+// stands past implementing (classify.MergeStateReadOwed), and the daemon reads them in GraphQL
+// queries that ask for those pull requests alone, by number, baseReadChunk to a query (two here):
+// no listing of the base's open pull requests, which on a busy repository GitHub cannot answer
+// within its 10 s, and no GET /pulls/{number} of each. Each owed pull request's answer is applied
+// as that GET's would be - the record holds GitHub's state - and a pull request the push owes no
+// read, one in implementing, is never asked for.
+func TestABasePushReadsItsOwedPullRequestsByNumberInChunks(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Reviewing, "needs_review", "U")
 	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
 	seedOnMain(t, pool, "CAPTURE-3", 88, phase.Testing, "testing", "W")
 	seedOnMain(t, pool, "CAPTURE-4", 89, phase.Implementing, "in_progress", "X")
-	var queries, pulls atomic.Int32
-	var mu sync.Mutex
-	var cursors []string
-	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/pulls/") {
-			pulls.Add(1)
-			http.NotFound(w, r)
-			return
+	states := map[int]string{86: "BLOCKED", 87: "BEHIND", 88: "UNSTABLE", 89: "DIRTY"}
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		var nodes []map[string]any
+		for _, number := range asked {
+			nodes = append(nodes, batchNode(number, fmt.Sprintf("head-%d", number), "MERGEABLE", states[number]))
 		}
-		if r.URL.Path != "/graphql" {
-			githubtest.Unexpected(t, w, r)
-			return
-		}
-		queries.Add(1)
-		request := readBatchRequest(t, r)
-		cursor := ""
-		if request.Variables.Cursor != nil {
-			cursor = *request.Variables.Cursor
-		}
-		mu.Lock()
-		cursors = append(cursors, cursor)
-		mu.Unlock()
-		switch {
-		case request.Variables.Base != "main":
-			http.Error(w, `{"message":"wrong base"}`, http.StatusBadRequest)
-		case cursor == "":
-			_, _ = io.WriteString(w, batchPage(t, "page-2",
-				batchNode(86, "head-86", "MERGEABLE", "BLOCKED"),
-				batchNode(87, "head-87", "MERGEABLE", "BEHIND"),
-				batchNode(99, "head-99", "CONFLICTING", "DIRTY")))
-		case cursor == "page-2":
-			_, _ = io.WriteString(w, batchPage(t, "page-3",
-				batchNode(89, "head-89", "CONFLICTING", "DIRTY"),
-				batchNode(88, "head-88", "MERGEABLE", "UNSTABLE")))
-		default:
-			t.Errorf("the batch read asked for page %q, want no page after the one that holds the last owed pull request", cursor)
-			_, _ = io.WriteString(w, batchPage(t, ""))
-		}
-	}})
-	logs := &syncBuffer{}
-	w := readRuntime(pool, api, slog.New(slog.NewJSONHandler(logs, nil)))
-	w.mergeStateRetry = readRigWait
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.readMergeStates(ctx)
+		return http.StatusOK, batchAnswer(t, asked, nodes...)
+	})
+	rig.w.baseChunk = 2
 
-	pushOntoMain(t, pool, w, "main-2")
+	pushOntoMain(t, pool, rig.w, "main-2")
 	want := map[string]record.MergeState{"CAPTURE-1": record.MergeStateBlocked, "CAPTURE-2": record.MergeStateBehind, "CAPTURE-3": record.MergeStateUnstable}
 	testwait.Eventually(t, "the owed pull requests to hold GitHub's answers and the batch to end", func() bool {
 		for issue, state := range want {
@@ -732,93 +767,463 @@ func TestABasePushReadsItsOwedPullRequestsInOneQueryAPage(t *testing.T) {
 				return false
 			}
 		}
-		running, waiting := ladders(w)
-		return running == 0 && waiting == 0
+		return rig.ended()
 	})
-	if got := queries.Load(); got != 2 {
-		t.Fatalf("the push made %d GraphQL queries, want one for each of the two pages that hold its three owed pull requests", got)
+	if asked := rig.askedOf(); len(asked) != 2 || !slices.Equal(asked[0], []int{86, 87}) || !slices.Equal(asked[1], []int{88}) {
+		t.Fatalf("the push asked GitHub for %v, want two queries, [86 87] and [88]: the owed pull requests by number, two to a query", asked)
 	}
-	if got := pulls.Load(); got != 0 {
-		t.Fatalf("the push made %d reads of a pull request over REST, want none: the batch answers every owed pull request", got)
-	}
-	mu.Lock()
-	asked := slices.Clone(cursors)
-	mu.Unlock()
-	if !slices.Equal(asked, []string{"", "page-2"}) {
-		t.Fatalf("the batch asked for the pages after cursors %q, want the first page and page-2", asked)
+	if got := rig.rest.Load(); got != 0 {
+		t.Fatalf("the push made %d REST reads, want none", got)
 	}
 	if pr := recordedPull(t, pool, "CAPTURE-4"); pr.MergeState != record.MergeStateClean || pr.Mergeability != record.MergeabilityMergeable || pr.ConflictRead != nil {
 		t.Fatalf("the pull request of the issue in implementing holds %s/%s, first read %+v; want it left as it was: the push owes it no read",
 			pr.Mergeability, pr.MergeState, pr.ConflictRead)
 	}
-	read := loggedMessages(t, logs.String(), "github: read the merge state of the open pull requests on a base")
-	if len(read) != 1 || read[0]["owed"] != float64(3) || read[0]["pages"] != float64(2) || read[0]["base"] != "main" {
-		t.Fatalf("the batch logged %v, want one read of main's three owed pull requests over two pages", read)
+	read := loggedMessages(t, rig.logs.String(), "github: read the merge state of pull requests on a base by number")
+	if len(read) != 2 || read[0]["asked"] != float64(2) || read[1]["asked"] != float64(1) || read[0]["base"] != "main" {
+		t.Fatalf("the batch logged %v, want one line for each of its two queries on main", read)
 	}
 }
 
 // The batch of a base follows GitHub's `unknown` as one pull request's ladder does (dispatch://
-// INFRA-4374 R4): it reads the base again, mergeStateLadderWait apart, up to mergeStateLadderReads
-// reads in its climb, and then after a wait that doubles, each read one query however many owed
-// pull requests GitHub still answers `unknown` for, each owed answer logged with its wait. A pull
-// request GitHub answers a state for leaves the batch, and the batch ends once no owed pull
-// request on the base reads `unknown`: GitHub is read no more after that.
+// INFRA-4374 R4): it reads again, mergeStateLadderWait apart, up to mergeStateLadderReads reads in
+// its climb, asking only for the owed pull requests GitHub has not answered yet, and then each on
+// its own ladder, after a wait that doubles, each answer logged with its wait. A pull request
+// GitHub answers a state for leaves the batch, and the batch ends once nothing is owed: GitHub is
+// read no more after that.
 func TestAnUnknownAnswerReadsTheBaseBatchAgainOnTheLadder(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
 	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
-	var queries, pulls atomic.Int32
-	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/graphql" {
-			pulls.Add(1)
-			http.NotFound(w, r)
-			return
-		}
-		readBatchRequest(t, r)
-		// The first read finds both unknown, the second answers 87 and still not 86, and 86 reads
-		// unknown to the end of the climb and is answered by the first read after it.
-		read := queries.Add(1)
-		second := batchNode(87, "head-87", "MERGEABLE", "CLEAN")
-		if read == 1 {
-			second = batchNode(87, "head-87", "UNKNOWN", "UNKNOWN")
-		}
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
 		first := batchNode(86, "head-86", "UNKNOWN", "UNKNOWN")
-		if read > mergeStateLadderReads {
+		if query > mergeStateLadderReads {
 			first = batchNode(86, "head-86", "MERGEABLE", "BLOCKED")
 		}
-		_, _ = io.WriteString(w, batchPage(t, "", first, second))
-	}})
-	logs := &syncBuffer{}
-	w := readRuntime(pool, api, slog.New(slog.NewJSONHandler(logs, nil)))
-	w.mergeStateRetry = readRigWait
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.readMergeStates(ctx)
-
-	pushOntoMain(t, pool, w, "main-2")
-	testwait.Eventually(t, "the read after the climb to answer 86 and the batch to end", func() bool {
-		running, waiting := ladders(w)
-		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && running == 0 && waiting == 0
+		second := batchNode(87, "head-87", "MERGEABLE", "CLEAN")
+		if query == 1 {
+			second = batchNode(87, "head-87", "UNKNOWN", "UNKNOWN")
+		}
+		return http.StatusOK, batchAnswer(t, asked, first, second)
 	})
-	if got := queries.Load(); got != mergeStateLadderReads+1 {
-		t.Fatalf("GitHub was queried %d times, want the climb's %d and one read after it", got, mergeStateLadderReads)
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "the read after the climb to answer 86 and the batch to end", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	asked := rig.askedOf()
+	want := [][]int{{86, 87}, {86, 87}, {86}, {86}, {86}, {86}}
+	if len(asked) != len(want) {
+		t.Fatalf("GitHub was asked for %v, want %v: the climb's five reads, each of what is still owed, and one read after it", asked, want)
 	}
-	if got := pulls.Load(); got != 0 {
-		t.Fatalf("GitHub was read %d times over REST, want none: each read of the base is one query", got)
+	for i := range want {
+		if !slices.Equal(asked[i], want[i]) {
+			t.Fatalf("GitHub was asked for %v, want %v", asked, want)
+		}
+	}
+	if got := rig.rest.Load(); got != 0 {
+		t.Fatalf("GitHub was read %d times over REST, want none", got)
 	}
 	if pr := recordedPull(t, pool, "CAPTURE-2"); pr.MergeState != record.MergeStateClean || pr.Mergeability != record.MergeabilityMergeable {
 		t.Fatalf("87 holds %s/%s, want GitHub's MERGEABLE/clean from the second read", pr.Mergeability, pr.MergeState)
 	}
-	follows := loggedLines(t, logs.String(), followRead)
+	follows := loggedLines(t, rig.logs.String(), followRead)
 	if len(follows) != 1 || follows[0]["issue"] != "CAPTURE-1" || follows[0]["attempt"] != float64(1) ||
 		follows[0]["wait"] != float64(2*readRigWait) || follows[0]["answered"] != string(record.MergeStateBlocked) || follows[0]["head"] != "head-86" {
 		t.Fatalf("the reads after the climb logged %v, want one for CAPTURE-1, after twice the ladder's wait, answering blocked", follows)
 	}
-	mark := queries.Load()
+	mark := rig.queries.Load()
 	time.Sleep(2 * mergeStateFollowWaits * readRigWait)
-	if got := queries.Load(); got != mark {
+	if got := rig.queries.Load(); got != mark {
 		t.Fatalf("GitHub was queried %d times after the batch ended, want none", got-mark)
+	}
+}
+
+// Each chunk's answers are applied as the chunk is answered, stamped with that moment: a later
+// chunk can take long, and meanwhile a newer read of a pull request of an earlier chunk can reach
+// the record - a climb of its own, or GitHub's own event. The workflow drops a read older than the
+// one the record holds, so the earlier chunk's answer changes nothing of the newer one: here it
+// would have released a CONFLICTING first read and with it the second read INFRA-4374 R2 requires.
+func TestABatchAnswerIsStampedWithItsOwnChunksTime(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	// second is the stand-in's word that the batch asked for its second chunk, which it does only
+	// once it has applied the first.
+	second := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	releaseSecond := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseSecond)
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		if slices.Contains(asked, 86) {
+			return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "CLEAN"))
+		}
+		nudge(second)
+		<-release
+		return http.StatusOK, batchAnswer(t, asked, batchNode(87, "head-87", "MERGEABLE", "BLOCKED"))
+	})
+	rig.w.baseChunk = 1
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	select {
+	case <-second:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the batch asked for no second chunk")
+	}
+	// While the second chunk is held, a read of 86 made after the first chunk was answered finds
+	// it CONFLICTING, and the record takes it as its first conflicting read.
+	applyFact(t, pool, "github", "newer-read-of-86", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
+		HeadSHA: "head-86", Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: time.Now().UTC(),
+		Rules: &record.BaseRules{Required: []string{"lint"}}}, rig.w.handlers...)
+	releaseSecond()
+	testwait.Eventually(t, "the second chunk's answer to be recorded and the batch to end", func() bool {
+		return recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	pr := recordedPull(t, pool, "CAPTURE-1")
+	if pr.Mergeability != record.MergeabilityConflicting || pr.MergeState != record.MergeStateDirty || pr.ConflictRead == nil || pr.ConflictRead.Head != "head-86" {
+		t.Fatalf("86 holds %s/%s with first read %+v, want the newer CONFLICTING read standing: the first chunk's answer is older than it",
+			pr.Mergeability, pr.MergeState, pr.ConflictRead)
+	}
+}
+
+// A chunk that fails costs the chunks answered before it nothing: their answers were applied when
+// they came, so the pull requests GitHub answered a state for have left the batch and are not
+// asked for again, and only the failed chunk's pull requests are read again.
+func TestAFailedChunkKeepsTheChunksReadBeforeIt(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		if query == 2 {
+			return http.StatusBadGateway, `{"message":"Server Error"}`
+		}
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"), batchNode(87, "head-87", "MERGEABLE", "CLEAN"))
+	})
+	rig.w.baseChunk = 1
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both pull requests answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateClean && rig.ended()
+	})
+	if asked := rig.askedOf(); len(asked) != 3 || !slices.Equal(asked[0], []int{86}) || !slices.Equal(asked[1], []int{87}) || !slices.Equal(asked[2], []int{87}) {
+		t.Fatalf("GitHub was asked for %v, want [86], the failed [87] and [87] again: 86's answer was kept", asked)
+	}
+}
+
+// A query of several pull requests that GitHub cannot answer whole - its 10 s run out, which it
+// answers 502 - is asked again at once one pull request at a time, so a slow pull request holds up
+// no other and each is answered by the same read.
+func TestAChunkGitHubCannotAnswerWholeIsAskedAgainOnePullRequestAtATime(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		if len(asked) > 1 {
+			return http.StatusBadGateway, `{"message":"Server Error"}`
+		}
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"), batchNode(87, "head-87", "MERGEABLE", "CLEAN"))
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both pull requests answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateClean && rig.ended()
+	})
+	if asked := rig.askedOf(); len(asked) != 3 || !slices.Equal(asked[0], []int{86, 87}) || !slices.Equal(asked[1], []int{86}) || !slices.Equal(asked[2], []int{87}) {
+		t.Fatalf("GitHub was asked for %v, want [86 87] and, after its 502, [86] and [87] in the same read", asked)
+	}
+}
+
+// A batch read that fails - here GitHub answers a chunk with GraphQL errors and no data - leaves
+// every owed pull request owed, a push that asked for them again while that read ran among them,
+// and the ladder reads them again at its next step, as it reads a head GitHub answered `unknown`
+// for.
+func TestAFailedBatchReadKeepsItsRequestsAndReadsThemAgain(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	held := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	releaseFailure := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(releaseFailure)
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		switch query {
+		case 1:
+			return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "UNKNOWN", "UNKNOWN"))
+		case 2:
+			nudge(held)
+			<-release
+			return http.StatusOK, `{"data":null,"errors":[{"type":"INTERNAL","message":"Something went wrong while executing your query."}]}`
+		}
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"), batchNode(87, "head-87", "MERGEABLE", "CLEAN"))
+	})
+	rig.w.baseChunk = 1
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	select {
+	case <-held:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the batch read no second chunk")
+	}
+	// Another push onto main asks for both reads again while the failing read runs.
+	pushOntoMain(t, pool, rig.w, "main-3")
+	releaseFailure()
+	testwait.Eventually(t, "the reads after the failure to answer both and the batch to end", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateClean && rig.ended()
+	})
+	if failed := loggedMessages(t, rig.logs.String(), "github: read the merge state of the open pull requests on a base whose reads were asked for"); len(failed) != 1 {
+		t.Fatalf("the batch logged %v, want the one failed read", failed)
+	}
+}
+
+// GitHub answers each pull request a query asks for by number on its own: one it cannot answer is
+// null in the data, with an error naming its alias, and the others are answered beside it. Those
+// are applied, and only the one GitHub left out is read again.
+func TestAPullRequestGitHubLeavesOutOfAnAnswerKeepsTheOthersAnswered(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		nodes := []map[string]any{batchNode(86, "head-86", "MERGEABLE", "BLOCKED")}
+		if query > 1 {
+			nodes = append(nodes, batchNode(87, "head-87", "MERGEABLE", "CLEAN"))
+		}
+		return http.StatusOK, batchAnswer(t, asked, nodes...)
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both pull requests answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateClean && rig.ended()
+	})
+	if asked := rig.askedOf(); len(asked) != 2 || !slices.Equal(asked[0], []int{86, 87}) || !slices.Equal(asked[1], []int{87}) {
+		t.Fatalf("GitHub was asked for %v, want [86 87] and then 87 alone: 86's answer beside 87's error was kept", asked)
+	}
+	left := loggedMessages(t, rig.logs.String(), "github: GitHub answered nothing for a pull request owed a merge-state read")
+	if len(left) != 1 || left[0]["pullRequest"] != float64(87) || !strings.Contains(fmt.Sprint(left[0]["error"]), "Could not resolve") {
+		t.Fatalf("the batch logged %v, want one line for 87 naming GitHub's error", left)
+	}
+}
+
+// A read GitHub's rate limit refuses is read again no sooner than GitHub asks: a secondary limit's
+// Retry-After here, one second, where the ladder would read again a hundredth of a second on.
+func TestARateLimitedBatchReadWaitsWhatGitHubAsks(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	var mu sync.Mutex
+	var at []time.Time
+	rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+		mu.Lock()
+		at = append(at, time.Now())
+		mu.Unlock()
+		if query == 1 {
+			header.Set("Retry-After", "1")
+			return http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"))
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "86 answered after the limit and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(at) != 2 || at[1].Sub(at[0]) < time.Second {
+		t.Fatalf("GitHub was queried at %v, want twice, the second at least the second GitHub's Retry-After asked after the first", at)
+	}
+}
+
+// A pull request can move to another base with its head unchanged, which the record learns of from
+// no event it reads. The query asks GitHub for each pull request's base by number, so the answer
+// names the base GitHub holds it on: the record takes it, and GitHub's `unknown` there is followed
+// by the batch of that base, with no REST read, until GitHub answers a state.
+func TestARetargetedPullRequestIsFollowedOnTheBaseGitHubNames(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		node := batchNode(86, "head-86", "UNKNOWN", "UNKNOWN")
+		if query > 1 {
+			node = batchNode(86, "head-86", "MERGEABLE", "BLOCKED")
+		}
+		node["baseRefName"] = "release"
+		return http.StatusOK, batchAnswer(t, asked, node)
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "the pull request to be read on its new base and its reads to end", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.Base != "release" || pr.Mergeability != record.MergeabilityMergeable {
+		t.Fatalf("86 is recorded on %q as %s, want GitHub's base release and its MERGEABLE", pr.Base, pr.Mergeability)
+	}
+	if got, queries := rig.rest.Load(), rig.queries.Load(); got != 0 || queries != 2 {
+		t.Fatalf("86 was read %d times over REST in %d queries, want no REST read and two queries", got, queries)
+	}
+	moved := loggedMessages(t, rig.logs.String(), "github: GitHub holds a pull request owed a merge-state read on another base")
+	follows := loggedLines(t, rig.logs.String(), followRead)
+	if len(moved) != 1 || moved[0]["now"] != "release" || len(follows) != 1 || follows[0]["answered"] != string(record.MergeStateBlocked) {
+		t.Fatalf("the batch logged moves %v and reads after the climb %v, want one move to release and its one read answering blocked", moved, follows)
+	}
+}
+
+// A pull request whose head on GitHub differs from the record's - a push the record has not heard
+// of - is answered for GitHub's head, which the workflow does not record, so the record keeps the
+// old base too. Its reads go by GitHub's base alone, so it moves to that base once and stays: the
+// record's base never sends it back.
+func TestARetargetedPullRequestDoesNotBounceBetweenBases(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		node := batchNode(86, "head-elsewhere", "UNKNOWN", "UNKNOWN")
+		node["baseRefName"] = "release"
+		return http.StatusOK, batchAnswer(t, asked, node)
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "three reads after the climb", func() bool {
+		return len(loggedLines(t, rig.logs.String(), followRead)) >= 3
+	})
+	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.Base != "main" || pr.HeadSHA != "head-86" {
+		t.Fatalf("86 is recorded on %q at %q, want the record left on main at head-86: GitHub answered another head", pr.Base, pr.HeadSHA)
+	}
+	moved := loggedMessages(t, rig.logs.String(), "github: GitHub holds a pull request owed a merge-state read on another base")
+	if len(moved) != 1 {
+		t.Fatalf("the batch logged %d moves %v, want one move to release and none back", len(moved), moved)
+	}
+	rig.w.mergeStateMu.Lock()
+	held := rig.w.baseReadOf["CAPTURE-1"]
+	rig.w.mergeStateMu.Unlock()
+	if want := baseReadKey(ghrepo.MustParse("acme/widgets"), "release"); held != want {
+		t.Fatalf("CAPTURE-1 is followed by %q, want %q", held, want)
+	}
+}
+
+// A head handed over to a batch that already follows another pull request starts its own ladder:
+// its first read comes two of the ladder's waits after the handover, and each next one twice as
+// long after, whatever the other's ladder stands at, and the other's ladder goes on as it was. The
+// two are read apart while their reads fall due apart.
+func TestAHeadHandedOverIsReadOnItsOwnLadder(t *testing.T) {
+	t.Parallel()
+	const unit = 25 * time.Millisecond
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	var reads87 atomic.Int32
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		nodes := []map[string]any{batchNode(86, "head-86", "UNKNOWN", "UNKNOWN")}
+		if slices.Contains(asked, 87) {
+			state := "UNKNOWN"
+			if reads87.Add(1) > 1 {
+				state = "BLOCKED"
+			}
+			nodes = append(nodes, batchNode(87, "head-87", "MERGEABLE", state))
+			if state == "UNKNOWN" {
+				nodes[1]["mergeable"] = "UNKNOWN"
+			}
+		}
+		return http.StatusOK, batchAnswer(t, asked, nodes...)
+	})
+	rig.w.mergeStateRetry = unit
+	repo := ghrepo.MustParse("acme/widgets")
+	followsOf := func(issue string) []map[string]any {
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+	}
+
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	testwait.Eventually(t, "86's third read after its handover", func() bool { return len(followsOf("CAPTURE-1")) >= 3 })
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
+	testwait.Eventually(t, "87's two reads and 86's fourth", func() bool {
+		return len(followsOf("CAPTURE-2")) >= 2 && len(followsOf("CAPTURE-1")) >= 4
+	})
+	first, second := followsOf("CAPTURE-2")[0], followsOf("CAPTURE-2")[1]
+	if first["attempt"] != float64(1) || first["wait"] != float64(2*unit) || second["attempt"] != float64(2) || second["wait"] != float64(4*unit) ||
+		second["answered"] != string(record.MergeStateBlocked) {
+		t.Fatalf("87's reads logged %v and %v, want its own ladder: attempt 1 after two of the ladder's waits, then 2 after four, answering blocked", first, second)
+	}
+	for i, line := range followsOf("CAPTURE-1")[:4] {
+		if want := float64(unit) * float64(int(2)<<i); line["attempt"] != float64(i+1) || line["wait"] != want {
+			t.Fatalf("86's read %d logged %v, want attempt %d after %s: 87's handover leaves its ladder as it was", i+1, line, i+1, time.Duration(want))
+		}
+	}
+	for _, asked := range rig.askedOf() {
+		if slices.Contains(asked, 87) && !slices.Equal(asked, []int{87}) {
+			t.Fatalf("GitHub was asked for %v, want 87 read on its own while 86's next read is not due", rig.askedOf())
+		}
+	}
+}
+
+// A batch's wake only has its follow's wait look again whether a climb was asked, nothing is owed,
+// or a read falls due sooner: a wake whose request a ladder already took up leaves the wait
+// waiting for the read it waited for, a climb asked ends it at once, and the ladder goes on while
+// anything is owed, with no request standing, ending only once nothing is.
+func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
+	t.Parallel()
+	w := readRuntime(nil, "", quietLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	repo := ghrepo.MustParse("acme/widgets")
+	key := baseReadKey(repo, "main")
+	const wait = 100 * time.Millisecond
+	due := func() {
+		w.mergeStateMu.Lock()
+		defer w.mergeStateMu.Unlock()
+		if w.baseReads == nil {
+			w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", asks: 1, wake: make(chan struct{}, 1), owed: map[string]baseOwed{}}}
+			w.baseReadOf = map[string]string{}
+		}
+		w.baseReads[key].owed["CAPTURE-1"] = baseOwed{head: "head-86", asked: 1, wait: wait, due: time.Now().UTC().Add(wait)}
+		w.baseReadOf["CAPTURE-1"] = key
+	}
+	waited := func() (bool, time.Duration) {
+		t.Helper()
+		start := time.Now()
+		read := w.baseFollowWait(ctx, key)
+		return read, time.Since(start)
+	}
+
+	due()
+	nudge(w.baseReads[key].wake)
+	if read, took := waited(); !read || took < wait*9/10 {
+		t.Fatalf("with a wake whose request was taken up, the follow's wait answered read %t after %s, want a read when the pull request falls due, %s on", read, took, wait)
+	}
+	if climb, goes := w.baseLadderNext(ctx, key); !goes || climb {
+		t.Fatalf("with a pull request owed and no request standing the ladder goes on %t, climbing %t; want it to follow on", goes, climb)
+	}
+	due()
+	go func() {
+		time.Sleep(wait / 4)
+		w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-3": ""}, true)
+	}()
+	if read, took := waited(); read || took >= wait {
+		t.Fatalf("with a climb asked during it, the follow's wait answered read %t after %s, want it ended before its %s", read, took, wait)
+	}
+	if climb, goes := w.baseLadderNext(ctx, key); !goes || !climb {
+		t.Fatalf("with a climb asked the ladder goes on %t, climbing %t; want it to climb", goes, climb)
+	}
+	w.mergeStateMu.Lock()
+	for _, issue := range []string{"CAPTURE-1", "CAPTURE-3"} {
+		w.leaveBaseLocked(issue)
+	}
+	w.mergeStateMu.Unlock()
+	if _, goes := w.baseLadderNext(ctx, key); goes {
+		t.Fatalf("with nothing owed the ladder goes on, want it ended")
+	}
+	if running, _ := ladders(w); running != 0 {
+		t.Fatalf("%d ladders are marked running after the batch ended, want none", running)
 	}
 }
 
@@ -907,245 +1312,6 @@ func TestAConditionalReadAnswered304LeavesTheRecordAsItWas(t *testing.T) {
 			}
 		}
 	})
-}
-
-// Each answer a batch applies is stamped with the moment its own page was answered, not the end of
-// the whole query: a later page can take long, and meanwhile a newer read of a pull request on an
-// earlier page can reach the record - a climb of its own, or GitHub's own event. The workflow drops
-// a read older than the one the record holds, so the earlier page's answer, read before that newer
-// one, changes nothing: here it would have released a CONFLICTING first read and with it the
-// second read INFRA-4374 R2 requires.
-func TestABatchAnswerIsStampedWithItsOwnPagesTime(t *testing.T) {
-	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
-	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
-	// pageTwo is the stand-in's word that the batch asked for page 2, which it does only once it
-	// has page 1's answer in hand and stamped.
-	pageTwo := make(chan struct{}, 1)
-	release := make(chan struct{})
-	var once sync.Once
-	releasePageTwo := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(releasePageTwo)
-	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/graphql" {
-			http.NotFound(w, r)
-			return
-		}
-		request := readBatchRequest(t, r)
-		if request.Variables.Cursor == nil {
-			_, _ = io.WriteString(w, batchPage(t, "page-2", batchNode(86, "head-86", "MERGEABLE", "CLEAN")))
-			return
-		}
-		nudge(pageTwo)
-		<-release
-		_, _ = io.WriteString(w, batchPage(t, "", batchNode(87, "head-87", "MERGEABLE", "BLOCKED")))
-	}})
-	w := readRuntime(pool, api, quietLogger())
-	w.mergeStateRetry = readRigWait
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.readMergeStates(ctx)
-
-	pushOntoMain(t, pool, w, "main-2")
-	select {
-	case <-pageTwo:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the batch asked for no second page")
-	}
-	// While page 2 is held, a read of 86 made after page 1 answered finds it CONFLICTING, and the
-	// record takes it as its first conflicting read.
-	applyFact(t, pool, "github", "newer-read-of-86", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
-		HeadSHA: "head-86", Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: time.Now().UTC(),
-		Rules: &record.BaseRules{Required: []string{"lint"}}}, w.handlers...)
-	releasePageTwo()
-	testwait.Eventually(t, "page 2's answer to be recorded and the batch to end", func() bool {
-		running, waiting := ladders(w)
-		return recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && running == 0 && waiting == 0
-	})
-	pr := recordedPull(t, pool, "CAPTURE-1")
-	if pr.Mergeability != record.MergeabilityConflicting || pr.MergeState != record.MergeStateDirty || pr.ConflictRead == nil || pr.ConflictRead.Head != "head-86" {
-		t.Fatalf("86 holds %s/%s with first read %+v, want the newer CONFLICTING read standing: page 1's answer is older than it",
-			pr.Mergeability, pr.MergeState, pr.ConflictRead)
-	}
-}
-
-// A batch read that fails - here GitHub answers its second page with GraphQL errors - leaves every
-// owed pull request owed, a push that asked for them again while that read ran among them, and the
-// ladder reads them again at its next step, as it reads a head GitHub answered `unknown` for.
-func TestAFailedBatchReadKeepsItsRequestsAndReadsThemAgain(t *testing.T) {
-	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
-	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
-	var queries atomic.Int32
-	held := make(chan struct{}, 1)
-	release := make(chan struct{})
-	var once sync.Once
-	releaseFailure := func() { once.Do(func() { close(release) }) }
-	t.Cleanup(releaseFailure)
-	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/graphql" {
-			http.NotFound(w, r)
-			return
-		}
-		request := readBatchRequest(t, r)
-		switch query := queries.Add(1); {
-		case query == 1:
-			_, _ = io.WriteString(w, batchPage(t, "page-2", batchNode(86, "head-86", "UNKNOWN", "UNKNOWN")))
-		case query == 2 && request.Variables.Cursor != nil:
-			nudge(held)
-			<-release
-			_, _ = io.WriteString(w, `{"data":null,"errors":[{"type":"INTERNAL","message":"Something went wrong while executing your query."}]}`)
-		default:
-			_, _ = io.WriteString(w, batchPage(t, "", batchNode(86, "head-86", "MERGEABLE", "BLOCKED"), batchNode(87, "head-87", "MERGEABLE", "CLEAN")))
-		}
-	}})
-	logs := &syncBuffer{}
-	w := readRuntime(pool, api, slog.New(slog.NewJSONHandler(logs, nil)))
-	w.mergeStateRetry = readRigWait
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.readMergeStates(ctx)
-
-	pushOntoMain(t, pool, w, "main-2")
-	select {
-	case <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the batch read no second page")
-	}
-	// Another push onto main asks for both reads again while the failing read runs.
-	pushOntoMain(t, pool, w, "main-3")
-	releaseFailure()
-	testwait.Eventually(t, "the read after the failure to answer both and the batch to end", func() bool {
-		running, waiting := ladders(w)
-		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
-			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateClean && running == 0 && waiting == 0
-	})
-	if failed := loggedMessages(t, logs.String(), "github: read the merge state of the open pull requests on a base whose reads were asked for"); len(failed) != 1 {
-		t.Fatalf("the batch logged %v, want the one failed read", failed)
-	}
-	if got := queries.Load(); got != 3 {
-		t.Fatalf("GitHub was queried %d times, want the failed read's two pages and the one read after it", got)
-	}
-}
-
-// A pull request can move to another base with its head unchanged, which the record learns of from
-// no event it reads. GitHub then lists it on no page of its recorded base, which says neither that
-// it closed nor that its head moved, so its reads do not end there: it is read alone (GET
-// /pulls/{number}), that read records the base GitHub holds it on, and GitHub's `unknown` there is
-// followed by the batch of its new base until GitHub answers a state.
-func TestAPullRequestMissingFromItsBasesListingIsReadAloneAndFollowedOnItsNewBase(t *testing.T) {
-	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
-	var alone atomic.Int32
-	var mu sync.Mutex
-	bases := map[string]int{}
-	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/widgets/pulls/86":
-			alone.Add(1)
-			_, _ = io.WriteString(w, `{"number":86,"state":"open","base":{"ref":"release"},"head":{"ref":"legion/CAPTURE-1","sha":"head-86"},"mergeable":null,"mergeable_state":"unknown"}`)
-		case "/graphql":
-			base := batchBase(t, r)
-			mu.Lock()
-			bases[base]++
-			mu.Unlock()
-			if base == "release" {
-				_, _ = io.WriteString(w, batchPage(t, "", batchNode(86, "head-86", "MERGEABLE", "BLOCKED")))
-				return
-			}
-			_, _ = io.WriteString(w, batchPage(t, ""))
-		default:
-			http.NotFound(w, r)
-		}
-	}})
-	logs := &syncBuffer{}
-	w := readRuntime(pool, api, slog.New(slog.NewJSONHandler(logs, nil)))
-	w.mergeStateRetry = readRigWait
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go w.readMergeStates(ctx)
-
-	pushOntoMain(t, pool, w, "main-2")
-	testwait.Eventually(t, "the pull request to be read on its new base and its reads to end", func() bool {
-		running, waiting := ladders(w)
-		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked && running == 0 && waiting == 0
-	})
-	if pr := recordedPull(t, pool, "CAPTURE-1"); pr.Base != "release" || pr.Mergeability != record.MergeabilityMergeable {
-		t.Fatalf("86 is recorded on %q as %s, want GitHub's base release and its MERGEABLE", pr.Base, pr.Mergeability)
-	}
-	mu.Lock()
-	queried := maps.Clone(bases)
-	mu.Unlock()
-	if got := alone.Load(); got != 1 || queried["main"] != 1 || queried["release"] != 1 {
-		t.Fatalf("86 was read alone %d times and the bases queried %v, want one read alone and one query of each base", got, queried)
-	}
-	follows := loggedLines(t, logs.String(), followRead)
-	if len(follows) != 1 || follows[0]["issue"] != "CAPTURE-1" || follows[0]["answered"] != string(record.MergeStateBlocked) {
-		t.Fatalf("the reads after the climb logged %v, want release's one read of CAPTURE-1 answering blocked", follows)
-	}
-}
-
-// A batch's wake only has its follow's wait check again whether a climb was asked or nothing is
-// owed: a wake whose request a ladder already took up, and a head another climb handed over, leave
-// the wait waiting out its time, so the read it waits for is neither dropped nor put off by each
-// new head; a climb asked ends it at once. And the ladder goes on while anything is owed, with no
-// request standing, ending only once nothing is.
-func TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed(t *testing.T) {
-	t.Parallel()
-	w := readRuntime(nil, "", quietLogger())
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	repo := ghrepo.MustParse("acme/widgets")
-	key := baseReadKey(repo, "main")
-	w.baseReads = map[string]*baseRead{key: {repo: repo, base: "main", asks: 1, wake: make(chan struct{}, 1),
-		owed: map[string]baseOwed{"CAPTURE-1": {head: "head-86", asked: 1}}}}
-	w.baseReadOf = map[string]string{"CAPTURE-1": key}
-	const wait = 100 * time.Millisecond
-	waited := func() (bool, time.Duration) {
-		t.Helper()
-		start := time.Now()
-		read := w.baseFollowWait(ctx, key, wait)
-		return read, time.Since(start)
-	}
-
-	nudge(w.baseReads[key].wake)
-	if read, took := waited(); !read || took < wait {
-		t.Fatalf("with a wake whose request was taken up, the follow's wait answered read %t after %s, want a read after its whole %s", read, took, wait)
-	}
-	go func() {
-		time.Sleep(wait / 4)
-		w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
-	}()
-	if read, took := waited(); !read || took < wait {
-		t.Fatalf("with a head handed over during it, the follow's wait answered read %t after %s, want a read after its whole %s", read, took, wait)
-	}
-	if climb, goes := w.baseLadderNext(ctx, key); !goes || climb {
-		t.Fatalf("with two pull requests owed and no request standing the ladder goes on %t, climbing %t; want it to follow on", goes, climb)
-	}
-	go func() {
-		time.Sleep(wait / 4)
-		w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-3": ""}, true)
-	}()
-	if read, took := waited(); read || took >= wait {
-		t.Fatalf("with a climb asked during it, the follow's wait answered read %t after %s, want it ended before its %s", read, took, wait)
-	}
-	if climb, goes := w.baseLadderNext(ctx, key); !goes || !climb {
-		t.Fatalf("with a climb asked the ladder goes on %t, climbing %t; want it to climb", goes, climb)
-	}
-	w.mergeStateMu.Lock()
-	for _, issue := range []string{"CAPTURE-1", "CAPTURE-2", "CAPTURE-3"} {
-		w.leaveBaseLocked(issue)
-	}
-	w.mergeStateMu.Unlock()
-	if _, goes := w.baseLadderNext(ctx, key); goes {
-		t.Fatalf("with nothing owed the ladder goes on, want it ended")
-	}
-	if running, _ := ladders(w); running != 0 {
-		t.Fatalf("%d ladders are marked running after the batch ended, want none", running)
-	}
 }
 
 // A move of a pull request to the batch of the base it is on now (moveBase) is decided on a read

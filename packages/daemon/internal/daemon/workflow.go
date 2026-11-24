@@ -305,13 +305,14 @@ type workflowRuntime struct {
 	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
 	// shortens (overrides.mergeStateRetry).
 	//
-	// baseReads is each base of a repository whose open pull requests the daemon reads in one batch
+	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
 	// (merge_state_reads.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
 	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
 	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under, and
 	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet. All of it is
 	// guarded by mergeStateMu, so a request moves an issue between a ladder of its own and its
-	// base's batch under one lock.
+	// base's batch under one lock. baseChunk is how many pull requests one query of a batch asks
+	// for, baseReadChunk when zero, which a test shortens.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]string
@@ -320,6 +321,7 @@ type workflowRuntime struct {
 	baseWake          *wakeSet[string]
 	baseReads         map[string]*baseRead
 	baseReadOf        map[string]string
+	baseChunk         int
 	// etags is what the conditional reads of a pull request and of its base's rules keep
 	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
 	// costs the implement App's installation none of its rate limit.

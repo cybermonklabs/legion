@@ -271,9 +271,9 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 // the base main requiring lint (green nowhere) and pr-checks-result; the runtime that reads it, its
 // waits cut to readRigWait through its own seam (mergeStateRetry) and its log kept; and the runner
 // of its second read (secondReadRunner). The second read's tests and the merge-state reads' share
-// it, so a read of either kind meets the same GitHub. A read of main's batch, the GraphQL query the
-// reads after a climb make (readBase), is a read of pull request 86 too: it takes the next answer
-// and counts as a read, answered as GraphQL answers the same pull request (graphQLAnswerOf).
+// it, so a read of either kind meets the same GitHub. A batch's GraphQL query that asks for pull
+// request 86 by number (readBase) is a read of it too: it takes the next answer and counts as a
+// read, answered as GraphQL answers the same pull request (graphQLAnswerOf).
 type readRig struct {
 	pool   *store.Pool
 	w      *workflowRuntime
@@ -301,11 +301,12 @@ func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(re
 			}
 			_, _ = io.WriteString(w, got.body)
 		case "/graphql":
-			if base := batchBase(t, r); base != "main" {
-				http.Error(w, `{"message":"a read of the batch of `+base+`, want main"}`, http.StatusBadRequest)
+			asked := readBatchRequest(t, r)
+			if !slices.Equal(asked, []int{86}) {
+				http.Error(w, `{"message":"a query of pull requests other than 86 alone"}`, http.StatusBadRequest)
 				return
 			}
-			status, body := graphQLAnswerOf(t, answer(rig.reads.Add(1)))
+			status, body := graphQLAnswerOf(t, answer(rig.reads.Add(1)), asked)
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, body)
 		case "/repos/acme/widgets/pulls/86/reviews":

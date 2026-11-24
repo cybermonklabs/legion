@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A client with ETags sends every GET conditional on the ETag GitHub gave the last answer for the
@@ -143,11 +145,13 @@ func TestETagsDropsTheAnswerReadLeastRecently(t *testing.T) {
 
 // GraphQL posts the query and its variables to the GraphQL endpoint under the installation token,
 // asking for the merge-info preview its merge-state reads need, and reads the answer's data. An
-// answer whose errors list is not empty is GraphQLErrors, naming each error's type and message; a
-// refusal is an *Answer, a rate limit as a REST call's is.
+// answer whose errors list is not empty is GraphQLErrors, naming each error's type, message and
+// path, after the data it carries is read; a refusal is an *Answer, a rate limit as a REST call's
+// is, and so is GraphQL's own rate limit, which GitHub answers 200, with the wait its headers ask.
 func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 	var mu sync.Mutex
 	answer, status := `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`, http.StatusOK
+	headers := map[string]string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var sent struct {
 			Query     string         `json:"query"`
@@ -161,6 +165,9 @@ func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
+		for name, value := range headers {
+			w.Header().Set(name, value)
+		}
 		w.WriteHeader(status)
 		w.Write([]byte(answer))
 	}))
@@ -190,6 +197,28 @@ func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 	if !errors.As(err, &graphQLErrors) || len(graphQLErrors) != 2 || !strings.Contains(err.Error(), "NOT_FOUND: Could not resolve to a Repository") {
 		t.Fatalf("GraphQL with errors = %v, want GraphQLErrors naming both", err)
 	}
+
+	mu.Lock()
+	answer = `{"data":{"viewer":{"login":"partial"}},"errors":[{"type":"NOT_FOUND","path":["viewer","p87"],"message":"Could not resolve to a PullRequest with the number of 87."}]}`
+	mu.Unlock()
+	login, err := query()
+	if !errors.As(err, &graphQLErrors) || login != "partial" || len(graphQLErrors) != 1 || len(graphQLErrors[0].Path) != 2 || graphQLErrors[0].Path[1] != "p87" {
+		t.Fatalf("GraphQL with data and an error = %q, %v; want the data read and GraphQLErrors naming the path [viewer p87]", login, err)
+	}
+
+	mu.Lock()
+	reset := time.Now().Add(2 * time.Minute).Unix()
+	answer, headers = `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation ID 1."}]}`,
+		map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": strconv.FormatInt(reset, 10), "X-RateLimit-Resource": "graphql"}
+	mu.Unlock()
+	_, err = query()
+	var limited *Answer
+	if !errors.As(err, &limited) || !limited.RateLimited || limited.Budget != BudgetGraphQL || limited.RetryAfter < time.Minute || limited.RetryAfter > 2*time.Minute {
+		t.Fatalf("GraphQL's own rate limit = %v, want an *Answer that is the GraphQL rate limit, waiting until its reset two minutes on", err)
+	}
+	mu.Lock()
+	headers = map[string]string{}
+	mu.Unlock()
 
 	mu.Lock()
 	answer, status = `{"message":"You have exceeded a secondary rate limit"}`, http.StatusForbidden

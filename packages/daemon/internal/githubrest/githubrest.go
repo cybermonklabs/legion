@@ -341,7 +341,14 @@ func retryAfter(response *http.Response, body []byte, now time.Time) time.Durati
 	if !RateLimited(response, body) {
 		return 0
 	}
-	headers := response.Header
+	return limitWait(response.Header, now)
+}
+
+// limitWait is how long a rate limit's headers ask a caller to wait, read as retryAfter reads
+// them: the retry-after header's seconds, else the x-ratelimit-reset epoch second when
+// x-ratelimit-remaining is 0, capped at an hour, else a minute. GraphQL's own rate limit, which
+// GitHub answers 200 with, is read through it too (Client.GraphQL).
+func limitWait(headers http.Header, now time.Time) time.Duration {
 	if seconds, err := strconv.Atoi(headers.Get("Retry-After")); err == nil && seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}

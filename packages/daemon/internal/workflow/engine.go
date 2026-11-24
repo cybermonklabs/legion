@@ -126,7 +126,8 @@ type Config struct {
 	// same reasons askMergeStateFor reads a fact by (classify.MergeStateReadOwed's base-push reason,
 	// a phase after implementing on the task's line, or a review round waiting on GitHub), named
 	// all at once, so that one push makes one batch of reads of its base rather than one read of
-	// each pull request (workflowRuntime.queueBaseMergeStates, one GraphQL query a page). issues is
+	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
+	// requests each, asked for by number). issues is
 	// never empty. Nil asks for none, as ReadMergeState's nil does.
 	ReadBaseMergeStates func(repo, base string, issues []string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
