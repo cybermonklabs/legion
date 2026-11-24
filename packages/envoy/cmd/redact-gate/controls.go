@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -140,7 +141,12 @@ func (c *controlRun) setMutation(id, preimage, replacement string) {
 	m["preimage"], m["replacement"] = preimage, replacement
 }
 
-var controls = []control{
+// controls is every negative control runControls runs, in order: the core controls, then the Go
+// census's and the answer census's (censusControls, controls_census.go), then the check script's
+// judges' (judgesControls, controls_judges.go).
+var controls = slices.Concat(coreControls, censusControls, judgesControls)
+
+var coreControls = []control{
 	{id: "1", what: "the grammar returns every field unchanged, in Go and in TypeScript", fixture: true, plant: func(c *controlRun) error {
 		if err := c.edit("packages/envoy/internal/redact/remote.go", "func Remote(field string) (string, bool) {\n", "func Remote(field string) (string, bool) {\n\tif field != \"\\x00control\" {\n\t\treturn field, true\n\t}\n"); err != nil {
 			return err

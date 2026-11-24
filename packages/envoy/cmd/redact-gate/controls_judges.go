@@ -14,13 +14,13 @@ import (
 	"time"
 )
 
-// The negative controls of the check script's judges: the three bun scripts of
+// judgesControls are the negative controls of the check script's judges: the three bun scripts of
 // packages/envoy/scripts/check-redact-remote-text.sh that read go test's events, Bun's JUnit
 // reports and the print test's REDACT-PRINT lines and print the verdicts the script counts, and
 // its judged function, which refuses (exit 2) a judge that failed or printed fewer verdict lines
 // than it owes. The script counts a judge's FAIL lines, and an empty or short output holds none,
-// so without that refusal it passes the rows no judge judged. They are added to controls in init,
-// so runControls runs them with the rest.
+// so without that refusal it passes the rows no judge judged. controls (controls.go) lists them
+// last.
 //
 // Each case runs the script whole, as HEAD commits it, in a worktree of HEAD, so it reads HEAD's
 // inventory and runs its own judge lines: no line of it is copied. Stand-ins take the place of what
@@ -31,10 +31,6 @@ import (
 // real bun, unless the case plants a fault in that judge. The recorded events and reports pass
 // every row of HEAD's inventory, and each control first runs the script on them with no plant and
 // requires it to pass, so the refusal each case then requires is its plant's.
-func init() {
-	controls = append(controls, judgesControls...)
-}
-
 var judgesControls = []control{
 	{id: "31a", what: "the check script's Go-row judge reads a go.json whose last line a killed go command cut short ({\"Action\":\"output\",\"Package\":, its go exiting 137), and the script must refuse it as a judge that failed",
 		own: judgesControl(judgesCase{name: "cut-short", cut: true, expect: judgesFailed("Go-row judge", "")})},
