@@ -856,14 +856,18 @@ const PullRequestHeadBatch = 200
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
 // A row's place is the later of checked_at, its last read, and attempted_at, when the reconcile
-// last began a read of it (markHeadTried), and a row with neither is taken first. The reconcile
-// stamps attempted_at as it begins each row's read, whatever the read then answers, so a row
+// last stamped a try of it (markHeadTried), and a row with neither is taken first. The reconcile
+// stamps attempted_at just before each row's read, whatever the read then answers, so a row
 // whose reads fail goes behind every due row tried less lately than it, and never holds the front
 // of every batch: before attempted_at, a full batch of rows GitHub answered 5xx for kept their
 // unchanged checked_at, and so their places, every pass, and a row behind them was never read. A
 // failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
 // and nothing that waits on its read (the check states settler's read of a row with no base
-// revision, api/check_states.go, verifyFormerHeads) takes the try for one.
+// revision, api/check_states.go, verifyFormerHeads) takes the try for one. A stamp whose call
+// times out or loses its connection may still commit, and the reconcile then gives the row up
+// with no read (reconcilePullRequestHeads): the row moves behind the other due rows unread, which
+// only delays its read by one turn of the order, and never supplies a base revision or releases a
+// handoff that waits on the read. Each such stamp counts as the row's try in the bound below.
 //
 // The bound. Of the rows due, n are those the first select takes from: the open rows due and the
 // merged rows credited to nobody that no read has reached. The rule half takes only the room that
@@ -1005,7 +1009,9 @@ func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull 
 // then answers, so ListStalePullRequestHeads takes every due row tried less lately before it
 // again, and a row whose reads fail never holds the front of every batch. It stamps nothing else:
 // a try is no read of the pull request, so checked_at, the base revision and every other fact of
-// the row stay as they are, and the row stays due.
+// the row stay as they are, and the row stays due. Its statement is one of its own, so a call that
+// times out or loses its connection may still have committed the stamp, and the reconcile, told
+// it failed, then reads nothing of the row (reconcilePullRequestHeads).
 func markHeadTried(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
 	if _, err := pool.Exec(ctx, `
 		update pull_request_heads set attempted_at = $3 where repo = $1 and number = $2

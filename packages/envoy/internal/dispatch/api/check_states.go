@@ -570,7 +570,9 @@ type formerHeadsReads struct {
 // delivery.PullRequestHeadStaleAfter old: with no more than a batch due and no pass a rate limit
 // stops, about nine and a half minutes after that read, plus the passes' run time. A try that
 // fails, or that a stopped pass never makes, stores nothing, and the row comes again the same way;
-// until a read stores a base revision the candidates stay unverified.
+// a try whose stamp's call times out or loses its connection may still commit the stamp with no
+// read, and then the row's read comes one turn of the order later, the stamp storing no base
+// revision. Until a read stores a base revision the candidates stay unverified.
 // A read of the pull request that finds GitHub at another head or base revision than the row
 // stores decides nothing either (delivery.CommitMembership.Stale): GitHub moved it on where no
 // write has stored it yet. Both are unverified, read again after the failure backoff, since a read

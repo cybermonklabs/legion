@@ -592,13 +592,19 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // row never tried first (ListStalePullRequestHeads). A rate limit stops the batch and fails the
 // pass, as every other GitHub step's does: each row it did not try keeps its place, so the next
 // pass takes those first, and the stopped pass counts toward no bound; any other per-row failure
-// is logged and leaves the row due, behind the rows not tried since.
+// is logged and leaves the row due: a failed read behind the rows not tried since, and a failed
+// stamp in its place, or behind them unread where that stamp committed after all (below).
 //
 // A row's try is stamped on a context the batch's stop does not cancel (stampTry), and a row whose
-// turn comes after the stop is not stamped. A stamp the stop cancelled in flight could otherwise
-// commit at the server after the pass returned, with the client told it failed, so a row the pass
-// counted untried would go behind the rows it did not try. So when the pass returns, the rows it
-// stamped are exactly the rows it tried, and the next pass reads that record whole.
+// turn comes after the stop is not stamped, so the stop itself puts no row behind that the pass
+// did not try: a stamp the stop cancelled in flight could commit at the server after the pass
+// returned, with the client told it failed. Each stamp is still a statement of its own, and a
+// stamp whose call times out or loses its connection may still commit, before or after the pass
+// returns, with the client told it failed. The pass then gives that row up with no refresh, and
+// the row moves behind the other due rows unread. That only delays the row's refresh by one turn
+// of the order: a stamp stores no checked_at and no base revision, so the row stays due, and it
+// never supplies a base revision or releases a handoff that waits on the row's read. So every row
+// a pass stamped is a row it tried, but for a row whose stamp's call failed and committed anyway.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {
@@ -632,9 +638,10 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 	return nil
 }
 
-// stampTry stamps head's try (markHeadTried) on a context the batch's stop does not cancel, bounded
-// by headWriteRollback, so the stamp either commits or fails before the pass returns
-// (reconcilePullRequestHeads).
+// stampTry stamps head's try (markHeadTried) on a context the batch's stop does not cancel, so the
+// stop cancels no stamp in flight, with headWriteRollback as its deadline. The deadline ends the
+// call and not the statement: a stamp whose call times out or loses its connection may still
+// commit, and what that costs the row is in reconcilePullRequestHeads.
 func stampTry(ctx context.Context, pool *store.Pool, head PullRequestHead, now time.Time) error {
 	stamp, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
 	defer cancel()
