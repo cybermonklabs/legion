@@ -166,12 +166,16 @@ func isGCSNotFound(err error) bool {
 	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusNotFound {
 		return false
 	}
-	return !strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
+	return !gcsBucketIsMissing(apiErr)
 }
 
 // gcsBucketMissing is the words GCS's 404 says a missing bucket in, where a missing object's says
 // "No such object".
 const gcsBucketMissing = "bucket does not exist"
+
+func gcsBucketIsMissing(apiErr *googleapi.Error) bool {
+	return strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
+}
 
 // gcsPermissions are the permissions the store needs, the ones a refusal is named by.
 var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
@@ -192,13 +196,13 @@ func gcsFailure(err error) error {
 		return redact.Class(err)
 	}
 	text := "the server answered HTTP " + redact.StatusLine(apiErr.Code)
-	said := apiErr.Message + " " + apiErr.Body
 	switch apiErr.Code {
 	case http.StatusNotFound:
-		if strings.Contains(said, gcsBucketMissing) {
+		if gcsBucketIsMissing(apiErr) {
 			text += ": the bucket does not exist"
 		}
 	case http.StatusForbidden:
+		said := apiErr.Message + " " + apiErr.Body
 		for _, permission := range gcsPermissions {
 			if strings.Contains(said, "Permission '"+permission+"' denied") {
 				text += ": missing permission " + permission
