@@ -7,7 +7,7 @@
 // credential fails fast where its broker cannot answer, so a listener that asks for no credential
 // keeps its calls (`transport.ts`, `attemptOnce`).
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";
 import { createEnvoyClient, EnvoySendUnconfirmedError } from "../transport";
@@ -253,10 +253,11 @@ test.each([
 }, 40_000);
 
 test("inside the renewal window, a broker that hangs leaves the call its live token and the time to send it", async () => {
-  // The token in hand is inside its renewal window, so the call waits for the renewal the
-  // credential starts, and the broker never answers it. At the end of the credential's share of
-  // the attempt the credential answers with the live token (`BrokerTokenClient.token`), and the
-  // request goes out with it in the time left, rather than on a deadline already spent.
+  // The token in hand is inside its renewal window and past half its life, so the call waits
+  // for the renewal the credential starts, and the broker never answers it. At the end of the
+  // credential's share of the attempt the credential answers with the live token
+  // (`BrokerTokenClient.token`), and the request goes out with it in the time left, rather than
+  // on a deadline already spent.
   let trades = 0;
   const broker = Bun.serve({
     port: 0,
@@ -264,7 +265,8 @@ test("inside the renewal window, a broker that hangs leaves the call its live to
     fetch: async () => {
       trades += 1;
       if (trades > 1) return await new Promise<Response>(() => {});
-      // Good for 200 s: inside the 5-minute renewal window from the first.
+      // Good for 200 s: inside the 5-minute renewal window from the first, and reused until half
+      // its life, 100 s.
       return Response.json({
         access_token: fixtureSecret("live"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -298,10 +300,16 @@ test("inside the renewal window, a broker that hangs leaves the call its live to
   await client.getRole("implementer");
   const live = fetched[0];
   expect(live).toStartWith("DPoP ");
-  await client.getRole("implementer");
+  // Past half the token's life by the system clock the token client reads, with 100 s of it left.
+  try {
+    setSystemTime(new Date(Date.now() + 100_001));
+    await client.getRole("implementer");
+  } finally {
+    setSystemTime();
+  }
   expect(trades).toBe(2);
   expect(fetched).toEqual([live, live]);
-});
+}, 20_000);
 
 test("an open listener's 403 to a call that went without its credential stands as the listener's answer", async () => {
   // A listener that requires a credential answers a request without one 401 and nothing else

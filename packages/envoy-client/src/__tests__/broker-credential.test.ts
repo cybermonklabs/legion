@@ -8,7 +8,7 @@
 // machine is broker-credential-signins.test.ts's; a pod session whose registration has not landed
 // is broker-credential-registration.test.ts's.
 
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -161,10 +161,11 @@ test("with no bearer at all, the session's credential is its own identity traded
   expect(claims.ath).toBe(Buffer.from(digest).toString("base64url"));
 });
 
-test("a session past its token's life trades again, with nothing restarted", async () => {
-  // One second of life is the broker's own minimum (BROKER_ACCESS_TOKEN_SECONDS), so every
-  // request after the first is inside the renewal window.
-  const broker = stubBroker(1);
+test("a session reuses a token shorter than the renewal window until half its life", async () => {
+  // A minute of life is inside the 5-minute renewal window from the start, as a restricted
+  // member's 270-second token is: the session reuses it until halfway through its life rather
+  // than trading again at every request, which would spend the broker's per-address bucket.
+  const broker = stubBroker(60);
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
   const resolution = dispatchSettings(env, noFile(env), { session: "example-worker-session" });
@@ -173,6 +174,31 @@ test("a session past its token's life trades again, with nothing restarted", asy
 
   await client.listAllIssues({});
   await client.listAllIssues({});
+
+  expect(broker.trades.length).toBe(1);
+  expect(dispatch.asked.map((one) => one.authorization)).toEqual([
+    `DPoP ${broker.trades[0]?.token}`,
+    `DPoP ${broker.trades[0]?.token}`,
+  ]);
+});
+
+test("a session past half its token's life trades again, with nothing restarted", async () => {
+  // The same minute of life, and the system clock 30 s on: past half the token's life, which the
+  // token client reads by `Date.now`, so the next request trades again.
+  const broker = stubBroker(60);
+  const dispatch = stubDispatch();
+  const env = podEnvironment(broker.url, dispatch.url);
+  const resolution = dispatchSettings(env, noFile(env), { session: "example-worker-session" });
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+  const client = new DispatchClient(resolution.url, resolution.credential);
+
+  await client.listAllIssues({});
+  try {
+    setSystemTime(new Date(Date.now() + 30_001));
+    await client.listAllIssues({});
+  } finally {
+    setSystemTime();
+  }
 
   expect(broker.trades.length).toBe(2);
   expect(dispatch.asked.map((one) => one.authorization)).toEqual([
