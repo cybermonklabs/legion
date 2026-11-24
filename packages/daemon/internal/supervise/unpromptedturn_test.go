@@ -206,10 +206,11 @@ func TestACleanPluginTurnEndsTheRunOfRefusedPrompts(t *testing.T) {
 }
 
 // A clean report the plugin marked prompted ends the run too, though no prompt result of its own
-// comes for it: a run in the window between Oh My Pi's acceptance of a prompt and its `input`, or
-// one after a prompt the host refused as busy, is read as the prompt's. The provider took that
-// turn, so five refusals, that clean turn and one more refusal make a run of one, and the
-// controller hears nothing; counted across the clean turn, the run would reach six and tell it.
+// comes for it: the run after one that started in the window between Oh My Pi's acceptance of a
+// prompt and its `input` (that run itself is reported unprompted), or a run after a prompt the host
+// refused as busy, is read as the prompt's. The provider took that turn, so five refusals, that
+// clean turn and one more refusal make a run of one, and the controller hears nothing; counted
+// across the clean turn, the run would reach six and tell it.
 //
 // A clean report ends the run only when no later turn has reported before it: a clean report that
 // reaches the daemon after a later turn's refused report is of a turn before that refusal, so the
