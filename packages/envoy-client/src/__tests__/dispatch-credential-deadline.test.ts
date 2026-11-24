@@ -73,7 +73,8 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
         renewing = true;
         return await new Promise<Response>(() => {});
       }
-      // Good for 200 s: inside the 5-minute renewal window from the first.
+      // Good for 200 s: inside the 5-minute renewal window from the first, and reused until
+      // half its life, 100 s.
       return Response.json({
         access_token: fixtureSecret("live"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
@@ -99,6 +100,9 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
       {}
     );
   await call();
+  // Past half the token's life, still live: the next call starts its renewal.
+  jest.advanceTimersByTime(100_001);
+  await turn();
   const started = performance.now();
   const second = call();
   let answered = false;
