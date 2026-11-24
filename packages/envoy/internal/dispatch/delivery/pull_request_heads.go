@@ -210,7 +210,7 @@ func markHeadNotStored(err error) error {
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
-	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
+	seedsBranch := false
 	records := broker != nil && head.AttributionComplete
 	if !seedsBranch && !records {
 		_, err := upsertHeadRow(ctx, pool, head)
