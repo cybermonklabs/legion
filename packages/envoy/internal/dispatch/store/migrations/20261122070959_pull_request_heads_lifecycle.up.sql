@@ -62,11 +62,30 @@ create table pull_request_heads_lifecycle (
 );
 create index pull_request_heads_lifecycle_number on pull_request_heads_lifecycle (number, repo);
 
--- The canonical name of a repository's name: the expression of refs.CanonicalRepoSQL, over
--- repo_projects.renamed_to. The install (20261124122830) and the settler read it too.
-create function pull_request_canonical_repo(text) returns text language sql stable as $$
-  select coalesce((select max(renamed.renamed_to) from repo_projects renamed
-    where renamed.renamed_to is not null and lower(renamed.repo) = lower($1)), $1)
+-- The canonical name of a repository's name, by the rename rule every Go reader holds
+-- (store.ReadRepoRenames, refs.Renames.Canonical, refs.CanonicalRepoSQL): the pairs are the
+-- repo_projects rows with a renamed_to, both names in lower case, and a row whose two names are
+-- then equal, or one of them empty, renames nothing; of the pairs of one old name, the one with
+-- the greatest new name in byte order stands; a name that is a pair's old name in any case is that
+-- pair's new name, and any other name is itself as it is given. So the row a writer keys under the
+-- canonical name (delivery's Attributor) is the row this name finds. A database without
+-- repo_projects holds no pairs, as ReadRepoRenames reads none there, so the table is read only
+-- once it is there. The install (20261124122830) and the settler read it too.
+create function pull_request_canonical_repo(text) returns text language plpgsql stable as $$
+declare
+  renamed text;
+begin
+  if $1 is null or to_regclass('repo_projects') is null then
+    return $1;
+  end if;
+  execute $read$
+    select max(lower(pair.renamed_to) collate "C") from repo_projects pair
+    where pair.renamed_to is not null and lower(pair.repo) = lower($1)
+      and lower(pair.repo) <> '' and lower(pair.renamed_to) <> ''
+      and lower(pair.repo) <> lower(pair.renamed_to)
+  $read$ into renamed using $1;
+  return coalesce(renamed, $1);
+end
 $$;
 
 -- A write of pull_request_heads that opens or closes a row (its triggers' when says which): one
