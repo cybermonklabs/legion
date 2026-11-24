@@ -337,6 +337,15 @@ func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
 		{name: "a 429 naming the secondary limit with no requests left and no Retry-After", status: http.StatusTooManyRequests,
 			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
 			body:    secondary, limited: true, budget: BudgetSecondary, wait: 10 * time.Minute},
+		// A Retry-After past what a time.Duration holds in nanoseconds wrapped negative when its
+		// seconds were multiplied whole, and a caller slept the negative wait as none. The seconds
+		// are clamped to a day first (maxRetryAfter).
+		{name: "a Retry-After past what a duration holds", status: http.StatusForbidden,
+			headers: map[string]string{"Retry-After": "9223372037"}, body: `{"message":"invented"}`,
+			limited: true, budget: BudgetSecondary, wait: maxRetryAfter},
+		{name: "a Retry-After past an int64", status: http.StatusForbidden,
+			headers: map[string]string{"Retry-After": "99999999999999999999"}, body: `{"message":"invented"}`,
+			limited: true, budget: BudgetSecondary, wait: time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := &http.Response{StatusCode: tc.status, Header: http.Header{}}

@@ -329,8 +329,8 @@ architect_registers_gate() {
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
 # answeredAt, and the root keeps the admission slot it took when the daemon started it (.slot is
 # there and admission.active names it), while its architect stays live. The person's review
-# answers the wait (waitingOn.answeredAt), and the answered root
-# waits in the line among the issues whose work came back, oldest first: at planning when an
+# answers the wait (waitingOn.answeredAt), and the answered root waits in the line
+# within its priority, among the issues whose work came back, oldest first: at planning when an
 # approval opened the gate, at admitted with the same architect session given its task when
 # changes were requested. The resume takes no slot, since the root holds one throughout, so it
 # comes on the pass that reads the answer however full the cap is, and the answer reads either as
