@@ -177,7 +177,7 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	statuses.givePlan(planDoc, 2, dispatch.DocumentBlock{ID: "note", Type: "callout", Attributes: map[string]string{}, Text: "No task here."})
 
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1),
-		PlanReason{Reason: `task a: the step "Implementer!" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*.`})
+		PlanReason{Reason: `task a: the 1st word of steps is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*.`})
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Reason: "the plan has no task block, so it gives Legion no work."})
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", childDoc, 1), http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE",

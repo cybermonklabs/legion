@@ -121,24 +121,51 @@ var builtinRoles = []RoleDef{
 	{Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
 }
 
-// nameWord is the grammar of a role and of a key.
-var nameWord = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// TaskIDGrammar is the grammar of a task's id, a role's name and a step's key: a lower-case letter,
+// then lower-case letters, digits and hyphens. Dispatch stores a block of any id, and the plan
+// route takes a version only where the id of each of its `plan_task` and `plan_role` blocks is in
+// this grammar (dispatch's PlanDocument).
+const TaskIDGrammar = "[a-z][a-z0-9-]*"
+
+// nameWord is TaskIDGrammar as a whole word.
+var nameWord = regexp.MustCompile("^" + TaskIDGrammar + "$")
+
+// IsTaskID says whether id is in TaskIDGrammar.
+func IsTaskID(id string) bool { return nameWord.MatchString(id) }
 
 // ParseSteps reads the words of a `steps` attribute: each word is `role` or `role:key`, a
-// role and a key each matching [a-z][a-z0-9-]*, with white space between two words. Text of no
-// word is no step. The key `owner` is reserved for the owner of the task: the grammar takes it,
-// and Supported says which keys this release carries out.
+// role and a key each in TaskIDGrammar, with white space between two words. Text of no word is
+// no step. The key `owner` is reserved for the owner of the task: the grammar takes it, and
+// Supported says which keys this release carries out. A word outside the grammar is named by its
+// place among the words, never by its text: a plan's steps are Dispatch's words, or the words of
+// whatever answers in its place, which can echo the credential the read carried.
 func ParseSteps(text string) ([]Step, error) {
 	words := strings.Fields(text)
 	steps := make([]Step, 0, len(words))
-	for _, word := range words {
+	for i, word := range words {
 		role, key, keyed := strings.Cut(word, ":")
-		if !nameWord.MatchString(role) || keyed && !nameWord.MatchString(key) {
-			return nil, fmt.Errorf("the step %q is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*", word)
+		if !IsTaskID(role) || keyed && !IsTaskID(key) {
+			return nil, fmt.Errorf("the %s word of steps is neither a role nor a role:key, where each matches %s", ordinal(i+1), TaskIDGrammar)
 		}
 		steps = append(steps, Step{Role: role, Key: key})
 	}
 	return steps, nil
+}
+
+// ordinal is n as an ordinal number: 1st, 2nd, 3rd, 4th, 11th, 21st.
+func ordinal(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("%d%s", n, suffix)
 }
 
 // StepsOf is the steps task t runs: its own when its block names any, the project's defaults

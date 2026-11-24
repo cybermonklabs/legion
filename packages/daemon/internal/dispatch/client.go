@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/redirects"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
@@ -540,6 +541,9 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 // block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
 // A block is named by its place in the answer, never by its id or its text: both are Dispatch's
 // words, or the words of whatever answers in its place, which can echo the bearer the read carried.
+// So a block of a plan's two types whose words the daemon would hand on to a caller that prints
+// them is refused, naming its place, its type and the rule it breaks (RefusedBlockError,
+// planBlockRule).
 func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
 	if version < 1 {
 		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
@@ -570,6 +574,9 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 		for _, attribute := range block.Attributes {
 			attributes[attribute.Name] = attribute.Value
 		}
+		if rule := c.planBlockRule(block.Type, block.ID, attributes); rule != "" {
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: %w", artifactID, version, &RefusedBlockError{Place: i + 1, Type: block.Type, Rule: rule})
+		}
 		document.Blocks = append(document.Blocks, DocumentBlock{ID: block.ID, Type: block.Type, Attributes: attributes, Text: rest[:closing]})
 	}
 	var artifact artifactResponse
@@ -580,6 +587,41 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 		document.IssueKey = *artifact.IssueKey
 	}
 	return document, nil
+}
+
+// planBlockRule is the rule a block of one of a plan's two types (plan_task, plan_role) breaks,
+// "" where it breaks none and for a block of any other type, which no plan reads. Its id is a
+// task's id or a role's name, which the plan route answers back and prints in its refusals, so it
+// is held to plan.TaskIDGrammar, which refuses ids Dispatch stores, and to no run of the bearer the
+// read carried (carries). Its `steps`, whose words a refusal names, and each value of its `needs`,
+// a reference to a block that the plan holds, are held to no run of that bearer alone; a value is
+// named by its place among the values, split as plan's FromBlocks splits them.
+func (c *HTTPClient) planBlockRule(typ, id string, attributes map[string]string) string {
+	if typ != plan.TaskBlockType && typ != plan.RoleBlockType {
+		return ""
+	}
+	const carried = "a run of the credential Legion's read of Dispatch carried"
+	switch {
+	case !plan.IsTaskID(id):
+		return "has an id outside the task-id grammar " + plan.TaskIDGrammar
+	case c.carries(id):
+		return "has an id holding " + carried
+	case c.carries(attributes["steps"]):
+		return "has steps holding " + carried
+	}
+	for i, value := range strings.Fields(attributes["needs"]) {
+		if c.carries(value) {
+			return fmt.Sprintf("has value %d of its needs holding %s", i+1, carried)
+		}
+	}
+	return ""
+}
+
+// carries says whether text holds a run of the bearer every request of the client carries, by the
+// rule envoy redacts a request's echo by (oauth2call.Tokens): text that echoes it, as whatever
+// answers in Dispatch's place can.
+func (c *HTTPClient) carries(text string) bool {
+	return oauth2call.Tokens(text, -1, c.token) != text
 }
 
 // ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
