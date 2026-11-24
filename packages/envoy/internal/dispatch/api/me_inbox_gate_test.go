@@ -8,15 +8,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // gateSeeded is one issue the gate test seeds, with the row it puts in alice's Inbox and the gate
@@ -161,62 +155,19 @@ func versionReads(texts []string) (probes int, beside []string) {
 	return probes, beside
 }
 
-// gateBatchTexts is the rig's statement recorder (meInboxStatements), which records a batch as the
-// one round trip it is and not as its text, with the text of each query a counted read's batches
-// carry kept beside it. The one read sends its one statement in the batch of its own transaction
-// (readMeInbox), so a batch is where that statement's text is.
-type gateBatchTexts struct {
-	*meInboxStatements
-	mu    sync.Mutex
-	texts []string
-}
-
-func (g *gateBatchTexts) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
-	if ctx.Value(countedRead{}) != nil {
-		g.mu.Lock()
-		for _, query := range data.Batch.QueuedQueries {
-			g.texts = append(g.texts, query.SQL)
-		}
-		g.mu.Unlock()
-	}
-	return g.meInboxStatements.TraceBatchStart(ctx, conn, data)
-}
-
-// taken is every text kept since the last call.
-func (g *gateBatchTexts) taken() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	texts := g.texts
-	g.texts = nil
-	return texts
-}
-
-// newGateRig is newMeInboxRig's rig, traced through gateBatchTexts so the batches' texts are kept
-// too.
-func newGateRig(t *testing.T) (*meInboxRig, *gateBatchTexts) {
-	t.Helper()
-	database := storetest.Open(t)
-	texts := &gateBatchTexts{meInboxStatements: &meInboxStatements{}}
-	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, texts, nil)}
-	handler, _, _ := newTestServer(t, testServerOptions{
-		store:    traced,
-		identity: headerIdentity(database),
-		// As newMeInboxRig's: a delay no test reaches keeps a document's settlement out of the
-		// read's statements.
-		settle: time.Hour,
-	})
-	return &meInboxRig{database: database, traced: traced, handler: handler, statements: texts.meInboxStatements}, texts
-}
-
 // The one read carries each entry's approval gate in its one statement (c-approval-one-statement):
-// over 3 issues with a row each and over 12, alice's Inbox is one statement, so no statement reads a
-// gate document's versions, its review or its request for each document; the text of what the read
-// sent reads artifact_versions only through the probe of each gate document's latest version
-// (gateVersionProbe), so it reads no document's version rows to pick the latest among them; each row
-// carries the gate its issue was seeded to, on its ask and on its thread; and the issue read answers
-// the same gate, field for field, so one computation answers both reads.
+// over 3 issues with a row each and over 12, alice's Inbox is one statement. The rig counts each
+// statement of a batch on its own (newMeInboxRig's eachOfABatch) and leaves out only the four that
+// frame the read's statement in its read-only transaction and read nothing: its begin, its two
+// set local settings and its commit (meInboxReadStatements). So no statement beside it, in its
+// batch or not, reads a gate document's versions, its review or its request for each document;
+// the text of every statement the read sent reads artifact_versions only through the probe of
+// each gate document's latest version (gateVersionProbe), so it reads no document's version rows
+// to pick the latest among them; each row carries the gate its issue was seeded to, on its ask
+// and on its thread; and the issue read answers the same gate, field for field, so one
+// computation answers both reads.
 func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
-	rig, texts := newGateRig(t)
+	rig := newMeInboxRig(t)
 	handler := rig.handler
 	createReferenceAPIProject(t, handler, "GATE")
 	publishGatedSteps(t, handler, "GATE", []string{model.GatedStepCriteria, model.GatedStepSpec})
@@ -238,15 +189,13 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 
 	// read reads alice's Inbox on a request whose statements the rig records, and holds each
 	// row's gate to what its issue was seeded to. It answers the statements the rig counts and
-	// the text of every query the read sent, its batch's among them.
+	// every statement the read sent, each of its batch on its own.
 	read := func(rows int) (meInboxResponse, []string, []string) {
 		t.Helper()
 		rig.statements.ownStatements(t, rig.traced)
-		texts.taken()
 		marked := context.WithValue(context.Background(), countedRead{}, true)
 		answer := decodeMeInbox(t, meInboxRequestAs(t, handler, marked, "alice", url.Values{"state": {myRepliesStateInbox}}))
-		statements := rig.statements.ownStatements(t, rig.traced)
-		sent := append(slices.Clone(statements), texts.taken()...)
+		sent := rig.statements.ownStatements(t, rig.traced)
 		if len(answer.Entries) != rows {
 			t.Fatalf("alice's Inbox holds %d rows, want the %d seeded: %v", len(answer.Entries), rows, meInboxNodes(answer))
 		}
@@ -274,7 +223,7 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 		if asks == 0 || threads == 0 {
 			t.Fatalf("alice's Inbox holds %d ask rows and %d thread rows, want both kinds", asks, threads)
 		}
-		return answer, statements, sent
+		return answer, meInboxReadStatements(sent), sent
 	}
 
 	_, three, threeSent := read(3)
@@ -292,8 +241,10 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	twelve, twelveStatements, twelveSent := read(12)
 
 	if len(three) != 1 || len(twelveStatements) != 1 {
-		t.Fatalf("the 3-row read ran %d statements and the 12-row read %d, want 1 each:\n%s\n---\n%s",
-			len(three), len(twelveStatements), strings.Join(three, "\n---\n"), strings.Join(twelveStatements, "\n---\n"))
+		t.Fatalf("the 3-row read ran %d statements and the 12-row read %d, want 1 each, counting each statement of a batch "+
+			"but the begin, the set local settings and the commit that frame the read's; every statement the 3-row read sent:\n%s\n"+
+			"=== every statement the 12-row read sent:\n%s",
+			len(three), len(twelveStatements), strings.Join(threeSent, "\n---\n"), strings.Join(twelveSent, "\n---\n"))
 	}
 	// One statement can pull every version row of each gate document and leave the latest to Go as
 	// well as it can probe for it, so the text of what each read sent is held to the probe too.

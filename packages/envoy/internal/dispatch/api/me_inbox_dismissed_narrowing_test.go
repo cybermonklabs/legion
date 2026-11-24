@@ -58,13 +58,14 @@ const (
 // many threads the person has dismissed. With no limit it answers 200, as it does with limit=200,
 // newest dismissal first, with a next_cursor; a limit above 200 is refused by its key; the cursor
 // walks every dismissed thread of both kinds once, in order, a tie across the first page's edge
-// included, and the last page names no cursor; each page's total is the page's own entries. The
-// statement of the first page reads its pile through user_threads_dismissed_replied and never
-// scans user_threads, under the custom plan, the plan of its own arguments, and under the generic
-// plan the read runs (meInboxGenericPlan). It reads no more rows with 1,000 dismissed threads than
-// with 250, because each arm is cut to the page before the walk (meInboxDismissedCut) and R2's
-// gate is read for the page's entries alone (meInboxGateReads). The rows it reads are the actual
-// rows of every scan node of its generic plan (scanRowsOf).
+// included, and the page that brings the walk to the last of them names no cursor, so the walk
+// reads no empty page; each page's total is the page's own entries. The statement of the first
+// page reads its pile through user_threads_dismissed_replied and never scans user_threads, under
+// the custom plan, the plan of its own arguments, and under the generic plan the read runs
+// (meInboxGenericPlan). It reads no more rows with 1,000 dismissed threads than with 250, because
+// each arm is cut to the page before the walk (meInboxDismissedCut) and R2's gate is read for the
+// page's entries alone (meInboxGateReads). The rows it reads are the actual rows of every scan
+// node of its generic plan (scanRowsOf).
 //
 // Both piles also hold 1,000 threads the person alone wrote in, each dismissed by their own reply
 // at a moment newer than every listed dismissal, as R1 writes them (seedOwnWriteDismissals). No
@@ -110,6 +111,10 @@ func TestTheDismissedNarrowingAnswersAtMostOnePage(t *testing.T) {
 		t.Fatalf("?state=dismissed&limit=500: status=%d body=%s, want 400 INVALID_QUERY naming limit", refused.Code, refused.Body.String())
 	}
 
+	// The walk follows each cursor until a page names none. The page whose entries bring it to the
+	// last dismissed thread is the last page and names no cursor; a cursor there leads to a page of
+	// no entry, which the walk never reads. Each is an error of its own, so a cursor rule that names
+	// a cursor on the last page prints both.
 	read := []string{}
 	query := url.Values{"state": {myRepliesStateDismissed}}
 	for page := 1; ; page++ {
@@ -123,7 +128,16 @@ func TestTheDismissedNarrowingAnswersAtMostOnePage(t *testing.T) {
 		}
 		nodes := meInboxNodes(answer)
 		unlisted(fmt.Sprintf("page %d", page), nodes)
+		if len(nodes) == 0 {
+			t.Errorf("page %d answers no entry after %d of the %d dismissed threads: the page before it named a cursor with no thread past it",
+				page, len(read), len(want))
+		}
+		completes := len(read) < len(want) && len(read)+len(nodes) >= len(want)
 		read = append(read, nodes...)
+		if completes && answer.NextCursor != "" {
+			t.Errorf("page %d brings the walk to %d of the %d dismissed threads and names the cursor %q, want no cursor on the last page",
+				page, len(read), len(want), answer.NextCursor)
+		}
 		if answer.NextCursor == "" {
 			break
 		}
