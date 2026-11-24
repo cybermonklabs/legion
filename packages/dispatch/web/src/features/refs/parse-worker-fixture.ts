@@ -1,4 +1,4 @@
-import { onTestFinished } from "bun:test";
+import { afterEach, onTestFinished } from "bun:test";
 
 import { createHeadlessProof, type HeadlessProofEditor } from "@legion/proof-editor/headless";
 
@@ -38,6 +38,20 @@ type Listener = (event: unknown) => void;
 
 /** The read-only engine the real worker builds, here on the test's own thread, built once. */
 let headless: Promise<HeadlessProofEditor> | undefined;
+
+/** Every wait no body has ended yet, over every fake a row installed. A row that ends while one
+ *  stands waited inside React's `act`, which that wait holds open, and React keeps one queue for
+ *  every surface: the next row's render would paint nothing, and each row after it fail on a body
+ *  that never appears. Ending the wait closes the act, and this runs before the preload's cleanup
+ *  unmounts (Bun 1.4.4 runs the afterEach of an imported module before the preload's, and a row's
+ *  `onTestFinished` after both), so that cleanup is not nested in an act that never ends. */
+const unfinished = new Set<{ giveUp: () => void }>();
+
+afterEach(() => {
+  for (const wait of [...unfinished]) {
+    wait.giveUp();
+  }
+});
 
 function tick(): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -126,9 +140,9 @@ export function installFakeParseWorker({
 } = {}): InstalledParseWorker {
   const workers: FakeParseWorker[] = [];
   const taken: { request: ParseRequest; worker: FakeParseWorker }[] = [];
-  /** The rows' waits for a count of bodies still to come, each resolved by the post that reaches
-   *  its count. */
-  const waits: { count: number; resolve: () => void }[] = [];
+  /** The rows' waits for a count of bodies still to come, each ended by the post that reaches its
+   *  count, or by the end of the row that made it (`unfinished`). */
+  const waits: { count: number; bodyCame: () => void; giveUp: () => void }[] = [];
   let asked = 0;
 
   setParseWorkerFactory(() => {
@@ -140,7 +154,7 @@ export function installFakeParseWorker({
       taken.push({ request, worker: from });
       for (const wait of waits.filter(({ count }) => count <= taken.length)) {
         waits.splice(waits.indexOf(wait), 1);
-        wait.resolve();
+        wait.bodyCame();
       }
     });
     workers.push(worker);
@@ -151,29 +165,43 @@ export function installFakeParseWorker({
     if (taken.length >= count) {
       return Promise.resolve();
     }
-    const { promise, resolve } = Promise.withResolvers<void>();
-    let resolved = false;
-    waits.push({
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    /** What the row waited for and what the worker had, read when the wait ends. */
+    const failure = () =>
+      new Error(
+        `The parse worker had ${taken.length} ${taken.length === 1 ? "body" : "bodies"} when ` +
+          `the row ended, and the row waited for ${count}: a body longer than ` +
+          "markdownWorkerThreshold is still parsed on the page's own thread, or the Markdown " +
+          "engine never loaded."
+      );
+    let came = false;
+    const wait = {
       count,
-      resolve: () => {
-        resolved = true;
+      /** The post that brings the bodies to `count`. */
+      bodyCame: () => {
+        came = true;
+        unfinished.delete(wait);
         resolve();
       },
-    });
+      /** The end of the row that made the wait, before the preload's cleanup (`unfinished`). */
+      giveUp: () => {
+        unfinished.delete(wait);
+        reject(failure());
+      },
+    };
+    waits.push(wait);
+    unfinished.add(wait);
     // Bun 1.4.4 runs a row's `onTestFinished` after the row's `afterEach` hooks, the preload's
     // included, for a row its deadline ended too and on every rerun, and reports what it throws
     // against that row; a hook registered mid-row, after awaits, attaches to the row running. So a
-    // wait still outstanding when the row ends fails it naming what it waited for, beside Bun's own
-    // "timed out" line, with no bound of the fixture's own, and the throw skips none of the row's
-    // other hooks, which have already run.
+    // wait no body ended fails its row naming what it waited for, beside Bun's own "timed out"
+    // line, with no bound of the fixture's own, and the throw skips none of the row's other
+    // hooks, which have already run. The wait itself was ended by the afterEach above, which runs
+    // before those hooks; Bun reports that rejection once more as an unhandled error between
+    // tests, with this same text, since the row it belonged to has ended.
     onTestFinished(() => {
-      if (!resolved) {
-        throw new Error(
-          `The parse worker had ${taken.length} ${taken.length === 1 ? "body" : "bodies"} when ` +
-            `the row ended, and the row waited for ${count}: a body longer than ` +
-            "markdownWorkerThreshold is still parsed on the page's own thread, or the Markdown " +
-            "engine never loaded."
-        );
+      if (!came) {
+        throw failure();
       }
     });
     return promise;
