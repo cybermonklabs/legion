@@ -21,11 +21,253 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
+
+// ---- the model stand-in of one driven pane, and the responses it served --------------------------
+
+// stepModelsAnswerDelay is what every stand-in of the chain waits before each answer, the same for
+// every request, as a model's own latency. A step's start read is made before its prompt reaches
+// the pane, so this puts the read more than the comparator's two seconds from the first response
+// of the turn that prompt starts.
+const stepModelsAnswerDelay = 3 * time.Second
+
+// stepModelsWaiting is the text a stand-in answers a turn it makes no call in, the tool's result
+// among them: the WAITING line the phase-stall reminder takes as a worker that said it is waiting,
+// so the reminder adds no turn of its own (packages/pi-shared/src/phase-stall.ts, WAITING_REPLY).
+const stepModelsWaiting = "WAITING on the daemon's next task: the legion tool has answered."
+
+// stepModelsSubagentMarker is in the prompt of each Claude Code subagent this chain starts, which
+// is how a Claude pane's stand-in tells a subagent's request from a turn of the role's. Oh My Pi's
+// subagent is told by deepWorkerSystemLine instead, which Oh My Pi puts in the system prompt of a
+// `task` subagent of the deep-worker agent and nowhere else (busy_relaunch_live_test.go).
+const stepModelsSubagentMarker = "STEP-MODELS-SUBAGENT"
+
+// servedResponse is one response a stand-in served, as the run writes it to standin-served.json:
+// the claim whose pane asked, the response's own id, whether it was a subagent's rather than the
+// agent's own conversation, the model the answer named, and when the answer ended. A record's
+// counts are held to this list rather than to the transcript, since the transcript is the
+// harness's own account of the same calls, which the comparator reads apart.
+type servedResponse struct {
+	Claim    string    `json:"claim"`
+	ID       string    `json:"id"`
+	Subagent bool      `json:"subagent"`
+	Model    string    `json:"model"`
+	EndedAt  time.Time `json:"endedAt"`
+}
+
+// stepModelsStep is what a stand-in answers for one step of its claim: four responses where the
+// agent ends the step itself, three where another fact ends it.
+//
+//   - ended: a text block and a shell call under one id, then a subagent call, then the call of
+//     the `legion` tool that completes the handoff, then the WAITING text that ends the turn after
+//     the tool's result. The end read comes as the third response's call is applied, and the
+//     fourth waits three seconds, so it ends after that read: the record answers the three calls
+//     of the set model and none of the subagent's.
+//   - stopped: the first two as above, then the WAITING text, which ends the turn. The architect
+//     ends the step over the daemon's route while the claim sits idle.
+type stepModelsStep struct {
+	ended bool
+	// verdict rides the handoff completion of an ended step: a tester's `fail` sends the issue
+	// back for a second step of the same implementer, which is how one issue gives each harness
+	// two steps its agent ended.
+	verdict string
+}
+
+// stepModelsStandin is the model endpoint of one driven pane. Its harness decides the names of the
+// three tools a turn calls and how a subagent's request is told from the role's; its steps are the
+// script, one entry per step the claim works in turn; and its list is what it answered.
+type stepModelsStandin struct {
+	*modelStandin
+
+	token   claim.Token
+	harness string
+	// model is what every answer of this stand-in names. It is the model the pane asked for
+	// everywhere in the chain; only the capture that measures what a transcript holds of a model
+	// that never answered serves another.
+	model string
+	steps []stepModelsStep
+
+	mu sync.Mutex
+	// step is the step of steps this stand-in is answering, and inStep how many responses of the
+	// agent's own conversation it has served within it. A step ends with the text that ends its
+	// turn, and the next prompt of the role's starts the next.
+	step, inStep int
+	ending       bool
+	list         []servedResponse
+}
+
+// newStepModelsStandin serves one pane's endpoint under the provider name, which is also the
+// provider half of the model an Oh My Pi overlay names (standinModel).
+func newStepModelsStandin(t *testing.T, name, harness, model string, token claim.Token, steps []stepModelsStep) *stepModelsStandin {
+	t.Helper()
+	s := &stepModelsStandin{
+		modelStandin: &modelStandin{name: name}, token: token, harness: harness, model: model, steps: steps,
+	}
+	s.serve(t, s)
+	return s
+}
+
+// claudeTools and ompTools are the three tools a turn calls on each harness: a shell command, a
+// subagent, and the `legion` tool, which Claude Code prefixes with its one MCP server's name.
+var (
+	claudeTools = [3]string{"Bash", "Task", "mcp__legion__legion"}
+	ompTools    = [3]string{"bash", "task", "legion"}
+)
+
+// tools is this harness's three tool names.
+func (s *stepModelsStandin) tools() [3]string {
+	if s.harness == "claude" {
+		return claudeTools
+	}
+	return ompTools
+}
+
+func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	body, ok := s.take(w, req)
+	if !ok {
+		return
+	}
+	seen := readStandinRequest([]byte(body), time.Now())
+	subagent := seen.subagent
+	if s.harness == "claude" {
+		subagent = strings.Contains(seen.conversation, stepModelsSubagentMarker)
+	}
+	// The same wait before every answer, a model's own latency, so a read made before a prompt is
+	// more than the comparator's two seconds from the response that prompt earns.
+	time.Sleep(stepModelsAnswerDelay)
+	id := s.answer(w, seen, subagent)
+	s.mu.Lock()
+	s.list = append(s.list, servedResponse{
+		Claim: string(s.token), ID: id, Subagent: subagent, Model: s.model, EndedAt: time.Now(),
+	})
+	s.mu.Unlock()
+}
+
+// answer writes one response and gives back its id. A subagent's request is answered with one text
+// that ends it, whatever the role's step is doing: a subagent is no turn of the agent's own
+// conversation, and no count of a record names it.
+func (s *stepModelsStandin) answer(w http.ResponseWriter, seen seenRequest, subagent bool) string {
+	if subagent {
+		return streamAnthropicBlocks(w, s.model, "end_turn",
+			stepModelsText("The subagent ran the scratch check and reports that it printed nothing."))
+	}
+	step, place := s.place(seen)
+	tools := s.tools()
+	switch {
+	case place == 1:
+		// One response of two content blocks under one id: what the turn is about to do, and the
+		// shell call it makes. A reader that counts blocks rather than responses counts this twice.
+		return streamAnthropicBlocks(w, s.model, "tool_use",
+			stepModelsText("I will run the scratch check of this step."),
+			stepModelsToolUse(s.name+"-shell", tools[0], map[string]any{"command": "true"}))
+	case place == 2:
+		return streamAnthropicBlocks(w, s.model, "tool_use",
+			stepModelsToolUse(s.name+"-subagent", tools[1], s.subagentInput()))
+	case place == 3 && step.ended:
+		input := map[string]any{"op": "handoff_complete", "summary": "The step is done, and this reports it."}
+		if step.verdict != "" {
+			input["verdict"] = step.verdict
+		}
+		if s.harness != "claude" {
+			input["i"] = "Reporting the step's completion"
+		}
+		return streamAnthropicBlocks(w, s.model, "tool_use",
+			stepModelsToolUse(s.name+"-legion", tools[2], input))
+	default:
+		return streamAnthropicBlocks(w, s.model, "end_turn", stepModelsText(stepModelsWaiting))
+	}
+}
+
+// subagentInput is the call that starts one subagent, in the shape each harness takes: Oh My Pi a
+// `task` of the deep-worker agent, whose own request the system prompt names
+// (deepWorkerSystemLine); Claude Code a `Task` of the general-purpose agent, whose prompt carries
+// the marker this stand-in finds in the subagent's own first user message.
+func (s *stepModelsStandin) subagentInput() map[string]any {
+	if s.harness == "claude" {
+		return map[string]any{
+			"subagent_type": "general-purpose",
+			"description":   "Run the scratch check",
+			"prompt":        stepModelsSubagentMarker + ": run the scratch check in the workspace and report what it printed.",
+		}
+	}
+	return subagentCall(stepModelsSubagentMarker)
+}
+
+// place is the step this response belongs to and its place in that step, counted over the agent's
+// own conversation alone. A step ends with the text that ends its turn, and the next prompt of the
+// role's — a new task from the daemon — starts the next step.
+func (s *stepModelsStandin) place(seen seenRequest) (stepModelsStep, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ending && seen.prompt {
+		s.step++
+		s.inStep = 0
+		s.ending = false
+	}
+	s.inStep++
+	step := stepModelsStep{}
+	if s.step < len(s.steps) {
+		step = s.steps[s.step]
+	}
+	if s.inStep > 3 || (s.inStep == 3 && !step.ended) {
+		// The text that ends this turn: the next prompt of the role's starts the next step.
+		s.ending = true
+	}
+	return step, s.inStep
+}
+
+// servedList is every response this stand-in answered, oldest first.
+func (s *stepModelsStandin) servedList() []servedResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]servedResponse(nil), s.list...)
+}
+
+// mainResponsesBetween is how many responses of the agent's own conversation this stand-in served
+// between two times, which is what a step's record must count: a subagent's response is in none of
+// them. The bounds are a step's two read times, and a response counts where it ended after the
+// first and at or before the second.
+func (s *stepModelsStandin) mainResponsesBetween(after, until time.Time) int {
+	count := 0
+	for _, served := range s.servedList() {
+		if served.Subagent {
+			continue
+		}
+		if served.EndedAt.After(after) && !served.EndedAt.After(until) {
+			count++
+		}
+	}
+	return count
+}
+
+// stepModelsText is one text block of a stand-in's answer.
+func stepModelsText(text string) anthropicBlock {
+	return anthropicBlock{
+		open:  `{"type":"text","text":""}`,
+		delta: fmt.Sprintf(`{"type":"text_delta","text":%q}`, text),
+	}
+}
+
+// stepModelsToolUse is one tool_use block: the block opens with an empty input and the one delta
+// carries the whole of it, as the plugins' own pane harness writes one.
+func stepModelsToolUse(id, name string, input map[string]any) anthropicBlock {
+	arguments, _ := json.Marshal(input)
+	open, _ := json.Marshal(map[string]any{"type": "tool_use", "id": "toolu_" + id, "name": name, "input": map[string]any{}})
+	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
+	return anthropicBlock{open: string(open), delta: string(delta)}
+}
+
+// ---- the reads of a stand-in's own stream --------------------------------------------------------
 
 // standinEvent is one event of a stand-in's Messages stream, as a harness reads it off the wire:
 // the `event:` name and the JSON of the `data:` line under it.

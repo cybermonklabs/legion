@@ -527,7 +527,12 @@ func standinResponseID() string {
 // and send its result in the next request (streamAnthropicToolUse). served is the model the
 // answer names, which is the model the request asked for in every proof but the capture that
 // measures what a transcript holds of a model that never answered.
-func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ...anthropicBlock) {
+//
+// It answers the id it wrote, which a stand-in that keeps a list of the responses it served
+// needs: a reader of a transcript counts one call for each id, so that list and the transcript
+// are joined by it. A caller with no such list, streamAnthropicBlock below among them, calls this
+// as a statement and drops the id.
+func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ...anthropicBlock) string {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -537,9 +542,10 @@ func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ..
 			flusher.Flush()
 		}
 	}
+	id := standinResponseID()
 	event("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":%q,"type":"message","role":"assistant",`+
 		`"model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}`,
-		standinResponseID(), served))
+		id, served))
 	for index, block := range blocks {
 		event("content_block_start", fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":%s}`, index, block.open))
 		event("content_block_delta", fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":%s}`, index, block.delta))
@@ -547,6 +553,7 @@ func streamAnthropicBlocks(w http.ResponseWriter, served, stop string, blocks ..
 	}
 	event("message_delta", fmt.Sprintf(`{"type":"message_delta","delta":{"stop_reason":%q,"stop_sequence":null},"usage":{"output_tokens":16}}`, stop))
 	event("message_stop", `{"type":"message_stop"}`)
+	return id
 }
 
 // streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
