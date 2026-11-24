@@ -664,14 +664,22 @@ type tokenAnswer struct {
 // is a RefusedError; everything else — a broker that did not answer, a 5xx, an answer that is
 // not this grant's — is an error a renewal may ask about again.
 //
-// The endpoint is built from the address's Raw, since the request must reach the broker as
-// configured; every error names it as shown, cipheraddr's Call of it, and wraps a failure of the
-// request itself through the address's Error, so no error of a trade carries a user name,
-// password, query or fragment the configured address holds.
+// The endpoint is TokenPath joined onto the address's path, the address's query kept and its
+// fragment dropped (cipheraddr.Address.Join), since the request must reach the broker as
+// configured: the path appended to the address's text would sit inside a query or a fragment the
+// address holds, and the broker would be asked another path. Every error names the endpoint as
+// shown, cipheraddr's Call of it, and wraps a failure of the request itself through the address's
+// Error, so no error of a trade carries a user name, password, query or fragment the configured
+// address holds. An address that does not parse or names no host is refused by its class, "not a
+// valid URL" (redact.ClassNotAURL), never url.Parse's error, which quotes the address whole.
 func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 	ctx, cancel := context.WithTimeout(ctx, tradeTimeout)
 	defer cancel()
-	endpoint := c.brokerURL.Raw() + TokenPath
+	joined, err := c.brokerURL.Join(TokenPath)
+	if err != nil {
+		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), c.brokerURL, redact.Masked(err, redact.ClassNotAURL))
+	}
+	endpoint := joined.String()
 	shown := c.brokerURL.Call(endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
