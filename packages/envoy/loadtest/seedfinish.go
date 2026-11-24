@@ -104,17 +104,19 @@ func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverag
 	case res.status != http.StatusOK:
 		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, res.text())
 	}
+	// The report is the model type itself, so every member it has or gains is read, with the
+	// three Dispatch writes words in shadowed by the box at depth 0: encoding/json fills the
+	// shallower member of a name, and the model type's *string of it is left as it is.
 	var report struct {
-		Identity *redact.RemoteText         `json:"identity"`
-		Place    *redact.RemoteText         `json:"place"`
-		Model    *redact.RemoteText         `json:"model"`
-		Total    model.SearchCoverageCounts `json:"total"`
-		Kinds    model.SearchCoverageKinds  `json:"kinds"`
+		model.SearchCoverage
+		Identity *redact.RemoteText `json:"identity"`
+		Place    *redact.RemoteText `json:"place"`
+		Model    *redact.RemoteText `json:"model"`
 	}
 	if err := res.answer.Decode(&report); err != nil {
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)
 	}
-	coverage.Total, coverage.Kinds = report.Total, report.Kinds
+	coverage = report.SearchCoverage
 	coverage.Identity = shownEmbedder(report.Identity)
 	coverage.Place = shownEmbedder(report.Place)
 	coverage.Model = shownEmbedder(report.Model)

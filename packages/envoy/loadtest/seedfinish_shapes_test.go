@@ -13,13 +13,14 @@ import (
 )
 
 // shapeCoverageBody is a coverage body as the server writes it (model.SearchCoverage), covering
-// four issues and lacking nothing, with each embedder member as embedder names it, which is a
-// JSON null where it is nil.
+// four issues and lacking nothing, one kind it indexes nothing of, and each embedder member as
+// embedder names it, which is a JSON null where it is nil.
 func shapeCoverageBody(embedder map[string]any) map[string]any {
 	none := map[string]any{"items": 0, "current": 0, "lacking": 0, "failed": 0, "oldest_lacking_seconds": nil}
 	issue := map[string]any{"items": 4, "current": 4, "lacking": 0, "failed": 0, "oldest_lacking_seconds": nil}
 	body := map[string]any{"total": issue, "kinds": map[string]any{"issue": issue, "document_block": none,
-		"comment_block": none, "message_block": none, "ask_part": none}}
+		"comment_block": none, "message_block": none, "ask_part": none},
+		"not_indexed": []map[string]any{{"kind": "project", "items": 3}}}
 	for member, value := range embedder {
 		body[member] = value
 	}
@@ -72,6 +73,9 @@ func TestTheCoverageReadNamesTheEmbedderAsTheRuleReadsItAndNamesNoneWhereTheRepo
 		}
 		if coverage.Kinds.Issue.Items != 4 || coverage.Total.Items != 4 {
 			t.Errorf("the report counts %d issue items of %d, want the body's 4 of 4", coverage.Kinds.Issue.Items, coverage.Total.Items)
+		}
+		if len(coverage.NotIndexed) != 1 || coverage.NotIndexed[0].Kind != "project" || coverage.NotIndexed[0].Items != 3 {
+			t.Errorf("the report's uncovered kinds read %+v, want the body's one project of 3 items", coverage.NotIndexed)
 		}
 	})
 	t.Run("none", func(t *testing.T) {
