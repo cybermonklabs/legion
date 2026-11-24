@@ -90,33 +90,16 @@ func PlainDatabase(t testing.TB, prefix string) string {
 	return database
 }
 
-// create makes an empty database named <prefix>_<random> on the server dsn names, and answers its
-// URL and the function that drops it. Both URLs it names — the admin database's and the new
-// database's — come from DatabaseURL, and it makes them before it connects, so a DSN whose
-// rewrite names another server ends the call with no connection and no database. Database is its
-// caller: one database per test.
+// create takes an empty database named <prefix>_<random> on the server dsn names, and answers its
+// URL and the function that gives it back. Both URLs it names come from DatabaseURL, and it makes
+// them before it connects, so a DSN whose rewrite names another server ends the call with no
+// connection and no database. Database is its caller: one database per test.
 //
-// The statement runs on the test binary's one admin pool, and the drop goes through the queue
-// that pool holds (queue.go, which says what a create and a drop cost the server).
+// The database comes from this binary's pool, which resets and reads back every database a test
+// gives it before another test takes it (pool.go, which says what a create costs the server and
+// what the reading holds).
 func create(dsn, prefix string) (string, func() error, error) {
-	name, err := RandomName(prefix)
-	if err != nil {
-		return "", nil, err
-	}
-	database, err := DatabaseURL(dsn, name)
-	if err != nil {
-		return "", nil, err
-	}
-	admin, err := adminPool(dsn)
-	if err != nil {
-		return "", nil, err
-	}
-	// A copy of template1's files. Created the default way, from PostgreSQL 15, every page of
-	// template1 goes into the write-ahead log: 4.4 MB of log for each empty database.
-	if _, err := admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
-		return "", nil, fmt.Errorf("create %s: %w", name, err)
-	}
-	return database, func() error { return dropDatabase(admin, name) }, nil
+	return take(dsn, shape{prefix: prefix})
 }
 
 // insufficientPrivilege is PostgreSQL's 42501, which a forced drop answers when a session of the

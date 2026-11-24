@@ -11,12 +11,10 @@
 // this size is megabytes of log per test. A file copy writes a few hundred bytes of log; Postgres
 // forces a checkpoint before and after the copy.
 //
-// A clone is dropped in the background once its test ends, and Main waits for the drops before it
-// drops the template. Dropping a database forces a checkpoint and waits for it, and every package
-// testing against the same server queues on its one checkpointer: a test that waited for its own
-// drop spent that queue's time on its clock. internal/testpg/testdb's queue.go holds the same
-// queue for the databases that package creates, which are every other package's; a binary that
-// takes both holds a slot budget of each, and each budget is half an admin pool of four.
+// A clone comes from internal/testpg/testdb's pool and goes back to it when its test ends, reset
+// and read against the template (that package's pool.go): a run clones as many databases as it
+// holds at once rather than one per test, because a create and a drop each force a checkpoint and
+// every package testing against the same server queues on its one checkpointer.
 
 package testpg
 
@@ -69,22 +67,7 @@ func Clone(t testing.TB, prefix string) string {
 	if shared.err != nil {
 		t.Fatal(shared.err)
 	}
-	name, err := testdb.RandomName(prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	clone, err := testdb.DatabaseURL(shared.server, name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if clone, err = testdb.PoolBounded(shared.server, clone); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := shared.admin.Exec(context.Background(), cloneStatement(name)); err != nil {
-		t.Fatalf("clone %s from the template: %v", name, err)
-	}
-	t.Cleanup(func() { dropInBackground(name) })
-	return clone
+	return testdb.TemplateCopy(t, shared.server, shared.template, prefix)
 }
 
 // CloneStore is Clone opened, its pool closed when the test ends — before the clone is dropped,
@@ -115,12 +98,6 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
-}
-
-// cloneStatement returns the create database that makes name a copy of the template's files rather
-// than a copy through the write-ahead log (the file comment says why).
-func cloneStatement(name string) string {
-	return "create database " + name + " template " + shared.template + " strategy file_copy"
 }
 
 // Main runs a package's tests, waits for their clones to drop, drops the template Clone copied,
@@ -160,37 +137,9 @@ func Main(prefix string, run func() int) int {
 }
 
 // adminConns is the admin pool's size, whatever pool size LEGION_TEST_PG_DSN sets (adminConfig):
-// the pool is this file's own bookkeeping, sized against dropSlots, not a pool a test opens. On a
-// large machine every package that clones opens one at once on one server, so it stays small.
+// the pool is this file's own bookkeeping, for the template it migrates, not a pool a test opens.
+// Every clone a test takes comes from internal/testpg/testdb's pool, on that package's admin pool.
 const adminConns = 4
-
-// dropSlots holds the drops in flight to half the admin pool's adminConns connections. A clone
-// takes one of those connections too, and a `drop database … with (force)` forces a checkpoint
-// and waits for it: with every connection on drops — a package whose parallel subtests each clone
-// one database queues one drop per subtest that ends — the next clone waits for a checkpoint on
-// its own clock, which is the cost dropInBackground exists to move off it.
-var dropSlots = make(chan struct{}, adminConns/2)
-
-// dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
-// together share one checkpoint.
-func dropInBackground(name string) {
-	shared.drops.Go(func() {
-		dropSlots <- struct{}{}
-		defer func() { <-dropSlots }()
-		// Drop rather than a bare statement: a forced drop terminates every other session of
-		// the database, which PostgreSQL refuses to a login that is neither superuser nor a
-		// member of pg_signal_backend as soon as one session belongs to another role — an
-		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
-		// pod shares one server whose test login holds neither privilege, so without the wait
-		// this drop fails the package (dispatch://INFRA-714 round six). Drop also waits out the
-		// 55006 a forced drop answers while a backend it terminated has not exited yet.
-		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
-			shared.dropMu.Lock()
-			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
-			shared.dropMu.Unlock()
-		}
-	})
-}
 
 // prepare opens the admin pool and migrates the template every Clone copies. It logs one line to
 // stderr naming the package's prefix and how long the template took: a run that logs two has lost
@@ -253,8 +202,7 @@ func prepare(dsn string) error {
 
 // adminConfig is the admin pool's configuration on the server dsn names: that server's postgres
 // database through testdb.DatabaseURL, which takes out every pool key the DSN sets, and
-// adminConns connections, so dropSlots' count holds whatever pool size the DSN sets for the tests'
-// own pools.
+// adminConns connections, whatever pool size the DSN sets for the tests' own pools.
 func adminConfig(dsn string) (*pgxpool.Config, error) {
 	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
 	if err != nil {

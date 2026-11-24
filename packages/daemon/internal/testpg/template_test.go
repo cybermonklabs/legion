@@ -43,12 +43,12 @@ func TestTwoClonesInOneProcessBuildOneTemplate(t *testing.T) {
 	}
 }
 
-// The admin pool holds twice the drops in flight (dropSlots), whatever pool size
-// LEGION_TEST_PG_DSN sets: drops take at most half its connections, so a clone always finds one,
-// which is what dropSlots' count is for. A DSN that sized it at 2 would put every connection on
-// drops, and one that sized it at 64 would open that many admin connections in every package that
-// clones, all on one server.
-func TestTheAdminPoolHoldsTwiceTheDropsInFlightWhateverTheDSNSets(t *testing.T) {
+// The admin pool holds adminConns connections whatever pool size LEGION_TEST_PG_DSN sets: it is
+// this package's own bookkeeping, for the template it migrates, and every package that clones
+// opens one at once on one server. A DSN that sized it at 2 would leave the template's migration
+// one connection, and one that sized it at 64 would open that many admin connections in every
+// such package.
+func TestTheAdminPoolHoldsItsOwnSizeWhateverTheDSNSets(t *testing.T) {
 	t.Setenv("PGPORT", "")
 	t.Setenv("PGUSER", "legion_test")
 	for _, dsn := range []string{
@@ -60,9 +60,9 @@ func TestTheAdminPoolHoldsTwiceTheDropsInFlightWhateverTheDSNSets(t *testing.T) 
 		if err != nil {
 			t.Fatalf("adminConfig(%s): %v", dsn, err)
 		}
-		if config.MaxConns != int32(2*cap(dropSlots)) || config.MinConns != 0 {
-			t.Errorf("the admin pool on %s holds %d connections (at least %d), want %d: twice the %d drops in flight, and none held open",
-				dsn, config.MaxConns, config.MinConns, 2*cap(dropSlots), cap(dropSlots))
+		if config.MaxConns != adminConns || config.MinConns != 0 {
+			t.Errorf("the admin pool on %s holds %d connections (at least %d), want %d, and none held open",
+				dsn, config.MaxConns, config.MinConns, adminConns)
 		}
 	}
 }

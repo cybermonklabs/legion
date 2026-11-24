@@ -64,6 +64,13 @@ func Main(run func() int) int {
 
 	code := run()
 
+	// The databases the pool made outlive the tests that took them, so they are dropped here,
+	// through the same queue (pool.go).
+	if admin := openAdmin(); admin != nil {
+		for _, name := range pooledDatabases() {
+			_ = dropDatabase(admin, name)
+		}
+	}
 	shared.drops.Wait()
 	shared.failMu.Lock()
 	fails := shared.fails
@@ -82,6 +89,13 @@ func Main(run func() int) int {
 		pool.Close()
 	}
 	return code
+}
+
+// openAdmin is the admin pool where one is open, and nil where no test took a database.
+func openAdmin() *pgxpool.Pool {
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	return shared.pool
 }
 
 // adminPool is the test binary's one pool on the postgres database of the server dsn names, opened
