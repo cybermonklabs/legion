@@ -125,6 +125,17 @@ func TestTheTracersEventsInAWindowTouchNoFreshPage(t *testing.T) {
 			if i == 1 {
 				xidTouchSignalStack()
 				xidHoldWindowMemory()
+				if os.Getenv("PLANT") == "mapbetween" {
+					// CONTROL BRANCH, not for the pull request: 256 KiB of anonymous writable
+					// memory mapped between the hold and the read this test takes after it, one
+					// page of it touched, as the runtime's own block was in the failing run of
+					// 2026-11-24.
+					plant, plantErr := unix.Mmap(-1, 0, 256<<10, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+					if plantErr != nil {
+						t.Fatalf("control: map the block: %v", plantErr)
+					}
+					plant[0] = 1
+				}
 				absent = xidAbsentPages(held)
 				runtime.Gosched()
 				xidThreadRusage(&before)

@@ -337,8 +337,12 @@ func xidHoldWindowMemory() (unheld string) {
 		}
 	}
 	tracer := xidFindTracerMemory(maps)
-	for _, r := range tracer {
-		unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
+	// CONTROL BRANCH, not for the pull request: PLANT=nopopulate leaves the tracer's pages as
+	// they are, so the pages the hold found are the ones it did not make present.
+	if os.Getenv("PLANT") != "nopopulate" {
+		for _, r := range tracer {
+			unix.Syscall(unix.SYS_MADVISE, r.start, r.end-r.start, unix.MADV_POPULATE_WRITE)
+		}
 	}
 	if refused {
 		return "the kernel refused mbind MPOL_LOCAL on the process's mappings, so NUMA balancing may move a page under the window's thread"
