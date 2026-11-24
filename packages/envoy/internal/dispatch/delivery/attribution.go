@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/distinct"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -203,16 +204,9 @@ func (a *Attributor) attributionInputsFrom(facts attributionFacts) AttributionIn
 }
 
 func uniqueKeys(text string) []string {
-	return appendUnique([]string{}, issueKeyCandidate.FindAllString(text, -1)...)
-}
-
-func appendUnique(list []string, values ...string) []string {
-	for _, value := range values {
-		if !slices.Contains(list, value) {
-			list = append(list, value)
-		}
-	}
-	return list
+	keys := distinct.New()
+	keys.Add(issueKeyCandidate.FindAllString(text, -1)...)
+	return keys.List()
 }
 
 // citedIssues is every GitHub issue body cites, as https://github.com/<owner>/<repo>/issues/<n>,
@@ -241,11 +235,11 @@ func citedIssues(renames refs.Renames, repo string, body citebody.Body) []string
 		citations = append(citations, citation{match[2], "https://github.com/" + repo + "/issues/" + body.Span(match[2], match[3])})
 	}
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
-	urls := []string{}
+	urls := distinct.New()
 	for _, c := range citations {
-		urls = appendUnique(urls, renames.CanonicalURL(c.url))
+		urls.Add(renames.CanonicalURL(c.url))
 	}
-	return urls
+	return urls.List()
 }
 
 // attributionColumns are the SQL expressions attributionCandidates reads a pull request's URL

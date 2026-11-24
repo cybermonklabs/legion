@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Reading a pull request's issue keys, cited issues and session trailers keeps each value once
+  through a set beside the ordered list, where it scanned the list for every value. The cost no
+  longer grows with the square of the distinct values: a 64 KiB body of 10,943 distinct issue
+  references took 193 ms to read, against 6 ms for one repeated reference. The values and their
+  order are the same.
+time: 2026-11-21T19:56:30Z
+custom:
+    Issue: pr4889

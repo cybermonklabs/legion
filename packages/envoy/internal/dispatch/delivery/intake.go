@@ -28,6 +28,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/distinct"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -774,13 +775,13 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,
 // ported from the prototype's `session_ids`), first-seen order, no repeats.
 func sessionTrailers(messages []string) []string {
-	sessions := []string{}
+	sessions := distinct.New()
 	for _, message := range messages {
 		for _, match := range ompSessionTrailer.FindAllStringSubmatch(message, -1) {
-			sessions = appendUnique(sessions, match[1])
+			sessions.Add(match[1])
 		}
 	}
-	return sessions
+	return sessions.List()
 }
 
 // mapRunConclusion maps GitHub's raw run conclusion to this schema's narrower check constraint

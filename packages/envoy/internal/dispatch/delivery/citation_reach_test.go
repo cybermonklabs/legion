@@ -119,7 +119,7 @@ func citedIssuesOverTheWholeBody(repo, body string) []string {
 	slices.SortStableFunc(citations, func(a, b citation) int { return cmp.Compare(a.at, b.at) })
 	urls := []string{}
 	for _, c := range citations {
-		urls = appendUnique(urls, c.url)
+		urls = appendUniqueByScan(urls, c.url)
 	}
 	return urls
 }

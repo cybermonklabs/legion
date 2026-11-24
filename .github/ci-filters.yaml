@@ -3156,6 +3156,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/cireconcile/*'
   - 'packages/envoy/internal/dispatch/delivery/*'
   - 'packages/envoy/internal/dispatch/delivery/citebody/*'
+  - 'packages/envoy/internal/dispatch/delivery/distinct/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/*'
   - 'packages/envoy/internal/dispatch/delivery/measures/testdata/**'
   - 'packages/envoy/internal/dispatch/delivery/testdata/**'
