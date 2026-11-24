@@ -311,7 +311,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
       },
     });
-    expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([["region", "Which region?"]]);
   });
   test("an upload named after the document's slug replaces it too, so its stored asks are not new", async () => {
     const check = await checkRules({
@@ -323,7 +323,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
       },
     });
-    expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([["region", "Which region?"]]);
   });
   test("an upload named after the document's id is another document, so every ask in it is judged", async () => {
     const check = await checkRules({
@@ -335,9 +335,9 @@ describe("runRulesCheck: which asks a call opens", () => {
         content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
       },
     });
-    expect(check?.names).toEqual([
-      "The ask block #window that starts 'Which deployment window?'",
-      "The ask block #region that starts 'Which region?'",
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([
+      ["window", "Which deployment window?"],
+      ["region", "Which region?"],
     ]);
   });
   test("an opener naming no id is not new when its question is one the stored version holds", async () => {
@@ -353,7 +353,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         content: ":::ask{}\nWhich deployment window?\n:::\n\n:::ask{}\nWhich region?\n:::\n",
       },
     });
-    expect(check?.names).toEqual(["The ask block that starts 'Which region?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([[undefined, "Which region?"]]);
   });
   test("a re-upload whose every opener names no id and repeats a stored question is not judged", async () => {
     let walks = 0;
@@ -391,7 +391,9 @@ describe("runRulesCheck: which asks a call opens", () => {
         ops: [{ op: "insert", after: "end", markdown: BRIEF }],
       },
     });
-    expect(check?.names).toEqual(["The ask block #window that starts 'Which deployment window?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([
+      ["window", "Which deployment window?"],
+    ]);
   });
   /** A session whose Dispatch does not resolve: the de-duplication read fails on every call. */
   const noDispatch: Partial<RulesCheckDeps> = { dispatchClient: () => undefined };
@@ -410,7 +412,7 @@ describe("runRulesCheck: which asks a call opens", () => {
       },
       noDispatch
     );
-    expect(check?.names).toEqual(["The ask block that starts 'Which region?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([[undefined, "Which region?"]]);
     expect(check?.asksPartial).toBe(true);
     // No ask was judged without its own text: the upload carries the text of every ask it holds.
     expect(check?.textMissing).toBe(false);
@@ -567,7 +569,9 @@ describe("runRulesCheck: which asks a call opens", () => {
       },
       noDispatch
     );
-    expect(check?.names).toEqual(["The ask block #window that starts 'Which deployment window?'"]);
+    expect(check?.judged.map((ask) => [ask.id, ask.opening])).toEqual([
+      ["window", "Which deployment window?"],
+    ]);
     expect(check?.asksPartial).toBe(false);
   });
 });

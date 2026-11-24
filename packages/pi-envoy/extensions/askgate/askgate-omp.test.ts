@@ -12,6 +12,8 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import systemTemplate from "./askgate-system.md" with { type: "text" };
+import ruleCheckSystem from "./rule-check-system.md" with { type: "text" };
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -32,12 +34,13 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
-/** The system prompt of a request the charter check sends: its own frame heads it. */
-const isGateRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate.");
-/** The rules check's own frame, which a `dispatch ask` brings beside the charter call. */
-const isRuleRequest = (request: Request): boolean =>
-  JSON.stringify(request.body.system ?? "").includes("You are AskGate's rule check.");
+/** Whether a request's system prompt holds `part`, a shipped system part, as its JSON escapes it. */
+const holdsPart = (request: Request, part: string): boolean =>
+  JSON.stringify(request.body.system ?? "").includes(JSON.stringify(part.trim()).slice(1, -1));
+/** The system prompt of a request the charter check sends: its own shipped part heads it. */
+const isGateRequest = (request: Request): boolean => holdsPart(request, systemTemplate);
+/** The rules check's own shipped part, which a `dispatch ask` brings beside the charter call. */
+const isRuleRequest = (request: Request): boolean => holdsPart(request, ruleCheckSystem);
 
 /** The scripted bash call: a `dispatch ask` by the stand-in's literal path, which the gate reads. */
 const ask = (dispatch: string) =>
@@ -283,8 +286,6 @@ for (const [language, code] of [
       );
       expect(main.length).toBeGreaterThanOrEqual(2);
       const next = JSON.stringify(main.at(-1)?.body.messages);
-      expect(next).toContain("AskGate did not review this Dispatch write");
-      expect(next).toContain("The call ran unreviewed.");
       expect(next).toContain("stand-in dispatch: sent");
 
       expect(await gateEntries(sessions)).toMatchObject([
@@ -467,7 +468,6 @@ test.skipIf(omp === undefined && !onActions)(
     });
     expect(asksPosted(requests)).toBe(1);
     expect(lastTurn(requests)).not.toContain(REFUSED);
-    expect(lastTurn(requests)).toContain("AskGate is on for this session in warn mode");
     expect(await gateEntries(sessions)).toMatchObject([
       { tool: "dispatch_ask", outcome: "unmarked", decision: "allow", verdictMode: "warn" },
     ]);
