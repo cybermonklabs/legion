@@ -157,11 +157,13 @@ const registrationSpare = 30 * time.Second
 // registerAsTheClientDoes posts body to the listener's /v1/interests/subscribe as the test's
 // shared-token caller and returns once the listener takes it (200), sending a 5xx again as the
 // client a session runs does. envoy-client sends a 5xx once more after 250 ms (the 5xx branch of
-// request, packages/envoy-client/src/transport.ts:1121-1128; LISTENER_CALL_RETRY_DELAY_MS and
-// LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy and
-// claude-envoy register again 20 to 40 s after a failed registration and then at every heartbeat
-// (packages/pi-envoy/extensions/envoy.ts:3764-3771 and :3804,
-// packages/claude-envoy/src/envoy-channel-server.ts:1925). So a registration refused because the
+// createEnvoyClient's request, packages/envoy-client/src/transport.ts; LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS, packages/contracts/src/envoy-session.ts:64 and :72), and pi-envoy
+// and claude-envoy register again 20 to 40 s after a failed registration and then at every
+// heartbeat (each plugin's heartbeat and its armRetry, whose delay is heartbeatRetryDelayMs of
+// packages/envoy-client/src/envoy-settings.ts: ensureHeartbeat in
+// packages/pi-envoy/extensions/envoy.ts, heartbeat in
+// packages/claude-envoy/src/envoy-channel-server.ts). So a registration refused because the
 // server answered the listener late - the 503 consumer_error of a session consumer call past its
 // bound, or the bus-unavailable 503 of store work past its own - is a registration the session
 // makes again, not one it never makes.
