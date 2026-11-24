@@ -207,7 +207,7 @@ ISSUER
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
-echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_MEMORY_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker airlock: pid=$$ profiles=${BROKER_PROFILES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} anthropic=${BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL:-} iam=${BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL:-} service_accounts=[${BROKER_SERVICE_ACCOUNT_SECRETS:-}] upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 echo "fake broker proxy: pid=$$ profiles=${BROKER_PROFILES_FILE:-} pool=${BROKER_PROXY_CA_POOL:-} test_ca_url=${BROKER_PROXY_TEST_CA_URL:-} clock_file=${BROKER_PROXY_TEST_CLOCK_OFFSET_FILE:-} margin=${BROKER_PROXY_TEST_RENEWAL_MARGIN-unset} release_roots=${BROKER_PROXY_RELEASE_ROOTS_FILE-unset}" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
@@ -475,7 +475,7 @@ printf 'PASS: each broker takes its intermediate from the ca stand (pool, stand 
 # store is a profile's (the broker refuses one no profile names), each with a github block of the
 # account its github-owners tag names: AIRLOCK_GITHUB_APP's own, behind the proxy by its source's
 # tag, and AIRLOCK_PLAIN_GITHUB, whose source has no tag.
-store_file="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
+store_file="$(exported AIRLOCK_MEMORY_SECRETS_FILE)"
 github_profiles="$(jq -r --slurpfile store "$store_file" '
   ($store[0].secrets | map({key: (.name | sub("^example/agent-secrets/"; "")), value: (.tags.proxy // "no-proxy")}) | from_entries) as $tag
   | [.profiles[] | select(.github != null)
@@ -540,7 +540,7 @@ printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s
   "$judge_model" "$model_url" "$dispatch_url"
 
 # The judged secrets: their judge tags give the judge seconds of four of them and nothing of the
-# fifth, no proxy block names a judge any more, and the fake store holds all five at human tier -
+# fifth, no proxy block names a judge any more, and the memory store holds all five at human tier -
 # four the approver's and one owned by nobody - so each waits for a person unless the judge
 # decides it first. One of the approver's four is an administrator's secret, which the judge must
 # refuse although its judge tag gives it the same seconds: the stack writes that tag on purpose,
@@ -553,7 +553,7 @@ second_judged_secret="$(exported AIRLOCK_SECOND_JUDGED_SECRET)"
 admin_max_grant="$(exported AIRLOCK_ADMIN_MAX_GRANT)"
 judge_seconds="$(exported AIRLOCK_JUDGE_SECONDS)"
 second_judge_seconds="$(exported AIRLOCK_SECOND_JUDGE_SECONDS)"
-fake_secrets="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
+fake_secrets="$(exported AIRLOCK_MEMORY_SECRETS_FILE)"
 approver="$(exported AIRLOCK_APPROVER)"
 for want in "airlock-judged-token=$judge_seconds" "airlock-second-judged-token=$second_judge_seconds" \
   "airlock-shared-token=$judge_seconds" "airlock-admin-token=$judge_seconds" "airlock-unjudged-token=null"; do

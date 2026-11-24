@@ -34,7 +34,7 @@
 # again in the result block of the check it touches:
 #
 #   - A key's judge is its own tag, so a check that needs other judge seconds - k10d's judge 300,
-#     and its control's 900 - retags the key in the stack's fake store and has every broker read
+#     and its control's 900 - retags the key in the stack's memory store and has every broker read
 #     it again, as an owner's `agent-secrets secret retag --judge` does. A check whose control
 #     needs another broker - k10's broker with no judge and its base-commit control, and k10g's -
 #     starts one more broker on the stack's own database, stand-ins and certificate authority,
@@ -316,7 +316,7 @@ front_backends_stack() {
 	sleep 2
 }
 
-# stack_facts reads the few settings the fake store needs and that the banner does not name: the
+# stack_facts reads the few settings the memory store needs and that the banner does not name: the
 # namespace prefix and key the brokers serve, read from their own /v1/settings route.
 stack_facts() {
 	local settings
@@ -330,7 +330,7 @@ psql_stack() { pg_url_run "$STACK_DB_URL" psql -Atq -v ON_ERROR_STOP=1 "$@"; }
 records() { curl -sS "$AIRLOCK_RECORDS_URL/records/$1"; }
 records_count() { records "$1" | jq 'length'; }
 
-# reread_all makes every broker read one secret's name again, which is what a change to the fake
+# reread_all makes every broker read one secret's name again, which is what a change to the memory
 # store waits on. Each call is signed by this stack's session, one proof a broker (a proof is
 # single-use), so each broker answers once its own reread is done; a call with no proof is
 # answered at once, before the store is read, and the next check would race it. A broker that is
@@ -361,30 +361,30 @@ reread_all() { # <name>
 	fi
 }
 
-# add_fake_secret appends one secret to the stack's fake Secrets Manager and set_fake_tags
+# add_fake_secret appends one secret to the stack's memory store and set_fake_tags
 # replaces one secret's tags. They are how a check gets a name the stack does not hold, or moves
 # the policy version, without writing a profiles file of its own.
 add_fake_secret() { # <store name> <tags json> <value>
-	local tmp="$WORK_DIR/fake-secrets.json"
+	local tmp="$WORK_DIR/memory-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" --arg value "$3" --arg kms "$STACK_KMS_KEY_ARN" \
-		'.secrets += [{name: $name, kms_key_id: $kms, tags: $tags, value: $value}]' \
-		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
-	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+		'.secrets += [{name: $name, tags: $tags, value: $value}]' \
+		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
 	rm -f "$tmp"
 }
 
 set_fake_tags() { # <store name> <tags json>
-	local tmp="$WORK_DIR/fake-secrets.json"
+	local tmp="$WORK_DIR/memory-secrets.json"
 	jq --arg name "$1" --argjson tags "$2" \
 		'.secrets = [.secrets[] | if .name == $name then .tags = $tags else . end]' \
-		"$AIRLOCK_FAKE_SECRETS_FILE" >"$tmp"
-	cat "$tmp" >"$AIRLOCK_FAKE_SECRETS_FILE"
+		"$AIRLOCK_MEMORY_SECRETS_FILE" >"$tmp"
+	cat "$tmp" >"$AIRLOCK_MEMORY_SECRETS_FILE"
 	rm -f "$tmp"
 }
 
-# stored_value is what the fake store holds for one name, read straight out of the file so a
+# stored_value is what the memory store holds for one name, read straight out of the file so a
 # comparison is against the store and not against a string this script carries.
-stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' "$AIRLOCK_FAKE_SECRETS_FILE"; }
+stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' "$AIRLOCK_MEMORY_SECRETS_FILE"; }
 
 # --- Talking to the brokers --------------------------------------------------------------------
 
@@ -817,7 +817,7 @@ k10_pair_calls() {
 # --ttl 15m, the stand answering grant — made at a broker built from the merge base of this tree
 # with origin/main (JUDGE_CHECK_BASE names another commit), the broker as it was before a key's
 # judge became its own tag, when it read the judge from the profiles file's proxy block. It runs
-# on the stack's own database, profiles file, fake store and identities, with the stack's two
+# on the stack's own database, profiles file, memory store and identities, with the stack's two
 # fronts pointed at it, so the only difference is where the broker reads the judge from. The
 # base tree is first read for the field it reads the judge from; a tree without it is not the
 # broker this control is about, and the control reports UNKNOWN rather than a pass.
@@ -1709,7 +1709,7 @@ check_k10g() {
 	control_grants="$(psql_stack -c "select count(*) from grants where request_id='$control_id'")"
 	front_backends_stack
 
-	control "the control is a broker built from a copy of this module's source under $tree with three deletions and nothing else: Create's choice of a person for an administrator's key (machine_state.go, judgeKey), the judge's admin check (judge.go, Runner.checks) and the guard currentPolicyAdmits makes for the judge (machine_state.go). It runs on the stack's own database, profiles file, fake store and identities, and the stack's two fronts were pointed at it, so the only difference between the two runs is the refusal itself. BROKER_JUDGE_TEST_SKIP_CHECKS is no control for this check and was not used: it leaves Create's choice and the transaction guard standing, so the request would still be its person's or its approval refused."
+	control "the control is a broker built from a copy of this module's source under $tree with three deletions and nothing else: Create's choice of a person for an administrator's key (machine_state.go, judgeKey), the judge's admin check (judge.go, Runner.checks) and the guard currentPolicyAdmits makes for the judge (machine_state.go). It runs on the stack's own database, profiles file, memory store and identities, and the stack's two fronts were pointed at it, so the only difference between the two runs is the refusal itself. BROKER_JUDGE_TEST_SKIP_CHECKS is no control for this check and was not used: it leaves Create's choice and the transaction guard standing, so the request would still be its person's or its approval refused."
 	control "the same --ttl 15m request for $AIRLOCK_ADMIN_SECRET at that broker was $control_state after ${AWAIT_SECONDS}s, decided by '$control_decider', with the stand asked $control_asked time(s) and $control_grants grant(s) made; its judged row: $(judged_summary "$control_id")"
 	assert "$([ "$control_state" = granted ] && [ "$control_decider" = "$JUDGE_ACTOR" ] && [ "$control_asked" -ge 1 ] && echo 0 || echo 1)" \
 		"negative control: with the admin refusal taken out of Create, the judge's checks and the decision transaction, the same request is granted by judge:<model id>" \

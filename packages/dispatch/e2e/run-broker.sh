@@ -62,7 +62,7 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 . "$e2e_dir/../../envoy/scripts/lib/pg-url.sh"
 
 # The one directory this script serves: the build below writes the three binaries into it, a
-# handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the fake secrets file is written in
+# handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the memory secrets file is written in
 # it. It is resolved to an absolute path here because the check of that variable runs before the
 # `cd` to packages/envoy below, and one name for the directory is all the script needs.
 work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
@@ -130,10 +130,9 @@ launcher_account=system:serviceaccount:example-system:example-launcher
 pod_account=system:serviceaccount:example:example-worker
 dispatch_account=system:serviceaccount:example-ns:example-dispatch
 
-# The namespace and key the fake secrets sit under; the key is an example ARN in AWS's
-# documentation account, and nothing here calls AWS.
+# The namespace the memory secrets sit under; the broker reads them from the file below
+# (BROKER_SECRETS_STORE=memory), and nothing here calls a cloud.
 secrets_prefix=example/agent-secrets/
-secrets_kms_key_arn=arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab
 
 case "$mode" in
   issuer | broker) ;;
@@ -164,7 +163,7 @@ cd "$e2e_dir/../../envoy"
 # listener's. One build of the three binaries per checkout, under a lock, so the two listeners
 # starting at once build them once: the second waits, and Go rewrites nothing that did not change.
 # out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
-# this run builds: the fake secrets file below is written in it, and with the binaries handed
+# this run builds: the memory secrets file below is written in it, and with the binaries handed
 # over it is the only thing this script still writes there.
 mkdir -p "$work"
 if [ -z "$prebuilt_bin" ]; then
@@ -199,7 +198,7 @@ broker_psql() { pg_url_run "$DATABASE_URL" psql_without_hostaddr -X -q -v ON_ERR
 broker_psql -c "drop database if exists \"$broker_database\" with (force)" \
   -c "create database \"$broker_database\""
 
-# The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
+# The memory store: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
 #
 # The file is renamed into place rather than written in place, which is what keeps it safe. Each
@@ -212,25 +211,25 @@ broker_psql -c "drop database if exists \"$broker_database\" with (force)" \
 # The name carries this stack's server as the URL spells it, which told the stacks apart while
 # each served on a TCP port of its own. Every stack now serves on a unix socket, and its URL's
 # authority is `postgres://postgres@` for all of them (the socket's directory is in the URL's
-# `host=` parameter, which the regex at :188 does not read), so every stack of a run writes and
+# `host=` parameter, which the regex at :187 does not read), so every stack of a run writes and
 # reads one shared file again. The atomic rename is what makes that safe: a reader sees one
 # whole file or another, never a truncated one, and every stack writes the same constants, so
 # which write lands last does not matter.
-fake_secrets_stack="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
-fake_secrets_file="$work/fake-secrets-$broker_database-$fake_secrets_stack.json"
+memory_secrets_stack="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
+memory_secrets_file="$work/memory-secrets-$broker_database-$memory_secrets_stack.json"
 (
   umask 077
-  cat >"$fake_secrets_file.$$.tmp" <<EOF
+  cat >"$memory_secrets_file.$$.tmp" <<EOF
 {"secrets": [
-  {"name": "${secrets_prefix}alice-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
+  {"name": "${secrets_prefix}alice-deploy-key",
    "tags": {"owner": "alice@${signin_domain}", "tier": "human"}, "value": "alice-deploy-value"},
-  {"name": "${secrets_prefix}bob-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
+  {"name": "${secrets_prefix}bob-deploy-key",
    "tags": {"owner": "bob@${signin_domain}", "tier": "human"}, "value": "bob-deploy-value"},
-  {"name": "${secrets_prefix}shared-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
+  {"name": "${secrets_prefix}shared-deploy-key",
    "tags": {"owner": "shared", "tier": "human"}, "value": "shared-deploy-value"}
 ]}
 EOF
-  mv -f "$fake_secrets_file.$$.tmp" "$fake_secrets_file"
+  mv -f "$memory_secrets_file.$$.tmp" "$memory_secrets_file"
 )
 
 # The broker discovers its token issuer before it listens and refuses to boot without it. The
@@ -265,8 +264,8 @@ exec_broker() {
     BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
     BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
     BROKER_SECRETS_PREFIX="$secrets_prefix" \
-    BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \
-    BROKER_FAKE_SECRETS_FILE="$fake_secrets_file" \
+    BROKER_SECRETS_STORE=memory \
+    BROKER_MEMORY_SECRETS_FILE="$memory_secrets_file" \
     BROKER_DRAIN_SECONDS=0 \
     BROKER_K8S_OIDC_ISSUER="$issuer_url" \
     BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \

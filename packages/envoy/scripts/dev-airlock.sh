@@ -43,14 +43,14 @@
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
 #     whose key's judge tag gives the judge seconds of it is decided by the model rather than by
 #     a person.
-#   - A profiles file (BROKER_PROFILES_FILE) in the kinds form and a fake Secrets Manager (the
-#     file BROKER_FAKE_SECRETS_FILE names). The file's kinds say where a credential of each kind
+#   - A profiles file (BROKER_PROFILES_FILE) in the kinds form and a memory store (the file
+#     BROKER_MEMORY_SECRETS_FILE names). The file's kinds say where a credential of each kind
 #     may go: stest, a stored secret bound to S; scoped, bound to S in authorization and x-key
 #     with GET /read alone; ghapp and glogin, a github-app and a google-login secret's minted
 #     token bound to S; azure, kind azure's exchange at the Microsoft stand-in and the stand-in
 #     resource host; aws, a stored AWS key pair signed again for the AWS stand-in; judged, the
 #     judge's five human-tier secrets bound to S; and anthropic, exactly as the spec writes it.
-#     Each secret is behind the proxy because its proxy tag in the fake store names one of them.
+#     Each secret is behind the proxy because its proxy tag in the memory store names one of them.
 #     The judge's five: two whose judge tags give the judge 900 and 600 seconds, each with a
 #     guidance tag of its own, one with no judge tag, one owned by nobody that anyone approves,
 #     and one tagged an administrator's whose judge tag gives the judge 900 seconds of it all the
@@ -199,7 +199,7 @@ STANDS_JSON="$WORK_DIR/stands.json"
 STANDS_LOG="$WORK_DIR/stands.log"
 DEV_BROKER_LOG="$WORK_DIR/dev-broker.log"
 PROFILES_FILE="$WORK_DIR/profiles.json"
-FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
+MEMORY_SECRETS_FILE="$WORK_DIR/memory-secrets.json"
 AZURE_TOKEN_FILE="$WORK_DIR/azure-identity-token"
 JUDGE_DISPATCH_TOKEN_FILE="$WORK_DIR/judge-dispatch-token"
 KEY_DIR="$WORK_DIR/session-key"
@@ -219,11 +219,9 @@ TRUST_FILE="$WORK_DIR/trust.pem"
 # nothing here asks Google for, since BROKER_PROXY_TEST_CA_URL sends its requests to the ca stand.
 CA_POOL="projects/example-project/locations/us-west1/caPools/proxy"
 
-# The namespace and the key this run's fake secrets sit under. The key is an example ARN in AWS's
-# documentation account, and nothing here calls AWS; a secret on any other key is refused by the
-# policy, so the two must agree.
+# The namespace this run's memory secrets sit under; the broker reads them from the file below
+# (BROKER_SECRETS_STORE=memory), and nothing here calls a cloud.
 SECRETS_PREFIX="example/agent-secrets/"
-SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 # The one service name this stack uses: the name the registrar account logs in as
 # (BROKER_SERVICE_LOGINS), the name the enrolled pod's own account is bound to
 # (BROKER_SERVICES), and the owner of the airlock's secrets. A pod's session acts for a service
@@ -319,7 +317,7 @@ JUDGE_SECONDS=900
 SECOND_JUDGE_SECONDS=600
 # The guidance tags of JUDGED_SECRET and of SECOND_JUDGED_SECRET: the key owner's instruction,
 # which the stand-in model is shown with every request for the key. Each is printed
-# single-quoted in the exports below and written into the fake store's JSON as it is, and each
+# single-quoted in the exports below and written into the memory store's JSON as it is, and each
 # holds only what an AWS Secrets Manager tag value may (letters, digits, spaces and
 # `_ . : / = + - @`), as the guidance of a real key on that store must.
 JUDGE_GUIDANCE="grant for the stack check runs that name the run in the reason"
@@ -333,7 +331,7 @@ JUDGE_MODEL_AUDIENCE="https://model.airlock.test"
 # The bearer the judge presents to the Dispatch stand, which takes any bearer and refuses a
 # read that carries none.
 JUDGE_DISPATCH_TOKEN="the-stand-in-dispatch-service-account-token"
-# The values the fake store holds for the two stored secrets. They are this script's own strings
+# The values the memory store holds for the two stored secrets. They are this script's own strings
 # and open nothing; a check compares what a stand-in was sent against them by length and prefix.
 DEMO_VALUE="the-real-airlock-demo-token-9f3a7c"
 SCOPED_VALUE="the-real-airlock-scoped-token-4b1e"
@@ -346,7 +344,7 @@ SHARED_VALUE="the-real-airlock-shared-token-2e6f"
 ADMIN_VALUE="the-real-airlock-admin-token-8d41"
 SECOND_JUDGED_VALUE="the-real-airlock-second-judged-token-6b19"
 # The session token of the stack's AWS key pair. One string for both halves of the stand: the
-# fake store hands it to the broker as part of the stored value, and --aws-session-token tells
+# memory store hands it to the broker as part of the stored value, and --aws-session-token tells
 # the stand-in AWS service to require exactly it, so a call the proxy signed again verifies.
 AWS_SESSION_TOKEN="the-stand-in-aws-session-token"
 # A federated token in the shape the azure-login minter reads: a JWT whose exp claim is
@@ -594,7 +592,7 @@ DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_H
 RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*} ${ANTHROPIC_HOST}=${ANTHROPIC_ADDRESS%:*}"
 
 # --- The profiles file, in the kinds form. Its kinds say where a credential of each kind may go
-# and in which headers; a secret is behind the proxy when its proxy tag in the fake store below
+# and in which headers; a secret is behind the proxy when its proxy tag in the memory store below
 # names one of them, and who decides a request for it is its key's own judge tag there. The
 # anthropic kind is the spec's own: its host, its one header, its variable, its way, its longest
 # grant and its three allow rows. The other kinds are this stack's test kinds, each with the
@@ -637,7 +635,7 @@ if ! curl -sSf -o /dev/null -X POST -H 'Content-Type: application/json' --data "
 fi
 echo "dev-airlock: the ca stand's policy names $POLICY" >&2
 
-# --- The fake Secrets Manager the brokers read, written with jq so the GitHub App's PEM and
+# --- The memory store the brokers read, written with jq so the GitHub App's PEM and
 # each object value are escaped once and correctly. Every value here is this stack's own and
 # opens nothing. Every secret but one is behind the proxy by its proxy tag (policy.TagProxy),
 # which names its kind; the one is the plain github-app source, which a control needs released
@@ -658,7 +656,7 @@ echo "dev-airlock: the ca stand's policy names $POLICY" >&2
 # also proxy-narrowed=true (policy.TagProxyNarrowed), which is what lets its profile's allow be
 # in force. ---
 jq -n \
-  --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
+  --arg prefix "$SECRETS_PREFIX" \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
@@ -671,55 +669,55 @@ jq -n \
   --arg anthropicgrant "$ANTHROPIC_MAX_GRANT" \
   --arg narrowedaccount "$ANTHROPIC_NARROWED_ACCOUNT" --arg kindaccount "$ANTHROPIC_KIND_ACCOUNT" \
   '{secrets: [
-     {name: ($prefix + "airlock-demo-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-demo-token"),
       tags: {owner: $service, tier: "agent", proxy: "stest"}, value: $demo},
-     {name: ($prefix + "airlock-scoped-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-scoped-token"),
       tags: {owner: $service, tier: "agent", proxy: "scoped"}, value: $scoped},
-     {name: ($prefix + "airlock-github-app"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-github-app"),
       tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner, proxy: "ghapp"},
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
-     {name: ($prefix + "airlock-plain-github-app"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-plain-github-app"),
       tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
       value: ({app_id: $appid, private_key: $appkey} | tojson)},
-     {name: ($prefix + "airlock-google-login"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-google-login"),
       tags: {owner: $service, tier: "agent", type: "google-login", proxy: "glogin"},
       value: ({type: "authorized_user", client_id: "the-stand-in-client",
                client_secret: "the-stand-in-client-secret",
                refresh_token: "the-stand-in-refresh-token"} | tojson)},
-     {name: ($prefix + "airlock-azure-login"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-azure-login"),
       tags: {owner: $approver, tier: "human", type: "azure-login", proxy: "azure"},
       value: ({tenant_id: "the-stand-in-tenant", client_id: "the-stand-in-application"} | tojson)},
-     {name: ($prefix + "airlock-aws-key"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-aws-key"),
       tags: {owner: $service, tier: "agent", proxy: "aws"},
       value: ({access_key_id: $awskey, secret_access_key: $awssecret,
                session_token: $awssession} | tojson)},
-     {name: ($prefix + "airlock-judged-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-judged-token"),
       tags: {owner: $approver, tier: "human", judge: $judge, guidance: $guidance, proxy: "judged"}, value: $judged},
-     {name: ($prefix + "airlock-unjudged-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-unjudged-token"),
       tags: {owner: $approver, tier: "human", proxy: "judged"}, value: $unjudged},
-     {name: ($prefix + "airlock-shared-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-shared-token"),
       tags: {owner: "shared", tier: "human", judge: $judge, proxy: "judged"}, value: $shared},
-     {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-admin-token"),
       tags: {owner: $approver, tier: "human", admin: "true",
              requesters: ($approver + " " + $service), "max-grant": $maxgrant, judge: $judge, proxy: "judged"},
       value: $admin},
-     {name: ($prefix + "airlock-second-judged-token"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-second-judged-token"),
       tags: {owner: $approver, tier: "human", judge: $secondjudge, guidance: $secondguidance, proxy: "judged"}, value: $second},
-     {name: ($prefix + "airlock-anthropic-narrowed"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-anthropic-narrowed"),
       tags: {owner: $approver, tier: "human", admin: "true", type: "anthropic-federation",
              requesters: ($approver + " " + $service), "max-grant": $anthropicgrant,
              proxy: "anthropic", "proxy-narrowed": "true"},
       value: ({organization_id: "00000000-0000-4000-8000-0000000000a1", federation_rule_id: "fdrl_01airlocknarrowed",
                service_account_id: "svac_01airlocknarrowed", service_account: $narrowedaccount,
                workspace_id: "wrkspc_01airlocknarrowed"} | tojson)},
-     {name: ($prefix + "airlock-anthropic-kind"), kms_key_id: $kms,
+     {name: ($prefix + "airlock-anthropic-kind"),
       tags: {owner: $approver, tier: "human", admin: "true", type: "anthropic-federation",
              requesters: ($approver + " " + $service), "max-grant": $anthropicgrant, proxy: "anthropic"},
       value: ({organization_id: "00000000-0000-4000-8000-0000000000a2", federation_rule_id: "fdrl_01airlockkind",
                service_account_id: "svac_01airlockkind", service_account: $kindaccount,
                workspace_id: "wrkspc_01airlockkind"} | tojson)}
-   ]}' >"$FAKE_SECRETS_FILE"
-chmod 600 "$FAKE_SECRETS_FILE"
+   ]}' >"$MEMORY_SECRETS_FILE"
+chmod 600 "$MEMORY_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
 chmod 600 "$AZURE_TOKEN_FILE"
 printf '%s' "$JUDGE_DISPATCH_TOKEN" >"$JUDGE_DISPATCH_TOKEN_FILE"
@@ -750,7 +748,7 @@ PROXY_FRONT_PID="$FRONT_PID"
 API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
 PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 
-# --- The brokers. Both read one database, one profiles file and one fake store, and each binds an
+# --- The brokers. Both read one database, one profiles file and one memory store, and each binds an
 # API port, a proxy port and a metrics port the system picks (BROKER_*_LISTEN_ADDR of port 0), so
 # two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
 # exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
@@ -790,10 +788,9 @@ start_broker() {
   BROKER_PUBLIC_URL="$API_FRONT_URL" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
+  BROKER_SECRETS_STORE="memory" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
-  BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
-  BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
+  BROKER_MEMORY_SECRETS_FILE="$MEMORY_SECRETS_FILE" \
   BROKER_DRAIN_SECONDS=0 \
   BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
   BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
@@ -937,7 +934,7 @@ dev-airlock: ready.
   export PROXY_CA_POOL=$CA_POOL
   export PROXY_CLOCK_OFFSET_FILE=$CLOCK_OFFSET_FILE
   export AIRLOCK_PROFILES_FILE=$PROFILES_FILE
-  export AIRLOCK_FAKE_SECRETS_FILE=$FAKE_SECRETS_FILE
+  export AIRLOCK_MEMORY_SECRETS_FILE=$MEMORY_SECRETS_FILE
   export AIRLOCK_RECORDS_URL=$RECORDS_URL
   export AIRLOCK_S_URL=$S_URL
   export AIRLOCK_S_RECORDS=$RECORDS_URL/records/s
