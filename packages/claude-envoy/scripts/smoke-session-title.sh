@@ -35,7 +35,7 @@ readonly chosen_name="eeny meeny"
 readonly renamed="miny moe"
 readonly register_timeout=30
 
-package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+package_dir="$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly package_dir
 repo_root="$(cd "${package_dir}/../.." && pwd)"
 readonly repo_root

@@ -421,6 +421,23 @@ type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, kep
 // and the guard's kill line in the pod's own log is then the one record of the kill.
 type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
 
+// ControllerMemoryGuardKilled is the daemon's reading of one process the controller pod's launcher
+// ended with SIGKILL because the pod was near its memory limit, which the memory guard of a gVisor
+// controller pod does, or, in a microVM controller pod, one that the pod's own kernel stopped
+// because the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the controller's session), which
+// the launcher's guest watch names (shimwire.LauncherMemoryKill): the controller's own pod runs the
+// guard or the guest watch as an issue pod in the same sandbox does, and the daemon tells the
+// project's controller which of its programs ended and why. The session gives it the claim token
+// its connection authenticated for, the uid of the pod the launcher runs in and the report, the
+// first two the session's own and never the report's. The controller's pod is of no issue, so
+// there is no issue to name, and MemoryGuardKilled, whose note is told to a role of an issue, has
+// nothing to take it with.
+//
+// It takes the wire's own frame for the reason MemoryGuardKilled does, and an error is returned
+// to the session, which logs it and drops the report, as MemoryGuardKilled's is.
+type ControllerMemoryGuardKilled func(ctx context.Context, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
 // VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
 // trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
 // per sweep that ended with the volume still above its low mark, none for a sweep the settings

@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The pre-deploy migration census admits a table above its 1 GiB limit for bounded writes: a
+  migration whose every statement on that table is an insert of at most 1,000 literal rows, or an
+  update of at most 1,000 rows by their primary key, passes, and the report names the table's
+  enabled triggers beside the admission. A table with an enabled trigger that is not on the
+  census's reviewed list is refused, since a trigger can read any table and the census does not
+  read its body. Every other statement on such a table is still refused,
+  and the refusal now says which shape is not bounded. `census --store --sizing` refuses nothing
+  on size any more: beside a table past the limit it names that rule, which is the gate.

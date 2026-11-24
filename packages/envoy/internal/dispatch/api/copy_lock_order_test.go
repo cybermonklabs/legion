@@ -6,6 +6,8 @@
 
 package api
 
+//ci:builds packages/envoy ./cmd/dispatch buildCopyLockGraph go list -deps -export ./cmd/dispatch in packages/envoy
+
 import (
 	"bytes"
 	"encoding/json"
@@ -98,6 +100,7 @@ var ownTransactionFunctions = []string{
 // TestCopyLockOrderGuardFollowsTheLockTakers holds the resolution to the chains this rule is about,
 // so the check cannot pass by losing them.
 func TestCopyLockComesBeforeEveryPendingRowAndEvent(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	var offences []string
 	for _, fn := range graph.functions {
@@ -118,6 +121,7 @@ func TestCopyLockComesBeforeEveryPendingRowAndEvent(t *testing.T) {
 // is about: if a rename or a refactor hid one of these from it, the guard would pass by seeing
 // nothing.
 func TestCopyLockOrderGuardFollowsTheLockTakers(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, want := range []struct {
 		function string

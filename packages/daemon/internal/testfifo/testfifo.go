@@ -1,5 +1,7 @@
 // Package testfifo plants a fifo where code under test must replace a file without opening it
-// for writing, and tells the test, with no clock, whether that code opened it so.
+// for writing, and tells the test, with no clock, whether that code opened it so (Plant). It also
+// tells the test, from the kernel and with no clock, whether code waits in a plain open of a fifo
+// for reading, which a held reader cannot show (Watch, watch.go).
 package testfifo
 
 import (

@@ -1,10 +1,13 @@
 package testnats
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -54,6 +57,70 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 		t.Fatal("the client was disconnected by the hold, which keeps its connection open")
 	default:
 	}
+}
+
+// HoldStalledWrite holds nats.go's connection lock with a write of nats.go's own, which a close of
+// the connection's socket ends: once the row closes the socket the client dialed, with the proxy
+// still frozen, nats.go lets the lock go and a read of the connection's status answers. The control
+// is HoldWriteLock on the same rig: its lock is the row's own, so the read still waits after the
+// close, which shows that the rig tells the two apart.
+func TestHoldStalledWriteHoldsTheLockWithAWriteTheSocketsCloseEnds(t *testing.T) {
+	for _, stalled := range []bool{true, false} {
+		name := "HoldStalledWrite"
+		if !stalled {
+			name = "HoldWriteLock, the control"
+		}
+		t.Run(name, func(t *testing.T) {
+			hold := StartHandshakeHold(t, URL(t))
+			dialer := &socketDialer{}
+			conn, err := natsgo.Connect(hold.URL(), natsgo.SetCustomDialer(dialer), natsgo.NoReconnect())
+			if err != nil {
+				t.Fatalf("connect through the hold: %v", err)
+			}
+			t.Cleanup(conn.Close)
+			socket := dialer.last.Load()
+			if socket == nil {
+				t.Fatal("control: the client dialed no socket through the row's dialer")
+			}
+			var release func()
+			if stalled {
+				release = hold.HoldStalledWrite(t, conn)
+			} else {
+				release = hold.HoldWriteLock(t, conn)
+			}
+			t.Cleanup(release)
+			RequireLockHeld(t, conn)
+			_ = (*socket).Close()
+			read := make(chan struct{})
+			go func() {
+				conn.Status()
+				close(read)
+			}()
+			select {
+			case <-read:
+				if !stalled {
+					t.Fatal("control: a read of the status answered once the socket closed while HoldWriteLock held the lock")
+				}
+			case <-time.After(10 * time.Second):
+				if stalled {
+					t.Fatal("a read of the status still waited 10 s after the socket closed: the lock HoldStalledWrite held was not the write's")
+				}
+			}
+		})
+	}
+}
+
+// socketDialer dials as nats.go's own dialer does and keeps the last socket it handed out.
+type socketDialer struct {
+	last atomic.Pointer[net.Conn]
+}
+
+func (d *socketDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: dialTimeout}).Dial(network, address)
+	if err == nil {
+		d.last.Store(&conn)
+	}
+	return conn, err
 }
 
 // holdChildEnv tells the re-executed test binary to run TestHoldWriteLockOnAHooksGoroutineChild,

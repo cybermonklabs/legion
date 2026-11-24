@@ -66,6 +66,10 @@ type Server struct {
 	// drainBoundNS is DefaultDrainBound unless SetDrainBound names another: how long a drain
 	// holds before the helper ends it by itself (drain). Atomic for the reason dormantGraceNS is.
 	drainBoundNS atomic.Int64
+	// drainTimer, when set (setDrainTimer), arms the timer that ends a drain in place of
+	// time.AfterFunc: the seam through which a test sees the bound a drain's timer is armed with
+	// and fires it itself, so no clock decides the row. Atomic for the reason dormantGraceNS is.
+	drainTimer atomic.Pointer[func(bound time.Duration, end func())]
 	// revokesInFlight counts every revoke fired off (goRevoke) until it has returned, and
 	// revokesIdle is closed each time that count falls to zero, so a test that must see a revoke
 	// land waits for it (the tests' waitRevokes) rather than polling a fixed span for its effect.
@@ -191,7 +195,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	case "sign-request":
 		// sign-request keeps peer's pidfd open through Registry.Root's ancestry walk exactly
 		// like sign, for the same pid-reuse reason (see sign's doc comment below).
-		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds)
+		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds, req.Locations)
 	case "sign-launcher":
 		// sign-launcher keeps peer's pidfd open through Registry.Root's ancestry walk too, and
 		// trusts its "no session" only once peer.PID() still names pid (see signLauncher).
@@ -845,12 +849,13 @@ func (s *Server) sign(peer *Peer, pid int, method, url string) Response {
 
 // signRequest builds and signs a credential-request object naming one agent_secret
 // authorization_detail per requested name (POST /v1/requests embeds this signed object
-// rather than carrying "secrets"/"reason" as plain fields), and lifetimeSeconds, the grant's
-// lifetime, when it is not nil, for a pid resolveDescendant ties to a registered session. The
+// rather than carrying "secrets"/"reason" as plain fields), lifetimeSeconds, the grant's
+// lifetime, when it is not nil, and locations, the target that narrows the one secret, when it is
+// not nil (record.SecretDetails), for a pid resolveDescendant ties to a registered session. The
 // audience is always s.Broker.URL, never a value the peer supplies: a request object's aud claim
 // must be the broker's own public URL for the broker to accept it, and there is no reason to trust
 // an untrusted local peer's opinion of that value over the helper's own configuration.
-func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int) Response {
+func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int, locations []string) Response {
 	if len(names) == 0 {
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-request needs at least one secret name"}
@@ -862,11 +867,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	if st := sess.snapshot(); st.EnrollmentID == "" {
 		return s.notEnrolled(st)
 	}
-	details := make([]record.AuthorizationDetail, len(names))
-	for i, name := range names {
-		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
-	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -1015,11 +1016,16 @@ func (s *Server) drain() Response {
 	if drain != 0 {
 		bound := s.drainBound()
 		s.Log.Info("draining: refusing new sessions until restart", "bound", bound)
-		time.AfterFunc(bound, func() {
+		end := func() {
 			if s.Registry.EndDrain(drain) {
 				s.Log.Warn(DrainEndedMessage, "bound", bound)
 			}
-		})
+		}
+		if arm := s.drainTimer.Load(); arm != nil {
+			(*arm)(bound, end)
+		} else {
+			time.AfterFunc(bound, end)
+		}
 	}
 	return Response{OK: true, Sessions: infos}
 }
@@ -1788,6 +1794,17 @@ func (s *Server) drainBound() time.Duration {
 		return time.Duration(ns)
 	}
 	return DefaultDrainBound
+}
+
+// setDrainTimer makes arm what starts the timer that ends a drain no restart follows, in place of
+// time.AfterFunc: arm is handed the drain bound and the func that ends the drain, and runs that
+// func when it chooses. Nil puts time.AfterFunc back. Safe to call while the Server runs.
+func (s *Server) setDrainTimer(arm func(bound time.Duration, end func())) {
+	if arm == nil {
+		s.drainTimer.Store(nil)
+		return
+	}
+	s.drainTimer.Store(&arm)
 }
 
 // retire forgets the session. One with no omp session id has its enrollments revoked at once by

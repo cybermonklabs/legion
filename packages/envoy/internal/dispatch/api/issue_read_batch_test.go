@@ -148,7 +148,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}
-	asks, replies, err := served.queryOwnerAsks(ctx, pool, issueOwner(issue.Key), "open")
+	asks, replies, err := served.queryOwnerAsks(ctx, pool, model.Actor{}, issueOwner(issue.Key), "open")
 	if err != nil {
 		t.Fatalf("load the open asks: %v", err)
 	}
@@ -170,7 +170,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err != nil {
 		t.Fatalf("load the design gates: %v", err)
 	}
-	counts, err := refs.BacklinkCounts(ctx, pool, "issue", []string{issue.Key}, nil)
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "issue", []string{issue.Key}, nil)
 	if err != nil {
 		t.Fatalf("count the issue's backlinks: %v", err)
 	}
@@ -191,6 +191,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 // paths run the same statements and the same scans, so an issue holding one of everything reads
 // the same either way.
 func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	fixture := buildFullIssueRead(t, handler)
 
@@ -318,6 +319,7 @@ func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEnd
 // The issue read costs two round trips, and one for an issue with nothing the second batch is
 // for, where the sequential loaders spent a statement on each part of the answer.
 func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -379,6 +381,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 // A key no issue carries answers what it always has: the issue row's callback records the missing
 // row, and the read answers that row's pgx.ErrNoRows once its batch has closed.
 func TestBatchedIssueReadStillAnswersAMissingKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/NOPE-1", nil, "alice")
 	if response.Code != http.StatusNotFound {
@@ -400,13 +403,14 @@ func TestBatchedIssueReadStillAnswersAMissingKey(t *testing.T) {
 // prepared statements - is that connection's. Every read on it runs through the same statement
 // cache a request's does: the pool is opened from the server's own configuration.
 func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := buildFullIssueRead(t, handler)
 	deps.Store = storetest.SingleConnection(t, database)
 	served := directServer(deps)
 	ctx := context.Background()
 
-	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
 		t.Fatalf("read the issue: %v", err)
 	}
 	prepared := preparedStatementNames(t, deps.Store)
@@ -414,7 +418,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 		t.Fatal("the read prepared no statement, so a deallocation would not show here")
 	}
 
-	if _, err := served.readIssue(ctx, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := served.readIssue(ctx, model.Actor{}, "NOPE-1", false); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read a missing issue: %v, want pgx.ErrNoRows", err)
 	}
 	after := preparedStatementNames(t, deps.Store)
@@ -423,7 +427,7 @@ func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
 			t.Fatalf("the missing key's read left %s deallocated: %v are prepared, %v were", name, after, prepared)
 		}
 	}
-	if _, err := served.readIssue(ctx, fixture.key, false); err != nil {
+	if _, err := served.readIssue(ctx, model.Actor{}, fixture.key, false); err != nil {
 		t.Fatalf("read the issue after the missing key: %v", err)
 	}
 	if again := preparedStatementNames(t, deps.Store); len(again) != len(after) {

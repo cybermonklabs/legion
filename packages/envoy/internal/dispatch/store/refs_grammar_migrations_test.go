@@ -110,9 +110,9 @@ func writeRefsGrammarFixture(t *testing.T, store *Store) refsGrammarFixture {
 // scope, with no edit and no command run. An image's version and a direct message, which no
 // mention is indexed from, are owed nothing.
 func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeRefsGrammar)
+	store := openMigratedTestStore(t, beforeRefsGrammar)
 	fixture := writeRefsGrammarFixture(t, store)
 
 	nameADefaultAssigneeOnEveryProject(t, store)
@@ -132,9 +132,9 @@ func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 // trigger and keeps the enqueued_at that write gave it: the seed adds the rows it finds missing
 // and rewrites none.
 func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, lastRefsGrammarTrigger)
+	store := openMigratedTestStore(t, lastRefsGrammarTrigger)
 	fixture := writeRefsGrammarFixture(t, store)
 	owed := readOwedSources(t, store)
 	enqueued, ok := owed[owedSource{"comment", fixture.comment}]
@@ -166,11 +166,9 @@ func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 // image's version, a direct message, an update of a column the index does not read and a write
 // that leaves every column it does read as it found it - an anchor refresh - owe nothing.
 func TestTheRefsGrammarTriggersOweWhatAnyBuildWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 

@@ -35,6 +35,7 @@ import (
 // the Warn row; the refused lookup written at Warn, as a wait, fails the Error row; forgetWait not
 // matching wait.ErrWaiting fails the start row's wait.
 func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
+	t.Parallel()
 	const taken = "ses-taken"
 	refusedTwice := []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true}, {Generation: 1, Sequence: 2, Refused: true}}
 	// shared is a supervisor whose session taken another claim, legion-943's implementer,

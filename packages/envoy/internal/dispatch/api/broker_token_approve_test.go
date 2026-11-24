@@ -71,6 +71,7 @@ func newCredentialRelayRig(t *testing.T) (*fakeBrokerRig, *brokerTokenRig) {
 // walk that found none, or missed a row a stolen machine file would use (a credential approve, a
 // machine login's revoke, a personal token's mint, a decision's Keep), fails rather than passes.
 func TestNoBrokerTokenGetsApprove(t *testing.T) {
+	t.Parallel()
 	credentials, rig := newCredentialRelayRig(t)
 	caller := newBrokerCaller(t)
 	tokens := approveTestTokens(caller.jkt)

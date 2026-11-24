@@ -72,6 +72,7 @@ func (h *heldStatement) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 // publish goes on. Both must succeed, and the issue must be the one the session asked for,
 // assigned to the person the project names.
 func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t *testing.T) {
+	t.Parallel()
 	held := newHeldStatement(t, "update projects set gated_steps")
 	handler, database, _ := newTestServer(t, testServerOptions{tracer: held})
 	const project = "HANDOVER"
@@ -79,9 +80,9 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 		map[string]string{"key": project, "name": "A person's handover"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create the project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": project, "default": true}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map acme/widgets to the project: status=%d body=%s", response.Code, response.Body.String())
+	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("make acme/widgets the project's default repository: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	held.armed.Store(true)

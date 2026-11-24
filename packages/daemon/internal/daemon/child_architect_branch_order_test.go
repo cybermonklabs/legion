@@ -15,6 +15,7 @@ import (
 // its own for the child, newer than the waiting start, and while GitHub has not created the
 // branch the waiting start must not create and launch the child's architect.
 func TestAWaitingChildArchitectStartWaitsForTheReadmissionsBranch(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	token := mustClaimToken(t, doorChild, claim.RoleArchitect)
 	parkTheRootBeforeTheChildsRowsRun(rig)

@@ -141,6 +141,7 @@ func TestSupersededRunsPastTheRepairGraceRaiseTheStallError(t *testing.T) {
 // so a hook that failed at once on the connection's loss returns while the context still reads
 // live: the status is what makes that run superseded rather than failed.
 func TestARunWhoseConnectionLeftConnectedIsSuperseded(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {

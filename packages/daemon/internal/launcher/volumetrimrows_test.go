@@ -240,7 +240,7 @@ func TestAReadingPanicAfterAReportsPanicCountsInTheReadingRowThoughEveryFaultLin
 		}
 	}
 	_, done := f.start(tr)
-	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
 
 	f.tick("started:") // the report's panic and its line's, after which the loop starts again
 	for _, row := range []string{"(1 in a row of sweeps and reports)", "(2 in a row of sweeps and reports)"} {
@@ -250,7 +250,7 @@ func TestAReadingPanicAfterAReportsPanicCountsInTheReadingRowThoughEveryFaultLin
 	}
 
 	f.tick("recovered a panic") // the reading's panic, then its line's
-	testwait.Eventually(t, "the loop to start again or the trimmer to switch itself off", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the loop to start again or the trimmer to switch itself off", func() bool {
 		return f.logged("started:") == 3 || f.logged("off for the life of this launcher process") != 0
 	})
 	for _, row := range []string{"(1 in a row of readings)", "(2 in a row of readings)"} {
@@ -310,7 +310,7 @@ func TestASweepTheSettingsStoppedEndsTheSweepRow(t *testing.T) {
 		return f.send(report)
 	}
 	f.start(tr)
-	testwait.Eventually(t, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the interval loop to start", func() bool { return f.logged("started:") == 1 })
 
 	sweepsAndPauses(f, 2)
 	if f.logged("(2 in a row") != 1 {
@@ -320,14 +320,14 @@ func TestASweepTheSettingsStoppedEndsTheSweepRow(t *testing.T) {
 	waited, started := f.logged("no settings are in force, so the trimmer stays off"), f.logged("started:")
 	stopping.Store(true)
 	f.tick("the settings stopped the trimmer")
-	testwait.Eventually(t, "the trimmer to wait for settings it can run", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings it can run", func() bool {
 		return f.logged("no settings are in force, so the trimmer stays off") == waited+1
 	})
 	f.setSettings(trimSettings())
 	offerSettingsTicksUntil(t, f, "the interval loop to start again", func() bool { return f.logged("started:") == started+1 })
 
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the panic of the report after the stopped sweep to be recovered", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the panic of the report after the stopped sweep to be recovered", func() bool {
 		return f.logged("recovered a panic") == 3
 	})
 	if first := f.logged("(1 in a row of sweeps and reports)"); first != 2 {
@@ -824,7 +824,7 @@ func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T
 	}
 	_, done := f.start(tr)
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the report its send refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report its send refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -833,10 +833,10 @@ func TestAHeldReportWhoseResendPanicsLeavesTheSwitchedOffReportSent(t *testing.T
 	for range volumeFaultLimit {
 		f.tick("recovered a panic")
 	}
-	testwait.Eventually(t, "the trimmer to switch itself off", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to switch itself off", func() bool {
 		return f.logged("in a row of sweeps and reports: the trimmer is off") == 1
 	})
-	testwait.Eventually(t, "the switched-off report to be sent, or the trimmer to end", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the switched-off report to be sent, or the trimmer to end", func() bool {
 		for _, report := range f.reports() {
 			if report.SwitchedOff {
 				return true
@@ -934,7 +934,7 @@ func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T
 		}
 		_, done := f.start(tr)
 		f.tick("the sweep ended")
-		testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 			return f.logged("holding it for the next attempt") == 1
 		})
 
@@ -944,7 +944,7 @@ func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T
 		f.tick("recovered a panic")
 		// The wait asks for its clock only once it has said why it waits and tried a held report,
 		// so a live clock is a wait that has done both or found it had nothing to say.
-		testwait.Eventually(t, "the trimmer to wait for settings again after the panic", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings again after the panic", func() bool {
 			_, waiting := f.ticks.live(volumeSettingsWait)
 			return waiting
 		})
@@ -981,7 +981,7 @@ func TestARefusalWhoseLinePanicsIsWrittenAgainAndTriesTheHeldReport(t *testing.T
 			f.log(format, args...)
 		}
 		_, done := f.start(tr)
-		testwait.Eventually(t, "the trimmer to end, or to wait for settings", func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to end, or to wait for settings", func() bool {
 			select {
 			case <-done:
 				return true
@@ -1038,7 +1038,7 @@ func TestAHeldReportWhoseResendPanicsInTheWaitIsTriedOnceOverOneRefusal(t *testi
 	}
 	stop, done := f.start(tr)
 	f.tick("the sweep ended")
-	testwait.Eventually(t, "the trimmer to hold the report the outage refused", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold the report the outage refused", func() bool {
 		return f.logged("holding it for the next attempt") == 1
 	})
 
@@ -1048,7 +1048,7 @@ func TestAHeldReportWhoseResendPanicsInTheWaitIsTriedOnceOverOneRefusal(t *testi
 	f.tick("recovered a panic")
 	// The wait asks for its clock only once it has said why it waits and tried a held report,
 	// so a live clock is a wait that has done both or found it had nothing to say.
-	testwait.Eventually(t, "the trimmer to wait for settings again after the panic, or to end", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to wait for settings again after the panic, or to end", func() bool {
 		select {
 		case <-done:
 			return true
@@ -1121,7 +1121,7 @@ func TestASwitchOffWhoseLinePanicsStillSendsTheLastReport(t *testing.T) {
 				f.tick("recovered a panic")
 			}
 			if tc.refused {
-				testwait.Eventually(t, "the trimmer to hold its last report, or to end", func() bool {
+				testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold its last report, or to end", func() bool {
 					select {
 					case <-done:
 						return true
@@ -1205,7 +1205,7 @@ func TestASwitchedOffReportWhoseLinePanicsOnceItIsHeldIsStillSent(t *testing.T) 
 			for range 3 {
 				f.tick("recovered a panic")
 			}
-			testwait.Eventually(t, "the line of the held last report to fall over, and the trimmer to wait to send that report or to end", func() bool {
+			testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the line of the held last report to fall over, and the trimmer to wait to send that report or to end", func() bool {
 				if !fallen.Load() {
 					return false
 				}
@@ -1283,7 +1283,7 @@ func TestASwitchedOffReportWhoseFailedAttemptsLinePanicsIsStillSent(t *testing.T
 	}
 	// deliverLast asks for its clock only once switchOff has held the report, so a live clock is
 	// the switched-off trimmer waiting to try it again.
-	testwait.Eventually(t, "the trimmer to hold its last report and wait to try it again", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to hold its last report and wait to try it again", func() bool {
 		_, waiting := f.ticks.live(volumeSettingsWait)
 		return waiting && f.logged("holding it for the next attempt") == 1
 	})
@@ -1774,7 +1774,7 @@ func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
 	}
 	// The trimmer ends, or, where run took the held report for the last one, waits to try it: a
 	// try is offered so that such a copy sends it.
-	deadline := time.Now().Add(testwait.Bounded(t, 10*time.Second, time.Second))
+	deadline := time.Now().Add(beforeDeadline(t))
 	for ended := false; !ended && time.Now().Before(deadline); {
 		select {
 		case <-done:

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -248,6 +249,61 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 	return g
 }
 
+// beforeDeadline is how long a wait that begins now may last: testwait.Remaining (#4792), until
+// 30 s before the test binary's deadline, which leaves a failing row's cleanups and its failure
+// time to run (cleanupBeforeDeadline gives the cleanups their part of it), and 1<<60 ns, about 36
+// years, under -timeout 0. Each wait for something the sweep or the launcher will do is bounded by
+// it rather than by a fixed span, so a pass or a goroutine that is merely slow on a loaded machine
+// still passes its row, and one that never comes still fails it, naming what it waited for. One
+// that never comes thus costs the rest of the binary's -timeout. With 30 s or less left there is no
+// span a wait could run on, so it fails t there, on one line naming the deadline and the margin,
+// rather than handing back a bound that asks the fact once and blames it. It calls t.Fatalf, so it
+// is called on the goroutine running the test.
+//
+// Every wait of the package's tests for a fact whose span is not the claim is bounded by it, or by
+// cleanupBeforeDeadline in a cleanup, in the test process and in every process the test binary
+// re-enters alike (a *Helper test, the role stage, role-init, the session-peer stand-ins, the PID 1
+// helpers). The exceptions are main's own: the sites #4901 wrote bound their waits with
+// testwait.Bounded of three years and a margin of their own, 30 s at reaperBound (the waits on PID
+// 1's reaper), at pidNamespace's probe, at runAsPIDOne's wait for sudo and at the put-back case's
+// checks of the restored workspaces, and 15 s at the put-back helper's wait for a put-back, which
+// must give up after the waits on the reaper. Each is the same bound as beforeDeadline's, or
+// ordered against it, but hands back a bound already spent where beforeDeadline fails t; each site
+// names its margin in its own failure. A re-entered process is given a -test.timeout that ends
+// reentryMargin before its starter's own deadline (reentry), or
+// helperDeadlineGap before it for runAsPIDOne's helpers, so beforeDeadline there ends before the
+// starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
+// own deadline, so the child's failure, its cleanups and its alarm all come while the starter still
+// waits (reentry). A child started with too little time for a wait of its own fails at that wait,
+// on the line above, which its starter prints with the rest of what it said. The re-entries whose
+// argv the test does not write wait on nothing of their own: the session peer's shim (roleShim's
+// `worker-shim`) hands its agent the deadline its plan carries (peerPlan.End), and mainHelpers,
+// the controller guard's shim, agent and eval kernel, which TestMain runs with no testing.T, live
+// until their parent's pipe ends (untilStdinEnds), with two minutes as a cap on what a failed run
+// leaves behind, never a wait a case reads. The role stage and its agents wait to the Deadline
+// their plan carries (stagePlan): the case's beforeDeadline, read once in the case, which ends
+// before the stage's own.
+//
+// Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
+// re-entered process prints and then goes on from. These are the race cases' two-minute search
+// budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline), which also sets how long the racer
+// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); and the gated
+// live measurement's bounds (memoryguard_live_test.go's controllerLive…Bound), each a part of that
+// measurement's verdict, run only where a person or a measurement Job asks for it.
+// removeWhileFilling's writer is no span at all: it runs until the removal answers, and only the
+// wait for that answer is bounded, by beforeDeadline.
+func beforeDeadline(t *testing.T) time.Duration {
+	t.Helper()
+	return testwait.Remaining(t)
+}
+
+// cleanupBeforeDeadline is beforeDeadline for a wait in a cleanup: it ends 10 s before the test
+// binary's deadline, so a cleanup that runs after its row gave up at beforeDeadline still has 20 s
+// to see its own wait out before the binary's alarm.
+func cleanupBeforeDeadline(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, 10*time.Second)
+}
+
 // through lets one of the sweep's holder reads past both gates and answers once it has read every
 // process between them. The row calls it from its own goroutine, with the pass running in
 // another; which names the read in the failure of a pass that never reached a gate.
@@ -262,13 +318,14 @@ func (g *gatedProc) through(t *testing.T, which string) {
 			}
 			opened <- err
 		}()
+		bound := beforeDeadline(t)
 		select {
 		case err := <-opened:
 			if err != nil {
 				t.Fatal(err)
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the sweep's %s holder read never reached %s", which, gate)
+		case <-time.After(bound):
+			t.Fatalf("the sweep's %s holder read never reached %s in %s, to 30 s before the test binary's deadline", which, gate, bound.Round(time.Second))
 		}
 	}
 }
@@ -324,14 +381,15 @@ func requireRemoved(t *testing.T, log *lockedBuffer, path string) {
 	}
 }
 
-// awaitPass fails the row unless the pass running in a goroutine of its own has returned within
-// d, with the sweep's own log for what it was doing.
-func awaitPass(t *testing.T, done <-chan struct{}, d time.Duration, log *lockedBuffer) {
+// awaitPass fails the row unless the pass running in a goroutine of its own has returned before
+// beforeDeadline runs out, with the sweep's own log for what it was doing.
+func awaitPass(t *testing.T, done <-chan struct{}, log *lockedBuffer) {
 	t.Helper()
+	bound := beforeDeadline(t)
 	select {
 	case <-done:
-	case <-time.After(testwait.Bounded(t, d, time.Second)):
-		t.Fatalf("the pass did not return within %s; its log:\n%s", d, log.String())
+	case <-time.After(bound):
+		t.Fatalf("the pass did not return in %s, to 30 s before the test binary's deadline; its log:\n%s", bound.Round(time.Second), log.String())
 	}
 }
 
@@ -450,7 +508,7 @@ func roleNamespaceHolder(t *testing.T, dir, lock string) int {
 		_ = process.status.Close()
 	})
 	var holder int
-	testwait.Eventually(t, "the role's shim to open "+lock, func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the role's shim to open "+lock, func() bool {
 		if !strings.Contains(out.String(), "holding") {
 			return false
 		}
@@ -618,7 +676,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 
 		t.Chdir(ws)
 		useSweepingLauncher(t)
-		fleet := newFleet(t, 5*time.Second, "tester")
+		fleet := newFleetOf(t, Config{StopGrace: 5 * time.Second, Workspace: ws}, "tester")
 		for _, path := range planted {
 			if !swept(path) {
 				t.Fatalf("the launcher's first pass left %s where it was; its log:\n%s", path, fleet.stderr.String())
@@ -696,8 +754,8 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 			if path != lock {
 				t.Fatalf("the pass held at the removal of %s, not of %s; the launcher's log:\n%s", path, lock, f.stderr.String())
 			}
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the launcher's pass never reached the removal of %s; its log:\n%s", lock, f.stderr.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the launcher's pass never reached the removal of %s before 30 s ahead of the test binary's deadline; its log:\n%s", lock, f.stderr.String())
 		}
 		answersNothingFor(t, conn, 300*time.Millisecond)
 		if swept(lock) {
@@ -851,8 +909,8 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
-			t.Fatalf("the sweep's ticker outlived the container's context; its log:\n%s", log.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the sweep's ticker outlived the container's context to 30 s before the test binary's deadline; its log:\n%s", log.String())
 		}
 	})
 
@@ -861,21 +919,151 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
 		t.Chdir(c.dir)
 		useSweepingLauncher(t)
+		// The verdict is an event, not a window: the channel the sweep's ticker goroutine closes
+		// as it returns (gitLockServed), read once Run has returned. Closed, that goroutine has
+		// left its loop and no pass of it can run; open, it was still running when Run returned,
+		// however late its next pass would come. It is set before the launcher starts, and put
+		// back after the launcher's own cleanup, for the reason shortGitLockClock gives.
+		served := make(chan (<-chan struct{}), 1)
+		previous := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previous })
 		f := newFleet(t, 2*time.Second, "tester")
 		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
-		testwait.Eventually(t, "the sweep's clock to remove "+running, func() bool { return swept(running) })
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the sweep's clock to remove "+running, func() bool { return swept(running) })
 
 		f.cancel()
 		select {
 		case err := <-f.result:
 			// Put it back: newFleet's own cleanup waits for this same send.
 			f.result <- err
-		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("Run did not return after its context ended; the launcher's log:\n%s", f.stderr.String())
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("Run did not return after its context ended, to 30 s before the test binary's deadline; the launcher's log:\n%s", f.stderr.String())
 		}
-		after := c.lock("refs/heads/after.lock", "stale", time.Hour)
-		if testwait.Holds(500*time.Millisecond, testwait.Poll, func() bool { return swept(after) }) {
-			t.Fatalf("a pass ran after Run returned: the sweep outlived the container's own process")
+		var ticker <-chan struct{}
+		select {
+		case ticker = <-served:
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
+		}
+		select {
+		case <-ticker:
+		default:
+			t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
+		}
+	})
+
+	// The row above reads its verdict when no pass is under way: the ticker goroutine then returns
+	// the moment the context ends, so its channel is closed when Run returns whether Run waited for
+	// it or not, and a Run that does not wait for its sweep passes that row. This row ends Run
+	// while a pass of its sweep is inside a removal, held there through the removal gitLockRemove
+	// answers, the one place a pass can be held (the second row of
+	// TestTheFirstPassRunsBeforeTheBundleRestore). A Run that waits for its sweep cannot return
+	// while that pass is held, however loaded the machine is; a Run that does not wait returns
+	// once its other waits are done.
+	//
+	// So the row fails a Run that returns in the half second after the tester's connection closed,
+	// all that such a Run has left being its waits for what it started (Run). That span is no
+	// verdict on a correct Run, which never returns in it: on a loaded machine it can only leave a
+	// slow wrong Run unseen there. Such a Run, returning after the half second but before the pass
+	// is let go, still fails, on the pass not having taken its lock when Run returned; one
+	// returning after the freed pass has finished is the one this row can miss. When Run returns,
+	// the row also reads #4855's event: the ticker goroutine's channel is closed.
+	t.Run("Run waits for a pass under way", func(t *testing.T) {
+		c := newLockClone(t)
+		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
+		reached := make(chan string, 1)
+		release := make(chan struct{})
+		var removed atomic.Bool
+		previousRemove := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- path:
+			default:
+			}
+			<-release
+			err := os.Remove(path)
+			removed.Store(true)
+			return err
+		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one; the pass is let go before either.
+		t.Cleanup(func() { gitLockRemove = previousRemove })
+		released := false
+		free := func() {
+			if !released {
+				released = true
+				close(release)
+			}
+		}
+		defer free()
+		served := make(chan (<-chan struct{}), 1)
+		previousServed := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previousServed })
+		t.Chdir(c.dir)
+		useSweepingLauncher(t)
+		f := newFleet(t, 2*time.Second, "tester")
+		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
+		select {
+		case path := <-reached:
+			if path != running {
+				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
+		}
+
+		// Whether the held pass had taken its lock when Run returned.
+		returned := make(chan bool, 1)
+		go func() {
+			err := <-f.result
+			taken := removed.Load()
+			// Put it back: newFleet's own cleanup waits for this same send.
+			f.result <- err
+			returned <- taken
+		}()
+		f.cancel()
+		conn := f.role("tester")
+		if err := conn.conn.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if _, err := conn.reader.ReadBytes('\n'); err != nil {
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() {
+					t.Fatalf("the tester's connection stayed open after the container's context ended; the launcher's log:\n%s", f.stderr.String())
+				}
+				break
+			}
+		}
+		select {
+		case <-returned:
+			t.Fatalf("Run returned while a pass of its sweep was still held inside a removal: the sweep outlived the container's own process; the launcher's log:\n%s", f.stderr.String())
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		free()
+		select {
+		case taken := <-returned:
+			if !taken {
+				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock: it did not wait for its sweep; the launcher's log:\n%s", f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
+		}
+		if !swept(running) {
+			t.Fatalf("the held pass's lock %s is still there after Run returned", running)
+		}
+		select {
+		case ticker := <-served:
+			select {
+			case <-ticker:
+			default:
+				t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
+			}
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
 		}
 	})
 }
@@ -899,7 +1087,7 @@ func TestTheSweepRunsAgainOnItsClockForTheLifeOfThePod(t *testing.T) {
 	for _, name := range []string{"index.lock", "refs/heads/one.lock", "refs/heads/two.lock"} {
 		path := c.lock(name, "stale", time.Hour)
 		line := "removed the git lock " + strconv.Quote(path) + ","
-		testwait.Eventually(t, "the clock pass that removes "+path, func() bool {
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the clock pass that removes "+path, func() bool {
 			return strings.Contains(log.String(), line)
 		})
 		if !swept(path) {
@@ -1047,13 +1235,17 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		log := &lockedBuffer{}
 		s := c.sweep(log, procRoot(t, os.Getpid()))
 		// An hour's recheck this pass must never reach: a lock the first read found a holder
-		// for is decided there and never read again, where a lock that reaches the second read
-		// would hold the pass for that hour. A row that gave the sweep its usual millisecond
-		// would read the same keep line whichever of the two reads wrote it.
+		// for is decided there and never read again. A lock that reached the second read would
+		// hold the pass for that hour, which fails the row at the hang guard awaitPass waits
+		// under only when that guard ends inside the hour: when the binary's -timeout is under
+		// about an hour, as CI's 30 minutes is. Under a longer -timeout, or none, such a pass
+		// returns after the hour with the same keep line, and the row passes it. A row that gave
+		// the sweep its usual millisecond would read the same keep line whichever of the two
+		// reads wrote it, under any -timeout.
 		s.recheck = time.Hour
 		done := make(chan struct{})
 		go func() { defer close(done); s.pass(context.Background(), false) }()
-		awaitPass(t, done, 10*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, held, "a process of the container holds it open")
 	})
 
@@ -1074,7 +1266,7 @@ func TestAClockPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 		}
 		defer file.Close()
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, taken, "a process of the container holds it open")
 	})
 }
@@ -1193,7 +1385,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 			t.Fatal(err)
 		}
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 
@@ -1213,7 +1405,7 @@ func TestAClockPassKeepsALockThatChangedBetweenTheTwoReads(t *testing.T) {
 		}
 		c.plant(path, "a second writer's", time.Hour)
 		proc.through(t, "second")
-		awaitPass(t, done, 30*time.Second, log)
+		awaitPass(t, done, log)
 		requireKept(t, log, path, "it changed between the two reads")
 	})
 }

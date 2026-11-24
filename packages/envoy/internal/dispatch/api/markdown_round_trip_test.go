@@ -130,6 +130,7 @@ func TestMarkdownRoundTripAnswersWhatTheStoreWouldHold(t *testing.T) {
 // refuses on: text the store would change comes back changed, and text it would hold as it
 // stands comes back unchanged.
 func TestMarkdownRoundTripNamesWhatTheStoreChanges(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, test := range []struct {
 		name     string
@@ -168,6 +169,7 @@ func TestMarkdownRoundTripNamesWhatTheStoreChanges(t *testing.T) {
 // and by a byte for every character JSON escapes, so a megabyte of body refuses it
 // (dispatch://INFRA-1522).
 func TestMarkdownRoundTripTakesTheLargestTextAnInlineUploadStores(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// One paragraph line of words is its own canonical rendering, so the answer is the text
 	// itself and the size is the whole of what this test is about.

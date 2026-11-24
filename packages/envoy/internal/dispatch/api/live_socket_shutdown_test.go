@@ -25,6 +25,7 @@ import (
 // liveSocketCloseWait more, waiting for the answer, so the set read before the page lets it go
 // finds it there.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 
 	const pages = 16

@@ -1702,7 +1702,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_doc_edit",
-      "The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own.",
+      "The spec holds requirements, design, and decisions - never progress, status, or timestamps. Work still to do is a task in the issue's plan, an issue, or an ask, never a separate document that lists it.",
     ],
     [
       "dispatch_issue",
@@ -1745,6 +1745,24 @@ describe("dispatchToolSpecs", () => {
     const argument = fields[field];
     const description = argument?.description ?? argument?.unwrap?.().description ?? "";
     expect(description).toContain(rule);
+  });
+
+  // Work still to do lives in the issue's plan, other issues and asks. No tool's help may offer a
+  // separate list of open items beside them. The control is the help sentence that offered one.
+  test("no tool description or flag help offers a separate list of open items", () => {
+    const listOffer = /open[- _]items/i;
+    expect(
+      listOffer.test("a record of open items or progress is a document of its own"),
+      "the control: the retired offer"
+    ).toBe(true);
+    const offering = dispatchToolSpecs.filter((spec) =>
+      listOffer.test(
+        JSON.stringify(z.toJSONSchema(dispatchToolSchema(spec, schemaApi), { io: "input" })) +
+          spec.description
+      )
+    );
+    expect(dispatchToolSpecs.length).toBeGreaterThan(0);
+    expect(offering.map((spec) => spec.name)).toEqual([]);
   });
 
   test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {

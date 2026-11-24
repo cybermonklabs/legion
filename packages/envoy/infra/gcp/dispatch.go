@@ -106,7 +106,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 115
+const dispatchConnectionsPerPod = 116
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -432,6 +432,18 @@ type DispatchArgs struct {
 	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
 	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
 	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
+	// ConsumerNames is how both consumer creators, the app and the listener, name the JetStream
+	// consumers they create: ENVOY_CONSUMER_NAMES on the app's and the listener's containers,
+	// "fixed" or "fresh". Unset renders nothing, and both run fixed; any other value is refused
+	// (core.CheckConsumerNames). Each reads it only at its start, so a change rolls both pods.
+	ConsumerNames string `pulumi:"consumerNames,optional"`
+	// ReplaceUnderHold is the writer hold's update rule (heldReplacement) for the same two
+	// Deployments: true recreates each, whatever its replica count, so its old pods stop before the
+	// new ones start, and lets the apply finish without waiting for the new pods, whose readiness
+	// the hold's refusal of their NATS connections can hold back. The front door, which creates no
+	// consumer, is unchanged. Unset or false, each Deployment updates and is waited for as it always
+	// has.
+	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -594,6 +606,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey},
+		{"consumerNames", args.ConsumerNames},
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
@@ -702,9 +715,11 @@ type Dispatch struct {
 // network half both modes build: no other field is read by the cluster and the network the mode
 // builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
-// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
-// is the generations the component registers a signing key for, in the order the server holds
-// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// inputs are unset, where the component renders none of those settings, consumerNames is "" when
+// its input is unset, where it renders no ENVOY_CONSUMER_NAMES, and signingKeyGenerations is the
+// generations the component registers a signing key for, in the order the server holds them, [0]
+// when its input is unset. replaceUnderHold is the writer hold's update rule for the app's and the
+// listener's Deployments (heldReplacement). frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
 // any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
@@ -750,6 +765,8 @@ type dispatchSettings struct {
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
 	senderMessagesPerMinute, senderMessageBurst int
+	consumerNames                               string
+	replaceUnderHold                            bool
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -1132,6 +1149,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"chatEndpoint", args.ChatEndpoint != nil},
 		{"chatModel", args.ChatModel != nil},
 		{"chatTokenSecret", args.ChatTokenSecret != nil},
+		{"consumerNames", args.ConsumerNames != ""},
+		{"replaceUnderHold", args.ReplaceUnderHold},
 	})
 }
 
@@ -1908,6 +1927,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
 		return dispatchSettings{}, err
 	}
+	// The consumer-name setting both creators read, checked here for the sender limit's reason.
+	if err := core.CheckConsumerNames("consumerNames", args.ConsumerNames); err != nil {
+		return dispatchSettings{}, err
+	}
+	s.consumerNames, s.replaceUnderHold = args.ConsumerNames, args.ReplaceUnderHold
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err
 	}

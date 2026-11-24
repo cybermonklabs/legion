@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -124,6 +124,11 @@
           "kind": "block[]",
           "targets": ["plan_task"],
           "scope": "document"
+        },
+        "steps": {
+          "kind": "string",
+          "since": 5,
+          "creatable_since": 5
         }
       },
       "since": 3,

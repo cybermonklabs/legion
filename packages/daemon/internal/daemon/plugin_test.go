@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -74,6 +75,7 @@ func pluginTestLocator(token claim.Token) *runtime.Locator {
 // daemon boot over claims seeded in the store first (seedWorkflowTree), since what this pins is what
 // the daemon's own boot does with claims it loaded from the store itself.
 func TestRunRelaunchesAClaimOnAnotherPluginContractAtBootChargingNothing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := testConfig(t)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -155,6 +157,7 @@ func TestRunRelaunchesAClaimOnAnotherPluginContractAtBootChargingNothing(t *test
 // that turn ends (supervise's refreshPlugin), so the launch path would never be asked and this
 // test would be waiting on a refusal nothing makes.
 func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := testConfig(t)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -245,6 +248,7 @@ func TestAStalePluginRelaunchTheLaunchPathRefusesIsRetriedAtTheNextSweep(t *test
 // relaunch lands, so the untouched claim's silence is not just a lucky race against a pass that
 // never happened.
 func TestRunLeavesAClaimAtTheDaemonsContractAloneAtBoot(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	cfg := testConfig(t)
 	cfg.PostgresDSN = pool.Config().ConnString()
@@ -304,6 +308,7 @@ func TestRunLeavesAClaimAtTheDaemonsContractAloneAtBoot(t *testing.T) {
 // A claim still launching, its registration not yet arrived, is left to that registration: the
 // boot pass never posts it the stale-plugin event, whatever its recorded contract.
 func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
+	t.Parallel()
 	sup, rt := newPluginSupervisor(t, 24, true)
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
@@ -356,6 +361,7 @@ func TestBootLeavesALaunchingClaimToItsRegistration(t *testing.T) {
 // which leaves the live claim unrefreshed at this boot. Both are read where this test asks for
 // the round and the resume.
 func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing.T) {
+	t.Parallel()
 	sup, rt := newPluginSupervisor(t, 24, true)
 	project, _ := claim.ProjectToken("legion")
 	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
@@ -435,6 +441,7 @@ func TestBootTakesEveryClaimOutOfItsPluginRoundAndRefreshesTheLiveOne(t *testing
 // contract that introduced ready_for_update cannot be asked to push first, so what it had not
 // pushed would go with the turn (supervise's holdStaleRelaunch).
 func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T) {
+	t.Parallel()
 	sup, rt := newPluginSupervisor(t, 24, true)
 	project, _ := claim.ProjectToken("legion")
 	token, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
@@ -489,6 +496,7 @@ func TestBootSuspendsAStaleClaimWhoseSuspensionIsHeldAtItsTurnsEnd(t *testing.T)
 // Driven through the supervision option directly (o.pluginRelaunchable): a real Kubernetes runtime
 // needs a cluster this pod has none of.
 func TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	no := false
 	rt := fake.NewRuntime()
@@ -541,6 +549,7 @@ func jsonLogger(buf *syncBuffer) *slog.Logger {
 // onto the current one — uncharged, the claim's first relaunch for this daemon's contract — and
 // the registration itself is refused naming both contracts and the relaunch under way.
 func TestAStaleRegistrationIsRelaunchedAtOnceChargingNothing(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
@@ -570,6 +579,7 @@ func TestAStaleRegistrationIsRelaunchedAtOnceChargingNothing(t *testing.T) {
 
 // The daemon-launched controller's registration is covered the same way as any other claim's.
 func TestAStaleControllerRegistrationIsRelaunchedAtOnce(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -609,12 +619,13 @@ func TestAStaleControllerRegistrationIsRelaunchedAtOnce(t *testing.T) {
 // the HTTP route the other registration tests use: the notice is the workflow's own reaction, which
 // needs its real store and handlers, not the fake-runtime daemon's.
 func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "planner", HandoffRecord: "plan-1", HandoffVersion: 1, LastHandoff: "plan-1"})
 	}); err != nil {
 		t.Fatal(err)
@@ -713,6 +724,7 @@ func TestARelaunchedProcessStillStaleIsChargedUntilWorkerDied(t *testing.T) {
 // tmux is always relaunchable and resolves no pair at all, since the tmux runtime never installs
 // one.
 func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
+	t.Parallel()
 	t.Run("kubernetes, the file names a pair", func(t *testing.T) {
 		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
@@ -753,6 +765,7 @@ func TestPrepareResolvesThePluginPairFromTheConfiguration(t *testing.T) {
 // "legion.yaml", and, once main fills Plugins from the binary's linked pair (PluginsFromBinary),
 // the same pair with "binary".
 func TestResolvedPlugins(t *testing.T) {
+	t.Parallel()
 	k9 := &config.PluginsConfig{PiLegion: "9.7.0", PiEnvoy: "9.6.1"}
 	for _, tc := range []struct {
 		name       string
@@ -778,6 +791,7 @@ func TestResolvedPlugins(t *testing.T) {
 // logPlugins is the boot's one line: Info naming the pair and its source with a pair, Warn naming
 // the gap without one.
 func TestLogPlugins(t *testing.T) {
+	t.Parallel()
 	var buf syncBuffer
 	logPlugins(jsonLogger(&buf), &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: api.DaemonAPIVersion}, "legion.yaml")
 	if got := buf.String(); !strings.Contains(got, `"msg":"daemon: stale-plugin relaunches install"`) || !strings.Contains(got, `"piLegion":"9.7.0"`) ||

@@ -57,10 +57,10 @@ func TestARefusedAnswerStopsTheSweepInFlight(t *testing.T) {
 	pod.conns[podRoles[0]] = again
 	releaseSweep()
 
-	testwait.Eventually(t, "the trimmer to stop the sweep on settings it refuses", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to stop the sweep on settings it refuses", func() bool {
 		return f.logged("the settings stopped the trimmer: the sweep ended at an entry boundary with its deletions standing, and no report is sent for it") == 1
 	})
-	testwait.Eventually(t, "the trimmer to name the key and the value it refuses", func() bool {
+	testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the trimmer to name the key and the value it refuses", func() bool {
 		return f.logged(fmt.Sprintf("high_percent is %d", wide.HighPercent)) == 1
 	})
 	if trims.hasStopped() {
