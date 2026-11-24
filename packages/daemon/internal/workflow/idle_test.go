@@ -770,7 +770,7 @@ func leftChild() pods.IdleView {
 }
 
 // A close with a live claim deletes a disk a role worked on, so it reads that disk first, as the
-// idle release does: the decision names the live roles and the daemon queues one workspace check,
+// idle release does: the decision names the live claims and the daemon queues one workspace check,
 // which queues the stops only where it finds nothing unpushed. A decline that stands keeps the pod
 // with its work, and while the check waits the pod is the daemon's own act under way. A pod with
 // no live claim has no role to read through, so the decline on record is the one word the daemon
@@ -789,13 +789,26 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 		v.Claims[0].State = supervise.StateFailed
 		return v
 	}
+	implementer := store.ReleasedClaim{Token: leftChild().Claims[0].Token, Role: claim.RoleImplementer}
+	other := store.ReleasedClaim{Token: claim.Token(string(implementer.Token) + "-other"), Role: claim.RoleImplementer}
 	for _, tc := range []struct {
-		name  string
-		view  pods.IdleView
-		want  IdleHold
-		roles []claim.Role
+		name   string
+		view   pods.IdleView
+		want   IdleHold
+		claims []store.ReleasedClaim
 	}{
-		{name: "every condition holds", view: leftChild(), roles: []claim.Role{claim.RoleImplementer}},
+		{name: "every condition holds", view: leftChild(), claims: []store.ReleasedClaim{implementer}},
+		{
+			name: "two live claims of one role both stop",
+			view: func() pods.IdleView {
+				v := leftChild()
+				c := v.Claims[0]
+				c.Token = other.Token
+				v.Claims = append(v.Claims, c)
+				return v
+			}(),
+			claims: []store.ReleasedClaim{implementer, other},
+		},
 		{
 			name: "the close's workspace check is still queued",
 			view: func() pods.IdleView { v := leftChild(); v.WorkspaceCheckQueued = true; return v }(),
@@ -845,8 +858,8 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 			if got.Hold != tc.want || got.Close != (tc.want == IdleHoldNone) || got.Release {
 				t.Fatalf("decision = %+v, want hold %s and a close only where nothing holds", got, tc.want)
 			}
-			if !slices.Equal(got.Roles, tc.roles) {
-				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+			if !slices.Equal(got.Claims, tc.claims) {
+				t.Fatalf("claims = %v, want %v", got.Claims, tc.claims)
 			}
 		})
 	}
@@ -858,7 +871,7 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 		v := leftChild()
 		v.WorkspaceCheckQueued, v.Declined = true, standing
 		v.Claims[0].LastTurnStart = turnStart
-		if got := LeftPodCloseAfterCheck(v, turnStart); !got.Close || !slices.Equal(got.Roles, []claim.Role{claim.RoleImplementer}) {
+		if got := LeftPodCloseAfterCheck(v, turnStart); !got.Close || !slices.Equal(got.Claims, []store.ReleasedClaim{implementer}) {
 			t.Fatalf("decision after a clean read = %+v, want the close of the implementer", got)
 		}
 		// A turn that started after the pass, of a claim that is no longer live as much as of a

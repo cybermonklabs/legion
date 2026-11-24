@@ -101,7 +101,10 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 	}))
 	g.r.launchers.beforeStart = func(ctx context.Context, _ claim.Token) {
 		if armed.CompareAndSwap(true, false) {
-			if session := launcherOf(g, workerToken); session != nil {
+			g.r.launchers.mu.Lock()
+			session := g.r.launchers.sessions[workerToken]
+			g.r.launchers.mu.Unlock()
+			if session != nil {
 				session.close()
 			}
 			close(dropped)

@@ -3918,7 +3918,7 @@ func (r *outbox) declineRelease(ctx context.Context, issue string, payload recor
 	}
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
-			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenRoleAt: workflow.OpenRoleAt})
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenWorker: r.openWorker})
 		if err != nil {
 			return err
 		}
