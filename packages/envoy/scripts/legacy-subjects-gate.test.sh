@@ -28,8 +28,10 @@
 # lists ENVOY_MACHINE_ID or NATS_URLS twice makes it UNKNOWN too. At a second reading it reads the
 # five facts, each with a case that shuts the gate or makes it UNKNOWN for that fact alone: a pin
 # behind the new-form commit (a1), a census of pins that read none, a connected client at an older
-# build (a2), a connection that names no build, a hub server that does not answer the census, a
-# census with no connection, a census whose list moved under it at an unchanged count, a user of
+# build (a2), a connection that names no build, a build's compare that gh could not make or that
+# answered a status, a count or a text GitHub never gives, which prints no word of gh's, a hub
+# server that does not answer the census, a census with no connection, a census whose list moved
+# under it at an unchanged count, a user of
 # the hub that may publish a notification subject mapped to no pin or to one the census of
 # listener pins shut (a3), a hub with no such user, each shape of publish permission that reaches
 # a notification subject and two that reach none, the auth service's entries behind an auth
@@ -172,12 +174,15 @@ EOF
 cat >"$root/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 # A fake gh for `gh api repos/cybermonklabs/legion/compare/<base>...<head> --jq <filter>`, answering
-# from $FAKE/compare/<head> and recording the call in $FAKE/calls.
+# from $FAKE/compare/<head> and recording the call in $FAKE/calls. $FAKE/compare/<head>.says makes
+# the call fail, saying that file on stderr, and $FAKE/compare/<head>.raw is answered as it is.
 set -u
 printf 'gh %s\n' "$*" >>"$FAKE/calls"
 [ "$1" = api ] && [ "$3" = --jq ] || { echo "fake gh: no answer for: $*" >&2; exit 99; }
 head=${2##*...}
-if [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
+if [ -f "$FAKE/compare/$head.says" ]; then cat "$FAKE/compare/$head.says" >&2; exit 1
+elif [ -f "$FAKE/compare/$head.raw" ]; then cat "$FAKE/compare/$head.raw"
+elif [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
 else echo "gh: Not Found (HTTP 404)" >&2; exit 1
 fi
 EOF
@@ -1463,6 +1468,76 @@ reading --since "$FAKE/earlier.json"
 expect_status 1
 expect_line "GATE SHUT: (a2) the running clients: 1 connection(s) run @sjawhar/pi-envoy@19.0.0, pi-envoy-v19.0.0 is behind $new_form (behind by 12): omp-ses_old @sjawhar/pi-envoy@19.0.0 (server envoy-nats-2, cid 32, user UOLD)"
 [ "$(jq -r .facts.a2 "$FAKE/record.json")" = false ] || fail "the record's (a2) is $(jq -r .facts.a2 "$FAKE/record.json")"
+# The control of the compare rows below: an answer of GitHub's own status and a count is printed
+# and keeps nothing beside the record.
+! compgen -G "$FAKE/record.json.compare.*" >/dev/null || fail "a compare GitHub answered with its own status and a count was kept beside the record"
+done_case
+
+# --- (a2) a build's compare prints no word of gh's ------------------------------------------------
+# Whatever answers gh's compare in GitHub's place holds gh's token and writes gh's own words and its
+# answer. Each case puts the marker not-a-secret-token in one of them for the compare of
+# claude-envoy-v6.0.0, the release tag of a clean connection's build, and no run of eight of its
+# characters (redacttest.Piece's run) may be in what the gate prints or in the record it writes,
+# which legacy-subjects-purge.sh reads. The twin: the file the build's line names, beside the
+# record, does hold the marker. The control: the fake gh is the one asked for that compare.
+readonly marker=not-a-secret-token
+readonly marked_head=claude-envoy-v6.0.0
+
+# holds_marker TEXT: whether TEXT holds a run of eight characters of the marker.
+holds_marker() {
+  local start
+  for ((start = 0; start + 8 <= ${#marker}; start++)); do
+    [[ "$1" == *"${marker:start:8}"* ]] && return 0
+  done
+  return 1
+}
+
+# marked_compare WANT: a second reading of the case, whose answer to the compare of marked_head the
+# case set. It must print WANT and then the words naming the one file beside the record that keeps
+# gh's answer and its own words, and no run of the marker, in its lines or in its record.
+marked_compare() {
+  local kept
+  reading --since "$FAKE/earlier.json"
+  ! holds_marker "$output" || fail "the gate printed a run of the marker gh's compare of $marked_head held; output:"$'\n'"$output"
+  [ -f "$FAKE/record.json" ] || fail "the reading wrote no record"
+  ! holds_marker "$(cat "$FAKE/record.json" 2>/dev/null)" || fail "the record holds a run of the marker gh's compare of $marked_head held"
+  grep -qxF -- "gh api repos/cybermonklabs/legion/compare/$new_form...$marked_head --jq {status, behind_by}" "$FAKE/calls" ||
+    fail "the fake gh was not asked for the compare of $marked_head"
+  kept=("$FAKE"/record.json.compare.*)
+  if [ "${#kept[@]}" = 1 ] && [ -f "${kept[0]}" ]; then
+    expect_line "$1; gh's answer and its own words are in ${kept[0]}"
+    grep -qF -- "$marker" "${kept[0]}" || fail "the file ${kept[0]} does not hold the marker gh's compare held"
+  else
+    fail "the reading kept gh's compare in ${#kept[@]} file(s) beside the record, want 1: ${kept[*]}"
+  fi
+}
+
+new_case "(a2) a compare gh could not make prints none of gh's words, and names the file that keeps them"
+first_reading_secs 200 reading
+printf 'gh: %s (HTTP 502)\n' "$marker" >"$FAKE/compare/$marked_head.says"
+marked_compare "UNKNOWN: (a2) the running clients: 1 connection(s) run @sjawhar/claude-envoy@6.0.0, which could not be judged against $new_form: GitHub could not compare $marked_head"
+expect_status 3
+done_case
+
+new_case "(a2) a compare answered with a status GitHub never gives prints none of it, and names the file that keeps it"
+first_reading_secs 200 reading
+printf '{"status":"%s","behind_by":0}\n' "$marker" >"$FAKE/compare/$marked_head"
+marked_compare "UNKNOWN: (a2) the running clients: 1 connection(s) run @sjawhar/claude-envoy@6.0.0, which could not be judged against $new_form: GitHub compared $marked_head with $new_form as none of its statuses (ahead, behind, diverged, identical)"
+expect_status 3
+done_case
+
+new_case "(a2) a compare answered behind with a behind_by that is no count prints none of it, and still shuts the gate"
+first_reading_secs 200 reading
+printf '{"status":"behind","behind_by":"%s"}\n' "$marker" >"$FAKE/compare/$marked_head"
+marked_compare "GATE SHUT: (a2) the running clients: 1 connection(s) run @sjawhar/claude-envoy@6.0.0, $marked_head is behind $new_form (behind by a count GitHub did not give)"
+expect_status 1
+done_case
+
+new_case "(a2) a compare answered with no JSON object names the file that keeps the answer"
+first_reading_secs 200 reading
+printf '%s\n' "$marker" >"$FAKE/compare/$marked_head.raw"
+marked_compare "UNKNOWN: (a2) the running clients: 1 connection(s) run @sjawhar/claude-envoy@6.0.0, which could not be judged against $new_form: GitHub's compare answered no status"
+expect_status 3
 done_case
 
 new_case "(a2) a connection that names no build is UNKNOWN"
