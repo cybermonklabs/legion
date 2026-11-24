@@ -56,9 +56,10 @@ var ErrAnswerTooLarge = errors.New("redact: the answer's body is longer than its
 // requests that led to resp (Carried). It does not close the body; its caller does. A body that
 // holds more than limit bytes is the Answer of its first limit bytes and an error that wraps
 // ErrAnswerTooLarge; a read that fails is an Answer with the status and no body, and the read's
-// error as a message may print it (unreadable): a transport failure's own error as it came, and
-// any other by its class, unwrapping to it, since net/http's text of a body it could not read
-// can quote a line the answer wrote.
+// error as a message may print it (unreadable): a transport failure's own error as it came, a TLS
+// record or certificate failure by the fixed words for its type, and any other by its class,
+// unwrapping to it, since net/http's text of a body it could not read can quote a line the answer
+// wrote.
 func ReadAnswer(resp *http.Response, limit int64) (Answer, error) {
 	a := &answer{status: resp.StatusCode, rec: answerRecord(resp)}
 	if resp.Body == nil || resp.Body == http.NoBody {

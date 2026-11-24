@@ -12,11 +12,12 @@ import (
 // Unanswered is err, the failure of an HTTP request that got no answer it could read
 // (http.Client.Do's error, or the error of reading the answer's body), as a message may print it:
 // net/http's operation and the request named shown, or where shown is "" by the URL it asked as
-// URL prints it, and then the failure by its transport text or its class (unansweredFailure). It
-// is for a request whose URL Call does not print, such as a GitHub API path: Cause prints a
-// transport failure's own text only beside a configured URL and a request URL under /v1/ of it,
-// Class never prints it, and neither keeps a timeout's or a refused connection's own words for
-// any other request. It is the contract of the daemon's redact.Unanswered, in this module.
+// URL prints it, and then the failure by its transport text, a TLS record or certificate
+// failure's fixed words, or its class (unansweredFailure). It is for a request whose URL Call does
+// not print, such as a GitHub API path: Cause prints a transport failure's own text only beside a
+// configured URL and a request URL under /v1/ of it, Class never prints it, and neither keeps a
+// timeout's or a refused connection's own words for any other request. It is the contract of the
+// daemon's redact.Unanswered, in this module.
 //
 // It never prints net/http's own text of any other failure, which can quote the answering
 // party's words: Go parses a redirect's Location before a client's CheckRedirect is asked
@@ -75,17 +76,19 @@ const (
 )
 
 // unansweredFailure is the words Unanswered prints for err, the failure under a request that got
-// no answer: the text of the first error down err's chain (errors.Unwrap) that is a transport
-// failure (transport: a dial or another net.OpError, name resolution, a timeout, a refused, reset
-// or broken connection, an end of the stream, an http answer to https, a TLS record or
-// certificate failure) or the caller's own cancellation (context.Canceled), whose text is the
-// transport's or context's own fixed words and the addresses the request dialled; and otherwise
-// fixed text naming its class. A Location that did not parse is told by net/http's own fixed
-// words for it, a decision on them that prints none of them.
+// no answer: for the first error down err's chain (errors.Unwrap) that is a transport failure
+// (transport: a dial or another net.OpError, name resolution, a timeout, a refused, reset or
+// broken connection, an end of the stream, an http answer to https, a TLS record or certificate
+// failure) or the caller's own cancellation (context.Canceled), its text as transportWords prints
+// it: the transport's or context's own fixed words and the addresses the request dialled, or for
+// a TLS record or certificate failure the fixed words for its type, since x509's text names what
+// the certificate the answering party sent holds; and otherwise fixed text naming its class. A
+// Location that did not parse is told by net/http's own fixed words for it, a decision on them
+// that prints none of them.
 func unansweredFailure(err error) string {
 	for e := err; e != nil; e = errors.Unwrap(e) {
 		if transport(e) || e == context.Canceled {
-			return e.Error()
+			return transportWords(e)
 		}
 	}
 	if err != nil && strings.HasPrefix(err.Error(), "failed to parse Location header ") {
@@ -95,16 +98,16 @@ func unansweredFailure(err error) string {
 }
 
 // unreadable is err, the failure of a read of an answer's body (ReadAnswer, StreamAnswer's
-// stream), as a message may print it: err itself where it is nil, a transport failure or the
-// caller's cancellation (io.EOF, io.ErrUnexpectedEOF, a timeout, a reset connection), whose text
-// is the transport's own words, so a reader that compares it with io.EOF still finds it as it
-// came; and otherwise Unanswered of it, its class, unwrapping to err. net/http's own text of a
-// body it could not read can quote a line the answer wrote: a chunked body's trailer line that
-// does not parse comes back quoted (net/http/transfer.go of go1.27.3, line 956, then textproto's
-// reader.go 549-621), and whoever answers in the server's place can write the request's
-// credential there.
+// stream), as a message may print it: err itself where it is nil, a transport failure other than
+// a TLS record or certificate failure, or the caller's cancellation (io.EOF, io.ErrUnexpectedEOF,
+// a timeout, a reset connection), whose text is the transport's own words, so a reader that
+// compares it with io.EOF still finds it as it came; and otherwise Unanswered of it, its class or
+// a TLS failure's fixed words, unwrapping to err. net/http's own text of a body it could not read
+// can quote a line the answer wrote: a chunked body's trailer line that does not parse comes back
+// quoted (net/http/transfer.go of go1.27.3, line 956, then textproto's reader.go 549-621), and
+// whoever answers in the server's place can write the request's credential there.
 func unreadable(err error) error {
-	if err == nil || transport(err) || err == context.Canceled {
+	if err == nil || err == context.Canceled || transport(err) && !tlsRecordOrCertificate(err) {
 		return err
 	}
 	return Unanswered(err, nil, "")
