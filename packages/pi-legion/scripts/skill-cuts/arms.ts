@@ -919,17 +919,15 @@ function pathRowsOf(c: Case, targets: ReadonlyMap<string, string>): PathRows {
 
 /** The copy of `c`'s skill a read by path reads (PathCopy), or undefined when it has none: the
  *  cut's own copy the case names (`c.pathCopy`), else the directory the case's `skill://` reads
- *  `reads` show the skill installed in (`shownInstalledDir`), whose files a read by path opens as
- *  Oh My Pi's read does; `shownDir` from the first hashline line of a read of a file of the copy
- *  that shows that file's path, else the copy's directory; `rows` as the session shows them
- *  (`pathRowsOf`). */
+ *  show the skill installed in (`installed`, from `shownInstalledDir`). `shownDir` comes from
+ *  the first hashline line of a read of a file of the copy that shows that file's path, else the
+ *  copy's directory; `rows` is as the session shows them (`pathRowsOf`). */
 function pathCopyOf(
   c: Case,
   targets: ReadonlyMap<string, string>,
   rows: PathRows,
-  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
+  installed: string | undefined
 ): PathCopy | undefined {
-  const installed = shownInstalledDir(reads);
   const place: Case["pathCopy"] =
     c.pathCopy ?? (installed === undefined ? undefined : { dir: installed });
   if (place === undefined) return undefined;
@@ -1307,6 +1305,8 @@ interface HistoryRead {
   readonly header: string | undefined;
   readonly id: string;
 }
+
+type HeaderRead = Pick<HistoryRead, "file" | "header">;
 
 /** A whole read by path of a file of the cut's own copy in the case's history: the file (a path
  *  inside the skill), the target its call read, its call's id, and the copy as the session read
@@ -1798,9 +1798,7 @@ export function installedDirOf(header: string | undefined, file: string): string
 
 /** The directory skill reads `reads` show their skill installed in: the one the first of them, in
  *  order, whose result header shows one shows (`installedDirOf`), or undefined when none does. */
-function shownInstalledDir(
-  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
-): string | undefined {
+function shownInstalledDir(reads: Iterable<HeaderRead>): string | undefined {
   for (const { file, header } of reads) {
     const dir = installedDirOf(header, file);
     if (dir !== undefined) return dir;
@@ -1810,10 +1808,7 @@ function shownInstalledDir(
 
 /** The directory the arms show skill `skill` installed in, from its reads `reads` in order: the
  *  first whose result header shows one (`shownInstalledDir`), else `/skills/<skill>`. */
-export function installedDirIn(
-  skill: string,
-  reads: Iterable<{ readonly file: string; readonly header: string | undefined }>
-): string {
+export function installedDirIn(skill: string, reads: Iterable<HeaderRead>): string {
   return shownInstalledDir(reads) ?? path.join("/skills", skill);
 }
 
@@ -1889,10 +1884,11 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     }
   }
   // The installed directory: the first header's path less the file it read.
-  const installedDir = installedDirIn(c.skill, reads.values());
+  const shown = shownInstalledDir(reads.values());
+  const installedDir = shown ?? path.join("/skills", c.skill);
   // The copy a read by path reads: the cut's own copy the case names, which each of `copyReads`
   // reads, else the installed directory the headers show.
-  const pathCopy = pathCopyOf(c, targets, pathRows, reads.values());
+  const pathCopy = pathCopyOf(c, targets, pathRows, shown);
   const pathReads = new Map<number, PathRead>();
   for (const [index, read] of copyReads) {
     if (pathCopy !== undefined) pathReads.set(index, { ...read, copy: pathCopy });

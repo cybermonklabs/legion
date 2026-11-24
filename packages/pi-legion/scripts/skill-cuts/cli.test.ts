@@ -4806,6 +4806,18 @@ describe("behaviour: a replay's reads of skill files", () => {
     );
   };
 
+  /** Every replay reads beta first, then acts once beta's text is in the request. */
+  const readsBetaFirst: typeof answer = (body) =>
+    isJudgement(body) || JSON.stringify(body.messages).includes("Load alpha before")
+      ? behaviourStandIn(body)
+      : readReply("skill://beta");
+
+  const expectBetaCopyRead = (run: NonNullable<CaseResult["stages"]["screen"]>["runs"][number]) => {
+    expect(run.skillReads).toEqual([
+      [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
+    ]);
+  };
+
   /** A stand-in whose replays answer as behaviourStandIn but for each run `reads` picks at its
    *  first send, given that send's body: every reply of such a run reads alpha's reference. */
   const readingStandIn = (reads: (body: { [field: string]: unknown }) => boolean) => {
@@ -4838,11 +4850,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const s = scenario("other-read", LOSS_SKILL(), [{ id: "c04" }]);
     recordCaptures(s, ["old", "new", "none"]);
     writeSkill(path.join(s.dir, "cache", "skills", BETA_FROM.key), { "SKILL.md": BETA_TEXT });
-    // Every run reads beta first, and acts once beta's text is in its body.
-    answer = (body) =>
-      isJudgement(body) || JSON.stringify(body.messages).includes("Load alpha before")
-        ? behaviourStandIn(body)
-        : readReply("skill://beta");
+    answer = readsBetaFirst;
     const ran = await cli(behaviour("screen", s));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const c = result(s.out, "c04");
@@ -4851,9 +4859,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(runs).toHaveLength(3 * SCREEN_RUNS);
     for (const run of runs) {
       expect(run.skillRounds).toBe(1);
-      expect(run.skillReads).toEqual([
-        [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
-      ]);
+      expectBetaCopyRead(run);
       expect(run.reply?.[0]).toMatchObject({
         type: "tool_use",
         name: "read",
@@ -4875,10 +4881,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     writeSkill(path.join(repos, BETA_FROM.repo, BETA_FROM.commit, BETA_FROM.path), {
       "SKILL.md": BETA_TEXT,
     });
-    answer = (body) =>
-      isJudgement(body) || JSON.stringify(body.messages).includes("Load alpha before")
-        ? behaviourStandIn(body)
-        : readReply("skill://beta");
+    answer = readsBetaFirst;
     const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(readFileSync(path.join(copy, "SKILL.md"), "utf8")).toBe(BETA_TEXT);
@@ -4889,9 +4892,7 @@ describe("behaviour: a replay's reads of skill files", () => {
     const runs = c.stages.screen?.runs ?? [];
     expect(runs).toHaveLength(3 * SCREEN_RUNS);
     for (const run of runs) {
-      expect(run.skillReads).toEqual([
-        [{ skill: "beta", file: "SKILL.md", by: "skill", from: "copy", isError: false }],
-      ]);
+      expectBetaCopyRead(run);
     }
   }, 120_000);
 
@@ -5078,9 +5079,7 @@ describe("behaviour: a replay's reads of skill files", () => {
         })
       );
     };
-    const ran = await cli(
-      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
-    );
+    const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const runsOf = (id: string) => result(s.out, id).stages.screen?.runs ?? [];
     for (const id of ["w00", "w01"]) {
@@ -5208,7 +5207,7 @@ describe("behaviour: a replay's reads of skill files", () => {
       );
     };
     const cache = path.join(s.dir, "cache");
-    const ran = await cli(behaviour("screen", s, "--repos", repos, "--cache-dir", cache));
+    const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const checkouts = path.join(cache, "checkouts", "acme", "proj");
     // Made once by w00, with no jj; made a colocated jj repository once, for w01.
@@ -5317,9 +5316,7 @@ describe("behaviour: a replay's reads of skill files", () => {
         })
       );
     };
-    const ran = await cli(
-      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
-    );
+    const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     expect(ran.stdout).toContain(
       "(git, its history 50 commits deep; 1 symbolic links that leave it removed: leak.txt)"
@@ -5398,9 +5395,7 @@ describe("behaviour: a replay's reads of skill files", () => {
         })
       );
     };
-    const ran = await cli(
-      behaviour("screen", s, "--repos", repos, "--cache-dir", path.join(s.dir, "cache"))
-    );
+    const ran = await cli(behaviour("screen", s, "--repos", repos));
     expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
     const runs = result(s.out, "w00").stages.screen?.runs ?? [];
     expect(runs).toHaveLength(3 * SCREEN_RUNS + 2);

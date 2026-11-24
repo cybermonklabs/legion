@@ -5295,34 +5295,13 @@ test("build-cases --written passes over a context session whose every written-ca
     );
   });
   const goodFile = sessionPath("good");
-  // The arguments of a build into `name` whose seeded order takes `first`, then the good session.
-  const seeded = (name: string, first: string) => {
-    const candidates = [first, goodFile].map((file) => ({
-      store: "store_a",
-      hash: fileHash(file),
-      path: file,
-    }));
-    const seed = Array.from({ length: 100 }, (_, n) => String(n)).find(
-      (each) => blindOrder(candidates, each)[0]?.item.path === first
-    );
-    expect(seed).toBeDefined();
-    const sessions = path.join(setupDir, `${name}-sessions.jsonl`);
-    writeFileSync(sessions, candidates.map((each) => `${JSON.stringify(each)}\n`).join(""));
-    const args = writtenArgs(
-      path.join(scratch, name, "cases.jsonl"),
-      "--sessions",
-      sessions,
-      "--seed",
-      seed ?? ""
-    );
-    args[args.indexOf("--config") + 1] = store;
-    return args;
-  };
   const refusal = 'the answer is not one JSON value: "" (the reply stopped at refusal)';
   const tries = `the written-case reader's answer was refused on each of ${READER_TRIES} tries`;
   const why = `reader-refused: ${tries}: ${Array(READER_TRIES).fill(refusal).join(" | ")}`;
   const printed: string[] = [];
-  expect(await main(seeded("written-refused", refusedFile), io(printed))).toBe(EXIT.ok);
+  expect(
+    await main(writtenInOrder(store, "written-refused", [refusedFile, goodFile]), io(printed))
+  ).toBe(EXIT.ok);
   const out = path.join(scratch, "written-refused", "cases.jsonl");
   const summary = summaryOf<WrittenSummary>(out);
   expect(summary.contextSession.hash).toBe(fileHash(goodFile));
@@ -5346,7 +5325,9 @@ test("build-cases --written passes over a context session whose every written-ca
   // The first reply stopped at refusal, the others ended their turn with no JSON: the build fails
   // as on any other failure of the reader, and takes no next session.
   const failed: string[] = [];
-  expect(await main(seeded("written-partly-refused", partlyFile), io(failed))).toBe(EXIT.failed);
+  expect(
+    await main(writtenInOrder(store, "written-partly-refused", [partlyFile, goodFile]), io(failed))
+  ).toBe(EXIT.failed);
   const unwritten = `the answer is not one JSON value: ${JSON.stringify(UNWRITTEN)}`;
   expect(failed.join("")).toContain(
     `the written-case reader: ${tries}: ${[refusal, ...Array(READER_TRIES - 1).fill(unwritten)].join(" | ")}`
