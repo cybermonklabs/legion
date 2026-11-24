@@ -1833,9 +1833,7 @@
       {
         "row": "record-admin-api-echo",
         "base": "74cb685538897604595fa6ce23e6212fb0c1971c",
-        "files": [
-          "packages/daemon/internal/sessionproxy/admin_api_echo_test.go"
-        ],
+        "files": ["packages/daemon/internal/sessionproxy/admin_api_echo_test.go"],
         "capture": "sessionproxy.admin-api-echo"
       },
       {
@@ -8368,7 +8366,11 @@
       "production": "listener edgeRepositories.read: a broker read whose Location does not parse prints its failure as the broker's address allows (redact.Cause), never net/http's text, which quotes the Location",
       "function": "(*github.com/sjawhar/envoy/cmd/listener.edgeRepositories).read",
       "capture": "listener.edge-redirect/unparsed",
-      "mutation": {"file": "packages/envoy/cmd/listener/edge_repositories.go", "preimage": "redact.Cause(err, e.brokerURL)", "replacement": "err"}
+      "mutation": {
+        "file": "packages/envoy/cmd/listener/edge_repositories.go",
+        "preimage": "redact.Cause(err, e.brokerURL)",
+        "replacement": "err"
+      }
     },
     {
       "id": "listener-edge-redirect-elsewhere",
@@ -8385,7 +8387,11 @@
       "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (redact.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
       "capture": "dispatch-agentsecrets.redirect/unparsed",
-      "mutation": {"file": "packages/envoy/internal/dispatch/cipher/client.go", "preimage": "redact.Cause(err, c.URL)", "replacement": "err"}
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
+        "preimage": "redact.Cause(err, c.URL)",
+        "replacement": "err"
+      }
     },
     {
       "id": "dispatch-agentsecrets-redirect-elsewhere",
@@ -8402,7 +8408,11 @@
       "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (redact.Cause)",
       "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
       "capture": "wake.redirect/unparsed",
-      "mutation": {"file": "packages/envoy/internal/cipher/wake/envoy.go", "preimage": "redact.Cause(err, e.URL)", "replacement": "func() error { _ = redact.Cause; return err }()"}
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/wake/envoy.go",
+        "preimage": "redact.Cause(err, e.URL)",
+        "replacement": "func() error { _ = redact.Cause; return err }()"
+      }
     },
     {
       "id": "wake-redirect-elsewhere",
@@ -8419,7 +8429,11 @@
       "production": "judge Dispatch.get: a read whose Location does not parse is named by its class (redact.Class)",
       "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
       "capture": "judge.redirect/unparsed",
-      "mutation": {"file": "packages/envoy/internal/cipher/judge/dispatch.go", "preimage": "redact.Class(err)", "replacement": "err"}
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/judge/dispatch.go",
+        "preimage": "redact.Class(err)",
+        "replacement": "err"
+      }
     },
     {
       "id": "judge-redirect-elsewhere",
@@ -8436,7 +8450,11 @@
       "production": "dispatchread Reader.Get: a read whose Location does not parse is ErrNoAnswer named by its class (redact.Class)",
       "function": "(github.com/sjawhar/envoy/internal/cipher/dispatchread.Reader).Get",
       "capture": "dispatchread.redirect/unparsed",
-      "mutation": {"file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go", "preimage": "ErrNoAnswer, path, redact.Class(err)", "replacement": "ErrNoAnswer, path, err"}
+      "mutation": {
+        "file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go",
+        "preimage": "ErrNoAnswer, path, redact.Class(err)",
+        "replacement": "ErrNoAnswer, path, err"
+      }
     },
     {
       "id": "dispatchread-redirect-elsewhere",
@@ -8453,7 +8471,11 @@
       "production": "ciphertoken GoogleAccount.generateIDToken: a mint whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the pod's access token a stand-in echoed",
       "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.GoogleAccount).generateIDToken",
       "capture": "brokertoken.mint-redirect",
-      "mutation": {"file": "packages/envoy/internal/ciphertoken/googleaccount.go", "preimage": "\"call generateIdToken: %w\", redact.Class(err)", "replacement": "\"call generateIdToken: %w\", err"}
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/googleaccount.go",
+        "preimage": "\"call generateIdToken: %w\", redact.Class(err)",
+        "replacement": "\"call generateIdToken: %w\", err"
+      }
     },
     {
       "id": "brokertoken-introspect-redirect",
@@ -8463,7 +8485,11 @@
       "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (redact.Cause)",
       "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
       "capture": "brokertoken.introspect-redirect",
-      "mutation": {"file": "packages/envoy/internal/ciphertoken/introspect.go", "preimage": "redact.Cause(err, v.brokerURL)", "replacement": "err"}
+      "mutation": {
+        "file": "packages/envoy/internal/ciphertoken/introspect.go",
+        "preimage": "redact.Cause(err, v.brokerURL)",
+        "replacement": "err"
+      }
     },
     {
       "id": "embed-redirect-azure",
@@ -8473,7 +8499,11 @@
       "production": "embed AzureClient.Embed: a call whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the api-key a stand-in echoed",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.AzureClient).Embed",
       "capture": "embed.redirect/azure",
-      "mutation": {"file": "packages/envoy/internal/dispatch/embed/azure.go", "preimage": "\"embed: azure embeddings: %w\", redact.Class(err)", "replacement": "\"embed: azure embeddings: %w\", err"}
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azure.go",
+        "preimage": "\"embed: azure embeddings: %w\", redact.Class(err)",
+        "replacement": "\"embed: azure embeddings: %w\", err"
+      }
     },
     {
       "id": "embed-redirect-entra",
@@ -8483,7 +8513,11 @@
       "production": "embed EntraTokenSource.exchange: an exchange whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the federated assertion a stand-in echoed",
       "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange",
       "capture": "embed.redirect/entra",
-      "mutation": {"file": "packages/envoy/internal/dispatch/embed/azuretoken.go", "preimage": "\"embed: entra token exchange: %w\", redact.Class(err)", "replacement": "\"embed: entra token exchange: %w\", err"}
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azuretoken.go",
+        "preimage": "\"embed: entra token exchange: %w\", redact.Class(err)",
+        "replacement": "\"embed: entra token exchange: %w\", err"
+      }
     },
     {
       "id": "oidc-revoke-redirect",
@@ -8493,7 +8527,11 @@
       "production": "oidc CodeFlow.Revoke: a revocation whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the client secret a stand-in echoed",
       "function": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke",
       "capture": "oidc.revoke-redirect",
-      "mutation": {"file": "packages/envoy/internal/oidc/codeflow.go", "preimage": "\"oidc: revoke: %w\", redact.Class(err)", "replacement": "\"oidc: revoke: %w\", err"}
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/codeflow.go",
+        "preimage": "\"oidc: revoke: %w\", redact.Class(err)",
+        "replacement": "\"oidc: revoke: %w\", err"
+      }
     }
   ],
   "bun": [
