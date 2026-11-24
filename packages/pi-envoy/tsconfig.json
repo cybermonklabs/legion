@@ -26,6 +26,8 @@
     "extensions/envoy.ts",
     "extensions/askgate/*.ts",
     "extensions/dispatch-first-omp.test.ts",
+    "extensions/card-delivery-omp.test.ts",
+    "extensions/session-answers-omp.test.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
     "scripts/*.ts",

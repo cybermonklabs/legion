@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -500,9 +501,10 @@ func (r *hourRig) returnTo(holder, eventID string, frames <-chan contracts.Envel
 
 // assertDeadLetterOf fails unless letter is the dead letter of held, a copy of role's lane: from
 // Envoy on its sender's agent subject, naming the copy as its source event, with a summary that
-// names the role, and a text that names the role, the copy's event id and first line, the time
-// Envoy kept it, the time Envoy dropped it - no earlier than droppedAfter and no later than
-// droppedBy - and each of says.
+// names the role, and a text that names the role, the copy's event id, the time Envoy kept it, the
+// time Envoy dropped it - no earlier than droppedAfter and no later than droppedBy - and each of
+// says, and that gives the copy's first line for a copy from any source but dispatch and none of
+// its summary for a Dispatch frame (keptCopyNamed).
 func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, held laneCopy, droppedAfter, droppedBy time.Time, says ...string) {
 	t.Helper()
 	if letter.Source != "envoy" || letter.SourceSession != "" || letter.Topic != contracts.LegacyAgentSubject(held.item.SourceSession) || letter.SourceEventID != held.item.EventID {
@@ -512,10 +514,14 @@ func assertDeadLetterOf(t *testing.T, letter contracts.Envelope, role string, he
 		t.Fatalf("the dead letter's summary is %q, want it to name role %s", letter.PayloadSummary, role)
 	}
 	kept := "Envoy kept the message at " + held.stored.UTC().Format(time.RFC3339)
-	for _, want := range append([]string{role, held.item.EventID, held.item.PayloadSummary, kept}, says...) {
+	for _, want := range append([]string{role, held.item.EventID, kept}, says...) {
 		if !strings.Contains(letter.Payload, want) {
 			t.Fatalf("the dead letter's text does not say %q:\n%s", want, letter.Payload)
 		}
+	}
+	if quoted := strings.Contains(letter.Payload, held.item.PayloadSummary); quoted != (held.item.Source != "dispatch") {
+		t.Fatalf("the dead letter of a copy from source %s quotes its summary %q: %t, want %t:\n%s",
+			held.item.Source, held.item.PayloadSummary, quoted, !quoted, letter.Payload)
 	}
 	_, rest, found := strings.Cut(letter.Payload, "Envoy dropped the message at ")
 	stamp, _, _ := strings.Cut(rest, ".")
@@ -1458,6 +1464,184 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt holds the line a dead letter names its
+// message by (keptCopyNamed), and that the letter keeps every other line it had. A Dispatch
+// frame's summary is the head of what its event carries, a post's body included, and the letter
+// is written as late as the end of the copy's hour, after the post's author may have deleted the
+// post, so the letter of a Dispatch frame gives none of the summary. It names a comment or a
+// message by its id and its dispatch:// reference, and says that is because its author can edit
+// or delete it; it names any other Dispatch frame - an ask's, an issue's, a delivery receipt, one
+// that names no post - by the event id alone, with no such reason, since no author edits or
+// deletes those. A message from any other source keeps its first line. Each Dispatch frame is
+// built as the outbox builds one (internal/dispatch/outbox envelope), from the event types
+// Dispatch writes: the whole event as its payload, and the head of what it carries in its summary.
+func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
+	const (
+		role         = "letter-role"
+		sender       = "ses_letter_sender"
+		phrase       = "zephyr-quokka-7731 is what the author deleted"
+		messageID    = "0b5e7c1e-2f4a-4c0e-9d3b-6a1f8e2c4d71"
+		commentID    = "7d2c9a40-5b1e-4f3a-8c6d-1e9b0a7f3c52"
+		askID        = "3c8e1f5a-6b2d-4e9c-a7f0-5d1b8c3e2a96"
+		artifactID   = "4f1a6b2c-8d3e-4a5f-9b0c-2e7d1a3f6c84"
+		postUnquoted = "Envoy names a comment or a message from Dispatch by its ID and its reference and quotes none of it, because its author can edit or delete it."
+		unquoted     = "Envoy does not quote a message from Dispatch, and names this one by its event ID alone."
+	)
+	stored := bus.StoredMessage{Sequence: 11, Time: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
+	dropped := stored.Time.Add(time.Hour + time.Minute)
+	drop := keptRoleDrop{reason: deadLetterExpired}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	body := phrase + "\n\nThe rest of the post."
+	// frame is the copy of event that the publish route kept from sender, with summary.
+	frame := func(t *testing.T, event model.Event, summary string) contracts.Envelope {
+		t.Helper()
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("encode event %d: %v", event.ID, err)
+		}
+		return contracts.Envelope{
+			EventID: fmt.Sprintf("dispatch-%d", event.ID), Source: "dispatch", SourceSession: sender, SourceEventID: fmt.Sprint(event.ID),
+			Topic: contracts.RoleTopicPrefix + role, DedupeKey: publishDedupePrefix + id.New(), PayloadSummary: summary, Payload: string(payload),
+		}
+	}
+	// named is the line of item's dead letter that names the message, and the letter. It fails t
+	// unless every other line of the letter, and its summary, are the ones every dead letter of an
+	// expired copy gives.
+	named := func(t *testing.T, item contracts.Envelope) (string, contracts.Envelope) {
+		t.Helper()
+		letter, _ := keptRoleDeadLetter(role, stored, item, dropped, drop)
+		lines := strings.Split(letter.Payload, "\n")
+		want := []string{
+			"Envoy dropped a message that you published to role " + role + ".",
+			"The event ID of the message is " + item.EventID + ".",
+			"",
+			"Envoy kept the message at 2026-11-20T09:00:00Z. Envoy dropped the message at 2026-11-20T10:01:00Z.",
+			drop.explanation(),
+		}
+		if len(lines) != len(want) {
+			t.Fatalf("the dead letter has %d lines, want %d:\n%s", len(lines), len(want), letter.Payload)
+		}
+		for i := range want {
+			if i != 2 && lines[i] != want[i] {
+				t.Fatalf("line %d of the dead letter is %q, want %q", i+1, lines[i], want[i])
+			}
+		}
+		if want := "Envoy dropped your message to role " + role + ": no session held the role in the hour that Envoy kept it."; letter.PayloadSummary != want {
+			t.Fatalf("the dead letter's summary is %q, want %q", letter.PayloadSummary, want)
+		}
+		return lines[2], letter
+	}
+	// quotesNothing fails t if letter gives any of the post's body.
+	quotesNothing := func(t *testing.T, letter contracts.Envelope) {
+		t.Helper()
+		if strings.Contains(letter.Payload, "zephyr") || strings.Contains(letter.PayloadSummary, "zephyr") {
+			t.Fatalf("the dead letter of a Dispatch frame quotes the post's body:\n%s\n%s", letter.PayloadSummary, letter.Payload)
+		}
+	}
+
+	t.Run("a a Dispatch message's dead letter names the message by its reference and its id and gives none of its body", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 41, IssueKey: new("CORE-12"), Type: "message.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.MessageEventPayload{Message: model.Message{ID: messageID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
+		}, "CORE-12 message created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch message " + messageID + ": dispatch://CORE-12/message/" + messageID + ". " + postUnquoted +
+			" Read the reference to see the message as it is now."; line != want {
+			t.Fatalf("the dead letter names the message as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("b a Dispatch comment's dead letter names the comment by its reference and its id and gives none of its body", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 42, IssueKey: new("CORE-12"), Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
+		}, "CORE-12 comment created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE-12/comment/" + commentID + ". " + postUnquoted +
+			" Read the reference to see the comment as it is now."; line != want {
+			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("c a Dispatch comment on a project document is named by the document's reference to it", func(t *testing.T) {
+		item := frame(t, model.Event{
+			ID: 43, ArtifactID: new(artifactID), Project: "CORE", Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+			Payload: model.CommentEventPayload{
+				Comment:      model.Comment{ID: commentID, ArtifactID: new(artifactID), Author: alice, Body: body, CreatedAt: stored.Time},
+				ArtifactName: "notes.md", ProjectKey: "CORE", ArtifactSlug: "notes-md",
+			},
+		}, "CORE/notes-md comment created: "+phrase+" The rest of the post.")
+		line, letter := named(t, item)
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE/artifact/notes-md/comment/" + commentID + ". " + postUnquoted +
+			" Read the reference to see the comment as it is now."; line != want {
+			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
+		}
+		quotesNothing(t, letter)
+	})
+
+	t.Run("d a Dispatch frame that names no post is named by its event id alone, with no reason of an author's, and gives none of its body", func(t *testing.T) {
+		noEvent := frame(t, model.Event{ID: 44}, phrase)
+		noEvent.Payload = body
+		for _, tc := range []struct {
+			name string
+			item contracts.Envelope
+		}{
+			{"a frame whose payload is no event", noEvent},
+			{"a comment on a project document whose event, an older server's, names no slug", frame(t, model.Event{
+				ID: 45, ArtifactID: new(artifactID), Project: "CORE", Type: "comment.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, ArtifactID: new(artifactID), Author: alice, Body: body, CreatedAt: stored.Time}},
+			}, "CORE/notes-md comment created: "+phrase)},
+			{"a comment's delivery receipt, whose payload names no post's id", frame(t, model.Event{
+				ID: 46, IssueKey: new("CORE-12"), Type: "comment.delivery", Actor: alice, CreatedAt: stored.Time,
+				Payload: model.CommentDeliveryEventPayload{CommentID: commentID, Target: "session:ses_letter_target", Attempt: 1, State: "sent"},
+			}, "CORE-12 comment delivery")},
+			{"an ask's frame", frame(t, model.Event{
+				ID: 48, IssueKey: new("CORE-12"), Type: "ask.opened", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.AskEventPayload{Ask: model.Ask{ID: askID, IssueKey: new("CORE-12"), Author: alice, Kind: "question", Question: phrase + "?"}},
+			}, "CORE-12 ask opened: "+phrase+"?")},
+			{"an issue's frame", frame(t, model.Event{
+				ID: 49, IssueKey: new("CORE-12"), Type: "issue.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.IssueEventPayload{Issue: model.Issue{Key: "CORE-12", Project: "CORE", Number: 12, Title: phrase, Status: "todo"}},
+			}, "CORE-12 issue created: "+phrase)},
+		} {
+			line, letter := named(t, tc.item)
+			if line != unquoted || strings.Contains(letter.Payload, "dispatch://") {
+				t.Fatalf("%s: the dead letter names the message as %q, want %q and no reference:\n%s", tc.name, line, unquoted, letter.Payload)
+			}
+			if strings.Contains(letter.Payload, "edit or delete") {
+				t.Fatalf("%s: the dead letter gives the reason of a post its author can edit or delete:\n%s", tc.name, letter.Payload)
+			}
+			quotesNothing(t, letter)
+		}
+	})
+
+	t.Run("e a raw role publish keeps its first line, whatever its payload holds", func(t *testing.T) {
+		event, err := json.Marshal(model.Event{
+			ID: 47, IssueKey: new("CORE-12"), Type: "message.created", Actor: alice, CreatedAt: stored.Time,
+			Payload: model.MessageEventPayload{Message: model.Message{ID: messageID, IssueKey: new("CORE-12"), Author: alice, Body: body}},
+		})
+		if err != nil {
+			t.Fatalf("encode the event: %v", err)
+		}
+		eventPayload := string(event)
+		for _, tc := range []struct {
+			name    string
+			payload *string
+		}{
+			{"a message of two lines", nil},
+			{"a message whose payload is a Dispatch event", &eventPayload},
+		} {
+			item := contracts.MessageEnvelope(contracts.Message{Source: "agent", SourceSession: sender, Text: phrase + "\nThe second line.", Payload: tc.payload},
+				contracts.RoleTopicPrefix+role, publishDedupePrefix+id.New())
+			if line, _ := named(t, item); line != "The first line of the message is: "+phrase {
+				t.Fatalf("%s: the dead letter names the message as %q, want its first line %q", tc.name, line, phrase)
+			}
+		}
+	})
 }
 
 // TestARepeatedKeepIsOneCopyUntilItEnds holds rows (k) and (l) of check k1: a publish that repeats

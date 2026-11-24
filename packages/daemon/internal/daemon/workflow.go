@@ -195,17 +195,20 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them.
+	// the read bounds' holdBound (repositoryReadBounds) tells them, and recoveryBoundChecked
+	// whether a run of the recovery has begun with that bound passed (recoverRepositories), after
+	// which the refresher no longer cuts its wait to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
-	repositories      *repositories
-	installs          appauth.Installations
-	recoveringMu      sync.Mutex
-	recovering        map[string]bool
-	silenced          map[string]map[string]bool
-	releaseWaits      map[string]map[string]releaseWait
-	recoveryHeldSince time.Time
-	recheckAfter      func(time.Duration) <-chan time.Time
+	repositories         *repositories
+	installs             appauth.Installations
+	recoveringMu         sync.Mutex
+	recovering           map[string]bool
+	silenced             map[string]map[string]bool
+	releaseWaits         map[string]map[string]releaseWait
+	recoveryHeldSince    time.Time
+	recoveryBoundChecked bool
+	recheckAfter         func(time.Duration) <-chan time.Time
 	// rereadWake, recoverWake, heardWake, heldWake and liveWake are the refresher's wakes, one
 	// request held at most each (wake): a bad answer kept outside the refresher (its second job's
 	// clock), a repository left unread or answered again (its third, recoverRepositories), a
@@ -293,23 +296,58 @@ type workflowRuntime struct {
 	handedOff *wakeSet[string]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
-	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
-	// testing through merging), each the start read found GitHub still computing
-	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
-	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
-	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
-	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
-	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
-	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
-	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
-	// long the outbox's merge-queue read and second conflict read wait before they read again
-	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
-	// shortens (overrides.mergeStateRetry).
+	// classify.MergeStateReadOwed a head move in implementing through merging), each the start read
+	// found GitHub still computing (readIssuesAtStart), and each a second read of a conflicting head
+	// left reading no answer (queueMergeStateFollow), that readMergeStates has not started a ladder
+	// for yet; mergeStateQueued is what each of them asked for, the pull request its ladder hands
+	// to the reads of its base, as the read that handed it over held it, or nil for a climb
+	// (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still climbing
+	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
+	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers
+	// `unknown` for, the unit the reads after a ladder wait in, and how long the outbox's
+	// merge-queue read and second conflict read wait before they read again (mergeStateWait, which
+	// attach hands the outbox), mergeStateLadderWait when zero, which a test shortens
+	// (overrides.mergeStateRetry).
+	//
+	// baseReads is each base of a repository whose owed pull requests the daemon reads in batches
+	// (merge_state_batches.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
+	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
+	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under,
+	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet, and baseAsks
+	// the number of the last request put in any batch (putLocked, baseOwed.asked): one count for
+	// the runtime, so a batch made again for a base whose last batch ended reuses no number a climb
+	// or a read still holds. All of it is guarded by mergeStateMu, so a request moves an issue
+	// between a ladder of its own and its base's batch under one lock. baseChunk is how many pull
+	// requests one query of a batch asks for, baseReadChunk when zero, which a test shortens.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateQueued  map[string]string
+	mergeStateQueued  map[string]*record.PullRequest
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	baseWake          *wakeSet[string]
+	baseReads         map[string]*baseRead
+	baseReadOf        map[string]string
+	baseAsks          uint64
+	baseChunk         int
+	// gates is each installation's GraphQL queries, by the implement App's scope for the owner
+	// (implementScope; merge_state_gate.go's queryGate): one rate-limit hold, one pace and one
+	// query at a time, shared by every base's batch of that installation. gateMu guards the map.
+	// graphQLShare is the share of the time each gate's queries may keep GitHub at work, the
+	// configuration's `github_graphql_share` (queryShare).
+	gateMu       sync.Mutex
+	gates        map[string]*queryGate
+	graphQLShare float64
+	// etags is what the conditional reads of a pull request and of its base's rules keep
+	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
+	// costs the implement App's installation none of its rate limit.
+	etags *githubrest.ETags
+	// appCalls are the start's App-call bounds the daemon was given (overrides.appCalls), nil for
+	// the production ones (callBounds): they bound the start's App calls and the runtime's reads
+	// that take the same bound (recordedRepositories, recordedBranches, rereadHeldBranches).
+	appCalls *appCallBounds
+	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
+	// waits, nil for the production ones (reads). Only a test sets them (withReads).
+	readBounds *repositoryReadBounds
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -318,20 +356,50 @@ type workflowRuntime struct {
 // it is logged, and the notices it would have released still go on their schedule.
 const readyReleaseTimeout = 30 * time.Second
 
-// appMintAttempt bounds one attempt at the boot's App calls, the logins read (appLoginsAtBoot) and
-// the key proof (proveAppKeys): the bot identity lookups and each App's read of its installations
-// under its JWT answer in well under a second, so an attempt that runs this long holds a request
-// GitHub never answered.
-var appMintAttempt = 15 * time.Second
+// appCallBounds are the bounds of the start's App calls, the logins read (appLoginsAtBoot) and the
+// key proof (proveAppKeys), which bound some of the runtime's own reads too (callBounds). A daemon
+// is given its bounds (overrides.appCalls, openWorkflow's appCalls), the production ones
+// (productionAppCalls) where it is given none, so a test that shortens them shortens them for the
+// daemons it boots alone.
+type appCallBounds struct {
+	// attempt bounds one attempt at an App call: the bot identity lookups and each App's read of
+	// its installations under its JWT answer in well under a second, so an attempt that runs this
+	// long holds a request GitHub never answered.
+	attempt time.Duration
+	// retry is the wait between attempts that failed transiently.
+	retry bootprobe.Retry
+	// rateLimits is how the start waits for GitHub's rate limit (rateLimitPolicy).
+	rateLimits rateLimitPolicy
+}
 
-// appMintRetry is the wait between attempts that failed transiently: 5 s doubling to 30 s, five
-// attempts. At worst the boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it
-// refuses, naming the last failure. The API listens only after the key proof, so /healthz is
-// refused meanwhile; the rest of a boot takes a second or two, which leaves a boot that passes on
-// the last attempt inside the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's
-// rate limit is none of these attempts: it lasts until the time GitHub names, within the start's
-// own bound (appAttempt, startRateLimits).
-var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
+// productionAppCalls are the bounds a daemon's start runs on. An attempt lasts 15 s. The wait
+// between attempts that failed transiently is 5 s doubling to 30 s, five attempts. At worst the
+// boot waits 2 min 20 s (five 15 s attempts and 65 s between them) before it refuses, naming the
+// last failure. The API listens only after the key proof, so /healthz is refused meanwhile; the
+// rest of a boot takes a second or two, which leaves a boot that passes on the last attempt inside
+// the 180 s Stage 3 gives a daemon to answer /healthz. A wait for GitHub's rate limit is none of
+// these attempts: it lasts until the time GitHub names, within the start's own bound (appAttempt,
+// rateLimits). Of that policy, a wait lasts at most an hour, the window of GitHub's REST limit, so
+// a spent counter is waited until its reset and a Retry-After longer than that is not waited
+// whole. All waits of one start end 70 minutes after the first, the hour and ten minutes more:
+// the refusals of 2026-11-14 and 2026-11-15 ended 5.6 to 13.9 minutes after the first exit. A
+// refusal that names no time waits a minute, the least GitHub's REST documentation gives.
+func productionAppCalls() appCallBounds {
+	return appCallBounds{
+		attempt:    15 * time.Second,
+		retry:      bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5},
+		rateLimits: rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute},
+	}
+}
+
+// callBounds are the bounds this runtime's daemon was given (appCalls), the production ones
+// where it was given none.
+func (w *workflowRuntime) callBounds() appCallBounds {
+	if w.appCalls != nil {
+		return *w.appCalls
+	}
+	return productionAppCalls()
+}
 
 // appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
 func appTransient(err error) bool {
@@ -340,7 +408,8 @@ func appTransient(err error) bool {
 }
 
 // appAttempt is one attempt at call, an App call of the start (the App logins read or the key
-// proof), bounded by appMintAttempt. The error the attempt returns decides its outcome, in this
+// proof), bounded by the start's attempt bound (appCallBounds.attempt). The error the attempt
+// returns decides its outcome, in this
 // order. No error passes. A token_command still running past the bound (appauth.ErrCommandPending,
 // most often for a grant that waits on a person's approval) is pending, and a pending attempt
 // spends no retry: the command goes on, and the next attempt joins it, so the start waits for the
@@ -349,12 +418,13 @@ func appTransient(err error) bool {
 // once those waits reach the start's end, it is a refusal (limitOutcome). GitHub's own trouble
 // (appTransient) is transient. So is an attempt that failed because its own bound ended while the
 // start's ctx is still alive: a request GitHub has not answered is GitHub's trouble, not the
-// App's, and it runs again within appMintRetry rather than refusing the start (#1347). Any other
+// App's, and it runs again within the start's retry (appCallBounds.retry) rather than refusing the
+// start (#1347). Any other
 // error is a refusal.
 //
 // Under an App's JWT the next attempt of its installation read joins the shared read still in
 // flight (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit
-// (1 min) when GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an
+// (1 min) when GitHub never answers it, inside the production retry's worst case of 2 min 20 s, so an
 // attempt after that asks GitHub afresh. In token mode the installation read and the logins read
 // are both the App's token_command's release of every installation, whose run appauth's
 // runTokenCommand shares: an attempt whose bound ends while the command runs is pending
@@ -368,7 +438,7 @@ func appTransient(err error) bool {
 // release it took has come within appauth's refreshWindow of its expiry.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
-		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
+		bounded, cancel := context.WithTimeout(ctx, waits.bounds.attempt)
 		defer cancel()
 		err := attempt(bounded)
 		if err == nil {
@@ -437,30 +507,24 @@ type rateLimitPolicy struct {
 	Max, Bound, NoTime time.Duration
 }
 
-// startRateLimits is the start's policy. A wait lasts at most an hour, the window of GitHub's REST
-// limit, so a spent counter is waited until its reset and a Retry-After longer than that is not
-// waited whole. All waits of one start end 70 minutes after the first, the hour and ten minutes
-// more: the refusals of 2026-11-14 and 2026-11-15 ended 5.6 to 13.9 minutes after the first exit.
-// A refusal that names no time waits a minute, the least GitHub's REST documentation gives. Tests
-// shorten its fields.
-var startRateLimits = rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}
-
-// startWaits is one start's waits for GitHub's rate limit on one policy and one clock, now: the
-// App logins read and then the key proof, which openWorkflow runs one after the other (wait). end
+// startWaits is one start's waits for GitHub's rate limit on one start's bounds (their
+// rateLimits) and one clock, now: the App logins read and then the key proof, which openWorkflow
+// runs one after the other (wait). end
 // is the start's end, zero until its first wait sets it Bound after that wait begins; noTime is the
 // last wait each App call took for a refusal that named no time; and waited is the time the start
-// has spent in its waits.
+// has spent in its waits. bounds are the start's App-call bounds, whose attempt and retry the
+// start's calls run on (appAttempt, appLoginsAtBoot, proveAppKeys).
 type startWaits struct {
-	policy rateLimitPolicy
+	bounds appCallBounds
 	now    func() time.Time
 	end    time.Time
 	noTime map[string]time.Duration
 	waited time.Duration
 }
 
-// newStartWaits is one start's waits on policy and the clock now.
-func newStartWaits(policy rateLimitPolicy, now func() time.Time) *startWaits {
-	return &startWaits{policy: policy, now: now, noTime: map[string]time.Duration{}}
+// newStartWaits is one start's waits on bounds and the clock now.
+func newStartWaits(bounds appCallBounds, now func() time.Time) *startWaits {
+	return &startWaits{bounds: bounds, now: now, noTime: map[string]time.Duration{}}
 }
 
 // wait is the wait for GitHub's rate limit on the start's App call call (the logins read, the key
@@ -475,9 +539,9 @@ func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait tim
 	if !s.end.IsZero() && !now.Before(s.end) {
 		return now, s.waited, true
 	}
-	wait := min(githubWait, s.policy.Max)
+	wait := min(githubWait, s.bounds.rateLimits.Max)
 	if !namesTime(answer.Limit, now) {
-		wait = s.policy.NoTime
+		wait = s.bounds.rateLimits.NoTime
 		if last, ok := s.noTime[call]; ok {
 			wait = 2 * last
 		}
@@ -492,8 +556,8 @@ func (s *startWaits) wait(call string, answer *githubrest.Answer, githubWait tim
 // run one after the other, so no two of its waits overlap. The start's first wait sets its end,
 // Bound after that wait begins.
 func (s *startWaits) register(begin, until time.Time) (time.Time, time.Duration) {
-	if s.end.IsZero() && s.policy.Bound > 0 {
-		s.end = begin.Add(s.policy.Bound)
+	if s.end.IsZero() && s.bounds.rateLimits.Bound > 0 {
+		s.end = begin.Add(s.bounds.rateLimits.Bound)
 	}
 	if !s.end.IsZero() && until.After(s.end) {
 		until = s.end
@@ -529,7 +593,7 @@ func namesTime(limit githubrest.LimitHeaders, now time.Time) bool {
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits, log *slog.Logger) (string, error) {
 	const call = "GitHub App logins read"
 	logins := map[appauth.AppRole]string{}
-	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, read := logins[role]; read {
 				continue
@@ -556,7 +620,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 // an App on token_command, the command's release of every installation), one App after the other,
 // both reads as one attempt run again after a failure GitHub reports as its own trouble
 // (appauth.TransientError), with a pending command spending no attempt (appAttempt): the two Apps
-// share one retry budget, so the boot spends at most appMintRetry on GitHub's trouble however the
+// share one retry budget, so the boot spends at most the start's retry on GitHub's trouble however the
 // failures fall between them, and an attempt after one App's read answered reads only the other's.
 // GitHub's rate limit on either read spends no attempt either: it is waited out on the start's
 // waits until the time GitHub names (appAttempt), and a read GitHub still refuses for it once
@@ -573,7 +637,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installed *appauth.Installed, waits *startWaits, log *slog.Logger) error {
 	const call = "GitHub App key proof"
 	owners := make(map[appauth.AppRole][]string, len(appauth.Roles))
-	err := bootprobe.Run(ctx, call, appMintRetry, log, appAttempt(waits, call, func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, waits.bounds.retry, log, appAttempt(waits, call, func(ctx context.Context) error {
 		for _, role := range appauth.Roles {
 			if _, proved := owners[role]; proved {
 				continue
@@ -609,7 +673,8 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
 // for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
 // owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
-// one read per such record bounded by installReadAttempt (backfillRead), which mints the token that
+// one read per such record bounded by the read attempt bound (repositoryReadBounds.attempt,
+// backfillRead), which mints the token that
 // read needs, a read that fails leaving the record for the refresher; the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
 // (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
@@ -632,7 +697,10 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // source is the random source every `random` experiment is drawn with (overrides.experimentSource):
 // the engine holds it, and the admission draws with the engine's (workflow.Engine's
 // ExperimentSource). nil is the engine's own, experiment.CryptoSource.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
+//
+// appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
+// productionAppCalls.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -673,8 +741,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]*mergeStateRun{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
+		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
+		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, graphQLShare: cfg.GitHubGraphQLShare, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
@@ -682,8 +750,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.defaultBranches.onHold = w.heldThroughLimit
 	log.Info("legion workflow boot stage", "stage", "appauth")
 	// One policy and one clock for every wait of the start for GitHub's rate limit: the App logins
-	// read, then the key proof (startRateLimits).
-	waits := newStartWaits(startRateLimits, time.Now)
+	// read, then the key proof (appCallBounds.rateLimits).
+	waits := newStartWaits(w.callBounds(), time.Now)
 	reviewAppLogin, err := appLoginsAtBoot(ctx, logins, waits, log)
 	if err != nil {
 		return nil, err
@@ -706,6 +774,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -739,7 +808,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log)
+	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, w.reads(), log)
 	if err != nil {
 		return nil, err
 	}
@@ -1096,11 +1165,14 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	// consumers are open, so an attempt that fails after the read, whose next attempt reads the
 	// records again, says nothing.
 	servesNone := len(w.repositories.liveNames()) == 0
+	// The give-up bound takes intake's production values (ConsumerSpec's defaults), and a give-up's
+	// notice wakes its outbox lane through the records' own lane wake once it commits.
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
 		PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
+		WakeOutbox: w.wakeOutbox,
 	})
 	if err != nil {
 		conn.Close()
@@ -1446,6 +1518,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if keep != nil && !keep(records, summary) {
 			continue
 		}
+		// Every kept summary is in scope, an issue left out of admission's decision below too:
+		// scope feeds the copy of Dispatch's issues, the claims the boot releases, and the boot
+		// refill's check of which keys the listing holds.
+		scope = append(scope, summary)
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
 		if fact.Status == "todo" || labelledTriageRoot {
@@ -1468,19 +1544,44 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		case labelledTriageRoot && records[summary.Key] == nil:
 			// The listing carries no actor, so the setter is read from the log as an event's is;
 			// a recorded root a person moved back to triage is never queued again, so its log is
-			// not read.
-			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
+			// not read. A log the daemon cannot read leaves the issue out of admission's decision,
+			// so one such issue does not stop the listing: no record, no queue, no handover. That
+			// is a log the daemon read and cannot decode, or a page of the log the Dispatch client
+			// cannot read (an event whose seq does not decode, or a seq that does not ascend), each
+			// a *dispatch.EventLogError. The log is read from sequence 0, and Dispatch never
+			// rewrites a log, so every boot, and every pass of a repository recovery whose scope
+			// holds the root, leaves the same root out with a line naming the same event until a
+			// person moves it out of triage or takes the label off. Every other failed read fails
+			// the listing, every refusal of the read included: the boot waits out Dispatch out of
+			// reach (dispatch.Unreachable) and reads again, it stops on every other failure and
+			// names it (readinessAttempt), and a recovery tries again. The events route answers 200
+			// for a key no issue holds, and it makes its refusals for every request alike (the
+			// credential answers, 400 INVALID_QUERY, the no-route 404), so those say nothing about
+			// one issue, and to leave the issue out would pass over every labelled triage root in
+			// silence. A 5xx can be about one issue: an ask event in its log whose stored payload
+			// Dispatch cannot read answers 500 for that log alone, and the boot waits on it until a
+			// person moves the issue out of triage or takes the label off, after which the next
+			// attempt reads no log for it. An event that still shows the issue an unrecorded
+			// labelled triage root reads the log again, and its preparation fails the same way. A
+			// move to todo reads no log, and admission takes the root.
+			fact.LabelSetter, err = w.labelSetter(ctx, summary.Key)
+			var unreadable *dispatch.EventLogError
+			if errors.As(err, &unreadable) {
+				w.log.Error("workflow: the listing leaves out of admission an issue whose Dispatch event log cannot be read",
+					"issue", summary.Key, "event", unreadable.Event, "seq", unreadable.Seq, "error", err)
+				continue
+			}
+			if err != nil {
 				return nil, fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
 		}
-		scope = append(scope, summary)
 		listed = append(listed, fact)
 	}
 	target, err := w.consumers.DispatchTarget(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}
@@ -2137,8 +2238,9 @@ const defaultHoldPollInterval = 2 * time.Second
 
 // defaultHoldWarnAfter and defaultHoldWarnEvery bound the watchdog log a hold that has not
 // released gets: a Dispatch event whose transaction always fails (an unmet precondition, a
-// programming bug) pins the ack floor forever, since the consumer sets no MaxDeliver to ever give
-// up on it, and nothing else says why a labeled root is waiting.
+// programming bug) holds the ack floor below it until the intake gives the event up, no sooner
+// than an hour after its first failure (intake's giveUpDue), and nothing else says why a labeled
+// root waits that long.
 const (
 	defaultHoldWarnAfter = 2 * time.Minute
 	defaultHoldWarnEvery = 5 * time.Minute

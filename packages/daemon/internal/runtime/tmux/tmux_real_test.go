@@ -1,5 +1,8 @@
 package tmux
 
+//ci:builds packages/daemon ./cmd/legion standins go build .../daemon/cmd/legion
+//ci:reads packages/daemon/cmd/legion/testdata/gh-help/** TestRealTmuxPaneResolvesThisDaemonsLegionCLI
+
 // The real-tmux tests. Each test gets a private tmux server of its own (its own socket name under
 // its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
 // from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a

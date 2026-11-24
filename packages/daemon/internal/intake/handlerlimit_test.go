@@ -146,7 +146,8 @@ var otherFactBoundedReads = map[string]string{
 // consumerSpecNotReads are the ConsumerSpec function fields that are no read at all, by field
 // name, with what each is instead. Nothing bounds them and nothing in the limit answers for them.
 var consumerSpecNotReads = map[string]string{
-	"Now": "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"Now":        "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"WakeOutbox": "the outbox lane's wake a give-up calls once its transaction has committed a notice, after the handling; it signals a channel and waits on nothing",
 }
 
 // recordedPullRequestRead is the one bounded read of a review's handling that reflection cannot
