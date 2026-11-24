@@ -303,9 +303,14 @@ func RateLimited(response *http.Response, body []byte) bool {
 // when it carries one of these, so a caller reading such a status as a verdict of its own
 // (appauth's 422 for a permission set) asks this first.
 func RateLimitSignals(response *http.Response, body []byte) bool {
-	return response.Header.Get("X-RateLimit-Remaining") == "0" ||
-		response.Header.Get("Retry-After") != "" ||
-		NamesSecondaryLimit(string(body))
+	return limitSignals(response.Header, string(body))
+}
+
+// limitSignals says whether headers or text, an answer's body or its errors' messages, carry
+// GitHub's rate limit (RateLimitSignals); GraphQL's 200 answers are read through it too
+// (GraphQLErrors.rateLimited).
+func limitSignals(headers http.Header, text string) bool {
+	return headers.Get("X-RateLimit-Remaining") == "0" || headers.Get("Retry-After") != "" || NamesSecondaryLimit(text)
 }
 
 // Limit is whether response, whose body is body, is GitHub's rate limit (RateLimited), and the

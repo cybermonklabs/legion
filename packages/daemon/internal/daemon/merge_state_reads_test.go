@@ -692,6 +692,12 @@ func (rig *batchRig) ended() bool {
 // implementer, and in reviewing a reviewer that has decided nothing.
 func seedOnMain(t *testing.T, pool *store.Pool, key string, number int, at phase.Phase, status, rank string) {
 	t.Helper()
+	seedOnBase(t, pool, key, number, "main", at, status, rank)
+}
+
+// seedOnBase is seedOnMain with the pull request open on base.
+func seedOnBase(t *testing.T, pool *store.Pool, key string, number int, base string, at phase.Phase, status, rank string) {
+	t.Helper()
 	records := record.NewStore()
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -699,7 +705,7 @@ func seedOnMain(t *testing.T, pool *store.Pool, key string, number int, at phase
 			return err
 		}
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets",
-			Number: number, Branch: "legion/" + key, Base: "main", HeadSHA: fmt.Sprintf("head-%d", number), Failing: []string{},
+			Number: number, Branch: "legion/" + key, Base: base, HeadSHA: fmt.Sprintf("head-%d", number), Failing: []string{},
 			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
 			return err
 		}
@@ -915,9 +921,9 @@ func TestAFailedChunkKeepsTheChunksReadBeforeIt(t *testing.T) {
 	}
 }
 
-// A query of several pull requests that GitHub cannot answer whole - its 10 s run out, which it
-// answers 502 - is asked again at once one pull request at a time, so a slow pull request holds up
-// no other and each is answered by the same read.
+// A query of several pull requests that runs out of GitHub's time - GitHub answers it 502, saying
+// it could not respond in time - is asked again at once one pull request at a time, so a slow pull
+// request holds up no other and each is answered by the same read.
 func TestAChunkGitHubCannotAnswerWholeIsAskedAgainOnePullRequestAtATime(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -925,7 +931,7 @@ func TestAChunkGitHubCannotAnswerWholeIsAskedAgainOnePullRequestAtATime(t *testi
 	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
 	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
 		if len(asked) > 1 {
-			return http.StatusBadGateway, `{"message":"Server Error"}`
+			return http.StatusBadGateway, timedOutAnswer
 		}
 		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "BLOCKED"), batchNode(87, "head-87", "MERGEABLE", "CLEAN"))
 	})
@@ -1073,9 +1079,10 @@ func TestARetargetedPullRequestIsFollowedOnTheBaseGitHubNames(t *testing.T) {
 		t.Fatalf("86 was read %d times over REST in %d queries, want no REST read and two queries", got, queries)
 	}
 	moved := loggedMessages(t, rig.logs.String(), "github: GitHub holds a pull request owed a merge-state read on another base")
-	follows := loggedLines(t, rig.logs.String(), followRead)
-	if len(moved) != 1 || moved[0]["now"] != "release" || len(follows) != 1 || follows[0]["answered"] != string(record.MergeStateBlocked) {
-		t.Fatalf("the batch logged moves %v and reads after the climb %v, want one move to release and its one read answering blocked", moved, follows)
+	onRelease := slices.DeleteFunc(loggedMessages(t, rig.logs.String(), "github: read the merge state of pull requests on a base by number"),
+		func(line map[string]any) bool { return line["base"] != "release" })
+	if len(moved) != 1 || moved[0]["now"] != "release" || len(onRelease) != 1 {
+		t.Fatalf("the batch logged moves %v and reads on release %v, want one move to release and one read there, which answered blocked", moved, onRelease)
 	}
 }
 
@@ -1384,6 +1391,343 @@ func TestAMoveDecidedOnAnOlderReadKeepsTheNewerHeadHandedOver(t *testing.T) {
 		both.Wait()
 		if held, head := followed(); held != to || head != "newer" {
 			t.Fatalf("round %d: with the older move and the newer handover raced, CAPTURE-1 is followed by %q at %q; want release's batch at newer", round, held, head)
+		}
+	}
+}
+
+// timedOutAnswer is GitHub's answer to a query that ran out of its time, which it sends with 502.
+const timedOutAnswer = `{"message":"We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists."}`
+
+// queryAt is one query a stand-in served: the pull requests it asked for, and when the stand-in
+// began and ended its answer.
+type queryAt struct {
+	asked      []int
+	start, end time.Time
+}
+
+// queryLog keeps the queries a stand-in served, safely for its goroutines.
+type queryLog struct {
+	mu      sync.Mutex
+	queries []queryAt
+}
+
+func (l *queryLog) add(q queryAt) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.queries = append(l.queries, q)
+}
+
+func (l *queryLog) all() []queryAt {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.queries)
+}
+
+// eachAsked is the batch answer that answers each pull request asked as node says.
+func eachAsked(t *testing.T, asked []int, node func(number int) map[string]any) string {
+	t.Helper()
+	nodes := make([]map[string]any, 0, len(asked))
+	for _, number := range asked {
+		nodes = append(nodes, node(number))
+	}
+	return batchAnswer(t, asked, nodes...)
+}
+
+// A query GitHub fails at once with a 5xx did not run out of GitHub's time, so asking for its pull
+// requests one at a time would only multiply the failed requests: it is a read of the chunk that
+// answered nothing, and the chunk's pull requests are read again together on their climb.
+func TestAFastServerErrorIsAFailedReadOfItsChunk(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		if query == 1 {
+			return http.StatusBadGateway, `{"message":"Server Error"}`
+		}
+		return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any { return batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", "BLOCKED") })
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both pull requests answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	if asked := rig.askedOf(); len(asked) != 2 || !slices.Equal(asked[0], []int{86, 87}) || !slices.Equal(asked[1], []int{86, 87}) {
+		t.Fatalf("GitHub was asked for %v, want [86 87] twice: a fast 502 is a failed read of the chunk, not a reason to ask for each alone", asked)
+	}
+}
+
+// A pull request whose query of its own ran out of GitHub's time, after its chunk's did, is asked
+// for alone on the reads after, until GitHub answers it, so it costs the pull requests beside it no
+// second timeout; the others are asked for together again.
+func TestAPullRequestThatFailedAloneIsAskedForAloneUntilGitHubAnswersIt(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	seedOnMain(t, pool, "CAPTURE-3", 88, phase.Testing, "testing", "W")
+	var alone87 atomic.Int32
+	rig := newBatchRig(t, pool, func(query int32, asked []int, _ http.Header) (int, string) {
+		switch {
+		case len(asked) > 1 && slices.Contains(asked, 87):
+			return http.StatusBadGateway, timedOutAnswer
+		case slices.Equal(asked, []int{87}) && alone87.Add(1) == 1:
+			return http.StatusBadGateway, timedOutAnswer
+		}
+		state := "BLOCKED"
+		if query <= 4 {
+			state = "UNKNOWN"
+		}
+		return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any {
+			node := batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", state)
+			if state == "UNKNOWN" {
+				node["mergeable"] = "UNKNOWN"
+			}
+			return node
+		})
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "the three pull requests answered and the batch ended", func() bool {
+		for _, issue := range []string{"CAPTURE-1", "CAPTURE-2", "CAPTURE-3"} {
+			if recordedPull(t, pool, issue).MergeState != record.MergeStateBlocked {
+				return false
+			}
+		}
+		return rig.ended()
+	})
+	want := [][]int{{86, 87, 88}, {86}, {87}, {88}, {86, 88}, {87}}
+	asked := rig.askedOf()
+	if len(asked) != len(want) {
+		t.Fatalf("GitHub was asked for %v, want %v", asked, want)
+	}
+	for i := range want {
+		if !slices.Equal(asked[i], want[i]) {
+			t.Fatalf("GitHub was asked for %v, want %v: after its own query timed out, 87 is asked for alone and the others together", asked, want)
+		}
+	}
+}
+
+// GitHub may answer a query 200 for its secondary limit, with errors of no type or another than
+// GraphQL's own: its Retry-After, or the secondary limit's message, make it a limit all the same.
+// The installation's queries are held before anything else is asked - no query of one pull
+// request alone, no later chunk - and the chunk is read again whole once the hold has passed; a
+// message alone holds them a minute.
+func TestA200SecondaryLimitHoldsTheInstallationBeforeAnySplit(t *testing.T) {
+	t.Parallel()
+	for _, limit := range []struct {
+		name string
+		body string
+	}{
+		{name: "no type", body: `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`},
+		{name: "another type", body: `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Try again later."}]}`},
+	} {
+		t.Run(limit.name+" with a Retry-After", func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+			seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+			queries := &queryLog{}
+			rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+				queries.add(queryAt{asked: asked, start: time.Now()})
+				if query == 1 {
+					header.Set("Retry-After", "1")
+					return http.StatusOK, limit.body
+				}
+				return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any { return batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", "BLOCKED") })
+			})
+			pushOntoMain(t, pool, rig.w, "main-2")
+			testwait.Eventually(t, "both answered after the hold and the batch ended", func() bool {
+				return recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
+			})
+			served := queries.all()
+			if len(served) != 2 || !slices.Equal(served[1].asked, []int{86, 87}) || served[1].start.Sub(served[0].start) < time.Second {
+				t.Fatalf("GitHub was queried %v, want twice for [86 87], the second at least the Retry-After's second after the first", served)
+			}
+		})
+	}
+
+	t.Run("the secondary limit's message alone", func(t *testing.T) {
+		pool := isolatedOutboxPool(t)
+		seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+		seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+		rig := newBatchRig(t, pool, func(int32, []int, http.Header) (int, string) {
+			return http.StatusOK, `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit."}]}`
+		})
+		pushOntoMain(t, pool, rig.w, "main-2")
+		testwait.Eventually(t, "the first query", func() bool { return rig.queries.Load() >= 1 })
+		gate := rig.w.queryGate("implement write acme")
+		testwait.Eventually(t, "the installation's hold", func() bool {
+			gate.mu.Lock()
+			defer gate.mu.Unlock()
+			return time.Until(gate.hold) > 55*time.Second
+		})
+		time.Sleep(300 * time.Millisecond)
+		if got := rig.queries.Load(); got != 1 {
+			t.Fatalf("GitHub was queried %d times, want once: the message alone holds the installation a minute", got)
+		}
+	})
+}
+
+// GitHub limits the installation, not the base: a limit one base's query meets holds the queries
+// of every base of the installation's repositories, so the other base asks nothing until it ends.
+func TestTwoBasesOfOneInstallationShareItsHold(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnBase(t, pool, "CAPTURE-1", 86, "main", phase.Testing, "testing", "U")
+	seedOnBase(t, pool, "CAPTURE-2", 87, "release", phase.Testing, "testing", "V")
+	queries := &queryLog{}
+	rig := newBatchRig(t, pool, func(query int32, asked []int, header http.Header) (int, string) {
+		queries.add(queryAt{asked: asked, start: time.Now()})
+		if query == 1 {
+			header.Set("Retry-After", "1")
+			return http.StatusForbidden, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		}
+		return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any {
+			node := batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", "BLOCKED")
+			if n == 87 {
+				node["baseRefName"] = "release"
+			}
+			return node
+		})
+	})
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	applyFact(t, pool, "github", "push-onto-release", intake.BasePush{Repo: "acme/widgets", Branch: "release", After: "release-2"}, rig.w.handlers...)
+	testwait.Eventually(t, "both bases answered and their batches ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-1").MergeState == record.MergeStateBlocked &&
+			recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	served := queries.all()
+	for _, later := range served[1:] {
+		if later.start.Sub(served[0].start) < time.Second {
+			t.Fatalf("GitHub was queried %v, want every query after the limited one at least the Retry-After's second after it, whatever its base", served)
+		}
+	}
+}
+
+// The installation's queries are paced: after each, the next waits as long as it took, so the
+// batches spend at most half of any stretch in GitHub's GraphQL work, inside GitHub's limit on a
+// query's processing time, however many pull requests a climb reads.
+func TestTheInstallationsQueriesArePaced(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	seedOnMain(t, pool, "CAPTURE-3", 88, phase.Testing, "testing", "W")
+	queries := &queryLog{}
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		start := time.Now()
+		time.Sleep(40 * time.Millisecond)
+		body := eachAsked(t, asked, func(n int) map[string]any { return batchNode(n, fmt.Sprintf("head-%d", n), "MERGEABLE", "BLOCKED") })
+		queries.add(queryAt{asked: asked, start: start, end: time.Now()})
+		return http.StatusOK, body
+	})
+	rig.w.baseChunk = 1
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "the three answered and the batch ended", func() bool {
+		return recordedPull(t, pool, "CAPTURE-3").MergeState == record.MergeStateBlocked && rig.ended()
+	})
+	served := queries.all()
+	if len(served) != 3 {
+		t.Fatalf("GitHub was queried %v, want three queries of one pull request each", served)
+	}
+	for i := 1; i < len(served); i++ {
+		if pause, took := served[i].start.Sub(served[i-1].end), served[i-1].end.Sub(served[i-1].start); pause < took {
+			t.Fatalf("query %d began %s after query %d ended, which took %s: want each query to wait as long as the one before it took", i+1, pause, i, took)
+		}
+	}
+}
+
+// A pull request on its own ladder is read once it is due and never before, whatever other pull
+// request of its base falls due near it: here two handed over a ladder's wait apart, each read
+// first two of the ladder's waits after its handover and then each read at least its logged wait
+// after the read before.
+func TestAFollowerIsReadNoSoonerThanItIsDue(t *testing.T) {
+	t.Parallel()
+	const unit = 50 * time.Millisecond
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	queries := &queryLog{}
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		start := time.Now()
+		body := eachAsked(t, asked, func(n int) map[string]any { return batchNode(n, fmt.Sprintf("head-%d", n), "UNKNOWN", "UNKNOWN") })
+		queries.add(queryAt{asked: asked, start: start, end: time.Now()})
+		return http.StatusOK, body
+	})
+	rig.w.mergeStateRetry = unit
+	repo := ghrepo.MustParse("acme/widgets")
+	handed := map[int]time.Time{}
+	handed[86] = time.Now()
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	time.Sleep(unit)
+	handed[87] = time.Now()
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": "head-87"}, false)
+	followsOf := func(issue string) []map[string]any {
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+	}
+	testwait.Eventually(t, "three reads of each", func() bool { return len(followsOf("CAPTURE-1")) >= 3 && len(followsOf("CAPTURE-2")) >= 3 })
+
+	for number, issue := range map[int]string{86: "CAPTURE-1", 87: "CAPTURE-2"} {
+		var reads []queryAt
+		for _, q := range queries.all() {
+			if slices.Contains(q.asked, number) {
+				reads = append(reads, q)
+			}
+		}
+		logs := followsOf(issue)
+		for k := range 3 {
+			wait := time.Duration(logs[k]["wait"].(float64))
+			since := handed[number]
+			if k > 0 {
+				since = reads[k-1].end
+			}
+			if got := reads[k].start.Sub(since); got < wait {
+				t.Fatalf("%s's read %d came %s after the one before it (or its handover), where its log names a wait of %s: a read comes no sooner than it is due", issue, k+1, got, wait)
+			}
+		}
+	}
+}
+
+// A climb reads the pull requests in it and those already due, and leaves the ladders of the
+// others as they are: a push that asks for one pull request's read neither reads early, nor starts
+// over, the ladder of another its base already follows.
+func TestAClimbLeavesTheOtherFollowersOnTheirLadders(t *testing.T) {
+	t.Parallel()
+	const unit = 50 * time.Millisecond
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		return http.StatusOK, eachAsked(t, asked, func(n int) map[string]any {
+			if n == 87 {
+				return batchNode(n, "head-87", "MERGEABLE", "BLOCKED")
+			}
+			return batchNode(n, "head-86", "UNKNOWN", "UNKNOWN")
+		})
+	})
+	rig.w.mergeStateRetry = unit
+	repo := ghrepo.MustParse("acme/widgets")
+	followsOf := func(issue string) []map[string]any {
+		return slices.DeleteFunc(loggedLines(t, rig.logs.String(), followRead), func(line map[string]any) bool { return line["issue"] != issue })
+	}
+
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-1": "head-86"}, false)
+	testwait.Eventually(t, "86's second read on its ladder", func() bool { return len(followsOf("CAPTURE-1")) >= 2 })
+	rig.w.queueBaseRead(repo, "main", map[string]string{"CAPTURE-2": ""}, true)
+	testwait.Eventually(t, "87 answered and 86's fourth read", func() bool {
+		return recordedPull(t, pool, "CAPTURE-2").MergeState == record.MergeStateBlocked && len(followsOf("CAPTURE-1")) >= 4
+	})
+	for i, line := range followsOf("CAPTURE-1")[:4] {
+		if want := float64(unit) * float64(int(2)<<i); line["attempt"] != float64(i+1) || line["wait"] != want {
+			t.Fatalf("86's read %d logged %v, want attempt %d after %s: 87's climb leaves 86's ladder as it was", i+1, line, i+1, time.Duration(want))
+		}
+	}
+	for _, asked := range rig.askedOf() {
+		if slices.Contains(asked, 86) && slices.Contains(asked, 87) {
+			t.Fatalf("GitHub was asked for %v, want 87's climb to read 87 alone while 86 is not due", rig.askedOf())
 		}
 	}
 }

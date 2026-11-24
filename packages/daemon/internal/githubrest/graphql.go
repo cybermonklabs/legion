@@ -51,14 +51,17 @@ func (e GraphQLErrors) Error() string {
 	return "GitHub answered the GraphQL query with errors: " + strings.Join(messages, "; ")
 }
 
-// rateLimited says whether one of e is GitHub's GraphQL rate limit, which it answers 200 with.
-func (e GraphQLErrors) rateLimited() bool {
+// rateLimited says whether e, the errors of a 200 GitHub sent with headers, is GitHub's rate
+// limit: an error of GraphQL's own type for it (RATE_LIMITED), or, whatever the errors' types, the
+// signals a REST answer's limit carries (limitSignals: a retry-after, x-ratelimit-remaining: 0, or a
+// message naming the secondary limit), which GitHub documents it may answer a query 200 with.
+func (e GraphQLErrors) rateLimited(headers http.Header) bool {
 	for _, entry := range e {
 		if entry.Type == "RATE_LIMITED" {
 			return true
 		}
 	}
-	return false
+	return len(e) > 0 && limitSignals(headers, e.Error())
 }
 
 // BudgetGraphQL is the GraphQL API's own primary budget, the points of the token's queries, which
@@ -69,8 +72,9 @@ const BudgetGraphQL Budget = "graphql"
 // (GraphQLEndpoint), and reads the answer's `data` into into, whatever part of it GitHub gave.
 // GitHub budgets queries apart from the REST API, by the points each costs, and a query of twenty
 // pull requests costs one point. An answer other than 2xx is an *Answer, as a REST call's is, a
-// rate limit among them, and so is a 200 whose errors name GitHub's GraphQL rate limit
-// (RATE_LIMITED), with the wait its headers ask (limitWait). A 2xx whose `errors` list is not empty
+// rate limit among them, and so is a 200 whose errors are GitHub's rate limit (rateLimited:
+// GraphQL's RATE_LIMITED, a retry-after, an exhausted budget, or the secondary limit's message),
+// with the wait its headers ask, or a minute (limitWait). A 2xx whose `errors` list is not empty
 // is GraphQLErrors after the data it carries is read, so a caller that asked for several things
 // takes those GitHub answered and reads each error's Path for the rest; one with no `data` and no
 // errors is an error too. It is not named Query: the daemon's transaction guard (internal/textcheck)
@@ -88,13 +92,19 @@ func (c Client) GraphQL(ctx context.Context, query string, variables map[string]
 	if err != nil {
 		return err
 	}
-	if answer.Errors.rateLimited() {
+	if answer.Errors.rateLimited(headers) {
 		path := "/graphql"
 		if target, err := url.Parse(c.API); err == nil {
 			path = c.answerPath(target)
 		}
-		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: answer.Errors.Error(), RateLimited: true,
-			RetryAfter: limitWait(headers, time.Now()), Budget: BudgetGraphQL, Limit: limitHeaders(headers)}
+		// A primary limit of a query is GraphQL's own budget, which GitHub names in
+		// x-ratelimit-resource; spent reads a budget named nowhere as the REST API's core one.
+		body, budget := answer.Errors.Error(), spent(headers, []byte(answer.Errors.Error()))
+		if budget == BudgetCore {
+			budget = BudgetGraphQL
+		}
+		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: body, RateLimited: true,
+			RetryAfter: limitWait(headers, time.Now()), Budget: budget, Limit: limitHeaders(headers)}
 	}
 	data := len(answer.Data) > 0 && string(answer.Data) != "null"
 	if data {

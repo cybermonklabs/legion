@@ -322,6 +322,11 @@ type workflowRuntime struct {
 	baseReads         map[string]*baseRead
 	baseReadOf        map[string]string
 	baseChunk         int
+	// gates is each installation's GraphQL queries, by the token scope they are made under
+	// (merge_state_reads.go's queryGate): one rate-limit hold, one pace and one query at a time,
+	// shared by every base's batch of that installation. gateMu guards the map.
+	gateMu sync.Mutex
+	gates  map[string]*queryGate
 	// etags is what the conditional reads of a pull request and of its base's rules keep
 	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
 	// costs the implement App's installation none of its rate limit.

@@ -220,6 +220,39 @@ func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 	headers = map[string]string{}
 	mu.Unlock()
 
+	// GitHub may answer a query 200 for its secondary limit with errors of any type, or none: the
+	// signals a REST limit carries make it a limit all the same, with the wait they ask, and a
+	// message alone waits a minute.
+	for _, limit := range []struct {
+		name    string
+		answer  string
+		headers map[string]string
+		wait    time.Duration
+		budget  Budget
+	}{
+		{name: "no type, the secondary limit's message and a Retry-After",
+			answer:  `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`,
+			headers: map[string]string{"Retry-After": "2"}, wait: 2 * time.Second, budget: BudgetSecondary},
+		{name: "another type and a Retry-After",
+			answer:  `{"data":null,"errors":[{"type":"FORBIDDEN","message":"Try again later."}]}`,
+			headers: map[string]string{"Retry-After": "3"}, wait: 3 * time.Second, budget: BudgetSecondary},
+		{name: "the secondary limit's message alone",
+			answer:  `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit."}]}`,
+			headers: map[string]string{}, wait: time.Minute, budget: BudgetSecondary},
+	} {
+		mu.Lock()
+		answer, headers = limit.answer, limit.headers
+		mu.Unlock()
+		_, err := query()
+		var held *Answer
+		if !errors.As(err, &held) || !held.RateLimited || held.Status != http.StatusOK || held.RetryAfter != limit.wait || held.Budget != limit.budget {
+			t.Fatalf("GraphQL answered 200 with %s = %v (%+v), want an *Answer that is the %s limit, waiting %s", limit.name, err, held, limit.budget, limit.wait)
+		}
+	}
+	mu.Lock()
+	headers = map[string]string{}
+	mu.Unlock()
+
 	mu.Lock()
 	answer, status = `{"message":"You have exceeded a secondary rate limit"}`, http.StatusForbidden
 	mu.Unlock()
