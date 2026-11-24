@@ -46,13 +46,11 @@ DEFAULT_LIMIT_KB = 8388608
 
 SAMPLE_SECONDS = 5.0
 
-# The -json actions that end a test. "output" carries the text and changes nothing.
-DONE_ACTIONS = frozenset({"pass", "fail", "skip"})
-
-# A parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on: in
-# between it runs nothing, and in a package whose tests are parallel most of them sit paused
-# while a few run, so a paused test is not named as running.
-PAUSE_ACTIONS = frozenset({"pause"})
+# The -json actions after which a test is not running: "pass", "fail" and "skip" end it, and a
+# parallel test reports "pause" at its t.Parallel call and "cont" when go test lets it go on, running
+# nothing in between. In a package whose tests are parallel most of them sit paused while a few
+# run, so a paused test is not named as running. "output" carries the text and changes nothing.
+NOT_RUNNING_ACTIONS = frozenset({"pass", "fail", "skip", "pause"})
 RUN_ACTIONS = frozenset({"run", "cont"})
 
 
@@ -180,7 +178,7 @@ class RunningTests:
         with self._lock:
             if action in RUN_ACTIONS:
                 self._running.add(name)
-            elif action in DONE_ACTIONS or action in PAUSE_ACTIONS:
+            elif action in NOT_RUNNING_ACTIONS:
                 self._running.discard(name)
 
     def names(self) -> str:

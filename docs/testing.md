@@ -526,9 +526,16 @@ race detector every live byte costs about three (the heap and the detector's sha
 envoy-go-race-docs fails its step when the binary passes 8 GB
 (`.github/workflows/ci-job-envoy-go-race-docs.yaml`).
 
-A docs test that builds a document far larger than the others (an update past ygo's item cap,
-150,000 blocks, a 1,242-case sweep of ask bodies) stays serial and says so on its first line:
-beside the package's other tests it is what sets the binary's peak.
+A docs test stays serial, and says so on its first line with what it measured, when run alone it
+adds far more memory than the others: a few hundred megabytes or more of live heap after a
+collection, about three times that under the race detector. Beside the package's other tests
+such a test would take the binary toward the step's limit. Today that is
+`TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge`,
+`TestARoomsHeldUpdatesStayBoundedAcrossManyAppendsAndAnUpload`,
+`TestASettlementStampsMoreBlocksThanYgosDefaultQueue`,
+`TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel`, and the two over-cap history tests
+(`TestAnUndecodableHistoryLoadsAsDocumentUnloadable`,
+`TestRebuildDocumentRestoresDocumentThatCannotLoad`).
 
 ## Go's package deadline
 
