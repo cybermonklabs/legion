@@ -13,11 +13,10 @@ import type { TreeAnswer } from "../tree-read/tree-read";
  * read one tree.
  *
  * `issue-tree.ts` passes the tree it assembles through this module, so this module imports no
- * value of that one, which Biome's `noImportCycles` would refuse: its caller hands it `heldBy`,
- * the folded count, and a node's life is read through `issue-address.ts`'s predicates, since that
- * module imports no value of `issue-tree.ts` or of any module that does. The read's own values
- * are read in `tree-read/tree-nodes.ts` (`nodeStatesOf`), which imports no value of this module
- * or of `issue-tree.ts`.
+ * value of that one, which Biome's `noImportCycles` would refuse: a node's life is read through
+ * `issue-address.ts`'s predicates, since that module imports no value of `issue-tree.ts` or of
+ * any module that does. The read's own values are read in `tree-read/tree-nodes.ts`
+ * (`nodeStatesOf`), which imports no value of this module or of `issue-tree.ts`.
  */
 
 /** What the tree read says of one node beside its kind: its life, where it has one, and whether
@@ -76,15 +75,13 @@ function carriesMarks(root: TreeNode): boolean {
  * reaches. A gap or a wait an earlier stamp took from a node is not given back. Each chip, in
  * `chips` and in `alsoUnder`, carries the marks of the node of `root` whose reference it names,
  * whatever version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
- * wherever it is drawn. Every node's `held` is counted again by `heldBy` over its new children,
- * which counts an overtaken node and what it holds as it counts every node.
+ * wherever it is drawn.
  *
  * With no states and no `closedAbove`, over a tree that carries no mark, it answers `root` itself.
  */
 export function stampStates(
   root: TreeNode,
   states: ReadonlyMap<string, NodeStates>,
-  heldBy: (children: readonly TreeNode[]) => number,
   closedAbove?: ReadonlyMap<string, string>
 ): TreeNode {
   if (states.size === 0 && closedAbove === undefined && !carriesMarks(root)) return root;
@@ -126,7 +123,6 @@ export function stampStates(
       chips: own.chips.map(chipWith),
       ...(top === undefined ? {} : { closed: true, closedBy: top, waiting: false }),
       gaps: top !== undefined || isProposed(own) ? [] : own.gaps,
-      held: heldBy(children),
       ...(line === undefined ? {} : { parentLine: line }),
     };
   };
@@ -150,14 +146,9 @@ export function stampStates(
  * is closed under the words where it is closed with none. Both come from the tree read, which
  * the page has already made: no read is sent for them.
  */
-export function closeOvertaken(
-  root: TreeNode,
-  answer: TreeAnswer,
-  heldBy: (children: readonly TreeNode[]) => number,
-  outline?: TreeNode
-): TreeNode {
+export function closeOvertaken(root: TreeNode, answer: TreeAnswer, outline?: TreeNode): TreeNode {
   const states = nodeStatesOf(answer);
-  if (outline === undefined) return stampStates(root, states, heldBy);
+  if (outline === undefined) return stampStates(root, states);
   // The read id of each node and parent line of `root` that the view's answer holds no node for,
   // and of each parent line it does hold a node for.
   const held = new Set((answer.nodes ?? []).map((node) => node.id));
@@ -171,7 +162,7 @@ export function closeOvertaken(
     for (const child of node.children) walk(child);
   };
   walk(root);
-  if (missing.size === 0 && lines.size === 0) return stampStates(root, states, heldBy);
+  if (missing.size === 0 && lines.size === 0) return stampStates(root, states);
   // Each missing one takes the marks of the outline's last node of that read id that carries any.
   // Each line whose node the outline holds at or under an overtaken node - above it, for a node
   // the view holds - closes the rows drawn under it, under the topmost such node of the first
@@ -190,7 +181,7 @@ export function closeOvertaken(
     for (const child of node.children) indexOutline(child);
   };
   indexOutline(outline);
-  return stampStates(root, merged, heldBy, closedAbove);
+  return stampStates(root, merged, closedAbove);
 }
 
 /** The marks of each node of `root` that has a reference and a mark, by that reference without

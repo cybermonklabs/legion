@@ -13,7 +13,7 @@ import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { heldBy, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
@@ -120,9 +120,7 @@ function TreeRow({ focused, node }: { focused: boolean; node: TreeNode }): React
       isClosed={false}
       level={1}
       node={
-        answer?.nodes?.some((read) => read.id === node.readId)
-          ? closeOvertaken(node, answer, heldBy)
-          : node
+        answer?.nodes?.some((read) => read.id === node.readId) ? closeOvertaken(node, answer) : node
       }
       onFocus={() => {}}
       onPin={() => {}}

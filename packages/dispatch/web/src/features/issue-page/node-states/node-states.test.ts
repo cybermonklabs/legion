@@ -148,7 +148,7 @@ function chip(ref: string): NodeChip {
  *  A node built by another file's helper carries no read id, so each node is read as the node of
  *  the tree read whose id is its own where it names none. */
 function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
-  return stampStates(readAsIds(root), new Map(Object.entries(states)), heldBy);
+  return stampStates(readAsIds(root), new Map(Object.entries(states)));
 }
 
 /** `root` with every node that carries no read id given its own id as one. */
@@ -306,7 +306,7 @@ test("a chip and a parent line carry the marks of the node they name", () => {
 
 test("a tree given no states is answered as it is", () => {
   const root = node(KEY, "issue", [node("spec#b-r1", "requirement", [], { gaps: ["no_check"] })]);
-  expect(stampStates(root, new Map(), heldBy)).toBe(root);
+  expect(stampStates(root, new Map())).toBe(root);
 });
 
 // A folded branch's count counts an overtaken node and the nodes under it as it counts every
@@ -396,16 +396,11 @@ test("an overtaken node is a row at its place with its mark and its child row un
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     expect(rowIds(view.container)).toEqual(["comment-1", "spec#b-r8", "comment-3"]);
     expect(levelOf("spec#b-r8")).toBe(levelOf("comment-1"));
-    const marks = [
-      ...(rowOf(view.container, "spec#b-r8")?.querySelectorAll<HTMLElement>("[data-node-mark]") ??
-        []),
-    ];
-    expect(marks.map((mark) => mark.dataset.nodeMark)).toEqual(["overtaken"]);
-    expect(marks[0]?.textContent).toBe(ROW_MARK_WORDS.overtaken);
-    expect(marks[0]?.querySelector("svg")).toHaveAttribute(
-      "data-glyph",
-      GLYPH_TOKENS.marks.overtaken
-    );
+    const row = rowOf(view.container, "spec#b-r8");
+    expect(marksIn(row)).toEqual(["overtaken"]);
+    const mark = row?.querySelector("[data-node-mark]");
+    expect(mark?.textContent).toBe(ROW_MARK_WORDS.overtaken);
+    expect(mark?.querySelector("svg")).toHaveAttribute("data-glyph", GLYPH_TOKENS.marks.overtaken);
 
     await user.keyboard("z");
     await user.keyboard("z");

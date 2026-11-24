@@ -192,7 +192,7 @@ export function presetView(
   // those the outline's node of that id carries.
   if (held !== undefined) {
     const view = heldFilterView(root, preset, held, wanted, named);
-    return { ...view, root: closeOvertaken(view.root, held, heldBy, root) };
+    return { ...view, root: closeOvertaken(view.root, held, root) };
   }
   return held === undefined
     ? filterView(root, preset, wanted, named)

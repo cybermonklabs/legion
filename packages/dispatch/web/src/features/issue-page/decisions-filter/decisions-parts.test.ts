@@ -5,6 +5,7 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { inReviewList } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
+import { stampStates } from "../node-states/node-states";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
@@ -854,12 +855,14 @@ test("an overtaken decision waiting for review stands in the review part and wai
   expect(waitingOrder(parts)).toEqual([D("review")]);
 });
 
+// The question waits on the reader until the page puts the tree read's states on the tree, where
+// it is overtaken, so it is the stamp that takes the wait away.
 test("an overtaken open question stands with the open questions and waits on nobody", () => {
-  const children = [
-    openAsk("q-old", false, { closed: true, life: "overtaken" }),
-    openAsk("q-mine"),
-  ];
-  const parts = partsOf(children, [], [], presetView(issueTree(children), "decisions", "").root);
+  const tree = stampStates(
+    issueTree([openAsk("q-old", true, { readId: "q-old" }), openAsk("q-mine")]),
+    new Map([["q-old", { life: "overtaken" as const }]])
+  );
+  const parts = partsOf(tree.children, [], [], presetView(tree, "decisions", "").root);
 
   expect(idsOf(parts).open_questions).toEqual(["q-mine", "q-old"]);
   expect(parts.open_questions[1]?.node.life).toBe("overtaken");

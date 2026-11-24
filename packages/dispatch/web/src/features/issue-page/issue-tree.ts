@@ -702,11 +702,7 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const words = treeWordsOf(reads);
   if (reads.tree === undefined) return assemble(reads.issue, [], words.chipOf);
   const drafts = treeDraftsFrom(reads.tree, reads, words);
-  return closeOvertaken(
-    assemble(reads.issue, [...drafts.values()], words.chipOf),
-    reads.tree,
-    heldBy
-  );
+  return closeOvertaken(assemble(reads.issue, [...drafts.values()], words.chipOf), reads.tree);
 }
 
 /**

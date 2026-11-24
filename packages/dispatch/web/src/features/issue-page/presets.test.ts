@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
-import { heldBy } from "./issue-tree";
 import { type NodeStates, stampStates } from "./node-states/node-states";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView, rowKindsOf } from "./presets";
@@ -383,7 +382,7 @@ test("the words filter matches the words a node draws, never its stored source",
  *  (`node-states.ts`): an overtaken node and every node under it are `closed`. Each node is read
  *  as the node of the tree read whose id is its own, where it carries no read id. */
 function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
-  return stampStates(readAsIds(root), new Map(Object.entries(states)), heldBy);
+  return stampStates(readAsIds(root), new Map(Object.entries(states)));
 }
 
 /** `root` with every node that carries no read id given its own id as one. */
