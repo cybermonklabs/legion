@@ -335,21 +335,24 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it (eventPage): each event in the shape its
 // durable stream carries, so the boot catch-up applies each through the live decoder, with its own
-// sequence. A page that does not ascend past the last sequence read is refused, and so is a page
-// eventPage refuses: one whose events do not decode, or whose created_at is not a time.
+// sequence. A page that holds an event the client cannot read fails the read with an
+// *EventLogError naming that event's place in the log read: an event that does not decode, or
+// whose created_at is not a time (eventPage), or whose seq is not above the sequence read before
+// it.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]Event, error) {
 	events := []Event{}
 	for {
 		query := url.Values{}
 		query.Set("after", fmt.Sprint(after))
 		query.Set("limit", fmt.Sprint(eventPageLimit))
-		page, err := c.eventPage(ctx, key, query)
+		page, err := c.eventPage(ctx, key, query, len(events))
 		if err != nil {
 			return nil, err
 		}
-		for _, event := range page {
+		for i, event := range page {
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + i + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 		}
@@ -360,28 +363,51 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose created_at is not a time (eventPage), or whose seq is not above the sequence
+// read before it. The intake's walk of the log (walkIssueEvents in internal/intake) gives it for
+// an issue event whose payload it cannot decode. Event is the event's place in the log read,
+// counted from 1. Seq is the event's sequence where the event decoded, and 0 where it did not. Err
+// names the cause in fixed text, which quotes no value of the event, and, from EventsAfter, the
+// issue; Error returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
+
 const eventPageLimit = 200
 
 // eventPage reads one page of the issue's event log, GET /api/v1/issues/{key}/events?<query>, in
-// the order query asks for. Each event's members, its created_at among them, are decoded through
-// the answer (Answer.Decode), so a member that does not decode is named in fixed text, and its
-// created_at is Dispatch's words held with the request's record, read as an RFC 3339 time: one
-// that is not a time is refused naming the event's place in the page and the member, never the
-// value. An absent, null or empty created_at is the zero time. Each event's payload is the
-// answer's data (Answer.StreamTo), which the event's reader decodes by the event's type.
-func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values) ([]Event, error) {
+// the order query asks for, read events of the log having been read before it. Each event's
+// members, its created_at among them, are decoded through the answer (Answer.Decode), so a member
+// that does not decode is named in fixed text, and its created_at is Dispatch's words held with
+// the request's record, read as an RFC 3339 time: one that is not a time is refused naming the
+// event's place in the page and the member, never the value. An absent, null or empty created_at
+// is the zero time. Each event's payload is the answer's data (Answer.StreamTo), which the event's
+// reader decodes by the event's type. An event that does not decode, or whose created_at is not a
+// time, is an *EventLogError naming its place in the log read (undecodedEvent).
+func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values, read int) ([]Event, error) {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/events?" + query.Encode()
 	answer, err := c.answer(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
-	var page []answeredEvent
-	if err := answer.Decode(&page); err != nil {
-		return nil, fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
-	}
 	var body bytes.Buffer
 	if _, err := answer.StreamTo(&body); err != nil {
 		return nil, fmt.Errorf("read Dispatch GET %s response: %w", path, err)
+	}
+	var page []answeredEvent
+	if err := answer.Decode(&page); err != nil {
+		err = fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
+		if place := undecodedEvent(body.Bytes()); place > 0 {
+			return nil, &EventLogError{Event: read + place, Err: err}
+		}
+		return nil, err
 	}
 	var payloads []struct {
 		Payload json.RawMessage `json:"payload"`
@@ -390,15 +416,35 @@ func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values
 		return nil, fmt.Errorf("decode Dispatch GET %s response's payloads: %w", path, oauth2call.DecodeError(err, body.Bytes(), &payloads))
 	}
 	events := make([]Event, len(page))
-	for i, read := range page {
-		at, ok := read.createdAt()
+	for i, answered := range page {
+		at, ok := answered.createdAt()
 		if !ok {
-			return nil, fmt.Errorf("decode Dispatch GET %s response: event %d of the page, at sequence %d, names a created_at that is not an RFC 3339 time (the value is not printed)",
-				path, i+1, read.Seq)
+			return nil, &EventLogError{Event: read + i + 1, Seq: answered.Seq, Err: fmt.Errorf(
+				"decode Dispatch GET %s response: event %d of the page, at sequence %d, names a created_at that is not an RFC 3339 time (the value is not printed)",
+				path, i+1, answered.Seq)}
 		}
-		events[i] = read.event(at, payloads[i].Payload)
+		events[i] = answered.event(at, payloads[i].Payload)
 	}
 	return events, nil
+}
+
+// undecodedEvent is the place, counted from 1, of the first event of page, the body of an answer
+// whose events Answer.Decode refused, that does not decode as an event; 0 where the body is no
+// JSON list, or where every event decodes alone. It decodes each event as the durable stream's
+// bytes (streamEvent), whose members take the JSON kinds an answered event's take, only to find
+// the place: the refusal itself is Answer.Decode's, whose text names the member and no value.
+func undecodedEvent(page []byte) int {
+	var events []json.RawMessage
+	if json.Unmarshal(page, &events) != nil {
+		return 0
+	}
+	for i, raw := range events {
+		var event streamEvent
+		if json.Unmarshal(raw, &event) != nil {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // MessageBodiesSince reads newest-first issue events, page by page (eventPage), until the bounded
@@ -410,6 +456,7 @@ func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
+	read := 0
 	for {
 		query := url.Values{}
 		query.Set("order", "desc")
@@ -417,10 +464,11 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 		if before != 0 {
 			query.Set("before", fmt.Sprint(before))
 		}
-		events, err := c.eventPage(ctx, key, query)
+		events, err := c.eventPage(ctx, key, query, read)
 		if err != nil {
 			return nil, err
 		}
+		read += len(events)
 		if len(events) == 0 {
 			return bodies, nil
 		}

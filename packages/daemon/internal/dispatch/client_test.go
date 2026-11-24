@@ -939,3 +939,65 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
 	}
 }
+
+// A page that holds an event the client cannot read fails the read with an *EventLogError naming
+// the event's place in the log read so far, counted from 1, here on the second page: an event
+// whose seq does not decode, with sequence 0, an event at the sequence already read and one whose
+// created_at is not a time, each with its sequence. A decode's refusal is Answer.Decode's fixed
+// text, which names the member and the JSON kind it held and quotes no value; the others are the
+// read's own text.
+func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
+	const page2 = "decode Dispatch GET /api/v1/issues/LEGION-1/events?after=207&limit=200 response: "
+	for _, tc := range []struct {
+		name string
+		bad  map[string]any
+		seq  int64
+		// text is the error's whole text; where the decoder words it, names are what it holds
+		// and value is what it never quotes.
+		text  string
+		names []string
+		value string
+	}{
+		{name: "a seq that does not decode", bad: map[string]any{"seq": "210", "type": "comment.created"},
+			names: []string{page2, "seq", "JSON string"}, value: "210"},
+		{name: "a seq at the sequence already read", bad: map[string]any{"seq": 209, "type": "comment.created"}, seq: 209,
+			text: "page issue events for LEGION-1: non-ascending sequence 209 after 209"},
+		{name: "a created_at that is not a time", bad: map[string]any{"seq": 210, "type": "comment.created", "created_at": "yesterday"}, seq: 210,
+			text: page2 + "event 3 of the page, at sequence 210, names a created_at that is not an RFC 3339 time (the value is not printed)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The first page holds sequences 8 to 207 and the second 208, 209 and the bad event,
+			// the log's 203rd.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+				if after == 7 {
+					page := make([]map[string]any, 0, 200)
+					for seq := after + 1; seq <= after+200; seq++ {
+						page = append(page, map[string]any{"seq": seq, "type": "comment.created", "issue_key": "LEGION-1"})
+					}
+					writeJSON(t, w, page)
+					return
+				}
+				writeJSON(t, w, []map[string]any{{"seq": 208, "type": "comment.created"}, {"seq": 209, "type": "comment.created"}, tc.bad})
+			}))
+			defer server.Close()
+
+			events, err := New(server.URL, dispatchToken).EventsAfter(context.Background(), "LEGION-1", 7)
+			var unread *EventLogError
+			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || events != nil {
+				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d", len(events), err, tc.seq)
+			}
+			if tc.text != "" && err.Error() != tc.text {
+				t.Fatalf("EventsAfter's error = %q, want %q", err, tc.text)
+			}
+			for _, name := range tc.names {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("EventsAfter's error = %q, want one naming %q", err, name)
+				}
+			}
+			if tc.value != "" && strings.Contains(err.Error(), tc.value) {
+				t.Errorf("EventsAfter's error = %q quotes the value %q", err, tc.value)
+			}
+		})
+	}
+}

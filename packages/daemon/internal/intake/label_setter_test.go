@@ -40,6 +40,12 @@ func servedLog(t *testing.T, log ...json.RawMessage) []dispatch.Event {
 	return events
 }
 
+// payloadlessLogEvent is an event of type typ at seq, written by a person, with no payload field.
+func payloadlessLogEvent(seq int, typ string) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":"LEGION-755","seq":%d,"type":%q,"actor":{"kind":"user","id":"user-1"},"notify":true,"created_at":"2026-10-14T17:00:%02dZ"}`,
+		seq, seq, typ, seq))
+}
+
 // issueLogEvent is an issue.created or issue.updated event whose issue carries labels.
 func issueLogEvent(seq int, typ, kind string, labels ...string) json.RawMessage {
 	quoted := make([]string, len(labels))
@@ -155,16 +161,22 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 	}
 }
 
-// A log the daemon cannot read names no setter it can act on: an issue event whose payload does
-// not decode is an error naming its position, so the consumer delivers the fact again rather than
-// treating the label as nobody's. An event that does not decode at all is refused by the read
-// itself (dispatch.Client.EventsAfter).
+// A log the daemon cannot read names no setter it can act on: LabelSetter returns the walk's error
+// (TestWalkIssueEventsRefusesAnEventItCannotDecode), naming the event's position, here for an
+// issue event with no payload, one whose payload is not an issue and a later one whose labels are
+// not a list, so the consumer delivers the fact again rather than treating the label as nobody's.
+// An event that does not decode at all is refused by the read itself (dispatch.Client.EventsAfter).
 func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		events []json.RawMessage
 		want   string
 	}{
+		{
+			name:   "an issue event with no payload",
+			events: []json.RawMessage{issueLogEvent(1, "issue.created", "user", "legion"), payloadlessLogEvent(2, "issue.updated")},
+			want:   "decode Dispatch issue payload of event 2 of 2",
+		},
 		{
 			name:   "an issue event whose payload is not an issue",
 			events: []json.RawMessage{logEvent(1, "issue.created", "user", `"a string"`)},

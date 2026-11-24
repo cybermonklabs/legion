@@ -944,11 +944,9 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //  3. The unread repositories recovered (recoverRepositories), at once when leaveUnread,
 //     leaveForRecovery or readAnswered wakes it (recoverWake, markUnread), and on installReadRetry
 //     while any repository is unread or to recover (unreadReasons, recoveringReasons). While a held
-//     recovery has release waits to tell and time left to recoveryHoldBound (recoveryHoldLeft), the
-//     wait is cut to that time, so the bound is checked when it falls, not up to a backoff later;
-//     such a cut wait does not move the backoff on. Once the bound has passed, a run that did not
-//     tell the waits waits the backoff as any failed run does, so a failure past the bound never
-//     turns the refresher into a busy loop.
+//     recovery has release waits to tell, the wait is cut to the time left to recoveryHoldBound,
+//     or to none once that time is up, until a run begins past the bound; recoveryHoldLeft's doc
+//     has the rule. Such a cut wait does not move the backoff on.
 //  4. The heard set published again (republishHeard), at once when a record's own consumer update
 //     was refused (hearRecorded, heardWake), and on installReadRetry while it fails (heardPending).
 //  5. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
@@ -977,7 +975,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		heard.stand(w.heardPending.Load(), now)
 		live.stand(liveFailed, now)
 		recoverAt, cut := recovery.due, false
-		if left, held := w.recoveryHoldLeft(); held && left > 0 && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
+		if left, due := w.recoveryHoldLeft(); due && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
 			recoverAt, cut = now.Add(left), true
 		}
 		heldAt := w.heldDue()
@@ -1157,14 +1155,24 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 }
 
 // recoveryHoldLeft is the time left to recoveryHoldBound for a recovery whose listing is held with
-// release waits to tell, zero once the bound has passed, and whether one is. The waits are those of
-// the repositories to recover and of the repositories left unread alike: a pass that would let one
-// of the latter go puts it back while the listing is held (recoverRepositories), and its waits are
-// told at the bound as the former's are, so the refresher's wait is cut to the bound for both.
+// release waits to tell, zero once the bound has passed, and whether a run is due at that time: one
+// is, until a run of the recovery has begun with the bound passed (recoveryBoundChecked). The waits
+// are those of the repositories to recover and of the repositories left unread alike: a pass that
+// would let one of the latter go puts it back while the listing is held (recoverRepositories), and
+// its waits are told at the bound as the former's are, so the refresher's wait is cut to the bound
+// for both.
+//
+// A bound that passed while another job of the refresher ran (a read of the live records, say) is
+// still due: the refresher's wait was cut to it before that job began, and the loop that comes
+// back from the job finds no time left, so the run is due at once. Once a run has begun past the
+// bound, whatever it then meets (a listing that fails, a notice that fails, GitHub failing again),
+// the next run waits the backoff, so a fault past the bound never turns the refresher into a busy
+// loop. A run that begins just before the bound and fails after it is followed by one more run
+// at once, which begins past the bound.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
-	if w.recoveryHeldSince.IsZero() {
+	if w.recoveryHeldSince.IsZero() || w.recoveryBoundChecked {
 		return 0, false
 	}
 	waits := false
@@ -1249,6 +1257,11 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // fact.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
+	// A run that begins with the hold's bound passed is the run the bound was due for: the next
+	// one waits the backoff, whatever this one meets (recoveryHoldLeft).
+	if !w.recoveryHeldSince.IsZero() && time.Since(w.recoveryHeldSince) >= recoveryHoldBound {
+		w.recoveryBoundChecked = true
+	}
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
 	for repo := range w.unread {
@@ -1385,7 +1398,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Lock()
 	if !heldBack {
-		w.recoveryHeldSince = time.Time{}
+		w.recoveryHeldSince, w.recoveryBoundChecked = time.Time{}, false
 	}
 	for _, repo := range answered {
 		delete(w.recovering, repo)
@@ -2476,9 +2489,10 @@ func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Iss
 // its start, for who set the label (labelSetter, intake.DispatchIssue.LabelSetter): a person's
 // label queues the root through the outbox, a session's wakes the controller as today, and the
 // event that reaches the daemon says the label is there, not who put it there. It is one paged
-// read per such event, outside the fact lock as the rest of the preparation reads, and a failed
-// read leaves the event to be retried. A recorded root a person moved back to triage is never
-// queued again, so its log is not read.
+// read per such event, outside the fact lock as the rest of the preparation reads. A failed read
+// fails the preparation, so the event is delivered again; a log that does not decode fails it at
+// every delivery, so the intake gives the event up at its bound. A recorded root a person moved
+// back to triage is never queued again, so its log is not read.
 func (w *workflowRuntime) prepareRepository(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 	return w.prepareIssue(ctx, issue, true)
 }
@@ -2530,13 +2544,14 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 	return w.withAncestry(ctx, prepared, nil, observe)
 }
 
-// labelSetter is the kind of the Dispatch actor that added the label to key, read from the issue's
-// whole Dispatch event log, from sequence 0, by intake.LabelSetter's rule: one paged read per call,
-// outside the fact lock as the rest of a preparation reads, for an event's preparation
-// (prepareIssue) and the boot listing's (reconcileListing) alike. A read that fails, or a log the
-// daemon cannot decode, is an error naming the key, for the caller to fail the preparation on, so
-// the event or the listing is read again rather than applied with a setter nobody read: a setter
-// of "" would keep today's triage wake for a label a person set.
+// labelSetter is the kind of the Dispatch actor that added the label to key, by
+// intake.LabelSetter's rule. It reads the issue's whole Dispatch event log from sequence 0, in one
+// paged read, outside the fact lock. A read that fails is an error that wraps the client's error,
+// which can be a *dispatch.EventLogError, for a page of the log the client cannot read, or a
+// Dispatch refusal (*dispatch.Error). A log that does not decode is an error that wraps a
+// *dispatch.EventLogError too. Each error names the key. No error comes with a setter, since a
+// caller must not apply a setter nobody read: a setter of "" would keep today's triage wake for a
+// label a person set.
 func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, error) {
 	events, err := w.dispatch.EventsAfter(ctx, key, 0)
 	if err != nil {
@@ -2558,6 +2573,18 @@ func (w *workflowRuntime) labelSetter(ctx context.Context, key string) (string, 
 // event to be retried. Every other review or version event — a session's or Dispatch's own review,
 // a changes request, a carried approval, a version — asks Dispatch nothing and is applied as
 // decoded, with no view, which queues nothing.
+//
+// The view is the issue as it is now, so it cannot say whether the status changed after the
+// approval. For an approval that needs the issue's whole Dispatch event log
+// (intake.DispatchArtifact.NeedsEventLog: one that can queue its root by that view and carries a
+// sequence to place it by), a second read takes that log, and the first change of the issue's
+// status after the approval is set on the fact (StatusChangedSeq, by
+// intake.DispatchArtifact.WithStatusChange), so the workflow refuses an approval after which the
+// person parked the root again, however late it is applied or replayed. That read is one paged
+// read of the issue's whole log, the same read labelSetter makes for an unrecorded issue's
+// admission event, made under the same AckWait bound the intake puts on the whole preparation, the
+// issue read's included. A failed read, or a log the daemon cannot decode, fails the preparation
+// with an error naming the key, so the event is delivered again, as a failed issue read is.
 func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.DispatchArtifact) (intake.DispatchArtifact, error) {
 	if !fact.PersonApproval() {
 		return fact, nil
@@ -2567,6 +2594,16 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 		return fact, fmt.Errorf("read %s from Dispatch before applying a person's approval of its document %s: %w", fact.Key, fact.ArtifactID, err)
 	}
 	fact.Issue = &issue
+	if !fact.NeedsEventLog() {
+		return fact, nil
+	}
+	events, err := w.dispatch.EventsAfter(ctx, fact.Key, 0)
+	if err != nil {
+		return fact, fmt.Errorf("read the event log of %s from Dispatch for a change of its status after the approval at %d: %w", fact.Key, fact.Mark.Seq, err)
+	}
+	if fact, err = fact.WithStatusChange(events); err != nil {
+		return fact, fmt.Errorf("read a change of the status of %s after the approval at %d from its event log: %w", fact.Key, fact.Mark.Seq, err)
+	}
 	return fact, nil
 }
 

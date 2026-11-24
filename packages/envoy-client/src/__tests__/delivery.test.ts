@@ -1868,6 +1868,51 @@ describe("renderInbound non-dispatch envelopes", () => {
     );
   });
 
+  // The card's TOON encoder recurses once per level of a value, so a payload nested some
+  // thousands of levels deep overflowed the stack and threw out of `renderInbound`, in every host
+  // and on every delivery. Such a payload is the text its sender sent, and the card shows it so.
+  describe("a payload the card cannot lay out", () => {
+    const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+
+    test("a message whose JSON payload is nested 9,999 deep is shown as the text its sender sent", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "evt-deep", payload_summary: "deep", payload: nested })
+        ),
+        reader
+      );
+
+      // The card is TOON this renderer wrote, read back as the other rows read theirs.
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
+    });
+
+    test("a Dispatch frame whose payload is nested 9,999 deep is shown as its text", () => {
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({ event_id: "dispatch-deep", source: "dispatch", payload: nested })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(card.envoy).toMatchObject({ id: "dispatch-deep", dispatch: nested });
+    });
+
+    // The control: the encoder lays out a value it can reach the bottom of as before. An array
+    // chain 7,000 deep is one; an object chain 7,000 deep is not (Bun 1.4.4).
+    test("a message whose JSON payload is an array chain 7,000 deep is laid out as before", () => {
+      const arrays = `${"[".repeat(7_000)}${"]".repeat(7_000)}`;
+      const rendered = renderInbound(JSON.stringify(envelope({ payload: arrays })), reader);
+
+      expect(rendered.payloadShownAsText).toBeUndefined();
+      expect(rendered.content).toContain("\n  message[1]:\n    - [1]:\n      - [1]:\n");
+      expect(rendered.content).not.toContain('message: "[');
+    });
+  });
+
   test("renders direct agent metadata with a one-line summary and no payload", () => {
     const sender = "01a0bbbb-cccc-7ddd-eeee-0123456789ab";
     const rendered = renderInbound(

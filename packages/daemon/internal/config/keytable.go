@@ -178,7 +178,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
-			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
+			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret. The daemon reads it at boot and again before each launch, so an edit reaches the next launch with no restart, and an edit that leaves it missing or blank keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
 		},
 		{
@@ -198,7 +198,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -542,7 +542,7 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "none: a mode other than `off` is refused without them", RequiredBy: "when `mode` is `on` or `random`: a memory-group role reads its memory from these files",
 			Description: "The Oh My Pi settings overlays every role of a memory-group tree names last in `PI_CONFIG_FILES`, after the deployment's own and the role's own, as absolute paths; under Kubernetes each must be a file one of the pod's mounts carries."},
 		{Name: "instructions", Default: "a memory-group role's system prompt gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot and appends to every memory-group role's system prompt, after the deployment's own instructions."},
+			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot, and again before each launch, and appends to every memory-group role's system prompt, after the deployment's own instructions."},
 	}},
 	{Path: "projects.<KEY>.experiments.<NAME>", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
@@ -564,7 +564,7 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "a unit drawn into this arm names no overlay of the arm's own", RequiredBy: "no",
 			Description: "The Oh My Pi settings overlays each role the experiment reaches (`roles`) of a unit drawn into this arm names in `PI_CONFIG_FILES`, as absolute paths; the arm that names no file is the control the others are measured against."},
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
+			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
 		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
 			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
@@ -805,7 +805,7 @@ var nestedKeys = []memberGroup{
 			Description: "The absolute path the daemon's own projected ServiceAccount token for the broker's audience is mounted at; the daemon logs in with it at every start and keeps logging in, and the broker's `BROKER_SERVICE_LOGINS` names that account."},
 		{Name: "operator", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon logs in with its own ServiceAccount token, which no person approves, so the block names no approver; the loader refuses a file that still sets it."},
-		{Name: "audience", Default: "`agent-secrets`", RequiredBy: "no",
+		{Name: "audience", Default: "`" + DefaultAgentSecretsAudience + "`", RequiredBy: "no",
 			Description: "The audience of the projected token the daemon presents to the broker."},
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},

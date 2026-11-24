@@ -780,6 +780,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},

@@ -198,8 +198,8 @@ type ImageProbe struct {
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
 	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
 	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), holds its TLS clients to the compromised chains, and exits, so it is sized for that
-	// and not for a role's work.
+	// setting), checks the image's capability rows and the roles' overlays, and exits, so it is
+	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -243,7 +243,7 @@ func (p ImageProbe) startupBudgetDuration() time.Duration {
 // transient: anything else, a pod the kubelet itself failed included, and a probe container that
 // exited bootprobe.NoVerdictExit, having seen no failure and some check with no verdict (judge),
 // retried under p.Retry; when the retry gives up, its error carries the last attempt's detail,
-// which for that exit names each TLS run and step with no verdict. The report counts the attempts
+// which for that exit names each step with no verdict. The report counts the attempts
 // that waited on capacity and keeps the last one's reason, for the pool-capacity row of the
 // capability report.
 func (r *Runtime) ProbeImage(ctx context.Context, p ImageProbe) (bootprobe.ImageReport, error) {
@@ -1188,11 +1188,10 @@ var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not de
 // reasons of its own (kubeletFailure) is transient, whatever of its log could be read, and an
 // unread log is judged by the read's error. A Failed pod past those is one whose probe container
 // exited on its own. One that exited bootprobe.NoVerdictExit is transient: the probe saw no
-// failure and some check with no verdict — a TLS run its own limit stopped short of an answer at a
-// site an earlier run reached, or a check the probe's deadline cut — which the detail names from
-// its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other exit is the
-// image's refusal, exit 1 included: a failure, or, from a CLI that predates the no-verdict exit,
-// a run its limit or deadline cut. The OK line must confirm this daemon's contract: an
+// failure and some check with no verdict — a check the probe's deadline cut — which the detail
+// names from its no-verdict line (bootprobe.NoVerdict), so the retry runs a new pod. Any other
+// exit is the image's refusal, exit 1 included: a failure, or, from a CLI that predates the
+// no-verdict exit, a check its deadline cut. The OK line must confirm this daemon's contract: an
 // image whose CLI predates the contract check prints none, having checked no contract, and is
 // refused, not waved through; one that confirmed another contract is refused naming both. And it
 // must say the prompt-named agents' models resolved: any other mark, or none, does not prove the
