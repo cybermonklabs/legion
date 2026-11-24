@@ -87,9 +87,10 @@ type Options struct {
 	// Log receives the listener's lines; nil is slog.Default().
 	Log *slog.Logger
 	// Listen takes the listener for the address Listen was given, as net.Listen takes network and
-	// address; nil binds it (listen). The daemon's sets none. A test that must keep a fixed port
-	// across two listeners hands over one of a socket it holds for its whole run, so no other
-	// program can take the port between them (the daemon test's controllerSandboxRig).
+	// address; nil binds it (listen). It is nil in production: the daemon passes its
+	// overrides.streamListen, which Run never sets. A test that must keep a fixed port across two
+	// listeners hands over one of a socket it holds for its whole run, so no other program can take
+	// the port between them (the daemon test's controllerSandboxRig).
 	Listen func(network, address string) (net.Listener, error)
 }
 

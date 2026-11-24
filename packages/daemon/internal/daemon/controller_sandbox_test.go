@@ -312,7 +312,11 @@ type controllerSandboxRig struct {
 // rig's keep both sockets listening, so no other program can take either port before the first
 // boot or between the two. A port found free and given back would be any program's to take before
 // the daemon bound it, and on a shared CI runner one was taken, which failed the boot with
-// `bind: address already in use`.
+// `bind: address already in use`. Because the rig's sockets keep listening, a launcher's redial
+// between the two boots is queued, not refused as it is in a deployment's restart, where the
+// daemon's close frees the port: the kernel completes the dial, the launcher writes its hello and
+// waits for the acknowledgement, and the second boot's stream listener accepts it. Nothing this
+// test asserts reads a refused redial.
 // The probe interval is a second, so the runtime's sweep of every watched claim, which a boot's
 // re-adoption is held against (controllerSandboxSettled), runs several times inside the test's
 // own window.
