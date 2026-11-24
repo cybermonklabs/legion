@@ -168,15 +168,12 @@ func isGCSNotFound(err error) bool {
 	return !gcsBucketIsMissing(apiErr)
 }
 
-// gcsBucketMissing is the words GCS's 404 says a missing bucket in, where a missing object's says
-// "No such object".
 const gcsBucketMissing = "bucket does not exist"
 
 func gcsBucketIsMissing(apiErr *googleapi.Error) bool {
 	return strings.Contains(apiErr.Message+" "+apiErr.Body, gcsBucketMissing)
 }
 
-// gcsPermissions are the permissions the store needs, the ones a refusal is named by.
 var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
 
 // gcsFailure is err, the failure of a call to GCS through its client, as a message may print it:
@@ -188,7 +185,7 @@ var gcsPermissions = []string{"storage.objects.get", "storage.objects.create"}
 // drew no answer fails with net/http's error, which quotes a Location that does not parse and names
 // the one a followed redirect asked. The client follows every redirect, and its transport
 // (cloud.google.com/go/auth's) puts the bearer on each request it sends, so either Location can
-// carry it. It unwraps to err, so gcsStatus and isGCSNotFound still read googleapi.Error.
+// carry it.
 func gcsFailure(err error) error {
 	var apiErr *googleapi.Error
 	if !errors.As(err, &apiErr) || apiErr.Code == 0 {
