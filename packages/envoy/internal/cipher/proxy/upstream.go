@@ -6,39 +6,33 @@
 package proxy
 
 import (
-	"crypto/x509"
-	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // upstreamMessage is the message of the line a call the proxy could not carry to its service logs
 // (badGateway).
 const upstreamMessage = "airlock proxy: upstream"
 
-// certificateNotForHost is what an upstream failure's error reads in place of crypto/x509's for a
-// service whose certificate names other hosts than the one asked for (x509.HostnameError). That
-// error lists the names the certificate holds with no quotation mark for logmask.HidePeerBytes to
-// find, and a service chooses them: a bound service, which is sent the real value the swap put
-// in, could name its certificate with it, and a token endpoint, which is sent the real federated
-// token, with that.
-const certificateNotForHost = "tls: the service's certificate is not valid for this host; the names it holds are not shown"
-
 // upstreamReason is how the error of a call the proxy made to a service reads in a line and in the
 // answer the command is given, for every such call: one the proxy carried (badGateway) and an
 // Azure exchange the proxy makes itself (exchangeAt). The error is the transport's own and carries
 // no header of the request, so nothing of the grant is in it, but it can quote what the service
-// sent - a status line it could not read, which a bound service may write with the real value the
-// swap sent it - so its text from the first quotation mark of each of its lines on, where %q's runs
-// of the service's bytes start, is written as logmask.PeerBytesShown (logmask.HidePeerBytes); and
-// the error for a certificate that names other hosts, whose names stand in no quotation marks, is
-// certificateNotForHost.
+// sent, and a bound service is sent the real value the swap put in, a token endpoint the real
+// federated token. A TLS record or certificate failure, or an error that wraps one, reads as
+// redact's fixed words for its type and reason (redact.TLSWords), never its own text: x509's text
+// names what the service's certificate holds, every name it is valid for with no quotation mark
+// and, on macOS, its subject in the verifier's words between curly quotation marks, and the
+// service chooses those. Any other error's text from the first quotation mark of each of its lines
+// on, where %q's runs of the service's bytes start, is written as logmask.PeerBytesShown
+// (logmask.HidePeerBytes): a status line it could not read, say.
 func upstreamReason(err error) string {
-	if names := (x509.HostnameError{}); errors.As(err, &names) {
-		return certificateNotForHost
+	if words, ok := redact.TLSWords(err); ok {
+		return words
 	}
 	return logmask.HidePeerBytes(err.Error())
 }

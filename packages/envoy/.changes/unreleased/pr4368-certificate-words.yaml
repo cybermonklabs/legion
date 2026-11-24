@@ -14,6 +14,12 @@ body: |-
   The error still unwraps to the failure, so `errors.As` finds the
   certificate failure and its x509 type. `oauth2call.Unanswered` is `redact.Unanswered` for a
   module outside this one: the daemon now prints every request that got no answer through it.
+  The airlock proxy's `airlock proxy: upstream` line, its `502`, and a failed Azure exchange's
+  reason, line and answer print such a failure in the same words (`redact.TLSWords`). Before, they
+  printed x509's text up to its first quotation mark, which on macOS leaves the certificate's name
+  in clear between the verifier's curly quotation marks, and for a certificate valid for other
+  hosts they printed `tls: the service's certificate is not valid for this host; the names it
+  holds are not shown`.
 time: 2026-11-24T05:47:51Z
 custom:
     Issue: pr4368

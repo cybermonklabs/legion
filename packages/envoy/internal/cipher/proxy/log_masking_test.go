@@ -185,7 +185,7 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	// A forwarded https request to a service whose certificate names the placeholder's host in
 	// its own case and a host made of the real value the swap puts in: the proxy's transport
 	// refuses the certificate, crypto/x509's error lists the names it holds with no quotation
-	// mark, and the upstream line and the 502 write a fixed phrase in its place.
+	// mark, and the upstream line and the 502 write redact's fixed words in its place.
 	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost, workerValue + ".example.net"})
 	if err != nil {
 		t.Fatalf("the certificate naming the placeholder and the real value: %v", err)
@@ -199,8 +199,8 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 	r.addresses[certHost] = []netip.Addr{netip.MustParseAddr("93.184.216.40")}
 	r.dialTo[net.JoinHostPort(certHost, "443")] = certService.Listener.Addr().String()
 	certAnswer, certBody := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation)
-	if certAnswer.StatusCode != http.StatusBadGateway || !strings.Contains(certBody, certificateNotForHost) {
-		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502 saying %q", certAnswer.StatusCode, certBody, certificateNotForHost)
+	if certAnswer.StatusCode != http.StatusBadGateway || !strings.Contains(certBody, wantHostnameWords) {
+		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502 saying %q", certAnswer.StatusCode, certBody, wantHostnameWords)
 	}
 	// A forwarded plain-HTTP request to a service whose chunked answer ends in a trailer line
 	// that is the placeholder and no header at all: the transport cannot read it, and httputil
@@ -283,9 +283,9 @@ func noLineOfACommandsRequestsHoldsAValueOrPlaceholder(t *testing.T) {
 		}
 	}
 	if !writtenWhere(written, upstreamMessage, func(line map[string]any) bool {
-		return line["host"] == certHost && strings.Contains(fmt.Sprint(line["error"]), certificateNotForHost)
+		return line["host"] == certHost && strings.Contains(fmt.Sprint(line["error"]), wantHostnameWords)
 	}) {
-		t.Errorf("no upstream line for %s says %q: %q", certHost, certificateNotForHost, r.logs.written.String())
+		t.Errorf("no upstream line for %s says %q: %q", certHost, wantHostnameWords, r.logs.written.String())
 	}
 	if !writtenWhere(written, netHTTPMessage, func(line map[string]any) bool {
 		text := fmt.Sprint(line["error"])
