@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -318,7 +317,7 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		// The question and the parts of the restored ask through one reader, which holds what
 		// the database answered for the first of them and resolves their short ids for the ask's
 		// author.
-		reader := refs.NewReader(ctx, tx, wording.author, "ask", wording.ask, s.serverURL)
+		reader := refs.NewReader(ctx, tx, wording.author, "ask", wording.ask, s.origins)
 		_, step, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question)
 		if err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)

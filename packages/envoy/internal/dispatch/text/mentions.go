@@ -50,9 +50,9 @@ type Prefix struct {
 // characters, `-` and a number from 1 up, ending as keyEnds says. A `#id` is `#` and the longest
 // run of the block-id characters [A-Za-z0-9_-], read as questionRef reads it. There is no markdown
 // parse here, so a candidate in code is read, as a reference in code is.
-func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
+func Mentions(body string, origins Origins, r Resolver) ([]Located, error) {
 	spans := referencePattern.FindAllStringIndex(body, -1)
-	located := extractSpans(body, serverURL, spans, true)
+	located := extractSpans(body, origins, spans, true)
 	if r == nil {
 		return located, nil
 	}

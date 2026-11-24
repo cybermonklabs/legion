@@ -8,7 +8,6 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -70,7 +69,7 @@ func TestSettlementSkipsACraftedTreeOutsideTheSchema(t *testing.T) {
 			if versions != 1 {
 				t.Fatalf("settlement wrote %d versions for a document outside the schema, want 1", versions)
 			}
-			if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
+			if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocSchema) {
 				t.Fatalf("read the document: %v, want ErrDocSchema", err)
 			}
 			state.mu.Lock()

@@ -19,12 +19,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
-
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // pendingAuthorRows is the document's durable pending authors (doc_pending_authors): every author
@@ -1140,7 +1140,7 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		Persistence: persistence,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     text.NewOrigins("https://dispatch.example"),
 		Settle:      time.Hour,
 	})
 	t.Cleanup(func() {

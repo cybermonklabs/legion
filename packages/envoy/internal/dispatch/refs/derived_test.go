@@ -30,10 +30,10 @@ func TestDerivedStampSourceSeqIsTheStampingEventsID(t *testing.T) {
 	createReferenceProject(t, tx, "STAMP")
 	createReferenceIssue(t, tx, "STAMP-1", "STAMP")
 	document, _ := createReferenceArtifact(t, tx, "STAMP-1", "STAMP", "spec")
-	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, server), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, "artifact", document, text.Extract(markdown, text.NewOrigins(server)), nil); err != nil {
 		t.Fatalf("index the document's references: %v", err)
 	}
-	located := text.ExtractAt(markdown, server)
+	located := text.ExtractAt(markdown, text.NewOrigins(server))
 	blocks := []model.ArtifactBlock{{ID: "b-stamp", Type: "paragraph", From: 0, To: len(markdown)}}
 	if _, _, _, err := IndexBlocks(ctx, tx, document, 1, time.Now(), markdown, blocks, located, nil); err != nil {
 		t.Fatalf("index the document's blocks: %v", err)

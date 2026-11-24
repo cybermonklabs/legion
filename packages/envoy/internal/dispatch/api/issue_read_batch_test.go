@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -140,11 +139,12 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	served := directServer(deps)
 	ctx := context.Background()
 	pool := deps.Store.Pool
-	issue, progress, err := served.loadIssueWithProgress(ctx, pool, key)
+	viewer := refs.VisibilityArg(everyReader)
+	issue, progress, err := served.loadIssueWithProgress(ctx, pool, everyReader, key)
 	if err != nil {
 		t.Fatalf("load the issue: %v", err)
 	}
-	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
+	artifacts, err := served.loadArtifacts(ctx, pool, everyReader, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
 	}

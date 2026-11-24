@@ -29,9 +29,6 @@ import (
 	"time"
 	"unicode"
 
-	"golang.org/x/sync/semaphore"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -45,12 +42,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"golang.org/x/sync/semaphore"
+	"golang.org/x/sync/singleflight"
 )
 
 // AppContext holds shared dependencies for the HTTP handlers. All fields are
@@ -183,7 +183,8 @@ type AppContextOptions struct {
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
-	// Metrics is the process's metrics registry (cmd/dispatch's /metrics); see api.Deps.Metrics.
+	// Metrics is the process's metrics registry, which GET /metrics serves and the API adds its
+	// held gauges to; nil serves an empty one. See api.Deps.Metrics.
 	Metrics *metrics.Registry
 	// AnswersLatency times the answers reads this process serves for the keyword fill's pause,
 	// which cmd/dispatch gives the fill too (textversions.Config.Latency); nil times none. See
@@ -283,9 +284,13 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		InsecureCookie:  opts.InsecureCookie,
 		devSignInHost:   devSignInHost,
 		devSignInOrigin: devSignInOrigin,
+		origins:         origins,
 		apiDeps:         apiDeps,
 		eventHead:       eventHead,
 		lifetime:        opts.Lifetime,
+		clock:           clock,
+		// The ranges as boot parsed them, which nothing changes after.
+		trustedProxyRanges: opts.TrustedProxyRanges,
 	}, nil
 }
 
@@ -359,20 +364,22 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
-	mux.HandleFunc("/", r.staticHandler)
+	readclass.Handle(mux, none, "/", http.HandlerFunc(r.staticHandler))
 	if ctx.devSignInHost != "" {
-		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
+		readclass.Handle(mux, none, "GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
 	return r, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in. The sign-in in flight (its state, nonce,
-// the page it returns to and when it lapses) travels in the browser's dispatch_oauth_state cookie,
-// signed under a key derived from the current signing key (signOAuthState), and no process keeps
-// it: whichever process holding that key the issuer's redirect reaches completes the sign-in. An
-// issuer not yet discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// authStart sends the browser to the issuer to sign in, to come back to the canonical origin's
+// callback (callbackURL), the only origin that serves Google's sign-in (googleSignInHere). The
+// sign-in in flight (its state, its nonce, the page it returns to and when it lapses) travels in
+// the browser's dispatch_oauth_state cookie, signed under a key
+// derived from the current signing key (signOAuthState), and no process keeps it: whichever process
+// holding that key the issuer's redirect reaches completes the sign-in. An issuer not yet
+// discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -412,9 +419,10 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // authCallback completes a sign-in the issuer redirected back: it exchanges the code for the
 // person's ID token and signs in only a person SignInRule admits (SignInRule.Person), keeping the
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
-// their pool username carries; under a domain, by the email of a Google account of the domain,
-// and the account's subject is recorded with the sign-in, which ends the address's sessions when
-// another account held it (auth.PeopleStore.SignInSubject).
+// their pool username carries; under a domain, by the email of a Google account of the domain, and
+// the account's subject is recorded with the sign-in, which ends the address's sessions when
+// another account held it (auth.PeopleStore.SignInSubject). The callback URL the exchange names is
+// the canonical origin's (callbackURL), the one authStart sent the issuer.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -458,14 +466,15 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error())
 		return
 	}
-	email, err := r.ctx.SignInRule.Person(session.Claims)
+	person, err := r.ctx.SignInRule.Person(req.Context(), session.Claims)
 	if err != nil {
 		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-		writeSignInRefusedPage(w, email, err)
+		writeSignInRefusedPage(w, person.Email, err)
 		return
 	}
+	email := person.Email
 	subject := r.ctx.SignInRule.Subject(session.Claims)
-	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, email, subject, session.RefreshToken); err != nil {
+	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, person, subject, session.RefreshToken); err != nil {
 		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
 		writeError(w, http.StatusInternalServerError, "record sign-in")
 		return
@@ -520,6 +529,17 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
+	googleRule := r.ctx.SignInRule != nil && r.ctx.SignInRule.Holds()
+	var signedInAt time.Time
+	if googleRule {
+		membership, _, err := r.ctx.People.Membership(req.Context(), email)
+		if err != nil {
+			slog.Warn("dispatch: read the sign-in a sign-out ends failed", "email", email, "error", err)
+			writeError(w, http.StatusInternalServerError, "read sign-in")
+			return
+		}
+		signedInAt = membership.SignedInAt
+	}
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
 			slog.Warn("dispatch: revoke sessions failed", "email", email, "error", err)
@@ -536,7 +556,10 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
-// answer's JSON has always carried them in.
+// answer's JSON has always carried them in. MemberKind is "restricted" for a restricted member and
+// absent for everyone else, and Origins names the server's two origins, the canonical one first,
+// only where it answers at a second (DISPATCH_OUTSIDE_ORIGIN): so a full member's answer from a
+// server at one origin is byte for byte what it was before either existed.
 type whoamiAnswer struct {
 	EventHead string `json:"event_head"`
 	Kind      string `json:"kind"`
@@ -554,9 +577,12 @@ type whoamiAnswer struct {
 // (api.ErrEventHeadUnproven: an event insert open since before every mark, with no horizon proven
 // or persisted), which ends on its own and which the page asks again for as long as it lasts.
 // Every other failure (the database or the horizon's pool not answering) is
-// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error.
+// EVENT_HEAD_READ_FAILED, which the page retries a few times and then shows as an error. The
+// person's member kind is read last (access.MemberKind): one it cannot read is a 503
+// IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
+// member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
-	email, ok := r.login(w, req)
+	email, ok := r.loginSigningIn(w, req, r.whoamiSignIn(req))
 	if !ok {
 		return
 	}
@@ -576,9 +602,13 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email})
 }
 
-// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
+// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
+// that person may see (repositoryHidden): any other repository answers as one the App is not
+// installed on, and while a project is private a read is held to its repository
+// (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
-	if _, ok := r.login(w, req); !ok {
+	login, ok := r.login(w, req)
+	if !ok {
 		return
 	}
 	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub)
@@ -587,6 +617,12 @@ func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.
 func (r *router) login(w http.ResponseWriter, req *http.Request) (string, bool) {
+	return r.loginSigningIn(w, req, "")
+}
+
+// loginSigningIn is login, whose 401 names signIn as the way req's origin signs a person in
+// (identity.WriteErrorSigningIn); "" names none.
+func (r *router) loginSigningIn(w http.ResponseWriter, req *http.Request, signIn string) (string, bool) {
 	login, err := r.ctx.Identity.Login(req)
 	if err != nil {
 		identity.WriteError(w, err)
@@ -605,8 +641,11 @@ func signInUnconfigured(w http.ResponseWriter) {
 // serverRoots are the path roots the server itself answers: an unmatched path under one of them
 // is a real JSON 404, decided before any dashboard lookup, never the SPA shell. "/v1" is
 // reserved because it is the API path typed without its "/api" prefix — an API client's mistake
-// that must be answered as one.
-var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz"}
+// that must be answered as one. "/metrics" and "/livez" are the roots of a route each, so a path
+// below one ("/metrics/") is no dashboard page either. A root matches whatever its case
+// ("/API/V1"), since a path under one that the mux, which compares case, did not route is a
+// client's mistake about a server route and never a dashboard page (TestNoVariantOfAServerRouteIsTheDashboard).
+var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz", "/livez", "/metrics"}
 
 // unmatchedRoute is the access-log route of a request under serverRoots that no route answers.
 const unmatchedRoute = "unmatched"
@@ -622,13 +661,18 @@ const (
 	pageCacheControl = "no-cache"
 	// assetCacheControl lets a browser keep a hashed asset for a year without asking.
 	assetCacheControl = "public, max-age=31536000, immutable"
+	// outsideContentSecurityPolicy is the outside origin's dashboard answers' policy: no page
+	// frames them, they load no plugin object, and no <base> element moves where their relative
+	// URLs point. It names no script or style source, so the page's inline script runs as it does
+	// at the canonical origin, which sends no policy.
+	outsideContentSecurityPolicy = "frame-ancestors 'none'; object-src 'none'; base-uri 'none'"
 )
 
 func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	requestedPath := req.URL.Path
 	// A rooted clean holds no `..`, so every path joined under the dist directory below stays in it.
 	normalized := filepath.Clean("/" + requestedPath)
-	if isReservedPath(normalized, serverRoots) {
+	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
@@ -941,11 +985,10 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
+// callbackURL is the sign-in callback of the canonical origin (publicOrigin with no outside
+// origin), the only origin that serves Google's sign-in (googleSignInHere).
 func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
+	return publicOrigin(serverURL, "", req) + "/auth/callback"
 }
 
 func publicOrigin(serverURL string, req *http.Request) string {
@@ -960,9 +1003,12 @@ func publicOrigin(serverURL string, req *http.Request) string {
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
-// cookie or an IAP assertion, unless it comes from Dispatch's own origin. A browser sends the
-// credential with a request another site's page makes: its cookie, or under IAP the IAP cookie,
-// for which IAP adds a valid assertion. A request with an Authorization header is an agent's.
+// cookie or an IAP assertion, unless its Origin is the origin of the request's own Host
+// (publicOrigin), or it carries none and the browser says the write is same-origin: so neither
+// another site's page nor a page on one of the server's origins can write as a person signed in
+// on the other. A browser sends the credential with a request another site's page makes: its
+// cookie, or under IAP the IAP cookie, for which IAP adds a valid assertion. A request with an
+// Authorization header is an agent's.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
@@ -1049,7 +1095,7 @@ func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
 	fmt.Fprintf(w, `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Dispatch: sign-in refused</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dispatch: sign-in refused</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem">
 <h1>Sign-in refused</h1>
 <p>%s</p>

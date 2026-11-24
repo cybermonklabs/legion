@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -72,7 +71,11 @@ type createIssueInput struct {
 }
 
 func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	// The reader is resolved before any connection is held: the body's project, and an issue an
+	// external ref names, are read as the caller reads them, and the related-item check below
+	// offers only what it may read (relatedInput.who).
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	var input createIssueInput
@@ -142,7 +145,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.External != "" {
-		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+		existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 		if err == nil {
 			var existingProject string
 			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
@@ -494,7 +497,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			existingKey, err := s.resolveIssueRef(r.Context(), input.External)
+			existingKey, err := s.resolveIssueRef(r.Context(), who, input.External)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
@@ -511,7 +514,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	issue, err := s.loadIssue(r.Context(), tx, key)
+	issue, err := s.loadIssue(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -585,6 +588,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// response is written.
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		who:     who,
 		project: input.Project,
 		text:    input.Title + "\n" + markdown,
 		title:   input.Title,
@@ -727,7 +731,7 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	existing, err := s.loadIssue(r.Context(), adviceReadTx, existingKey)
+	existing, err := s.loadIssue(r.Context(), adviceReadTx, who, existingKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

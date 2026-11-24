@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -139,7 +138,7 @@ func editIndexedDocument(t *testing.T, service *Service, artifactID string, ops 
 // the block node nodeID.
 func requireLinksTo(t *testing.T, database *store.Store, stage, nodeID string, want ...string) {
 	t.Helper()
-	edges, err := refs.Edges(context.Background(), database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
+	edges, err := refs.Edges(context.Background(), database.Pool, model.ServerReader, refs.Query{Direction: "in", Kind: "block", ID: nodeID})
 	if err != nil {
 		t.Fatalf("%s: read the links to %s: %v", stage, nodeID, err)
 	}

@@ -176,7 +176,7 @@ func TestACommentResumeSendsNothingBesideALiveSenderAndTakesTheAttemptOnceItLaps
 	// The comment's own send runs on s1's lane after the response: let it finish, so the sends
 	// this test counts are the resumes alone and nothing lands after the strand below.
 	settledCommentDeliveries(t, database, created.ID)
-	comment, err := direct.loadComment(context.Background(), database.Pool, created.ID)
+	comment, err := direct.loadComment(context.Background(), database.Pool, everyReader, created.ID)
 	if err != nil {
 		t.Fatalf("load the comment: %v", err)
 	}

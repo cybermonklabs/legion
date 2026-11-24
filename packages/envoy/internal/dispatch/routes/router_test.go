@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -48,8 +49,9 @@ func sharedAgentTokens(t *testing.T, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocuments is options with a document service of the test's own, which BuildAppContext
-// requires: one over the options' store, event broker, identity and server URL, shut down once
-// the test ends. Options with no broker get one, which the router and the service then share.
+// requires: one over the options' store, event broker, identity and origins (the server URL and
+// the outside origin, read as api.NewDeps reads them), shut down once the test ends. Options with
+// no broker get one, which the router and the service then share.
 func withDocuments(t testing.TB, options AppContextOptions) AppContextOptions {
 	t.Helper()
 	if options.Events == nil {
@@ -114,6 +116,11 @@ type memoryPerson struct {
 	RefreshToken string
 	Subject      string
 	ConfirmedAt  time.Time
+	Kind         model.MemberKind
+	HostedDomain string
+	Held         bool
+	SignedOut    bool
+	SignedInAt   time.Time
 }
 
 func newMemoryPeople() *memoryPeopleStore {
@@ -150,12 +157,13 @@ func (s *memoryPeopleStore) SignIn(_ context.Context, email, refreshToken string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind = refreshToken, s.clock(), model.MemberFull
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
 
-func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken string) error {
+func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	defer s.runAfterSignIn()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,7 +177,8 @@ func (s *memoryPeopleStore) SignInSubject(ctx context.Context, email, subject, r
 		}
 	}
 	person.Subject = subject
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
+	person.SignedInAt, person.Held, person.SignedOut = s.clock(), false, false
 	s.people[email] = person
 	return nil
 }
@@ -178,30 +187,24 @@ func (s *memoryPeopleStore) Membership(_ context.Context, email string) (auth.Pe
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	membership := auth.PersonMembership{RefreshToken: person.RefreshToken, Subject: person.Subject}
+	membership := auth.PersonMembership{
+		RefreshToken: person.RefreshToken, Subject: person.Subject, Kind: person.Kind, HostedDomain: person.HostedDomain,
+		Held: person.Held, SignedOut: person.SignedOut, SignedInAt: person.SignedInAt, ReadAt: s.clock(),
+	}
 	if !person.ConfirmedAt.IsZero() {
 		membership.Confirmed, membership.ConfirmedAge = true, s.clock().Sub(person.ConfirmedAt)
 	}
 	return membership, found, nil
 }
 
-func (s *memoryPeopleStore) Confirm(_ context.Context, email, refreshToken string) error {
+func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, readToken, refreshToken, hostedDomain string, kind model.MemberKind) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person := s.people[email]
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
-	s.people[email] = person
-	return nil
-}
-
-func (s *memoryPeopleStore) ConfirmSubject(_ context.Context, email, subject, refreshToken string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	person := s.people[email]
-	if person.Subject != subject {
+	if person.Subject != subject || person.RefreshToken != readToken {
 		return nil
 	}
-	person.RefreshToken, person.ConfirmedAt = refreshToken, s.clock()
+	person.RefreshToken, person.ConfirmedAt, person.Kind, person.HostedDomain = refreshToken, s.clock(), kind, hostedDomain
 	s.people[email] = person
 	return nil
 }
@@ -273,7 +276,7 @@ func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, h
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions
 	rig.people.now = rig.clock
-	rig.membership = &identity.Membership{People: rig.people, Sessions: rig.sessions, SignIn: flow, Rule: rule}
+	rig.membership = &identity.Membership{People: rig.people, SignIn: flow, Rule: rule}
 	rig.options = AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     rig.people,
@@ -666,7 +669,8 @@ func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
 
 // An account outside the domain, one whose email Google has not verified, and one with no email
 // each reach Dispatch's refusal page with their reason; none gets a session or a recorded sign-in,
-// and each refusal is logged with the email and hd.
+// and each refusal is logged with the email and hd. The page is laid out at the device's width, so
+// a phone shows it at a size its reader can read rather than as a desktop page scaled down.
 func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -694,6 +698,9 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 			}
 			if body := response.Body.String(); !strings.Contains(body, tc.page) || !strings.Contains(body, `href="/auth/start"`) {
 				t.Errorf("refusal page does not say %q and offer another sign-in: %s", tc.page, body)
+			}
+			if body := response.Body.String(); !strings.Contains(body, `<meta name="viewport" content="width=device-width, initial-scale=1">`) {
+				t.Errorf("refusal page names no viewport, so a phone lays it out 980 pixels wide and scales it down: %s", body)
 			}
 			if sessionCookie(response) != nil {
 				t.Error("a refused sign-in received a session cookie")
@@ -835,6 +842,7 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 		name     string
 		insecure bool
 		secure   bool
+		session  string
 	}{
 		{name: "TLS default", secure: true},
 		{name: "HTTP development mode", insecure: true, secure: false},
@@ -855,7 +863,7 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 				}
 			}
 			if !issued {
-				t.Errorf("callback set no dsession cookie: %v", response.Result().Cookies())
+				t.Errorf("callback set no %s cookie: %v", tc.session, response.Result().Cookies())
 			}
 		})
 	}
@@ -867,7 +875,7 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 func TestDomainSignInGetsNoSessionWhenAnotherAccountTakesTheAddressBeforeItsCookie(t *testing.T) {
 	rig := newDomainSignInRig(t)
 	rig.people.afterSignIn = func() {
-		if err := rig.people.SignInSubject(context.Background(), rigGoogleEmail, "google-subject-2", "refresh-2"); err != nil {
+		if err := rig.people.SignInSubject(context.Background(), rigGoogleEmail, "google-subject-2", "refresh-2", "", model.MemberFull); err != nil {
 			t.Errorf("the other account's sign-in: %v", err)
 		}
 	}
@@ -1118,14 +1126,14 @@ func TestOAuthCallbackRefusesAStateTheCookieDoesNotName(t *testing.T) {
 }
 
 // A value signed with the signing key for anything but the sign-in state is no state cookie: a
-// dsession cookie's value, and a well-formed state signed as a dsession cookie is (the signing
+// session cookie's value, and a well-formed state signed as a session cookie is (the signing
 // key's own MAC rather than the key derived for the state).
 func TestOAuthCallbackRefusesAValueSignedForAnotherPurpose(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		value func(t *testing.T, state string) string
 	}{
-		{name: "dsession cookie", value: func(t *testing.T, _ string) string {
+		{name: "session cookie", value: func(t *testing.T, _ string) string {
 			session, err := http.ParseSetCookie(auth.IssueSessionCookie(rigEmail, 0, testSigningKey, true))
 			if err != nil {
 				t.Fatalf("parse session cookie: %v", err)
@@ -1580,7 +1588,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 				want := map[string]string{
 					"code":  "NOT_FOUND",
 					"error": "no route for GET " + path,
-					"hint":  "GET /api/v1 lists every route",
+					"hint":  "GET /api/v1, with a credential, lists every route",
 				}
 				if !reflect.DeepEqual(body, want) {
 					t.Fatalf("%s body = %v, want %v", path, body, want)
@@ -1622,7 +1630,7 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 		want := map[string]string{
 			"code":  "NOT_FOUND",
 			"error": "no route for " + method + " " + path,
-			"hint":  "GET /api/v1 lists every route",
+			"hint":  "GET /api/v1, with a credential, lists every route",
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
@@ -1652,7 +1660,7 @@ func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
 		want := map[string]string{
 			"code":  "NOT_FOUND",
 			"error": "no route for " + method + " " + path,
-			"hint":  "GET /api/v1 lists every route",
+			"hint":  "GET /api/v1, with a credential, lists every route",
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)
@@ -1931,7 +1939,7 @@ func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	person, found := s.people[email]
-	if !found || person.Subject != subject {
+	if !found || person.Subject != subject || person.RefreshToken != refreshToken {
 		return false, nil
 	}
 	if s.sessions == nil {

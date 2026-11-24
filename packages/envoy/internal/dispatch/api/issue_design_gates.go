@@ -140,6 +140,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		holds[index] = gate.Holds
 	}
 
+	who, ok := s.readerOf(w, r)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

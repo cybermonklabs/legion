@@ -25,7 +25,8 @@ type appInstallationResponse struct {
 // (gitHubReason): an error GitHub answered with a page that is no JSON carries the page as
 // githubapp.ShownBody shows it, its first 512 characters and its size.
 func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	owner, name, err := githubRepoPath(r)

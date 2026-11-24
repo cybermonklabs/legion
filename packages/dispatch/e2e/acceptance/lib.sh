@@ -29,6 +29,39 @@ require_env() {
   done
 }
 
+# loopback_database_url URL: succeeds only for a single loopback postgres URL authority.
+# Connection overrides and escaped parameter names are refused, and so is any `@` after the
+# authority: libpq reads user credentials up to the first `@` or `/`, not stopping at `?`, so a query
+# value holding `@` can name the host, and an override can replace even an explicit loopback one.
+loopback_database_url() {
+  local url="$1" authority host query parameter name
+  [[ "$url" == postgres://* || "$url" == postgresql://* ]] || return 1
+  [[ "$url" != *\#* ]] || return 1
+  authority="${url#*://}"
+  authority="${authority%%[/?]*}"
+  [[ "${url#*://"$authority"}" != *@* ]] || return 1
+  host="${authority#*@}"
+  [[ "$host" =~ ^(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?$ ]] || return 1
+  if [[ "$url" == *\?* ]]; then
+    query="${url#*\?}"
+    while :; do
+      parameter="${query%%&*}"
+      name="${parameter%%=*}"
+      case "$name" in host | hostaddr | service | *%*) return 1 ;; esac
+      [[ "$query" == *'&'* ]] || break
+      query="${query#*&}"
+    done
+  fi
+}
+
+# declared SECTION WHAT FILE SED: the one value SED prints out of a source file, refused when the
+# file or the declaration is gone, so a build that moved it moves the driver that reads it.
+declared() {
+  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
+  answer="$(sed -n "$4" "$3")"
+  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
+}
+
 # require_commands COMMAND…: refuses the first named command that is not on PATH.
 require_commands() {
   local command
@@ -115,12 +148,116 @@ expect() {
 q() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
+# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host, and without
+# PGSERVICE and PGSERVICEFILE, whose service entry can carry a hostaddr of its own: the DSN alone
+# names the server, as the loopback guard read it.
 # shellcheck disable=SC2034 # $answer is this function's answer, read by its caller
 query() {
   local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
     fail "$section" "$what" "psql: $(<"$work/psql")"
+}
+
+# observe_horizon SECTION: the observer's half of an observation of the event horizon as
+# events.Horizon takes one (horizonObserveSQL): a statement in a transaction of its own, which
+# draws a transaction id, the observer's X, as it runs. Every transaction id drawn before X must
+# end before the observation is proven, so X decides which transactions hold it back. It sets
+# $answer to X and the database's clock as X was drawn, in seconds since the epoch, separated by a
+# space: one argument of own_horizon_hold.
+observe_horizon() {
+  query "$1" "observe the event horizon" \
+    "select pg_current_xact_id()::text || ' ' || extract(epoch from clock_timestamp())"
+}
+
+# own_horizon_hold SECTION OBSERVATION...: judges a hold against the newest of the OBSERVATIONs,
+# each one observe_horizon answered, that has waited 5 s (horizontest.OwnHoldBound). It sets
+# $answer to the oldest transaction of this run's database that has held that observation back,
+# named with its pid, its client, its start and its query, or to '' where none has; and
+# $observation_age to how long that observation has waited, in seconds, or to '' where none of them
+# has waited 5 s. One statement reads both, so the age is the one the judgement read. Each
+# observation's time goes into that statement as written: observe_horizon writes a number, and
+# node-projects-horizon-hold.test.ts writes an expression on the statement's own clock, so the age
+# it judges is one no scheduling can move.
+#
+# The horizon proves an observation only once no transaction id below the observer's is running
+# (events/horizon.go, "Safe horizon"). So a transaction holds an observation back only while it
+# holds an id drawn before the observer's, and one that drew its first id after the observation
+# does not hold that one back, however long ago it began. A transaction that holds it back has held
+# it for the shorter of the observation's age and the transaction's own, as horizontest's heldFor
+# reads a stall warning, both read on the database's clock. The newest observation that has waited
+# 5 s is the one to judge by: a transaction holding back an older one holds back that one too,
+# since its id is below both observers'. Two ids are compared by their age(), which one statement
+# reads against one counter. The holders are read as events.StallHolderSQL reads them, a prepared
+# transaction's as well as a backend's, the oldest id first. pg_stat_activity shows a session's
+# xact_start only to a superuser, a member of pg_read_all_stats or a member of the session's own
+# role, and a holder this role cannot date is not named.
+# shellcheck disable=SC2034 # $observation_age is this function's answer too, read by its caller
+own_horizon_hold() {
+  local section="$1" observation observer observed_at given=""
+  shift
+  for observation; do
+    read -r observer observed_at <<<"$observation"
+    given+="${given:+, }('$observer'::xid8, $observed_at)"
+  done
+  query "$section" "read the oldest transaction of this run's database that holds the event horizon back" "
+    with judged as (
+      select observer, now() - to_timestamp(observed_at) as waited
+      from (values $given) as observation (observer, observed_at)
+      where now() - to_timestamp(observed_at) >= interval '5 seconds'
+      order by waited limit 1
+    )
+    select coalesce((select extract(epoch from waited)::text from judged), '') || '|' || coalesce((select name from (
+      select format('backend %s (application %s), open since %s: %s', pid, coalesce(application_name, ''), xact_start,
+          left(coalesce(query, ''), 80)) as name, xact_start as started, age(backend_xid) as age
+      from pg_stat_activity
+      where backend_xid is not null and pid <> pg_backend_pid() and datname = current_database()
+      union all
+      select format('prepared transaction %s, prepared at %s', gid, prepared), prepared, age(transaction)
+      from pg_prepared_xacts where database = current_database()
+    ) holder, judged
+    where holder.age > age(judged.observer::xid) and now() - holder.started >= interval '5 seconds'
+    order by holder.age desc limit 1), '')"
+  observation_age="${answer%%|*}"
+  answer="${answer#*|}"
+}
+
+# start_horizon_watch SECTION: starts the watch of the event horizon that watch_horizon carries
+# on, and returns once the watch's first observation has waited 5 s. Until then it polls as
+# watch_horizon polls, about once a second, so the watch holds an observation of each second from
+# its start on. own_horizon_hold names a transaction only against an observer that drew its id
+# after the transaction drew its own, and only once that observation has waited 5 s. So a watch
+# begun at the moment from which a hold must be named would name a transaction that drew its id
+# before that moment only once it had held the id 5 s more, and never one that ended sooner,
+# though it may have held the horizon back far longer. A driver starts the watch 5 s before that
+# moment instead: a transaction that drew its id before the watch began and still holds it when
+# this returns fails the section here, and one that drew its id later is judged against the
+# observations of the seconds after it.
+start_horizon_watch() {
+  horizon_observations=()
+  watch_horizon "$1"
+  until [[ -n "$observation_age" ]]; do
+    sleep 1
+    watch_horizon "$1"
+  done
+}
+
+# watch_horizon SECTION: one poll of the watch start_horizon_watch began. It observes the horizon
+# (observe_horizon), keeps the observation in $horizon_observations with every one the watch took
+# before it, judges a hold against them all (own_horizon_hold), and fails the section naming the
+# transaction that holds the horizon back. It sets $observation_age as own_horizon_hold does. It
+# refuses to poll a watch that was never started: its judgement would then have no observation
+# older than its own polls, the defect start_horizon_watch's comment names.
+watch_horizon() {
+  declare -p horizon_observations >/dev/null 2>&1 || {
+    printf 'watch_horizon polls only a watch that start_horizon_watch began\n' >&2
+    exit 2
+  }
+  observe_horizon "$1"
+  horizon_observations+=("$answer")
+  own_horizon_hold "$1" "${horizon_observations[@]}"
+  [[ -z "$answer" ]] ||
+    fail "$1" "no transaction of this run's database holds the event horizon back" \
+      "$answer has held back an observation of the horizon that has waited $observation_age s on it, 5 s or more, holding a transaction id drawn before that observer's in this run's database, which holds the server's event readers back"
 }
 
 # The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
@@ -140,8 +277,10 @@ cli() {
     if [[ -n "$saved_tmpdir" ]]; then
       export TMPDIR="$saved_tmpdir"
     fi
+    # shellcheck disable=SC2154 # session is set by the driver that sources this file
     export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
     export DISPATCH_TOKEN="$token"
+    # shellcheck disable=SC2154 # cli_entry is set by the driver that sources this file
     exec "$bun_bin" "$cli_entry" "$@"
   )
 }

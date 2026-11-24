@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -81,7 +80,7 @@ func (s *server) resolveMentionTarget(
 		lookup, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
+	sessionID, title, resolveError, hidden := s.resolveDeliveryTarget(lookup, route, delivery)
 	if sessionID == "" && resolveError != "" && ctx.Err() == nil &&
 		errors.Is(lookup.Err(), context.DeadlineExceeded) {
 		item.unanswered = true
@@ -352,7 +351,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, everyReader, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -1135,7 +1134,11 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
@@ -1317,6 +1320,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	// The writer's reader, resolved before the transaction holds a connection
+	// (lockedCommentForDelivery), and read by the role read below.
+	who, ok := s.readerOf(w, r)
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
@@ -1349,7 +1355,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -1447,7 +1453,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
 	// newest, which a replayed reply need no longer be.
 	if attempt.ReplyID != nil {
-		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
+		reply, err := s.loadComment(r.Context(), tx, who, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

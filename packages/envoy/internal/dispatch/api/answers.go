@@ -42,6 +42,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)

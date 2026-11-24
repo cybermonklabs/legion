@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -368,6 +367,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
 	var input inboxReadRequest
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)

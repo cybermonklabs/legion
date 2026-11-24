@@ -5,11 +5,12 @@ import (
 )
 
 func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	project := r.PathValue("key")
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
+	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, who, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -32,7 +33,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, artifactPointers(artifacts)); err != nil {
+	if err := loadArtifactDetails(r.Context(), s.deps.Store.Pool, who, artifactPointers(artifacts)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

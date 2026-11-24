@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -75,7 +74,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 			storedBody: "First paragraph.\n\nSecond cites dispatch://CORE-2.",
 			editedBody: "First paragraph.",
 			drain: func(ctx context.Context, database *store.Store, comment string, _ time.Time) drainAnswer {
-				indexed, err := IndexOwedItemBlocks(ctx, database.Pool, OwedItemBlock{Kind: ItemComment, ID: comment}, itemBlockServer)
+				indexed, err := IndexOwedItemBlocks(ctx, database.Pool, OwedItemBlock{Kind: ItemComment, ID: comment}, text.NewOrigins(itemBlockServer))
 				return drainAnswer{indexed: indexed, err: err}
 			},
 		},
@@ -112,7 +111,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 			drain: func(ctx context.Context, database *store.Store, comment string, enqueuedAt time.Time) drainAnswer {
 				indexed, err := ReindexOwed(ctx, database.Pool, Owed{
 					Queue: BlockGrammarOwed, Kind: "comment", ID: comment, EnqueuedAt: enqueuedAt,
-				}, itemBlockServer)
+				}, text.NewOrigins(itemBlockServer))
 				return drainAnswer{indexed: indexed, err: err}
 			},
 			wantIndexed:  true,
@@ -171,7 +170,7 @@ func TestADrainOfACommentWaitsForItsOwnerLock(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the comment's block index: %v", err)
 			}
-			located := text.ExtractAt(drainer.editedBody, itemBlockServer)
+			located := text.ExtractAt(drainer.editedBody, text.NewOrigins(itemBlockServer))
 			indexing, err := PlanItemIndex(index.Edited(), ItemComment, comment, drainer.editedBody, editedAt, located, nil)
 			if err != nil {
 				t.Fatalf("plan the edited comment's blocks: %v", err)
