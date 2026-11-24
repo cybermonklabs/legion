@@ -38,6 +38,7 @@ import {
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionOperatorProjectPauseRequest,
+  LegionP0BoundResponse,
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -191,6 +192,11 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
+  // The P0 bound the controller's set and clear left in force (contract 282), each written from
+  // what the route itself answers (internal/api's TestP0BoundRouteGoldens): a set of 2 over
+  // legion.yaml's 3, and the clear after it.
+  "p0-bound.json": LegionP0BoundResponse,
+  "p0-bound-clear.json": LegionP0BoundResponse,
   // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
   // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
   // a replay with one record of each outcome and one left, and the ids a discard closed.
@@ -2881,7 +2887,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource });
+  // A caller below 282 is served the admission without the two keys 282 added (the daemon's
+  // `withoutP0Start`), and a caller below 202 is below 282.
+  const {
+    p0Holders: _p0Holders,
+    p0Bound: _p0Bound,
+    ...admission
+  } = z.record(z.string(), z.unknown()).parse(rest.admission);
+  expect(narrowedRest).toEqual({ ...rest, issues, capabilities: withoutCachesSource, admission });
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to

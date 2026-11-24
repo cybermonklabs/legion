@@ -8,6 +8,7 @@
   },
   "admission": {
     "cap": 2,
+    "p0Holders": 0,
     "active": [
       "LEGION-208"
     ],

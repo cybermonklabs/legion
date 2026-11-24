@@ -297,16 +297,16 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
 		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard:
+		AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard, AnswerP0Bound:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
 		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
 		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract,
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
-		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records
-		// any of the six at all.
+		// AnswerPlanRegister arrived whole at OwnerPlanContract, AnswerIntakeReplay and
+		// AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, and AnswerP0Bound arrived
+		// whole at p0BoundContract, so no older contract records any of the seven at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -580,6 +580,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
+	{contract: p0BoundContract, state: withoutP0Start, dropped: "admission.p0Holders and admission.p0Bound"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1848,6 +1849,17 @@ func withoutPause(state State) (State, bool) {
 func withoutIntakeGiveUps(state State) (State, bool) {
 	state.IntakeGiveUps, state.intakeGiveUpsHidden = IntakeGiveUpsView{}, true
 	return state, true
+}
+
+// withoutP0Start is state with no `admission.p0Holders` or `admission.p0Bound`, the two keys
+// p0BoundContract added to the state; its routes are no keys of this one. `cap` stays, and says to
+// every reader what it always said: the cap of the slots, which now counts no P0 holder. Both are
+// pointers with `omitempty`, so nil takes the key off. Admission is a value of the state, so the
+// state the source answered is left as it was, as withoutPause leaves it.
+func withoutP0Start(state State) (State, bool) {
+	moved := state.Admission.P0Holders != nil || state.Admission.P0Bound != nil
+	state.Admission.P0Holders, state.Admission.P0Bound = nil, nil
+	return state, moved
 }
 
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added

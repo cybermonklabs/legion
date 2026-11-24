@@ -7,6 +7,8 @@ import {
   LEGION_WORKFLOW_PHASES,
   type LegionPhase,
   type LegionState,
+  LegionProjectP0BoundClearRequest,
+  LegionProjectP0BoundRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
@@ -250,6 +252,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "compact",
         "pause",
         "resume",
+        "set_p0_bound",
+        "clear_p0_bound",
         "replay_give_up",
         "discard_give_up",
       ],
@@ -292,7 +296,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
@@ -324,6 +328,16 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       type: "number",
       description:
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
+    },
+    bound: {
+      type: "number",
+      description:
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number of at least 1. Name it or unbounded, never both",
+    },
+    unbounded: {
+      type: "boolean",
+      description:
+        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both",
     },
   },
   required: ["op"],
@@ -2157,6 +2171,82 @@ test("the controller pauses the project with its reason and resumes it, and each
   }
   expect(posted).toHaveLength(2);
   expect(minted).toHaveLength(2);
+});
+
+// The P0 bound (C3 of dispatch://INFRA-5636, check c-bound-tool). The controller sets the bound
+// with one operation, which sends exactly the request the daemon API contract describes, a bound or
+// none with its reason, and clears it with another. Each goes through the real daemon client, so
+// the answer the controller reads is the golden the daemon's own route test wrote, parsed by the
+// contract's schema. A call the tool can tell is wrong is refused before a grant is minted.
+test("the controller sets and clears the P0 bound, each request the contract's and each answer the daemon's golden", async () => {
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/project/p0-bound": "p0-bound.json",
+    "/legion/v1/project/p0-bound/clear": "p0-bound-clear.json",
+  });
+  const minted: string[] = [];
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+  const reason = "the P0 issues outran the gateway";
+
+  const set = await run({ op: "set_p0_bound", bound: 2, reason });
+  expect(set.isError).toBeUndefined();
+  expect(set.details).toEqual(daemonFixture("p0-bound.json"));
+  const none = await run({ op: "set_p0_bound", unbounded: true, reason });
+  expect(none.isError).toBeUndefined();
+  const cleared = await run({ op: "clear_p0_bound", reason: "back to the file" });
+  expect(cleared.details).toEqual(daemonFixture("p0-bound-clear.json"));
+  expect(posted).toEqual([
+    ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", bound: 2, reason }],
+    ["/legion/v1/project/p0-bound", { grantId: "controller-grant-1", unbounded: true, reason }],
+    ["/legion/v1/project/p0-bound/clear", { grantId: "controller-grant-1", reason: "back to the file" }],
+  ]);
+  // Each request is one the contract describes, as the daemon's request-shape records do.
+  expect(LegionProjectP0BoundRequest.safeParse(posted[0]?.[1]).success).toBeTrue();
+  expect(LegionProjectP0BoundRequest.safeParse(posted[1]?.[1]).success).toBeTrue();
+  expect(LegionProjectP0BoundClearRequest.safeParse(posted[2]?.[1]).success).toBeTrue();
+
+  const refusals = [
+    [{ op: "set_p0_bound", reason }, "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both"],
+    [
+      { op: "set_p0_bound", bound: 2, unbounded: true, reason },
+      "set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both",
+    ],
+    [{ op: "set_p0_bound", bound: 0, reason }, "set_p0_bound's bound is a whole number of at least 1"],
+    [{ op: "set_p0_bound", bound: 2 }, "set_p0_bound requires reason"],
+    [{ op: "clear_p0_bound" }, "clear_p0_bound requires reason"],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(parameters)).resolves.toEqual({ content: [{ type: "text", text }], details: {}, isError: true });
+  }
+  expect(posted).toHaveLength(3);
+  expect(minted).toHaveLength(3);
+});
+
+// read_state's summary gives the P0 holders, the bound in force and the live value that stands,
+// on one line after the admission cap's, and no such line for a body served below contract 282.
+test("the read_state summary gives the P0 holders and the P0 bound in force", async () => {
+  const base = daemonFixture("state.json") as LegionState;
+  const { daemon } = recordingDaemon({ state: base });
+  const summary = (await controllerTool(daemon, []).execute("", { op: "read_state" }, undefined, undefined, context("ses_controller")))
+    .content[0];
+  const admission = base.admission;
+  const live = admission?.p0Bound?.live;
+  if (admission?.p0Holders === undefined || live === undefined || live.setBy.kind !== "controller") {
+    throw new Error("state.json carries no P0 holders or no live P0 bound set by the controller: this test proves nothing");
+  }
+  expect(summary).toMatchObject({
+    text: expect.stringContaining(
+      `\np0 holders ${admission.p0Holders} bound ${admission.p0Bound?.bound} set ${live.bound} by the controller (session ${live.setBy.session}) at ${live.setAt}: ${live.reason}\n`
+    ),
+  });
+
+  const { p0Holders: _held, p0Bound: _bound, ...older } = admission;
+  const { daemon: olderDaemon } = recordingDaemon({ state: { ...base, admission: older } });
+  const olderSummary = (
+    await controllerTool(olderDaemon, []).execute("", { op: "read_state" }, undefined, undefined, context("ses_controller"))
+  ).content[0];
+  expect(olderSummary).toMatchObject({ text: expect.not.stringContaining("\np0 holders") });
 });
 
 // The daemon's refusals reach the controller as every other write's do: the code, then the

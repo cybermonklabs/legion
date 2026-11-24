@@ -94,3 +94,50 @@ func PriorityOf(issue, root Issue) Priority {
 	}
 	return root.Priority
 }
+
+// StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199):
+// whether its own Dispatch priority is P0. It reads the issue's own priority and never PriorityOf's,
+// which gives an issue with none its tree root's for the order of the line: a P0 root makes none of
+// its children P0.
+func (i Issue) StartsNow() bool { return i.Priority == P0 }
+
+// SlotHolders is a project's holders of an admission slot as the cap and the P0 bound count them:
+// P0, the holders whose own priority is P0 (Issue.StartsNow), which the cap does not count and the
+// P0 bound does, and Capped, every other holder, which the cap counts. A holder is counted by the
+// priority its record carries at the read, so one raised to P0 leaves the cap's count at the next
+// read and one lowered below P0 counts against the cap from then on, while its slot stays.
+type SlotHolders struct {
+	Capped int
+	P0     int
+}
+
+// HoldersOf counts the slots of slots whose issue is one of issues, by whether that issue starts
+// outside the cap. issues is one project's records and slots may be every project's: a slot of an
+// issue not among issues is counted nowhere. Every reader of the cap counts through it — the
+// promotion, its free-slot reading, the stall measure and the state — so all of them count the same
+// holders of one record.
+func HoldersOf(issues []Issue, slots []Slot) SlotHolders {
+	byKey := make(map[string]Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	var held SlotHolders
+	for _, slot := range slots {
+		if issue, known := byKey[slot.Issue]; known {
+			held.Add(issue)
+		}
+	}
+	return held
+}
+
+// Add counts issue as one more holder.
+func (h *SlotHolders) Add(issue Issue) {
+	if issue.StartsNow() {
+		h.P0++
+		return
+	}
+	h.Capped++
+}
+
+// Total is every holder, P0 and capped together: the slots in use.
+func (h SlotHolders) Total() int { return h.Capped + h.P0 }

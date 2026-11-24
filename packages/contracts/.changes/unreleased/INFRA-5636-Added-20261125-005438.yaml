@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The daemon API schemas describe contract 282: the state's `admission` carries `p0Holders`, how
+  many slot holders are P0 and hold their slot outside the cap, and `p0Bound`, the P0 bound in
+  force (`bound`, null for none), `legion.yaml`'s (`configured`) and the value set while the daemon
+  runs (`live`, with who set it, when and why). New schemas: the controller's and the operator's
+  set and clear of the P0 bound (`LegionProjectP0BoundRequest`, `LegionProjectP0BoundClearRequest`
+  and the operator's two) and their answer, `LegionP0BoundResponse`.
+time: 2026-11-25T00:54:38Z
+custom:
+    Issue: INFRA-5636

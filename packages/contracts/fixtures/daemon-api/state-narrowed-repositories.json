@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 256,
+    "daemon": 282,
     "caller": 199
   },
   "admission": {
@@ -1019,6 +1019,7 @@
       }
     },
     "admission_cap": 4,
+    "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,
     "omp_launch_prefix": [],

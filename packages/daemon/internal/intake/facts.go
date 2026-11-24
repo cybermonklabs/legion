@@ -574,6 +574,26 @@ type ProjectResumed struct{}
 
 func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
+// P0BoundSet is a change of the project's P0 bound while the daemon runs (dispatch://INFRA-5636
+// C3), applied as a synthetic fact by the P0 bound routes (api's changeP0Bound) and never decoded
+// from an event. Mode is what it does: store.P0BoundSet sets the bound to Bound, at least 1, which
+// the route refused anything else against; store.P0BoundUnbounded sets it to none, whatever
+// legion.yaml says; and store.P0BoundCleared returns the project to legion.yaml's
+// admission_p0_bound. By is who changed it, in a pause's actor shape, Reason why, and At when.
+// Admission is its one handler: it appends the change (store.RecordP0BoundChangeTx) and then makes
+// the pass every fact that is not a Dispatch issue makes, in the same transaction, so the bound is
+// in force from that pass on (admit.Admission.applyFact). The workflow engine and the blockers
+// mirror do nothing for it.
+type P0BoundSet struct {
+	Mode   store.P0BoundMode
+	Bound  int
+	By     store.PauseActor
+	Reason string
+	At     time.Time
+}
+
+func (P0BoundSet) namedIssue() (string, bool) { return "", false }
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string

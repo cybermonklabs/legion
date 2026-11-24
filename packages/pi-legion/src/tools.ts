@@ -91,6 +91,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "compact",
     "pause",
     "resume",
+    "set_p0_bound",
+    "clear_p0_bound",
     "replay_give_up",
     "discard_give_up",
   ],
@@ -116,6 +118,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  set_p0_bound: ["bound", "unbounded", "reason"],
+  clear_p0_bound: ["reason"],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
   discard_give_up: ["giveUp", "consumer", "throughSeq", "reason"],
 };
@@ -186,6 +190,27 @@ function pauseSummary(state: LegionState): string | undefined {
 }
 
 /**
+ * The summary's `p0` line (C3 and C4 of dispatch://INFRA-5636): how many of the issues holding a
+ * slot are P0 by their own priority, which hold it outside the cap, the P0 bound in force (`none`
+ * for no bound), and the live value that stands with who set it, when and why. A body served below
+ * contract 282 carries neither key, and the summary then has no such line.
+ */
+function p0Summary({ admission }: LegionState): string | undefined {
+  if (admission?.p0Holders === undefined && admission?.p0Bound === undefined) return undefined;
+  const p0Bound = admission.p0Bound;
+  let line = `p0 holders ${admission.p0Holders ?? 0}`;
+  if (p0Bound !== undefined) {
+    line += ` bound ${p0Bound.bound ?? "none"}`;
+    const live = p0Bound.live;
+    if (live !== undefined) {
+      const by = pauseActorWords(live.setBy.kind === "controller" ? live.setBy.session : undefined);
+      line += ` set ${live.bound ?? "none"} by ${by} at ${live.setAt}: ${live.reason}`;
+    }
+  }
+  return line;
+}
+
+/**
  * The summary's line on the wakes the daemon's pacing holds until their turn
  * (`wakesWaiting`): how many, and after `next` the earliest moment any of them is due, which is
  * when the pacing lets the next one out. The state lists them in claim order, so the earliest is
@@ -236,7 +261,9 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
+  "admission cap; p0 holders <count> [bound <n|none> [set <n|none> by <who> at <time>: <reason>]], " +
+  "the P0 issues holding a slot outside the cap and the P0 bound in force, with the value set " +
+  "while the daemon runs that stands; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
@@ -276,7 +303,11 @@ function stateSummary(state: LegionState): string {
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
     lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
+      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`
+    );
+    const p0 = p0Summary(state);
+    if (p0 !== undefined) lines.push(p0);
+    lines.push(
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
@@ -416,7 +447,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -450,6 +481,18 @@ function toolSchema(pi: PiApi): unknown {
       .number()
       .describe(
         "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups"
+      )
+      .optional(),
+    bound: z
+      .number()
+      .describe(
+        "set_p0_bound's bound: how many P0 issues may hold an admission slot at once outside the cap, a whole number of at least 1. Name it or unbounded, never both"
+      )
+      .optional(),
+    unbounded: z
+      .boolean()
+      .describe(
+        "set_p0_bound's no bound: true sets no P0 bound, whatever legion.yaml's admission_p0_bound says. Name it or bound, never both"
       )
       .optional(),
   });
@@ -714,6 +757,14 @@ export function createLegionTool(deps: {
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
         "since each would start a turn. " +
+        "A P0 issue, one whose own Dispatch priority is P0, starts outside the admission cap; set_p0_bound (bound or " +
+        "unbounded, reason) sets how many P0 issues may hold a slot at once, or no bound with unbounded true, whatever " +
+        "legion.yaml's admission_p0_bound says, and clear_p0_bound (reason) returns to legion.yaml's; neither takes an " +
+        "issue. Each is in force from the change's own admission pass on, with no restart: a lower bound stops nothing that " +
+        "runs, and at the bound a P0 issue waits first in the line. The answer is the bound in force, legion.yaml's and the " +
+        "value set that stands; read_state's summary gives the same on its p0 holders line. The daemon refuses a set that " +
+        "names neither bound nor unbounded, both, or a bound below 1 (INVALID_P0_BOUND), and a change with no reason " +
+        "(P0_BOUND_REASON_REQUIRED). " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
@@ -793,6 +844,28 @@ export function createLegionTool(deps: {
           if (operation === "resume") {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.projectResume({ grantId }));
+          }
+          // The P0 bound's set and clear name no issue either, and are validated whole before the
+          // grant is minted; each answer is the daemon's own: the bound in force after the change.
+          if (operation === "set_p0_bound" || operation === "clear_p0_bound") {
+            const reason = requiredString(parameters, operation, "reason");
+            if (operation === "clear_p0_bound") {
+              const { grantId } = await controllerGrant(active.sessionID);
+              return jsonSuccess(await client.p0BoundClear({ grantId, reason }));
+            }
+            const { bound, unbounded } = parameters;
+            if ((bound === undefined) === (unbounded !== true)) {
+              throw new Error("set_p0_bound requires bound, a whole number of at least 1, or unbounded true, not both");
+            }
+            if (bound !== undefined && !isWholeFromOne(bound)) {
+              throw new Error("set_p0_bound's bound is a whole number of at least 1");
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(
+              await client.p0Bound(
+                bound === undefined ? { grantId, unbounded: true, reason } : { grantId, bound, reason }
+              )
+            );
           }
           // The replay and the discard of the intake's give-ups name no issue either. Each is
           // validated whole, its selection and the discard's reason, before its grant is minted,

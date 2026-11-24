@@ -86,6 +86,11 @@ type Config struct {
 	StateDir      string
 	Runtime       Runtime
 	AdmissionCap  int
+	// AdmissionP0Bound is `admission_p0_bound`: how many P0 issues may hold a slot at once outside
+	// the cap (R10 of dispatch://INFRA-3199), at least 1, or nil where the file gives none, which is
+	// no bound. It is the bound the daemon boots with; the controller or the operator sets another
+	// while the daemon runs, which stands until it is cleared (store.EffectiveP0Bound).
+	AdmissionP0Bound *int
 
 	// DaemonURL is the API address every pane is told (`LEGION_DAEMON_URL`), with no trailing
 	// slash; the loopback address on Port unless the file names another.
@@ -409,6 +414,7 @@ type fileConfig struct {
 	PostgresDSN      *string
 	StateDir         *string
 	AdmissionCap     *int
+	AdmissionP0Bound *int
 	Kubernetes       *Kubernetes
 	Tmux             *Tmux
 	DaemonURL        *string
@@ -1118,6 +1124,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if cfg.AdmissionCap < 1 {
 		return Config{}, errors.New("admission_cap must be a positive integer")
+	}
+	if file.AdmissionP0Bound != nil {
+		if *file.AdmissionP0Bound < 1 {
+			return Config{}, errors.New("admission_p0_bound must be a positive integer, or left out for no bound")
+		}
+		cfg.AdmissionP0Bound = new(*file.AdmissionP0Bound)
 	}
 
 	if file.WorkerWakesPerMinute != nil {

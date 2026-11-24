@@ -172,6 +172,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
+			Name: "admission_p0_bound", Default: "no bound", RequiredBy: "no",
+			Description: "How many P0 issues may hold a slot at once; a P0 issue, one whose own Dispatch priority is P0, starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. The controller (`set_p0_bound`) or the operator (`legion project set-p0-bound`) sets another bound, or none, while the daemon runs, which takes effect at the next admission pass with no restart and stands until it is cleared.",
+			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionP0Bound = v }),
+		},
+		{
 			Name: "controller", Default: "`operator`", RequiredBy: "no",
 			Description: "Who runs the project's controller: `operator`, a person with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running (a pane of its own window under `runtime: tmux`), which needs `dispatch_url`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),

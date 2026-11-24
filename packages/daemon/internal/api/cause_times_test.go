@@ -291,9 +291,11 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	}
 
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
+	// p0BoundContract's band stands above this one, so the caller is told of it too, on the line
+	// after this band's (stateNarrowings' order).
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) != 1 || narrowings[0].Dropped != dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q",
+	if len(narrowings) != 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "admission.p0Holders and admission.p0Bound" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want one that dropped %q and then p0BoundContract's",
 			narrowings, causeTimesContract-1, dropped)
 	}
 }

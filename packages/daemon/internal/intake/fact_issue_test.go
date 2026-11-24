@@ -54,6 +54,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"ControllerMemoryGuardKill": ControllerMemoryGuardKill{},
 		"EntrySweep":                EntrySweep{},
 		"ProjectResumed":            ProjectResumed{},
+		"P0BoundSet":                P0BoundSet{},
 		"PullRequestOpened":         PullRequestOpened{Branch: "legion/" + issue},
 		"PullRequestSynchronized":   PullRequestSynchronized{Branch: "legion/" + issue},
 		"PullRequestReview":         PullRequestReview{},

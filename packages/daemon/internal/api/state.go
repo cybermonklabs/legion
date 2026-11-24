@@ -638,6 +638,16 @@ type ContractView struct {
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
 	Cap int `json:"cap"`
+	// P0Holders is how many of the issues holding a slot are P0 by their own Dispatch priority
+	// (record.HoldersOf): they start and hold their slot outside the cap, so the cap counts the
+	// other holders of `active` alone (R10 of dispatch://INFRA-3199). Every body at
+	// p0BoundContract carries it, 0 included; a body served a caller below that contract leaves it
+	// out (shaping.go's withoutP0Start).
+	P0Holders *int `json:"p0Holders,omitempty"`
+	// P0Bound is the P0 bound in force, legion.yaml's and the live value that stands, with who set
+	// it and when (P0BoundView, P0BoundStateTx). Every body the daemon's state route serves at
+	// p0BoundContract carries it; a body served a caller below that contract leaves it out.
+	P0Bound *P0BoundView `json:"p0Bound,omitempty"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots while it stands in a phase that keeps one, from the moment
