@@ -35,7 +35,7 @@ const discardReasonRunes = storetext.FarSideErrorRunes
 // the pool the records and every fact are kept in, the consumers' spec, and the repositories
 // GitHub intake hears now, which a replay decodes a GitHub event against as a delivery is decoded.
 type Records struct {
-	Pool         Pool
+	Pool         store.TxPool
 	Spec         ConsumerSpec
 	Repositories func() []ghrepo.Repository
 }
@@ -47,7 +47,7 @@ type Records struct {
 // it logged (droppedSettlements), as a consumer keeps one, so a settlement replayed again names
 // its drop once.
 type GiveUps struct {
-	pool         Pool
+	pool         store.TxPool
 	spec         ConsumerSpec
 	repositories func() []ghrepo.Repository
 	handlers     []Handler
@@ -252,12 +252,13 @@ func (g *GiveUps) Discard(ctx context.Context, selector record.IntakeSelector, c
 	return ids, nil
 }
 
-// write runs fn in a transaction of its own, bounded at AckWait, the bound each of a handling's
-// own reads has: the claim, a close and a kept error are each a statement or two on the record.
+// write runs fn in a transaction of its own (store.Transact), bounded at AckWait, the bound each
+// of a handling's own reads has: the claim, a close and a kept error are each a statement or two
+// on the record.
 func (g *GiveUps) write(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	bounded, cancel := context.WithTimeout(ctx, g.spec.AckWait)
 	defer cancel()
-	return pgx.BeginTxFunc(bounded, g.pool, pgx.TxOptions{}, func(tx pgx.Tx) error { return fn(bounded, tx) })
+	return store.Transact(bounded, g.pool, fn)
 }
 
 // replayClose is the give-up whose stored message a replay applies: project's record id, closed by

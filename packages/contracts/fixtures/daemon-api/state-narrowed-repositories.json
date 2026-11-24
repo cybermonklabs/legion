@@ -332,6 +332,12 @@
           "variant": "long",
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
+        },
+        {
+          "experiment": "planning",
+          "variant": "b",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
         }
       ]
     },
@@ -1051,6 +1057,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1060,6 +1073,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },

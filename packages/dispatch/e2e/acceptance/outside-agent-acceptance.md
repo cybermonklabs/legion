@@ -13,13 +13,13 @@ The gate must pass before the deployment names a real person from outside on any
 | `outside-agent-codex.sh` | The Codex leg, rows C0-C7: the outside person's Codex CLI with the codex-envoy plugin's npm release, under row P2's device login, and that release's provenance. The public leg runs it after P10. |
 | `outside-agent-codex-model.ts` | The Codex leg's keyless stand-in model, which speaks the Responses API and plays one scripted turn per run. It binds a port of the kernel's choosing and answers `/_ready` with the leg's nonce. |
 | `outside-agent-codex-provenance.ts` | The Codex leg's reads of row C0: the registry's record and provenance attestation of the plugin's release, and the byte comparison of two builds' bundles. |
-| `outside-agent-lib.sh` | What the legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, the scratch issue's title, and `reap`, which stops and waits for every background child a leg started. |
+| `outside-agent-lib.sh` | What the legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, the scratch issue's title, `await_child`, which waits for a child's end and returns within a tenth of a second of it, and `reap`, which stops and waits for every background child a leg started. A leg's wait for something on its own machine (a child's end, a file, a socket, a screen, a line of its model's log) looks at it every tenth of a second, so it ends as that holds; its bound only says how long it may take. A read of a remote service (the edge's session list, a workflow run) keeps its own pace. |
 | `outside-agent-peer.sh` | The tailnet leg's peer of row P4 and its session outside the project of row P6. |
 | `outside-agent-sweep.sh` | The tailnet leg's half of the read sweep and its two controls. |
 | `outside-agent-pins.sh` | The tailnet leg's reads of the deployed pins and of the build Dispatch serves, for rows pins and pins-end. |
 | `outside-agent-probe.ts` | The calls that carry a broker credential (DPoP), which a shell cannot sign, the scripted peer, and the public session's keyless model. Both legs run it with `bun`. |
 | `outside-path-reach.sh` | The TCP reach check that row P9 runs. |
-| `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; and that the tailnet leg's own judgments hold against stand-ins. |
+| `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; that `await_child` ends as its child ends and at its bound; and that the tailnet leg's own judgments hold against stand-ins. |
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
 | `../__tests__/outside-agent-codex.test.ts` | The test that the Codex leg's rows hold against stand-ins, each beside the change that makes it fail, and that its stand-in model answers the requests Codex sends as the rows need. |
 | `../__tests__/outside-agent-fixture.ts` | What the test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
@@ -105,8 +105,12 @@ the result as one comment), `OUTSIDE_LEGION_CHECKOUT` and `OUTSIDE_ALLOW_HTTP`.
 
 `OUTSIDE_FULL_COOKIE_FILE` holds a full member's browser session at Dispatch's private origin,
 `<name>=<value>` as the Cookie header carries it. The leg gives it to curl in a header file of mode
-0600 alone. No broker token approves, and Dispatch's GitHub proxy reads as the browser's person and
-never as a token, so the positive controls of T3, P7 and the sweep read with it.
+0600 alone, with the origin's own `Origin` on every call, which Dispatch asks of a cookie's write.
+No broker token approves, so the positive controls of T3 and P7 read with it. The sweep's GitHub
+proxy reads use it where it is given, and else the full member's token
+(`OUTSIDE_SWEEP_FULL_TOKEN_FILE`): a build of Dispatch whose proxy reads a browser's person alone
+refuses that token (401 `NO_IDENTITY`, 403 `OAUTH_SCOPE_REQUIRED`), and the sweep row then reads
+UNKNOWN naming the refusal.
 
 The tailnet leg does these steps, in this order:
 
@@ -141,10 +145,14 @@ The tailnet leg does these steps, in this order:
 5. It runs the read sweep's full-member half: `restricted-sweep.sh` (beside this file, added by
    #4608; until #4608 merges the file is absent, the sweep row reads UNKNOWN, and so the gate cannot
    pass) in its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
-   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
-   `SWEEP_MEMBER`, and the full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the
-   GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
-   UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
+   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, a personal token of the person scope given to the sweep as
+   `SWEEP_FULL_TOKEN`, with which it makes its reads, its writer's comment and direct message and
+   the agent view, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as `SWEEP_MEMBER`, and the
+   full member's cookie as `SWEEP_FULL_COOKIE`, with which it reads the GitHub proxy where it is
+   given, and with the token where it is not; a build of Dispatch whose proxy reads a browser's
+   person alone refuses the token, and its fills then hold no `can_fail` line, its proxy control
+   names that refusal and its row reads UNKNOWN), and starts its writer. Every 15 s until the public leg
+   ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
    the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
    delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
@@ -168,10 +176,14 @@ The tailnet leg does these steps, in this order:
    this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
    leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
-   member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
-   scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
-   session its driver registered at the edge as the test person; it needs no input from this leg.
-   Without it the runner reads UNKNOWN, and so does the sweep row. A runner's
+   member's feed takes one of two forms, and the workflow gives exactly one: with
+   `SWEEP_MEMBER_SESSION`, the member's direct message to their own session in the scratch project,
+   which the workflow sets to the session its driver registered at the edge as the test person (the
+   agents leg); with `SWEEP_MEMBER_ISSUE`, the member's own comment and message on the scratch
+   issue, which the workflow sets from its `sweep_member_issue` input (the browser leg, where the
+   person holds no session). The member's feed must be sent each write, and the message must read
+   200 by `GET /api/v1/messages/{id}`. It needs no input from this leg. Without either, or with
+   both, the runner reads UNKNOWN, and so does the sweep row. A runner's
    UNKNOWN, such as a GET route the deployment's own index lists and `routes.txt` lacks, keeps the
    sweep row UNKNOWN. Then the sweep's proxy control. The fills must hold a `can_fail` line, the
    full member's answer that can fail, for each GitHub proxy read the runner makes:
@@ -252,11 +264,11 @@ After P10 and the revocations the leg opens the T5 window. It tells the peer
 `outside-e2e t5-open <nonce> at <ms>`, starts `OUTSIDE_T5_COMMAND`, trades P2's device login afresh
 every 10 s, and keeps a relay socket open with the newest token, opening another when one closes,
 as the agent would. Once a trade is refused, it watches the socket open then until it closes or
-325 s pass, and goes on trading every 10 s meanwhile. It prints rows `T5-agent` (with
-`last_answered_at=`, the time of the last trade answered, `refused_at=`, `socket_opened_at=`,
-`socket_closed_at=` in Unix seconds, the close `code=`, the count of `refusals=` and of
-`unread_after=`, the later trades with no readable answer), `T5-cookie` and `T5-passkey`; the
-tailnet leg judges T5 from them.
+325 s pass, and goes on trading every 10 s meanwhile and once more as it closes. It prints rows
+`T5-agent` (with `last_answered_at=`, the time of the last trade answered, `refused_at=`,
+`socket_opened_at=`, `socket_closed_at=` in Unix seconds, the close `code=`, the count of
+`refusals=` and of `unread_after=`, the later trades with no readable answer), `T5-cookie` and
+`T5-passkey`; the tailnet leg judges T5 from them.
 
 Before the window, `OUTSIDE_REVOKE_COMMAND` revokes every device login the run approved but P2's,
 the scratch helper's included, while the person's cookie still reads their own list. The workflow
@@ -331,6 +343,8 @@ Codex runs against `outside-agent-codex-model.ts`, a keyless stand-in model on 1
 speaks the Responses API and plays a scripted turn, so no model credential goes on the runner. It
 binds a port of the kernel's choosing and prints it, and the leg points Codex at it only once it
 answers `/_ready` with the run's nonce: a line that names another run's stand-in is never used.
+A server at the port the model's whole line names that answers another word ends the wait at once,
+every C row UNKNOWN; with no answer, the leg waits at most 30 s.
 Codex 0.171.0 with `gpt-6.2-sol` runs no tool at all; with `-m gpt-5.5` it lists the plugin's tools
 behind `tool_search`, and the stand-in finds them there. `--no-daemon` runs the session in its own
 process, outside Codex's shared app server, where the plugin registers no session. In the main run
@@ -344,7 +358,7 @@ name, and the plugin's version, its integrity at the registry and the root Codex
 | Row | It passes when |
 | --- | --- |
 | C0 | The release's provenance holds, and Codex installed the attested tarball. At npm's registry (`https://registry.npmjs.org`; the leg names no other to any npm call), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml`, the ref `refs/heads/main` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names. The attestation's signing certificate names the same repository, workflow, ref and commit in its Fulcio extensions as its payload does: `npm audit signatures` verifies that certificate's chain and the signature, and the leg holds the payload to the certificate. The tarball the registry serves is the bytes that integrity names, and every file of the tree Codex installed is that tarball's, with none more or fewer, a link holding the same target and no entry another type; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), another workflow, ref, commit or tarball, a certificate whose extensions differ from the payload or lack one of them, an installed tree that differs from the tarball (the row names each differing file), or a commit without the device login reads FAIL; a certificate that cannot be read reads UNKNOWN. |
-| C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. |
+| C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. The hook runs as the session starts, before the turn's first request, so the leg waits for the record until the turn's next request (`whoami` or `end` in the model's log), at most that window: no record by then reads UNKNOWN, naming it. |
 | C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` is refused: the command itself exits 1 or more. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the control's call answers (exit 0) or ends with no exit of the command (a timeout, a cancel or a kill, which the model's log reads as -1), C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; P3 reads them on the same login's token. |
 | C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue with its author as Dispatch records a broker-issued token's write: kind `session`, its id the Codex session, proven by the credential, the test person as owner and the scratch project as project. Each must equal what the leg expects; an absent field never matches. The outside person is a restricted member, whose machine-login trade is named with the one project, so the project is on the author; against a broker that mints a restricted member's token as acting for the person, with no project, C3 reads FAIL by design. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL; with no session record from Codex there is no session to hold the author to, and C3 reads UNKNOWN. |
 | C4 | The probe sends the session `outside-e2e codex-in <nonce>` through the edge, and a model request holds it within 20 s: the plugin's PostToolUse hook puts it there. The control: before that the probe sends `<peer>-foreign`, the session outside the project of row P6, another message, which the edge answers 404 and which no request ever holds. That message reaching the session reads FAIL, and so does the session's own message never reaching it; a control send answered otherwise than 404 reads UNKNOWN. The tailnet leg holds C4's PASS as it holds P6's: where that session outside the project was not set up (its `foreign_problem`), C4 reads UNKNOWN. |
@@ -364,7 +378,7 @@ name, and the plugin's version, its integrity at the registry and the root Codex
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login: its `revoke-<credential id>` row, the only row read for it, passes. `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`, a reading beside the row and no proof of the revoke alone, since an expired or skewed proof is refused so too. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
 | T5 | The owner's removal, made during the public run's T5 window between the two clocks the leg read around it; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows, each part stopped at or after the first clock: the cookie got 401 within 30 s of it, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it. A part that stopped more than its bound after the second clock reads FAIL, and so does a trade answered more than 325 s after the second clock (`last_answered_at`), refused trade or not, once the list confirms the removal; a part between the two bounds reads UNKNOWN, as does one that stopped before the first clock. The socket part counts only for a socket opened before the first clock. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | public | The public leg's own `verdict` row and `revocations` row pass, and it ended well: exit 0 for a local command, or the run's conclusion `success`. A run concludes `failure` for an exit 1 and an exit 2 alike, so its verdict row says which. A public leg that failed, or left no verdict, never lets the gate pass. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's writes was delivered to the full member's own feed, and began after the sweep's `live window` opened and ended before it closed, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's writes was delivered to the full member's own feed, and began after the sweep's `live window` opened and ended before it closed, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member answered 200 by the proxy, with their browser session where `OUTSIDE_FULL_COOKIE_FILE` is given and with their token where it is not), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either it reads UNKNOWN, as it does, naming the refusal, where a build refuses the token; a FAIL of the sweep stands. |
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 
@@ -387,6 +401,93 @@ session (its listing and the send to it) are no evidence, since it is then in th
 P6 FAIL of those parts alone reads UNKNOWN. A P6 FAIL whose relay `sub` was granted, or refused with
 another code, stands whatever the foreign session did.
 
+## The browser gate
+
+`OUTSIDE_GATE=browser` runs the browser leg alone: what a person from outside gets in their
+browser, proved while nothing of the agents' path serves (no edge listener, no broker route at the
+edge, no broker project check). It is the same command, `outside-agent-tailnet.sh <project>`;
+`OUTSIDE_GATE=all`, the default, is both legs as above, and any other value reads every row UNKNOWN
+and exits 2.
+
+The project's owner acts through four commands. Each is a command line, split on blanks, that holds
+its own owner credential, which the leg never sees:
+
+| Variable | Its last words | It must |
+| --- | --- | --- |
+| `OUTSIDE_OWNER_ADD_COMMAND` | the address, the project | put the address on the project's access list, and exit 0. |
+| `OUTSIDE_OWNER_LIST_COMMAND` | the project | print the addresses on the project's access list, one a line, and exit 0. |
+| `OUTSIDE_OWNER_INVITE_COMMAND` | the address, the project | print the address's invitation link alone and exit 0; or print Dispatch's refusal, `<status> <code>`, on its first line and exit 1; or exit 2 when it could not tell. |
+| `OUTSIDE_OWNER_REMOVE_COMMAND` | the address, the project | take the address off the project's access list, and exit 0. |
+
+A command left unset is made by the leg itself with the owner's own browser session,
+`OUTSIDE_FULL_COOKIE_FILE` (the project's owner holds the person and approve scopes no agent token
+holds today), at `OUTSIDE_TAILNET_DISPATCH_URL`: `PUT` and `DELETE
+/api/v1/projects/<key>/access/people/<address>`, `GET /api/v1/projects/<key>/access` and `POST
+.../people/<address>/invitations`, each read as the command's contract says. Dispatch refuses a
+cookie's write whose `Origin` is not the origin called, 403 `invalid request origin`, which a row
+then names; a refusal with no code is quoted by its words. With neither the command nor the
+session, the rows that need the act read UNKNOWN, naming both.
+
+The leg quotes no word of what they print but a refusal's `<status> <code>`, since a link is a
+secret, and asks no terminal. In this gate it does these steps:
+
+1. It reads the pins of the broker and Dispatch alone, as row `pins` does above; the pins file's
+   `edge-listener` line is not read. No run starts unless the row passes.
+2. It finds or makes the scratch project's issue (row `issue`).
+3. It starts no scratch helper, no peer, no session outside the project and no full member's
+   helper, so it runs no T1-T4 and needs none of `OUTSIDE_TAILNET_BROKER_URL`,
+   `OUTSIDE_LISTENER_URL`, `OUTSIDE_INTERNAL_LISTENER_URL`, `OUTSIDE_FOREIGN_PROJECT` and
+   `OUTSIDE_CANARY`. It runs the sweep's full-member half, its writer and its proxy control, as
+   step 5 above says, the proxy reads with `OUTSIDE_FULL_COOKIE_FILE` where it is given and with the
+   full member's token where it is not; a build that refuses the token holds the sweep row at
+   UNKNOWN, naming the refusal.
+4. The owner puts the test person on the access list, the list command reads them on it (its
+   control), and the owner's invite makes their link. Then row `unlisted`: the owner's invite for
+   an address on no list, `OUTSIDE_UNLISTED_PERSON` (default
+   `outside-e2e-unlisted-<random>@example.com`).
+5. Seconds before it starts the workflow, it reads the full member's list of credential grants
+   (`GET /api/v1/credential-grants?approver=me`, with `OUTSIDE_SWEEP_FULL_TOKEN_FILE`) and picks the
+   probe grant: the first grant with no approver and no operator, whose approver and operator name
+   neither the full member (their token's whoami) nor the test person. No person may end such a
+   grant at the broker, whatever Dispatch relays, so the probe ends nothing.
+   `outside-agent-grants.sh`, run alone (`bash outside-agent-grants.sh`, with
+   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_TAILNET_DISPATCH_URL` and `OUTSIDE_PERSON`), is the
+   same read as a preflight before a live gate is asked for: it prints `grant <id>` (exit 0), `no
+   grant with no approver and no operator` (exit 1), or `UNKNOWN: <why>` (exit 2).
+6. It starts the workflow as step 6 above says, with `checks=browser`, `project`,
+   `routed_controls=dispatch-healthz`, the link as `invite_url`, the issue's key as
+   `sweep_member_issue` (the issue the person's own comment and issue message go on, the control of
+   the sweep's member feed on the runner), the probe grant as `grants_probe_id`, `sweep_project`,
+   `sweep_fills`, and each line of `OUTSIDE_WORKFLOW_INPUTS` but an `invite_url` one, which it leaves
+   out. With no link it starts no run. It refuses `OUTSIDE_PUBLIC_COMMAND`, since only the
+   workflow's step status opens its window.
+7. It reads the run every 10 s (`gh run view --json status,jobs`) until its step
+   `The delisting window` reads `in_progress`; then it reads the person on the access list with the
+   list command (the control) and runs the owner's remove command, its clock read before and after,
+   as T5's removal above does. A step read `completed` or `skipped` before it was read running (the
+   step ends at once when the driver kept no cookie), a run that ended first, or an hour with no such
+   read is T5's UNKNOWN, and no removal is made.
+8. It waits for the run's end, downloads its artifacts `outside-edge-refusals`,
+   `outside-path-reach`, `outside-edge`, `outside-edge-grants`, `restricted-sweep` and
+   `outside-edge-t5`, and reads the full member's list of credential grants again.
+
+It prints the rows pins, issue, unlisted, T5, refusals, reach, sign-in, projects, limits, grants,
+public, sweep, pins-end and the gate:
+
+| Row | It passes when |
+| --- | --- |
+| unlisted | The owner's invite for the unlisted address prints `409 PERSON_NOT_LISTED` and exits 1, and the same command made the test person's link, its positive control. A link made reads FAIL, and the row prints no link; any other refusal (a 403, a 404, another code) or exit reads UNKNOWN. |
+| T5 | As the tailnet leg's T5 above, from the rows `T5-cookie` (401 within 30 s of the first clock) and `T5-passkey` (refused within 325 s) of `outside-edge-t5.tsv` alone: on this path the person has no device login and no socket. The owner's list command names the person before the removal and not after the run. |
+| refusals | The run's `outside-edge-refusals.code`, the exit its Verdict step reads, is 0; 1 reads FAIL, and 2, none or another word UNKNOWN. Its `got` is the last line the check printed. |
+| reach | The same, of `outside-path-reach`. |
+| sign-in, projects | The driver's rows of those names in `outside-edge.tsv`, read through `worst_row`. |
+| limits | Every `limit-*` row of `outside-edge.tsv` passes, and there is at least one. One FAIL reads FAIL; the driver's `limits` row of no request counted, or no limit row, reads UNKNOWN. |
+| grants | The driver's rows `grants-list` (the test person's own list holds only their own sessions' grants) and `grants-revoke` (their revoke of the probe grant is refused by Dispatch itself, 403 `RESTRICTED_MEMBER`) in `outside-edge-grants.tsv` both pass, a probe grant was given, and the full member's list holds a grant every signed-in person is listed (one the model judge approved for `anyone`, or one a pod that acts for no person got without asking) both before and after the run, so one was live while the runner read. Either driver row's FAIL reads FAIL with or without that control; no `outside-edge-grants.tsv`, no probe grant, or no such grant in both reads reads UNKNOWN. It FAILs until Dispatch holds a restricted member to their own sessions' grants. |
+| public | The run's conclusion is `success`. A `failure` reads FAIL where a check's exit is 1, and UNKNOWN otherwise; its `got` names each check's exit. |
+
+Rows pins, issue, sweep and pins-end read as above. A removal ends the person's account, so each
+run's owner add puts them back on the list and its invite makes a new link.
+
 ## The controls, run first and recorded
 
 Run each control on `packages/envoy/scripts/dev-stack.sh`, which runs the real broker, Dispatch
@@ -408,7 +509,9 @@ for every row and exit 2. Its control runs a copy of each leg in which every `UN
 `PASS`, and the same check must fail on that copy. It runs every background shape the legs start a
 child in, and `reap` stops each, beside two shapes the legs no longer use, which `reap` cannot
 stop; and a process on the leg's list that is no child of the leg, as a reused pid would be, which
-`stop_child` and `reap` must leave running.
+`stop_child` and `reap` must leave running. `await_child` ends at its bound for a child that never
+ends (the control), and at the child's end, with its exit status, for one that ends far inside its
+bound.
 
 It runs the public leg against stand-ins of the plugin, the device login and the probe: P6, P7 and
 P10 pass on the edge's own refusals and fail on an accepted send or another refusal code, and T5's
@@ -435,6 +538,32 @@ run and local pin files (`pins-end`); and the workflow gets only the inputs its 
 stdin, `sweep_project` among them, while an undeclared input is refused 422 and makes T1 UNKNOWN
 at once.
 
+It runs the browser gate against stand-ins of the owner commands, `dispatch` and the workflow's run,
+whose step `The delisting window` the stand-in `gh` reports: every row passes and the gate exits 0,
+with a pins file whose `edge-listener` line names a file the deployment repository lacks (the same
+stand-ins under `OUTSIDE_GATE=all` read that pin, its control), with none of the agents' path's
+inputs, no `agent-secrets` call and no full member's helper, and the workflow gets `checks=browser`,
+`routed_controls=dispatch-healthz`, the owner's one link (not the link `OUTSIDE_WORKFLOW_INPUTS`
+held), `sweep_member_issue` and the probe grant as `grants_probe_id`, on stdin, while no output holds
+the link; the full member's list of credential grants is read before the run and after it. Each
+plant holds its own row: an owner's invite refused `403 BROWSER_SESSION_REQUIRED` starts no run; an
+unlisted address already listed gets a link, which fails row unlisted; a remove that takes nobody
+off holds T5 at UNKNOWN; `OUTSIDE_PUBLIC_COMMAND` starts no run; a skipped window step makes no
+removal; a cookie's 401 a minute after the removal fails T5; a check's exit 1 fails its row and the
+public row; a check with no `.code` reads UNKNOWN; a limit row's FAIL, or no limit row, holds
+limits; with no `OUTSIDE_FULL_COOKIE_FILE` the sweep's proxy reads use the full member's token and
+every row passes, while a build that refuses the token holds the sweep row and the gate at UNKNOWN,
+naming the refusal, its fills going to the workflow with no `can_fail` line (the tailnet leg's own
+row holds the same in both legs' gate); either driver row's FAIL fails grants, with or without its
+control, and an empty control, no grant with no approver and no operator (no `grants_probe_id` is
+sent), the driver's own guard and no `outside-edge-grants.tsv` each read UNKNOWN; with no owner
+command every owner act is made with the owner's browser session and every row passes, while the
+same acts sent another `Origin` are refused `403 invalid request origin`, which rows unlisted and
+public name, and with neither a command nor the session the owner rows read UNKNOWN naming both. Run
+alone, `outside-agent-grants.sh` prints the probe grant, `no grant with no approver and no operator`
+(exit 1), or UNKNOWN without the token (exit 2). With no input the browser gate reads each of its
+rows UNKNOWN, and `OUTSIDE_GATE` of another word every row.
+
 ## What the two legs do not prove
 
 - The broker's policy denial behind an enrollment is reached only by its unit test: a refused
@@ -449,3 +578,14 @@ at once.
   their pins': the check cannot see either running another build than the deployment repository's
   configuration names. Dispatch's serving build is read, at the start and at the end, and held to
   its pin.
+- The browser gate proves nothing of the agents' path: the device login, the relay socket, rows
+  P1-P10 and T1-T4, and T5's trade and socket parts are the agents' gate's, `OUTSIDE_GATE=all`. Its
+  row unlisted reads the owner's invite route; that an address taken off the list cannot sign in
+  again is its T5's passkey part.
+- Row grants reads which grants every signed-in person is listed from the fields the full member's
+  list shows. A person's pod that the broker no longer maps to them shows the same fields (no
+  approver, no operator) on that person's list without being on everyone's, so where the full
+  member is such a pod's former person, that grant counts in the control though the test person
+  would not be listed it. Its revoke probe ends nothing only while the probe grant names no approver
+  and no operator; the box reads that seconds before the run, and the driver again from its own
+  list just before the revoke.

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -74,13 +75,14 @@ func committedGiveUp(ctx context.Context, pool *pgxpool.Pool, consumer string, s
 	return given, err
 }
 
-// failingRecordPool is a Pool that stands for a PostgreSQL refusing the intake's record: while
-// refuse is on, every statement on intake_failures fails before it reaches the server, and while
-// refuseCommit is on, the commit of a transaction that ran one fails and the transaction is rolled
-// back; refuseNextCommit refuses one such commit and is then off again. Every other statement and
-// commit passes through. refused and commitsRefused count what it refused.
+// failingRecordPool is a pool (store.TxPool) that stands for a PostgreSQL refusing the intake's
+// record: while refuse is on, every statement on intake_failures fails before it reaches the
+// server, and while refuseCommit is on, the commit of a transaction that ran one fails and the
+// transaction is rolled back; refuseNextCommit refuses one such commit and is then off again.
+// Every other statement and commit passes through. refused and commitsRefused count what it
+// refused.
 type failingRecordPool struct {
-	Pool
+	store.TxPool
 	refuse, refuseCommit, refuseNextCommit atomic.Bool
 	refused, commitsRefused                atomic.Int32
 }
@@ -88,7 +90,7 @@ type failingRecordPool struct {
 var errRecordRefused = errors.New("the test refuses the intake's record")
 
 func (p *failingRecordPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	tx, err := p.Pool.BeginTx(ctx, options)
+	tx, err := p.TxPool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Each give-up counts itself in the project's intake-gave-up notice (record.Postgres.RecordUndecodable
@@ -43,7 +44,7 @@ func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
 		{Project: project, Consumer: "legion-go-LEGION-github", Subject: "notifications.github.acme.widgets.pr.7",
 			StreamSeq: 42, StoredAt: gaveUpAt.Add(-time.Minute), Payload: []byte(`{`)},
 	} {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			failure, recorded, err := records.RecordUndecodable(ctx, tx, message, 1, "the payload is not JSON", gaveUpAt.Add(time.Duration(i)*time.Second))
 			if err == nil && !recorded {
 				err = errors.New("it was recorded already")

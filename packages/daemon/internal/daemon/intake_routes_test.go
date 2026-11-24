@@ -44,7 +44,7 @@ func TestTheBootedDaemonsIntakeRoutesReachItsGiveUps(t *testing.T) {
 			Subject: "notifications.dispatch.issue." + key + ".issue.updated", StreamSeq: seq, StoredAt: time.Now().Add(-time.Hour).UTC(),
 			Payload: []byte(`{`)}
 		var failure record.IntakeFailure
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			failure, _, err = record.NewStore().RecordUndecodable(ctx, tx, message, 1, "decode Envoy envelope: unexpected end of JSON input", time.Now().UTC())
 			return err

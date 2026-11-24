@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // fakeDelivery is one delivery of a stored message as a durable consumer hands it to
@@ -121,7 +122,7 @@ func consumeDelivery(ctx context.Context, d *fakeDelivery, run consumerRun, hand
 // productionRun is the Dispatch durable of project CAPTURE as the daemon runs it: the spec
 // normalizedSpec gives the NakDelay the daemon's connect sets (1 s) and nothing else of the
 // bound, on a stream that keeps a message for notificationStreamMaxAge, with now as its clock.
-func productionRun(t *testing.T, pool Pool, logs *lockedBuffer, now func() time.Time) consumerRun {
+func productionRun(t *testing.T, pool store.TxPool, logs *lockedBuffer, now func() time.Time) consumerRun {
 	t.Helper()
 	spec, err := normalizedSpec(ConsumerSpec{Project: "CAPTURE", Repositories: capturedRepositories, NakDelay: time.Second,
 		Logger: slog.New(slog.NewTextHandler(logs, nil)), Now: now})
@@ -346,7 +347,7 @@ func envelopeWithID(t *testing.T, data []byte, id string) []byte {
 // boundRun is productionRun with the bound at its least: the first failed delivery reaches the
 // count, and no hour is waited. A test sets the zero hour after normalizedSpec, whose zero is the
 // production hour.
-func boundRun(t *testing.T, pool Pool, logs *lockedBuffer, now func() time.Time) consumerRun {
+func boundRun(t *testing.T, pool store.TxPool, logs *lockedBuffer, now func() time.Time) consumerRun {
 	t.Helper()
 	run := productionRun(t, pool, logs, now)
 	run.spec.GiveUpDeliveries, run.spec.GiveUpAfter = 1, 0
@@ -542,7 +543,7 @@ func TestWhileTheRecordCannotBeWrittenTheMessageIsNakedAndRecordedLater(t *testi
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			raw := migratedPool(t)
-			pool := &failingRecordPool{Pool: raw}
+			pool := &failingRecordPool{TxPool: raw}
 			pool.refuse.Store(true)
 			run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
 			calls := 0
@@ -583,7 +584,7 @@ func TestAGiveUpWhoseCommitFailsStillRecordsTheDeliverysFailure(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	consumer := dispatchConsumerName("CAPTURE")
 	raw := migratedPool(t)
-	pool := &failingRecordPool{Pool: raw}
+	pool := &failingRecordPool{TxPool: raw}
 	run := boundRun(t, pool, &lockedBuffer{}, func() time.Time { return now })
 	calls := 0
 	first := newDelivery(t, consumer, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t), 800, now.Add(-time.Minute))

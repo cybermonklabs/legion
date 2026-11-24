@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  EnvelopeSchema,
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -54,7 +55,11 @@ import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatc
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import {
+  NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  natsConnectionOptions,
+} from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -66,6 +71,15 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
+  sessionGrantConfig,
+  useNatsServerDirectory,
+} from "@legion/envoy-client/test/nats-server";
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
@@ -21668,6 +21682,55 @@ console.log(JSON.stringify(args));
     });
   }, 30_000);
 
+  // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
+  // of connections lists: the image's build-commit stamp, else a packed build's release version,
+  // else none.
+  test("the connection name the server sees ends with the plugin's build", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const names: string[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          names.push(options.name ?? "");
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
+      try {
+        // An instance of its own (the query), as each row of this file loads one: the build source
+        // it is given is that instance's module state.
+        const entry = await import("./envoy.ts?connection-build");
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const rows = [
+          { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
+          { stamp: undefined, packed: true, want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}` },
+          { stamp: undefined, packed: false, want: "omp-ses_build" },
+        ];
+        for (const [index, row] of rows.entries()) {
+          const stamp = join(stampDirectory, `build-commit-${index}`);
+          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+          entry.setBuildSourceForTests({ stamp, packed: row.packed });
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const fixture = createPi();
+          entry.default(fixture.pi);
+          names.length = 0;
+          await fixture.handlers.get("session_start")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
+          expect(names[0]).toBe(row.want);
+        }
+      } finally {
+        rmSync(stampDirectory, { recursive: true, force: true });
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
   for (const { row, error, shown, withheld } of [
     {
       row: "names the NATS failure in the refused registration and in every part of the notice",
@@ -24780,6 +24843,76 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   }, 120_000);
 });
 
+// The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
+// session's own connection authenticated as a session user holding the grant the NATS auth
+// service gives a session (`sessionGrantConfig`, `natsgrant.Session` itself): publish its replies
+// under `_INBOX.*.<session id>.>` alone. The scenario is the one claude-envoy's row runs too
+// (`runReplayGrantScenario`): a replay asked on a reply subject naming the session is answered;
+// one asked on nats.go's own request inbox, the subject Dispatch used before, is refused by the
+// server and reaches nobody; the session then answers on its own prefix again. This row keeps the
+// extension's own boot, connection and shutdown. Docker-backed: the pi-envoy job runs this suite
+// with LEGION_E2E=1, its NATS service having pulled the image.
+const replyGrantServerDirectory = useNatsServerDirectory();
+
+describe.skipIf(process.env.LEGION_E2E !== "1")(
+  "the replay answer under a session's own NATS grant",
+  () => {
+    const SESSION = "ses_reply_grant";
+    const sessionUser = nkeys.createUser();
+    const requesterUser = nkeys.createUser();
+    const server = natsServerWithConfig(
+      replyGrantServerDirectory,
+      sessionGrantConfig({
+        sessionID: SESSION,
+        sessionKey: sessionUser.getPublicKey(),
+        requesterKey: requesterUser.getPublicKey(),
+      })
+    );
+
+    beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
+    afterAll(() => server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)), NATS_STOP_HOOK_MS);
+
+    test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
+      const decoder = new TextDecoder();
+      const originalSeed = process.env.NATS_NKEY_SEED;
+      process.env.ENVOY_NATS_URL = server.url;
+      process.env.NATS_NKEY_SEED = decoder.decode(sessionUser.getSeed());
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+        responseWithRegistration(input, init, [])) as typeof fetch;
+      natsState.realConnect = true;
+      const requester = await realConnect({
+        ...natsConnectionOptions({
+          servers: [server.url],
+          name: "pi-envoy-reply-grant-requester",
+          credential: {
+            kind: "seed",
+            seed: {
+              value: decoder.decode(requesterUser.getSeed()),
+              source: "the row's requester user",
+            },
+          },
+        }),
+        reconnect: false,
+      });
+      // A module instance of its own, as every row here takes one: the extension keeps its
+      // session's state, so a static import would share it with every other row of the file.
+      const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      const context = sessionContext(SESSION);
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        await runReplayGrantScenario({ requester, server, sessionID: SESSION });
+      } finally {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await requester.close();
+        if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
+        else process.env.NATS_NKEY_SEED = originalSeed;
+      }
+    }, 60_000);
+  }
+);
+
 // What the envoy_send and envoy_publish tools tell the model about where a message went
 // (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
 // other sessions it reaches, or says it reaches none.
@@ -24893,6 +25026,52 @@ describe("the send and publish answers", () => {
           event_id: "evt_text",
           topic: "notifications.team.test",
           ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
+
+  // The listener answers a repeat of another sender's key with that message's ids and times
+  // alone, its text fields empty: both tools report it as not delivered, naming that message's
+  // event id. The control is the envelope schema every answer was read by before, which throws
+  // on it.
+  for (const tool of ["envoy_send", "envoy_publish"] as const) {
+    test(`${tool} reports a key another sender's message holds as not delivered`, async () => {
+      const taken = {
+        event_id: "evt_alice",
+        source: "",
+        source_event_id: "",
+        topic: "notifications.team.test",
+        dedupe_key: "publish.key",
+        issued_at: 1,
+        payload_summary: "",
+        trace_id: "",
+        recipient: "ses_target",
+        duplicate: true,
+      };
+      expect(() => EnvelopeSchema.parse(taken)).toThrow();
+      const session = await bootTool(`answers-key-taken-${tool}`, taken);
+
+      try {
+        const result = await session.fixture.tools
+          .find((candidate) => candidate.name === tool)
+          ?.execute(
+            "",
+            tool === "envoy_send"
+              ? { session_id: "ses_target", message: "bob's words" }
+              : { topic: "notifications.team.test", message: "bob's words" }
+          );
+
+        expect(result?.content[0]?.text).toBe(
+          `not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; ${tool === "envoy_send" ? "send it again without an idempotency_key; Envoy gives it a new one" : "publish it again; Envoy gives every publish a new idempotency_key"}`
+        );
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_alice",
+          topic: "notifications.team.test",
+          delivered: false,
+          key_taken: true,
         });
       } finally {
         await session.stop();

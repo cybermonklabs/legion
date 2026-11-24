@@ -338,7 +338,7 @@ func TestEachGiveUpIsCountedInExactlyOneNotice(t *testing.T) {
 
 	// Two give-ups at once: the first's transaction holds the lock while the second's waits on it.
 	later := now.Add(2 * giveUpNoticeDelay)
-	first, err := st.BeginTx(ctx, pgx.TxOptions{})
+	first, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = first.Rollback(ctx) }()
 	failed, err := records.NoteFailure(ctx, first, failingMessage("LEGION", 200), 21, "the handler failed", later)
@@ -354,7 +354,7 @@ func TestEachGiveUpIsCountedInExactlyOneNotice(t *testing.T) {
 	second := make(chan answer, 1)
 	go func() {
 		var got answer
-		got.err = st.Tx(ctx, func(tx pgx.Tx) error {
+		got.err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			failed, err := records.NoteFailure(ctx, tx, failingMessage("LEGION", 201), 21, "the handler failed", later)
 			if err != nil {
 				return err

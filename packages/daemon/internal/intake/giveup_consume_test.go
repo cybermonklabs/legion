@@ -105,7 +105,7 @@ func TestAMessageWhoseHandlingNeverEndsIsGivenUpWithoutRunningItAgain(t *testing
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			raw := migratedPool(t)
-			pool := &failingRecordPool{Pool: raw}
+			pool := &failingRecordPool{TxPool: raw}
 			js, stream := testJetStream(t)
 			spec := boundSpec(&lockedBuffer{}, 3, time.Nanosecond)
 			var calls atomic.Int32

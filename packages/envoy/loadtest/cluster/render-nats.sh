@@ -7,11 +7,18 @@
 # It renders chart nats/nats 2.15.1 from nats-2.15.1.tgz, the chart's archive vendored beside it,
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
-# both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
-# v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
-# manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
-# write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
+# both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` at
+# the helm version HELM names below and nats-values.yaml, with each image pinned to the digest a
+# registry manifest read gives its tag, and refuses a render that holds a kind the load-test Role
+# cannot write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
 # __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+#
+# It needs sha256sum, and one of two helms. Where the helm on PATH answers that version to
+# `helm version --template '{{.Version}}'`, it runs that helm and needs no go: CI's
+# .github/actions/install-helm installs it, from the helm row of .github/ci-tools.yaml, which
+# .github/scripts/check-ci-tools.sh holds to HELM. Otherwise it needs go, and runs
+# `go run "$HELM"`, which builds that helm from its module and fetches the module through go's
+# module proxy where the module cache does not hold it.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
 # from FILE (an earlier render) instead of the registry, and then needs no curl and no jq.
@@ -39,6 +46,9 @@ CHART_REPO=https://nats-io.github.io/k8s/helm/charts
 CHART_VERSION=2.15.1
 CHART_SHA256=b209c62784b1b24c714d5ff6503b4c7dd948ec187d4222beee16b579f1258cc1
 CHART=$here/nats-$CHART_VERSION.tgz
+# The helm module and version the render runs. The helm row of .github/ci-tools.yaml, which CI
+# installs, carries the same version, and .github/scripts/check-ci-tools.sh refuses the two apart,
+# so a raise moves this line and that row (its version, digest and URLs) in one commit.
 HELM=helm.sh/helm/v3/cmd/helm@v3.20.2
 # Each image: the chart value that names it, and the tag render-nats.sh pins (the chart's own
 # defaults, on mirror.gcr.io).
@@ -64,11 +74,20 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$pin_from" ] || [ -f "$pin_from" ] || die "--pin-from $pin_from is not a file"
 # curl and jq read each image's digest from its registry, which a --pin-from render does not read.
-tools=(go sha256sum)
+tools=(sha256sum)
 [ -n "$pin_from" ] || tools+=(curl jq)
 for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || die "render-nats.sh needs $tool on PATH"
 done
+# The helm that renders: the one on PATH where it answers the version HELM names, else that
+# version built from its module with go run, which is the one path that needs go.
+helm_version=${HELM##*@}
+if command -v helm >/dev/null && [ "$(helm version --template '{{.Version}}' 2>/dev/null)" = "$helm_version" ]; then
+  helm=(helm)
+else
+  command -v go >/dev/null || die "render-nats.sh needs helm $helm_version or go on PATH, and finds neither"
+  helm=(go run "$HELM")
+fi
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/render-nats.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
@@ -96,7 +115,7 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+(cd -- "$tmp" && "${helm[@]}" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 
 while read -r kind; do
@@ -109,7 +128,7 @@ fi
 {
   printf '# nats.yaml: rendered by render-nats.sh (do not edit): chart nats/nats %s from\n' "$CHART_VERSION"
   printf '# %s/\n# (archive sha256 %s),\n' "$CHART_REPO" "$CHART_SHA256"
-  printf '# helm template --skip-tests at helm v3.20.2 with nats-values.yaml, each image pinned to\n'
+  printf '# helm template --skip-tests at helm %s with nats-values.yaml, each image pinned to\n' "$helm_version"
   printf '# its digest:\n'
   printf '#   %s\n' "${pins[@]}"
   printf '# cluster.sh fills the namespace, storage class and run id placeholders.\n'

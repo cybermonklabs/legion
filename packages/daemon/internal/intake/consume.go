@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
@@ -254,7 +255,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // failureSweepEvery, which a test shortens.
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     Pool
+	pool     store.TxPool
 	js       jetstream.JetStream
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
@@ -295,7 +296,7 @@ type Consumers struct {
 // The version is decided on one the connection reports: a connection reconnecting or draining when
 // the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
 // bound the stream lookup after this has), and is never read as a server of no version.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool store.TxPool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -397,7 +398,7 @@ func (c *Consumers) Records() Records {
 // and the stream's first may have been handled by the consumer before it went missing, or may have
 // been missed. The daemon applied none of them, and nothing replays them. A consumer with no
 // position starts at the next message.
-func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, js, stream, pool, spec, remade, config)
@@ -417,7 +418,7 @@ func openConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.
 // again the messages after it, each with a delivery count of 1, so the open failures it had are
 // read into remade as it is made, for their success to delete (remadeFailures). One made at the
 // next message delivers none of them again, and the sweep gives up those it moved past.
-func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool Pool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, pool store.TxPool, spec ConsumerSpec, remade *remadeFailures, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	logger := spec.Logger
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
@@ -1101,7 +1102,7 @@ type messageLog func(level slog.Level, line string, attributes ...any)
 // nested under work, so one dependency that is slow to answer is cut while the handling as a
 // whole runs to HandlerLimit. dropped is the memory of the checks settlements whose drop was
 // logged (droppedSettlements): the consumer's for a delivery, the replay's own for a replay.
-func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
+func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under, and a replay answers such a message no fact.
 	recorded, err := recordedPullRequest(work, spec, pool, decoded.Fact)
@@ -1109,7 +1110,7 @@ func handleMessage(work context.Context, log messageLog, position *streamPositio
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		log(slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction",
+		log(slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a fact transaction",
 			"event_id", decoded.EventID)
 		// Each checks settlement of a pull request the daemon does not record is named once at
 		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
@@ -1213,14 +1214,14 @@ func consumerOf(metadata *jetstream.MsgMetadata) string {
 // name the fact carries and then, when that finds nothing, under the other name of the pair that
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
-// while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
-// recorded pull request, so one of any other pull request is acknowledged with no transaction
-// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
-// a repository the daemon hears reviews and checks. A pull request recorded after this read, by
-// a later opened, gets its checks and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
+// while the fact names the one it moved to. It is one read-only transaction per name within the
+// one AckWait, made before the review's GitHub reads (resolveReviewBody,
+// resolveReviewPermission): the workflow applies either fact only to a recorded pull request, so
+// one of any other pull request is acknowledged with no transaction under the fact lock
+// (ApplyFact) and no GitHub read, whatever the number of other pull requests a repository the
+// daemon hears reviews and checks. A pull request recorded after this read, by a later opened,
+// gets its checks and reviews from their next event.
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool store.TxPool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {
@@ -1234,7 +1235,9 @@ func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact
 	read, cancel := context.WithTimeout(ctx, spec.AckWait)
 	defer cancel()
 	return ghrepo.Under(spec.Renames, repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(read, pool, name, number)
+		return store.ReadOnly(read, pool, fmt.Sprintf("read whether %s#%d is recorded", name, number), func(ctx context.Context, tx pgx.Tx) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, number)
+		})
 	})
 }
 

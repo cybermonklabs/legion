@@ -38,6 +38,7 @@ import (
 // applying it with a permission nobody read. The review App's own login, and a review on a pull
 // request the daemon does not record, are answered without a GitHub call.
 func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
 	for _, tc := range []struct {
@@ -152,6 +153,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 // which either reads the permission or, for a removed App, is refused as not installed; a younger
 // one is kept and tried again once it is that old.
 func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		minted   time.Duration
@@ -224,6 +226,7 @@ func (t *forgettingTokens) Forget(role appauth.AppRole, owner string) {
 // stands, an account with no answer kept is answered with the wait left, with no call made against
 // a limited API; once the wait has passed, reads resume, so the writer the limit hid still decides.
 func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	var limitFirst bool
 	calls := 0
@@ -313,6 +316,7 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 // limit the same way, so the next uncached review inside the hold is answered without minting
 // again: minting on through the App's own limit risks the ban GitHub warns a repeated call does.
 func TestAReviewMintThatFailsTransientlyHoldsTheLimitWithoutMintingAgain(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	tokens := &transientOnceTokens{}
 	w := reviewPermissionRuntime(pool, "http://unused.invalid", quietLogger())
@@ -348,10 +352,11 @@ func TestAReviewMintThatFailsTransientlyHoldsTheLimitWithoutMintingAgain(t *test
 // releases, is read at once. The review App here is a real token-mode Manager whose token_command
 // answers as the broker does for each owner.
 func TestAPendingGrantForOneOwnerHoldsNoOtherOwnersPermissionRead(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "beta/gadgets", DefaultBranch: "main", GitHubRepo: "beta/gadgets", Project: "LEGION", Tree: "LEGION-209", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-209", Repo: "beta/gadgets", Number: 7, Branch: "legion/LEGION-209", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the second pull request: %v", err)
@@ -424,6 +429,7 @@ esac`, appauth.TokenCommandOwner, tc.pending, time.Now().Add(time.Hour).UTC().Fo
 // owner, and held for the permission window, rather than returned for a delivery that would mint
 // again on every redelivery. The review App's own review is restored from what was delivered.
 func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	var logged syncBuffer
 	w := reviewPermissionRuntime(pool, "http://unused.invalid", slog.New(slog.NewJSONHandler(&logged, nil)))
@@ -489,7 +495,7 @@ func reviewPermissionPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -517,6 +523,7 @@ func reviewPermissionRuntimeRenamed(pool *store.Pool, githubAPI string, log *slo
 // one GitHub serves. With no pair configured no name finds the row, the review is one the daemon
 // does not record, and GitHub is asked nothing at all.
 func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	for _, tc := range []struct {
 		name    string
@@ -561,7 +568,7 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "LEGION", Tree: "LEGION-209", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -584,6 +591,7 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 // the pair exists to prevent: a permission read refused decides nothing, and a body read refused
 // is naked and redelivered.
 func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderNow(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionTransferredPool(t)
 	// review is the review as it reaches the daemon: published under the name the repository
 	// moved away from, which is the name the pull request is recorded under too.

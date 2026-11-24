@@ -251,6 +251,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-new-issue.e2e.ts` | the bar creates an issue and the row re-reads what the server stored, its messages and its results |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |
+| `e2e/graph-store.e2e.ts` | both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered |
 | `e2e/handoffs.e2e.ts` | needs the live frame |
 | `e2e/heavy-bodies.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other |
 | `e2e/heavy-streamed-turn.e2e.ts` | a long turn streaming over the live relay |
@@ -356,6 +357,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/typed-block-content-rule.e2e.ts` | pastes into the live document editor |
 | `e2e/typed-blocks.e2e.ts` | asserts inside the live project-document editor |
 | `e2e/verification.e2e.ts` | opens the document's live room; where a result's commit stands is the server's comparison with the PR head |
+| `e2e/visual-guard.e2e.ts` | the writes the guard must stop go to the real API and the live document room, and a second page reads the server back |
 | `e2e/visual.e2e.ts` | it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects |
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |

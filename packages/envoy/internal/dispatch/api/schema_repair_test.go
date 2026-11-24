@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -151,9 +152,15 @@ func createAnchoredComment(t *testing.T, handler http.Handler, issueKey, artifac
 // tree after its review began would have them. A text embed holding a string is text, so a
 // document holding one reads.
 func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
-			handler, database, deps := newTestServer(t, testServerOptions{})
+			// settle: an hour, so no background settlement of the corrupted document runs between
+			// the routes below and fails its room: a failed room answers 503 DOC_SERVICE_UNAVAILABLE
+			// whatever failed it, which is a different path from the one this test asks each route
+			// about (job 137399725401, where the default 20 ms timer fired before the comment reply
+			// under load).
+			handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 			issue := createArtifactIssue(t, handler)
 			artifact := createBeforeDocument(t, handler, issue.Key, "routes.md")
 			open := createAnchoredComment(t, handler, issue.Key, artifact.ID, "open thread")
@@ -231,6 +238,7 @@ func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
 // outsideSchemaCorruptions lists, one whose text holds an embed among them, which the upload
 // replaces whole rather than diffing against.
 func TestOutsideSchemaArtifactIsRepairableThroughUpload(t *testing.T) {
+	t.Parallel()
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})

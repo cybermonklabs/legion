@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -119,7 +120,7 @@ func givenUp(t *testing.T, h *harness, message record.IntakeMessage) record.Inta
 	t.Helper()
 	ctx := context.Background()
 	var given record.IntakeFailure
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		failure, err := records.NoteFailure(ctx, tx, message, 21, "the handler failed", giveUpsNow.Add(-2*time.Hour))
 		if err != nil {
@@ -145,7 +146,7 @@ func givenUpUndecodable(t *testing.T, h *harness, seq uint64) record.IntakeFailu
 	message := record.IntakeMessage{Project: testDispatchProject, Consumer: giveUpConsumer,
 		Subject: "notifications.dispatch.issue.LEGION-999.issue.updated", StreamSeq: seq, StoredAt: giveUpsNow.Add(-3 * time.Hour), Payload: []byte(`{`)}
 	var given record.IntakeFailure
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		given, _, err = record.NewStore().RecordUndecodable(ctx, tx, message, 1, "an earlier decoder's error", giveUpsNow.Add(-time.Hour))
 		return err
@@ -162,7 +163,7 @@ func giveUpRecord(t *testing.T, h *harness, id int64) record.IntakeFailure {
 	t.Helper()
 	ctx := context.Background()
 	var records []record.IntakeFailure
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		records, err = record.NewStore().IntakeRecords(ctx, tx)
 		return err
@@ -457,8 +458,8 @@ func TestTheGiveUpRoutesDiscardThroughBothDoors(t *testing.T) {
 				t.Errorf("the discard of a replayed record is not refused saying %q", sentence)
 			}
 			// A replay running now holds one record: its claim is the one a replay takes first.
-			if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-				_, err := record.NewStore().ClaimIntakeReplay(context.Background(), tx, testDispatchProject, record.IntakeSelector{ID: held.ID},
+			if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+				_, err := record.NewStore().ClaimIntakeReplay(ctx, tx, testDispatchProject, record.IntakeSelector{ID: held.ID},
 					1, time.Hour, giveUpsNow)
 				return err
 			}); err != nil {

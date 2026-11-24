@@ -200,6 +200,14 @@ type sessionDelivery struct {
 	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
 	// once moves it under the first write alone.
 	afterStoredRowRead func()
+	// registrationCallBudget bounds the consumer calls a registration makes before it answers: its
+	// own consumer call (consumerFor), timed from before it waits for the session's lock, and the
+	// repair its confirm makes (confirmRegistered). Zero is sessionConsumerCallTimeout, which every
+	// listener main builds runs with. It is a seam for a test whose own work runs inside those
+	// bounds, as a session's consumer lock it holds while it writes, or afterRepairPlan running a
+	// whole registration on another listener in each pass: such a test gives the calls what is left
+	// of the test binary's deadline here, so the bound does not count the test's work.
+	registrationCallBudget time.Duration
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the one delete
@@ -341,9 +349,18 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 	if m == nil || m.consumers == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+}
+
+// registrationCallBudgetOr is the bound on a registration's consumer calls
+// (registrationCallBudget): sessionConsumerCallTimeout unless a test set one.
+func (m *sessionDelivery) registrationCallBudgetOr() time.Duration {
+	if m.registrationCallBudget == 0 {
+		return sessionConsumerCallTimeout
+	}
+	return m.registrationCallBudget
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -740,7 +757,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {

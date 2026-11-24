@@ -46,7 +46,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	giveUp := func(m record.IntakeMessage, at time.Time) int64 {
 		t.Helper()
 		var id int64
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			failure, err := records.NoteFailure(ctx, tx, m, 21, "the handler failed", base)
 			if err != nil {
 				return err
@@ -75,7 +75,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	undecodable.Subject += "\x00\xff"
 	undecodable.EventSource, undecodable.EventID = "", ""
 	var newest record.IntakeFailure
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		newest, _, err = records.RecordUndecodable(ctx, tx, undecodable, 1, longError, base.Add(time.Hour))
 		return err
@@ -85,7 +85,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	// One more of the same consumer, given up after them all and then discarded: its stream
 	// sequence, 300, is above every open one's.
 	closed := giveUp(message("LEGION", 300), base.Add(2*time.Hour))
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := records.DiscardIntakeGiveUps(ctx, tx, "LEGION", record.IntakeSelector{ID: closed}, "operator", "a test discard", time.Minute, base.Add(3*time.Hour))
 		return err
 	}); err != nil {
@@ -97,7 +97,7 @@ func TestTheStateCountsAndListsTheProjectsOpenGiveUps(t *testing.T) {
 	project := func(name string) api.State {
 		t.Helper()
 		var state api.State
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			state, err = Project(ctx, Inputs{Tx: tx, Store: records, Project: name, Now: base.Add(5 * time.Hour)})
 			return err

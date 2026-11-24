@@ -215,7 +215,7 @@ const legionIssueJourney: Walkthrough<Seeded> = {
           if (index === 0) cue("phases");
           await linger(page, 1.1);
         }
-        // The architect's acceptance of the reviewed head moves the issue to retro.
+        // The architect's acceptance, the last of the default steps, moves the issue to retro.
         await accept(seeded.next, DELIVERY_DATE);
         await expect(pill).toHaveValue("retro");
         await linger(page, 1.7);

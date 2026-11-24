@@ -71,6 +71,7 @@ func labelledBy(key, kind string) []json.RawMessage {
 // or a log that does not decode, fails the preparation naming the issue, so the event is delivered
 // again rather than applied with a setter nobody read.
 func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-755"
 	triageRoot := intake.DispatchIssue{Key: key, Seq: 2, Type: "issue.updated", Status: "triage", Title: key, Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets"}
 	pool := isolatedOutboxPool(t)
@@ -153,6 +154,7 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 // issue. The log served here is empty, so it leaves StatusChangedSeq at 0, and every prepared fact
 // is the decoded one apart from its view.
 func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-755"
 	person := dispatch.Actor{Kind: "user", ID: "sami"}
 	approval := intake.DispatchArtifact{Key: key, ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 9, Actor: person,
@@ -252,6 +254,7 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 // is never queued again), an unlabelled triage root, or a labelled triage child; and a read that
 // fails fails the reconcile naming the issue.
 func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
+	t.Parallel()
 	const unrecorded, recorded, unlabelled, child = "CAPTURE-755", "CAPTURE-589", "CAPTURE-526", "CAPTURE-756"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)

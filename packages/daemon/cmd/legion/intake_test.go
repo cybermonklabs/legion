@@ -277,7 +277,7 @@ func TestIntakeCommandsReplayAndDiscardRecordedGiveUps(t *testing.T) {
 		message := record.IntakeMessage{Project: project, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue." + key + ".issue.updated",
 			StreamSeq: seq, StoredAt: time.Now().Add(-3 * time.Hour).UTC(), Payload: []byte(envelope), EventSource: "dispatch", EventID: "dispatch-" + key}
 		var failure record.IntakeFailure
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			noted, err := records.NoteFailure(ctx, tx, message, 21, "the handler failed", time.Now().Add(-2*time.Hour))
 			if err != nil {
 				return err

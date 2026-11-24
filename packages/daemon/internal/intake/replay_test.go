@@ -36,7 +36,7 @@ func replaySpec(t *testing.T, logs *lockedBuffer) ConsumerSpec {
 }
 
 // giveUpsOf is the replay and the discard of CAPTURE's give-ups on pool, applying with handlers.
-func giveUpsOf(t *testing.T, pool Pool, spec ConsumerSpec, handlers ...Handler) *GiveUps {
+func giveUpsOf(t *testing.T, pool store.TxPool, spec ConsumerSpec, handlers ...Handler) *GiveUps {
 	t.Helper()
 	giveUps, err := NewGiveUps(Records{Pool: pool, Spec: spec, Repositories: func() []ghrepo.Repository { return spec.Repositories }}, handlers...)
 	if err != nil {

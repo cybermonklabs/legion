@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // reviewPermissionTTL is how long an account GitHub gave no write access stands so for its
@@ -92,18 +95,21 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 // reviewedRepository says whether the pull request review is on is recorded, and parses its
 // repository, the one lookup reviewerCanWrite and reviewBody both need before either reads
 // GitHub. Whether it is recorded is all either reads of the record, so it asks that alone
-// (record.PullRequestRecorded, PullRequestByNumber's lookup), one read of the pool per name with no
-// transaction, as intake's recordedPullRequest does. It asks under the name the review carries
-// and then, when that finds nothing, under the other name of the pair that names it (ghrepo.Under,
-// repositories.renames): a pull request already open when its repository was transferred is
-// recorded under the name it moved from, while the review names the one it moved to. A review on
-// a pull request neither name finds answers recorded=false, which both callers take as nothing
-// left to do: the workflow drops such a review unread, so no check of it is ever read.
+// (record.PullRequestRecorded, PullRequestByNumber's lookup), in one read-only transaction for
+// every name it asks under. It asks under the name the review carries and then, when that finds
+// nothing, under the other name of the pair that names it (ghrepo.Under, repositories.renames): a
+// pull request already open when its repository was transferred is recorded under the name it
+// moved from, while the review names the one it moved to. A review on a pull request neither name
+// finds answers recorded=false, which both callers take as nothing left to do: the workflow drops
+// such a review unread, so no check of it is ever read.
 func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.PullRequestReview) (repository ghrepo.Repository, recorded bool, err error) {
-	recorded, err = ghrepo.Under(w.repositories.renames, review.Repo, func(name string) (bool, error) {
-		return record.PullRequestRecorded(ctx, w.pool, name, review.Number)
-	})
-	if err != nil {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		recorded, err = ghrepo.Under(w.repositories.renames, review.Repo, func(name string) (bool, error) {
+			return record.PullRequestRecorded(ctx, tx, name, review.Number)
+		})
+		return err
+	}); err != nil {
 		return ghrepo.Repository{}, false, fmt.Errorf("read the record of pull request %s#%d: %w", review.Repo, review.Number, err)
 	}
 	if !recorded {

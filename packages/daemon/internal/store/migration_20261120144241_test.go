@@ -280,7 +280,7 @@ func intakeRecords(t *testing.T, store *Store, project string, at time.Time) (op
 	t.Helper()
 	ctx := t.Context()
 	records := record.NewStore()
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		failure, err := records.NoteFailure(ctx, tx, intakeMessage(project, 41), 1, "the handler failed", at)
 		if err != nil {
 			return err
@@ -386,7 +386,7 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue the tick: %v", err)
 	}
-	if err := store.Tx(ctx, func(tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, tick) }); err != nil {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().Enqueue(ctx, tx, tick) }); err != nil {
 		t.Fatalf("queue the tick: %v", err)
 	}
 	open, givenUp := intakeRecords(t, store, "LEGION", at)
@@ -446,7 +446,7 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		t.Fatalf("the roll forward's migrate applied %d, %v; want nothing, its version recorded", applied, err)
 	}
 	records := record.NewStore()
-	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 		state, err := records.OpenIntakeGiveUps(ctx, tx, "LEGION", 50)
 		if err != nil {
 			return err

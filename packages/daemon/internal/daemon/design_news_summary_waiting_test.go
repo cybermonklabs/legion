@@ -20,6 +20,7 @@ import (
 // does not say that a task tells it now. The control is the same tree once a turn has taken that
 // task: the reconcile queues the sub-architect's start, and the summary says a task tells it now.
 func TestTheRootArchitectsSummarySaysAMemberWaitsWhileItsSubArchitectHoldsAnUntakenTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		confirmed bool

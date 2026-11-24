@@ -430,7 +430,7 @@ func TestIntakeFailuresReplayClaimsGoStaleAtTheCallersBound(t *testing.T) {
 	other := giveUpAt(t, st, failingMessage("LEGION", 42), at)
 
 	claim := func(id int64, now time.Time) error {
-		return st.Tx(ctx, func(tx pgx.Tx) error {
+		return store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, err := records.ClaimIntakeReplay(ctx, tx, "LEGION", IntakeSelector{ID: id}, 100, bound, now)
 			return err
 		})

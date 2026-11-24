@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -201,7 +202,7 @@ func dropConsumer(t *testing.T, logs *lockedBuffer) (context.Context, ConsumerSp
 // consumeDropped runs consumeMessage on message under ctx as consumeConsumer does, for the
 // consumer and the context dropConsumer gives: its metadata parsed once and handed on with it,
 // over pool, with no handler.
-func consumeDropped(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, names *issueNames, dropped *droppedSettlements) bool {
+func consumeDropped(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, names *issueNames, dropped *droppedSettlements) bool {
 	metadata, _ := message.Metadata()
 	run := consumerRun{spec: spec, repositories: capturedRepositories, pool: pool, names: names, remade: &remadeFailures{}, dropped: dropped}
 	return consumeMessage(ctx, message, metadata, run, nil)
