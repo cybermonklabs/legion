@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -160,7 +162,13 @@ func (t Table) Read(ctx context.Context, mode pmdoc.DisplayMode, sums [][32]byte
 	defer rows.Close()
 	stored := make(map[[32]byte]json.RawMessage, len(sums))
 	for rows.Next() {
-		var sum, tree []byte
+		var sum []byte
+		// The tree is scanned as the driver's own bytes, which are good only until the next row,
+		// and copied by append: an append's array is as long as the allocation the runtime rounds
+		// it up to, where the scan into a []byte would make one exactly the tree's length. The
+		// display cache charges a tree its array's capacity (pmdoc.PutStoredDisplayTree), so this
+		// is the copy whose capacity is what the tree holds, at the same one allocation a row.
+		var tree pgtype.DriverBytes
 		if err := rows.Scan(&sum, &tree); err != nil {
 			return nil, fmt.Errorf("read a stored display tree: %w", err)
 		}
@@ -169,7 +177,7 @@ func (t Table) Read(ctx context.Context, mode pmdoc.DisplayMode, sums [][32]byte
 		if len(sum) != sha256.Size {
 			continue
 		}
-		stored[[32]byte(sum)] = tree
+		stored[[32]byte(sum)] = append(json.RawMessage(nil), tree...)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read %d display trees: %w", len(sums), err)

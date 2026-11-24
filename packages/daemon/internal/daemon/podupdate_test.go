@@ -592,7 +592,7 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 	r.workers[role] = conn
 	// A claim the boot restored with no process of its own is launch_uncertain until its release
 	// settles it, which is what the daemon's own unfinished-launch path does before it launches
-	// (launchUnfinishedClaim).
+	// (releaseUnfinishedClaim, launchUnfinished).
 	if r.claimOf(role).State == supervise.StateLaunchUncertain {
 		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
 			r.t.Fatalf("release the %s's unfinished launch: %v", role, err)
@@ -883,10 +883,7 @@ func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing
 	rig.signal(claim.RoleArchitect, "e4f5a6b")
 	rig.tick()
 
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once the degraded architect answered, want once", len(calls))
-	}
+	calls := rig.awaitReplacement(1, "once the degraded architect answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of the kept pod %s", calls[0].Pod, podUpdatePod)
 	}

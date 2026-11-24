@@ -15,7 +15,8 @@ When what you measure or read makes the plan build something differently from th
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise read
+When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` holds edits made before
+this turn, your own resumed ones or another role's, so read
 `jj -R "$LEGION_WORKSPACE" diff -r @`: if you wrote every change in it, run
 `jj -R "$LEGION_WORKSPACE" new`, then `jj -R "$LEGION_WORKSPACE" squash --from @- --into @`;
 if not, or if you are not sure, run `jj -R "$LEGION_WORKSPACE" new @-`, which sets that change
@@ -38,7 +39,7 @@ A missing check never blocks the plan. When a check's call fails (the task retur
 
 ## An open decision
 
-While a decision you sent to whoever owns the plan is outstanding, end the turn with a line that begins WAITING, naming the decision, who holds it and when you sent it. Do not finish the phase with the decision still open: a plan that ships an open decision hands the choice to whoever implements it, unseen. This is about a decision its owner must make; a check's other findings never block the plan, and its rejection of the goal or of a requirement does, as above. An answer that changes what the plan builds or how it is proven gets a plan review of the changed plan, and `rounds` counts it, because a plan an answer changed and no reviewer read is the gap this rule closes. That review runs the loop above.
+While a decision you sent to whoever owns the plan is outstanding, end the turn with a line that begins WAITING, naming the decision, who holds it and when you sent it. Do not finish the phase with the decision still open: a plan that ships an open decision hands the choice to the steps after yours, unseen. This is about a decision its owner must make. A check's finding is not one: resolve it in the plan by the loop above, and send it to the architect only when a round repeats it. A rejection of the goal or of a requirement is never one you proceed past, as above. An answer that changes what the plan builds or how it is proven gets a plan review of the changed plan, and `rounds` counts it, because a plan an answer changed and no reviewer read is the gap this rule closes. That review runs the loop above.
 
 ## Plan handoff
 

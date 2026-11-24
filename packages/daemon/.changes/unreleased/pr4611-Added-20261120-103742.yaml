@@ -1,12 +1,14 @@
 kind: Added
 body: |-
   The architect who owns an issue can give Legion a plan whose one task names which of today's
-  steps run, some of `planner implementer tester reviewer acceptance:owner` in that order and
-  always with `implementer`, with the new architect operation `register_plan`. Legion runs those
-  steps and then its own retro and merge. An issue with no plan runs the project's new setting
-  `projects.<KEY>.default_steps`, whose default is today's line; name the key only once every
-  daemon that reads the file runs this release, since an earlier one refuses the whole file. An
-  issue that ran before this release goes on as it did.
+  steps run, and in which order, with the new architect operation `register_plan`: some of
+  `planner implementer tester reviewer acceptance:owner`, each once and always with
+  `implementer`, in any order that puts each `tester`, `reviewer` and `acceptance:owner` step
+  after `implementer`. Legion runs those steps and then its own retro and merge. An issue with no
+  plan runs the project's new setting `projects.<KEY>.default_steps`, held to the same rule, whose
+  default is today's line; name the key only once every daemon that reads the file runs this
+  release, since an earlier one refuses the whole file. An issue that ran before this release goes
+  on as it did.
 
   The new operation `stop_task` stops a task: the issue is held `task-stopped`, the step's
   process stops and its session stays, and no start of Legion's brings that role back, a

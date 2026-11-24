@@ -1,5 +1,8 @@
 package prompts
 
+//ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
+//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+
 import (
 	"embed"
 	"io/fs"
@@ -58,6 +61,16 @@ func rolePart(t *testing.T, name string) string {
 	body, err := roleParts.ReadFile("roles/" + name)
 	if err != nil {
 		t.Fatalf("read role prompt part %s: %v", name, err)
+	}
+	return string(body)
+}
+
+// goPart is one embedded daemon prompt part, by its path under go/.
+func goPart(t *testing.T, name string) string {
+	t.Helper()
+	body, err := goParts.ReadFile("go/" + name)
+	if err != nil {
+		t.Fatalf("read the daemon part go/%s: %v", name, err)
 	}
 	return string(body)
 }
@@ -632,7 +645,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
+		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for

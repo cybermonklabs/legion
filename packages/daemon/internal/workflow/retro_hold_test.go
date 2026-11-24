@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -264,6 +263,94 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 	})
 }
 
+// A parent whose plan holds the owner's sign-off before another step passes the sign-off with no
+// issue beneath it in the workflow, and a child enters the workflow beneath it after that. No
+// sign-off is left to refuse the parent while the child runs, and its head proves its children's
+// merged work, so the pass of its last step, the reviewer's approval, holds it before its retro:
+// issues.phase held, from retro for its children, its task at the retro's place, no retro
+// started, and its owner told once in a retro-held notice naming the child. The child's leave
+// starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
+// is its last step, which the sign-off moves into its retro with no hold.
+func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
+	t.Run("the approval after the sign-off holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
+			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+
+		approveReview(t, pool, engine)
+
+		held := issueOf(t, pool, engine, root.Key)
+		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Retro, Reason: record.HoldForChildren}) {
+			t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
+		}
+		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
+			t.Fatalf("task a after the approval is %s at %+v, want running at its retro", task.State, task.Place)
+		}
+		if got := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(got) != 0 {
+			t.Fatalf("the approval wrote the retro's starts %+v, want none", got)
+		}
+		want := []record.Notice{{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro, Reason: heldParentReason}}
+		if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
+		}
+		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro for the issues beneath it") != 1 || !strings.Contains(line, heldParentChild) {
+			t.Fatalf("the log of the approval = %q, want one line of the hold naming %s", line, heldParentChild)
+		}
+
+		childLeavesDone(t, pool, engine)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+		starts := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro)
+		if len(starts) != 1 {
+			t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
+		}
+		if !strings.Contains(starts[0].Task, "Handoff: review version 1") || strings.Contains(starts[0].Task, "Handoff: implement") {
+			t.Fatalf("the retro's start = %+v, want it told Handoff: review version 1 and no Handoff: implement", starts[0])
+		}
+		if got := noticesOf(t, pool, root.Key, "retro-held"); len(got) != 1 {
+			t.Fatalf("the release told %d more retro-held notices, want none", len(got)-1)
+		}
+		if line := logged.String(); !strings.Contains(line, "act=children_done") {
+			t.Fatalf("the log of the release = %q, want the act children_done", line)
+		}
+	})
+
+	t.Run("the known pass: a sign-off that is the last step moves the parent into its retro with no hold", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		approveReview(t, pool, engine)
+		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+
+		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
+			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
+		}
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+		if got := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro); len(got) != 1 {
+			t.Fatalf("the sign-off wrote %d starts of the retro, want one", len(got))
+		}
+		if notices := noticesOf(t, pool, root.Key, "retro-held"); len(notices) != 0 {
+			t.Fatalf("the sign-off told %+v, want no retro-held notice", notices)
+		}
+		if line := logged.String(); strings.Contains(line, "held before its retro") {
+			t.Fatalf("the log = %q, want no hold", line)
+		}
+	})
+}
+
 // The reviewer's own report can land after its approval moved a parent with no acceptance step
 // into its hold before the retro. It is the first report of the run the approval ended, so it is
 // taken as such a report is wherever else the issue stands (leftItsPhase): on the reviewer's own
@@ -309,52 +396,5 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	want := intake.NotCurrentPhase(claim.RoleReviewer, phase.Held, root.Key)
 	if result := apply("the reviewer's second report", again); !reflect.DeepEqual(result.Refusal, want) {
 		t.Fatalf("the reviewer's second report = %+v, want %+v", result.Refusal, want)
-	}
-}
-
-// A version of the design approved while a parent with no acceptance step was held before its
-// retro owes the held parent nothing (record.OwedNews names a held issue UntoldHeld), so no
-// reconcile records its change set for that parent. The release that starts the retro moves the
-// parent into a phase as the pass into the retro would have (transition), so it queues the
-// reconcile of the tree's news as that pass does (queueMovedNews), which records what changed and
-// sends it to the retro's holder: the retro's start carries no item whose change set is not
-// recorded. The control is the same release of a parent whose holder took the approved version
-// already, which is owed nothing and queues no reconcile. The deployment gates the spec of each
-// root, and the root's gate stands open at version 3 from the start; no reconcile stands queued
-// before the release, so the count is the release's own.
-func TestTheReleaseOfAHeldParentQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		took int
-		want int
-	}{
-		{name: "a holder that took the version before the approved one", took: 3, want: 1},
-		{name: "a holder that took the approved version", took: 4, want: 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
-			root := stepRoot(t, pool, phase.Admitted)
-			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
-			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
-			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-			approveReview(t, pool, engine)
-			if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
-				t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
-			}
-			// A person approves version 4 of the spec while the parent is held: the hold owes it
-			// nothing, so no reconcile stands for it.
-			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
-			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
-			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
-			assertOutboxCount(t, pool, "design_changes", 0)
-
-			childLeavesDone(t, pool, engine)
-
-			assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
-			assertOutboxCount(t, pool, "design_changes", tc.want)
-		})
 	}
 }

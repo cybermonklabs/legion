@@ -184,9 +184,9 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		// promotion passes over it.
 		{key: queuedRoot, stands: phase.Admitted, status: "todo", tree: queuedRoot},
 		// The live tree the held child belongs to, and the child itself, held at admitted by a
-		// link: a child the workflow holds is out of the line altogether. The root is at work on
-		// a phase short of its review, so it holds the row it was started with
-		// (record.KeepsSlot): a root past its review would hold none.
+		// link: a child the workflow holds is out of the line altogether. The root is at work in
+		// implementing, a phase that keeps a slot, so it holds the row it was started with
+		// (record.KeepsSlot): a root in accepting, retro or merging would hold none.
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.

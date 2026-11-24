@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -198,6 +199,15 @@ func dropConsumer(t *testing.T, logs *lockedBuffer) (context.Context, ConsumerSp
 	return ctx, spec, &issueNames{}, newDroppedSettlements()
 }
 
+// consumeDropped runs consumeMessage on message under ctx as consumeConsumer does, for the
+// consumer and the context dropConsumer gives: its metadata parsed once and handed on with it,
+// over pool, with no handler.
+func consumeDropped(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, pool store.TxPool, names *issueNames, dropped *droppedSettlements) bool {
+	metadata, _ := message.Metadata()
+	run := consumerRun{spec: spec, repositories: capturedRepositories, pool: pool, names: names, remade: &remadeFailures{}, dropped: dropped}
+	return consumeMessage(ctx, message, metadata, run, nil)
+}
+
 // A checks settlement the decoder refuses is acknowledged, as every message of no fact is, and
 // the consumer logs one WARN line for it, naming the field refused and the head, generation and
 // snapshot the payload gives, by which the listener's line that published the settlement is
@@ -214,7 +224,7 @@ func TestAConsumedSettlementTheDecoderRefusesLogsOneLine(t *testing.T) {
 	var acks atomic.Int64
 	message := settlementDelivery(t, "checks-refused", payload, &acks)
 	for delivery := 1; delivery <= 3; delivery++ {
-		if !consumeMessage(ctx, message, spec, capturedRepositories, nil, nil, names, dropped) {
+		if !consumeDropped(ctx, message, spec, nil, names, dropped) {
 			t.Fatalf("delivery %d was not handled, want it acknowledged; the consumer's log:\n%s", delivery, logs)
 		}
 		if got := acks.Load(); got != int64(delivery) {
@@ -231,7 +241,7 @@ func TestAConsumedSettlementTheDecoderRefusesLogsOneLine(t *testing.T) {
 	// by no generation at all.
 	other := settlementPayload([]record.AttemptRun{{Name: "build", ID: 1}}, nil, nil)
 	other["generation"] = "4"
-	if !consumeMessage(ctx, settlementDelivery(t, "checks-refused-again", other, &acks), spec, capturedRepositories, nil, nil, names, dropped) {
+	if !consumeDropped(ctx, settlementDelivery(t, "checks-refused-again", other, &acks), spec, nil, names, dropped) {
 		t.Fatalf("the second refused settlement was not handled, want it acknowledged; the consumer's log:\n%s", logs)
 	}
 	if got := strings.Count(logs.String(), refusedLine); got != 2 {
@@ -272,7 +282,7 @@ func TestAConsumedSettlementOfAnUnrecordedPullRequestLogsOneLine(t *testing.T) {
 	var acks atomic.Int64
 	message := settlementDelivery(t, "checks-unrecorded", settlement(3), &acks)
 	for delivery := 1; delivery <= 3; delivery++ {
-		if !consumeMessage(ctx, message, spec, capturedRepositories, counted, nil, names, dropped) {
+		if !consumeDropped(ctx, message, spec, counted, names, dropped) {
 			t.Fatalf("delivery %d was not handled, want it acknowledged; the consumer's log:\n%s", delivery, logs)
 		}
 		if got := acks.Load(); got != int64(delivery) {
@@ -286,7 +296,7 @@ func TestAConsumedSettlementOfAnUnrecordedPullRequestLogsOneLine(t *testing.T) {
 		"generation=3", "snapshot=snapshot-3", "subject="+statusesSubject)
 
 	next := settlementDelivery(t, "checks-unrecorded-next", settlement(4), &acks)
-	if !consumeMessage(ctx, next, spec, capturedRepositories, counted, nil, names, dropped) {
+	if !consumeDropped(ctx, next, spec, counted, names, dropped) {
 		t.Fatalf("the next settlement was not handled, want it acknowledged; the consumer's log:\n%s", logs)
 	}
 	if got := strings.Count(logs.String(), NoRecordedPullRequestLine); got != 2 {
