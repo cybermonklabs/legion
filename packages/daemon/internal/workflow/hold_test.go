@@ -746,62 +746,118 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 }
 
 // A person's todo on a root held from reviewing, by its reviewer's failed claim, ends a hold no plan
-// made, and the todo releases it into reviewing (releaseHeldRoot, retryPhase). It opens no new
-// generation: the root keeps its generation and its one slot. The counts of its returns, which a
-// root with no plan rows keeps on its implementer's phases row (record.ImplementerCounts), stand as
-// the hold left them: the round the reviewer left is still open, so the release settles nothing and
-// starts the reviewer again. A review of that round that requests changes then settles it, and the
-// move back it makes raises the counts: one more pass, one more move back under
-// reviewing-implementing (recordPass) and one more review round (recordRound). A todo on a root held
-// for its stopped task is no such release: it starts the task again and raises its pass
-// (restartTask).
+// made (releaseHeldRoot, retryPhase). It opens no new generation: the root keeps its generation and
+// its one slot. The counts of its returns, which a root with no plan rows keeps on its implementer's
+// phases row (record.ImplementerCounts), stand as the hold left them until a review round settles,
+// and the round's move back raises them by one pass, one move back under reviewing-implementing
+// (recordPass) and one review round (recordRound). The round settles in one of two places.
+//
+// In the first case the reviewer left its round open, so the release settles nothing and starts the
+// reviewer again, and the counts stand after it. The review that requests changes comes after the
+// todo and settles the round as it is recorded.
+//
+// In the second case the review that requests changes is recorded while the root is held: a hold
+// from reviewing counts as standing there for the review (record.StandsIn), and a held round decides
+// nothing (reviewRound), so the counts stand after the review too. The todo's release settles the
+// round itself (retryPhase's settleRound): the counts rise there and the root moves into
+// implementing. The release writes the status of the phase it ends in, in_progress over the todo
+// Dispatch shows, beside the move's own row, which observes the record's needs_review.
+//
+// A todo on a root held for its stopped task is no such release: it starts the task again and
+// raises its pass (restartTask).
 func TestATodoOnARootWithAHoldNoPlanMadeKeepsTheCountsUntilAReviewRoundSettles(t *testing.T) {
 	const root = "LEGION-208"
-	pool := migratedPool(t)
-	engine := testEngine(config.DesignGateRootIssues, nil)
-	apply := applyFacts(t, pool, engine)
-	seedReview(t, pool, "green")
-	seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
-	seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim", Pass: 2, Rounds: 1,
-		BackwardMoves: map[string]int{"reviewing-implementing": 1}})
-	apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
-	held := storedIssue(t, pool, root)
-	if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Reviewing}) {
-		t.Fatalf("the root after its reviewer failed stands in %s with hold %+v, want held from reviewing", held.Phase, held.Hold)
-	}
 	before := record.ReturnCounts{Pass: 2, Rounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}}
-	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
-		t.Fatalf("the counts before the todo = %+v, want the %+v seeded", got, before)
-	}
-	if got := slotCount(t, pool, root); got != 1 {
-		t.Fatalf("%s holds %d slots before the todo, want 1", root, got)
-	}
-
-	apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
-		Title: "root", Rank: "U", HandedOver: true})
-
-	released := storedIssue(t, pool, root)
-	if released.Phase != phase.Reviewing || released.Hold != nil || released.Generation != held.Generation {
-		t.Fatalf("the root after the todo stands in %s with hold %+v at generation %d, want reviewing, no hold and generation %d",
-			released.Phase, released.Hold, released.Generation, held.Generation)
-	}
-	if got := slotCount(t, pool, root); got != 1 {
-		t.Fatalf("%s holds %d slots after the todo, want the 1 it held", root, got)
-	}
-	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
-		t.Fatalf("the counts after the todo = %+v, want the %+v the hold left", got, before)
-	}
-
-	apply("changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne,
-		Author: testReviewApp, Body: reviewBody("Name the rollback path.", headOne)})
-
-	if moved := storedIssue(t, pool, root); moved.Phase != phase.Implementing || moved.Generation != held.Generation {
-		t.Fatalf("the root after the request for changes stands in %s at generation %d, want implementing at generation %d", moved.Phase, moved.Generation, held.Generation)
-	}
 	raised := record.ReturnCounts{Pass: 3, Rounds: 2, BackwardMoves: map[string]int{"reviewing-implementing": 2}}
-	if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, raised) {
-		t.Fatalf("the counts after the round settled = %+v, want %+v", got, raised)
+	changesRequested := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "changes_requested", CommitID: headOne,
+		Author: testReviewApp, Body: reviewBody("Name the rollback path.", headOne)}
+	todo := intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
+		Title: "root", Rank: "U", HandedOver: true}
+	// heldFromReviewing is the root in reviewing with one review round and one more pass behind it,
+	// held from reviewing by its reviewer's failed claim, with its counts and its one slot read.
+	heldFromReviewing := func(t *testing.T) (*pgxpool.Pool, *Engine, func(string, intake.Fact) intake.Result, record.Issue) {
+		t.Helper()
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		apply := applyFacts(t, pool, engine)
+		seedReview(t, pool, "green")
+		seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+		seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer, Claim: "implement-claim", Pass: 2, Rounds: 1,
+			BackwardMoves: map[string]int{"reviewing-implementing": 1}})
+		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
+		held := storedIssue(t, pool, root)
+		if held.Phase != phase.Held || held.Hold == nil || *held.Hold != (record.Hold{From: phase.Reviewing}) {
+			t.Fatalf("the root after its reviewer failed stands in %s with hold %+v, want held from reviewing", held.Phase, held.Hold)
+		}
+		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
+			t.Fatalf("the counts before the todo = %+v, want the %+v seeded", got, before)
+		}
+		if got := slotCount(t, pool, root); got != 1 {
+			t.Fatalf("%s holds %d slots before the todo, want 1", root, got)
+		}
+		return pool, engine, apply, held
 	}
+
+	t.Run("the review that requests changes comes after the todo", func(t *testing.T) {
+		pool, engine, apply, held := heldFromReviewing(t)
+
+		apply("todo", todo)
+
+		released := storedIssue(t, pool, root)
+		if released.Phase != phase.Reviewing || released.Hold != nil || released.Generation != held.Generation {
+			t.Fatalf("the root after the todo stands in %s with hold %+v at generation %d, want reviewing, no hold and generation %d",
+				released.Phase, released.Hold, released.Generation, held.Generation)
+		}
+		if got := slotCount(t, pool, root); got != 1 {
+			t.Fatalf("%s holds %d slots after the todo, want the 1 it held", root, got)
+		}
+		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
+			t.Fatalf("the counts after the todo = %+v, want the %+v the hold left", got, before)
+		}
+
+		apply("changes-requested", changesRequested)
+
+		if moved := storedIssue(t, pool, root); moved.Phase != phase.Implementing || moved.Generation != held.Generation {
+			t.Fatalf("the root after the request for changes stands in %s at generation %d, want implementing at generation %d", moved.Phase, moved.Generation, held.Generation)
+		}
+		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, raised) {
+			t.Fatalf("the counts after the round settled = %+v, want %+v", got, raised)
+		}
+	})
+
+	t.Run("the review that requests changes comes while the root is held, and the todo settles it", func(t *testing.T) {
+		pool, engine, apply, held := heldFromReviewing(t)
+
+		apply("changes-requested", changesRequested)
+
+		if still := storedIssue(t, pool, root); still.Phase != phase.Held || still.Hold == nil || *still.Hold != (record.Hold{From: phase.Reviewing}) {
+			t.Fatalf("the root after the request for changes stands in %s with hold %+v, want it still held from reviewing: a held round decides nothing", still.Phase, still.Hold)
+		}
+		if decision := reviewerDecision(t, pool); decision == nil || decision.State != "changes_requested" {
+			t.Fatalf("the reviewer's decision after the request for changes = %+v, want changes_requested recorded on the held round", decision)
+		}
+		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, before) {
+			t.Fatalf("the counts after the request for changes, before the todo = %+v, want the %+v the hold left: the round has not settled", got, before)
+		}
+
+		apply("todo", todo)
+
+		moved := storedIssue(t, pool, root)
+		if moved.Phase != phase.Implementing || moved.Hold != nil || moved.Generation != held.Generation {
+			t.Fatalf("the root after the todo stands in %s with hold %+v at generation %d, want implementing, no hold and generation %d",
+				moved.Phase, moved.Hold, moved.Generation, held.Generation)
+		}
+		if got := slotCount(t, pool, root); got != 1 {
+			t.Fatalf("%s holds %d slots after the todo, want the 1 it held", root, got)
+		}
+		if got := taskCounts(t, pool, engine, root, held.Generation); !reflect.DeepEqual(got, raised) {
+			t.Fatalf("the counts after the todo settled the round = %+v, want %+v", got, raised)
+		}
+		want := []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "needs_review", ""), record.OrdinaryStatusWrite("in_progress", "todo", "")}
+		if got := statusWrites(t, pool, root); !reflect.DeepEqual(got, want) {
+			t.Fatalf("status writes = %+v, want the move's %+v and the release's %+v, the status of the phase the root ends in over the todo", got, want[0], want[1])
+		}
+	})
 }
 
 // storedIssue is the record of key.
