@@ -18,6 +18,12 @@ const giveUpMargin = 30 * time.Second
 // is still a time after now, as a read deadline or a timer built from it needs.
 const unboundedRemaining = time.Duration(1 << 60)
 
+// deadlineOf is where Remaining reads the test binary's deadline: t.Deadline. Only the child of
+// TestRemainingWithinTheMarginFailsTheTestByName replaces it, with a deadline already within the
+// margin, so the child shows Remaining's failure while its own alarm is what is left of its
+// parent's deadline: no starved child reaches that alarm before it reaches Remaining.
+var deadlineOf = (*testing.T).Deadline
+
 // Remaining is how long a wait that begins now in t may last: the test binary's deadline, the one
 // go test's -timeout sets, less giveUpMargin, less now; and unboundedRemaining under -timeout 0.
 // A wait bounded by it ends on its fact or gives up 30 s before the deadline, never at a fixed
@@ -28,7 +34,7 @@ const unboundedRemaining = time.Duration(1 << 60)
 // goroutine running the test.
 func Remaining(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, ok := t.Deadline()
+	deadline, ok := deadlineOf(t)
 	if !ok {
 		return unboundedRemaining
 	}
