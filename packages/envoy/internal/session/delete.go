@@ -17,13 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// Delete deletes sessionID's entry at the revision it reads (bus.KeyValue.DeleteAtRead, which
-// reads a value that is no record of sessionID again from the stream's leader: recordOf), each
-// bucket call waiting no longer than ctx (bus.Bounded): DELETE /v1/sessions/<session_id> passes its
-// request's own context. A delete ctx abandoned may still land after this answer, and that is
-// safe: it deletes only the revision it read, so a registration that landed since is kept, and an
-// entry the read found absent is left alone rather than deleted at no revision, which would take
-// the entry a registration wrote between that read and the delete.
+// Delete deletes sessionID's entry at the revision the bucket stream's leader reports
+// (bus.KeyValue.DeleteAtRead, whose read is never a copy's: a copy that has not applied the
+// registration made a moment ago answers that the entry is absent, and the stop would delete
+// nothing), each bucket call waiting no longer than ctx (bus.Bounded): DELETE
+// /v1/sessions/<session_id> passes its request's own context. A delete ctx abandoned may still land
+// after this answer, and that is safe: it deletes only the revision it read, so a registration
+// that landed since is kept, and an entry the read found absent is left alone rather than deleted
+// at no revision, which would take the entry a registration wrote between that read and the delete.
 func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
@@ -31,9 +32,7 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) {
-		return kv.DeleteAtRead(ctx, sessionID, r.recordOf(sessionID))
-	})
+	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
 	}

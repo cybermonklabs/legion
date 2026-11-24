@@ -685,48 +685,53 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 	return kv.GetFromLeader(ctx, key)
 }
 
-// DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
-// lands in between is kept, and returns the entry it deleted, whose revision the delete landed at
-// and whose value a caller reads to remove what that value named (store's interest record
-// chunks); nil when there was none to read. A value readable refuses is deleted at the revision
-// the stream's leader reports for it, the one it is stored at. A delete the bucket refuses at the
-// revision a direct get reported is followed by one read of the key from the stream's leader: a
-// record the server wrote (ReadFromLeader, LeaderServerWritten), which a direct get can report at
-// another stream's sequence however its value reads, is deleted at the sequence it is stored at,
-// and is the entry returned, at that sequence and with no value; any other answer leaves the
-// refusal standing, a write that landed in between being kept. The leader read ReadStored falls
-// back to where readable refuses the direct get's value cannot tell a message the server wrote
-// from a writer's, so that path can return a server-written copy, another key's manifest among
-// them, with its value: what protects a caller from acting on it is the caller's own guard
-// (store's deleteInterest deletes chunks only for a cached row of the same generation, and
-// session's Delete reads only the entry's revision).
+// DeleteAtRead deletes key at the revision the stream's leader reports for it (ReadFromLeader), so
+// a write that lands in between is kept, and returns the entry it deleted: the revision the delete
+// was fenced on, and, for a writer's record, the value a caller reads to remove what that value
+// named (store's interest record chunks); nil when there was none to read. The read is the
+// leader's and never a direct get: on a replicated bucket a direct get is answered by any copy near
+// enough to current (Get), and a copy that has not applied the registration made a moment ago
+// answers that the key is absent, so the delete a session's stop asks for would be dropped and its
+// record kept until it expires. The leader holds every write the bucket took. It reports a record
+// the server wrote, which a direct get can report at another stream's sequence, at the sequence it
+// is stored at, so it is deleted there like any other record; its entry carries no value, since a
+// message no writer stored names nothing a caller removes. A delete the bucket refuses at that
+// revision is a write that landed between the read and the delete, and the refusal stands, that
+// writer's record kept (DeleteAt). A writer's record the leader answers can still be no record of
+// key - a writer of the bucket can store a copy of another key's value under it, another session's
+// manifest among them - so a caller acts on the value only behind a guard of its own (store's
+// deleteInterest deletes chunks only for a cached row of the same generation; session's Delete
+// reads only the revision).
 //
-// A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
-// sends no expected-last-subject-sequence header for revision 0, so that delete would take
-// whatever the bucket holds, and a write that landed between the read and it - a registration
-// storing the row this delete read none of - would be deleted whole. So no delete is made for it:
-// the key is reported absent, with no entry, and there is nothing there to remove.
+// A key the read finds missing, or holding a delete or purge marker, is deleted at no revision at
+// all, which fences nothing: nats.go sends no expected-last-subject-sequence header for revision
+// 0, so that delete would take whatever the bucket holds, and a write that landed between the read
+// and it - a registration storing the row this delete read none of - would be deleted whole. So no
+// delete is made for it: the key is reported absent, with no entry, and there is nothing there to
+// remove.
 //
 // A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
 // that key is deleted at no revision, with no entry, which removes a key an earlier build stored
 // past the write bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(value []byte) bool) (nats.KeyValueEntry, error) {
-	entry, err := kv.ReadStored(ctx, key, readable)
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	leader, err := kv.ReadFromLeader(ctx, key)
 	switch {
-	case err == nil:
-		revision, serverWritten, err := kv.deleteAt(ctx, key, entry.Revision())
-		if serverWritten {
-			entry = leaderEntry{bucket: kv.Bucket(), key: key, revision: revision, op: nats.KeyValuePut}
-		}
-		return entry, err
-	case errors.Is(err, nats.ErrKeyNotFound):
-		return nil, nil
 	case errors.Is(err, ErrRefused):
 		return nil, kv.Delete(key)
-	default:
+	case err != nil:
 		return nil, err
+	case leader.Kind == LeaderAbsent || leader.Kind == LeaderMarker:
+		return nil, nil
 	}
+	revision, err := kv.DeleteAt(ctx, key, leader.Revision)
+	value := leader.Value
+	if revision != leader.Revision {
+		// DeleteAt's fallback took a record the server wrote since the read, at its own sequence:
+		// the record read is gone, and what was deleted names nothing a caller removes.
+		value = nil
+	}
+	return leaderEntry{bucket: kv.Bucket(), key: key, value: value, revision: revision, op: nats.KeyValuePut}, err
 }
 
 // DeleteAt deletes key fenced on revision, the revision a read of the key reported, and returns the
@@ -739,26 +744,18 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 // write that landed between the read and the delete being kept. A delete refused for any other
 // reason is that error.
 func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (uint64, error) {
-	deleted, _, err := kv.deleteAt(ctx, key, revision)
-	return deleted, err
-}
-
-// deleteAt is DeleteAt, which also reports whether the delete took a record the server wrote at
-// the sequence the stream's leader reports it stored at, in place of the revision it was asked
-// for (DeleteAtRead's entry).
-func (kv KeyValue) deleteAt(ctx context.Context, key string, revision uint64) (uint64, bool, error) {
 	err := kv.Delete(key, nats.LastRevision(revision))
 	if err == nil || !IsCASConflict(err) {
-		return revision, false, err
+		return revision, err
 	}
 	// A record the server wrote, which a direct get reports at another stream's sequence however
 	// its value reads (ReadFromLeader, LeaderServerWritten), is deleted at the sequence the leader
 	// reports it stored at, fenced there. Any other newest message - a writer's record, a marker,
 	// none - and a leader read that failed, leave the refusal standing for the caller to answer.
 	if leader, readErr := kv.ReadFromLeader(ctx, key); readErr == nil && leader.WrittenByServer() {
-		return leader.Revision, true, kv.Delete(key, nats.LastRevision(leader.Revision))
+		return leader.Revision, kv.Delete(key, nats.LastRevision(leader.Revision))
 	}
-	return revision, false, err
+	return revision, err
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

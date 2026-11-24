@@ -57,7 +57,7 @@ func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
 	}
 	base := reg.watcher.KV()
 	reg.watcher.Stop()
-	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(missingGetKeyValue{KeyValue: base.Legacy(), key: "ses_unread"},
+	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(missingGetKeyValue{KeyValue: base.Legacy(), key: "ses_unread", leader: base},
 		historyFailingWatch{KeyValue: base.WatchHandle(), key: "ses_unread"}, base.Streams()), interestCache{reg})
 	reg.watcher.Start()
 	waitFor(t, 30*time.Second, reg.watcher.Ready)
@@ -186,11 +186,15 @@ func TestAForgedManifestIsARecordThisBuildCannotDecodeAndTheNextWriteReplacesIt(
 	}
 }
 
-// missingGetKeyValue is the interest bucket as a copy behind the leader answers a direct get of
-// key that it has not applied: as no record at all.
+// missingGetKeyValue is the interest bucket as a read of key answers it just before a registration
+// lands: no record at all, from a direct get and from the stream's leader alike (bus.LeaderReads),
+// as the leader read a delete makes (bus.KeyValue.DeleteAtRead) answers when the registration that
+// stores the record lands after it. Every other key, its chunks among them, is read from leader,
+// the bucket's own handle.
 type missingGetKeyValue struct {
 	natsgo.KeyValue
-	key string
+	key    string
+	leader bus.KeyValue
 }
 
 func (kv missingGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
@@ -198,6 +202,13 @@ func (kv missingGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 		return nil, natsgo.ErrKeyNotFound
 	}
 	return kv.KeyValue.Get(key)
+}
+
+func (kv missingGetKeyValue) NewestFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+	if key == kv.key {
+		return nil, natsgo.ErrKeyNotFound
+	}
+	return kv.leader.NewestFromLeader(ctx, key)
 }
 
 // A delete whose read of the record found nothing deletes nothing, and its read-back finds the
@@ -217,7 +228,7 @@ func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
 		t.Fatalf("store the record: %v", err)
 	}
 	legacy := reg.watcher.KV().Legacy()
-	useKV(t, reg, missingGetKeyValue{KeyValue: legacy, key: "ses_kept"})
+	useKV(t, reg, missingGetKeyValue{KeyValue: legacy, key: "ses_kept", leader: reg.watcher.KV()})
 	if err := reg.deleteInterest(t.Context(), "ses_kept"); err != nil {
 		t.Fatalf("the delete whose read found nothing: %v", err)
 	}
@@ -477,15 +488,15 @@ func TestAWriteOverACopyOfANewerManifestThanTheCacheHoldsLeavesTheOwnerWhole(t *
 		older.layout.Generation, newer.Generation, len(newer.Keys()))
 }
 
-// A delete that reads nothing - a copy of the stream behind the leader answering its direct get -
-// deletes nothing, so the row the cache holds stays, even when the watcher has not yet delivered
+// A delete that reads nothing - its leader read made just before the record's registration landed
+// - deletes nothing, so the row the cache holds stays, even when the watcher has not yet delivered
 // that row's chunks: a write-through stored it, and the read-back finds its own revision. Evicting it
 // would fence the row out of the cache and leave its chunks to a collection that takes chunks no row
 // names. The watcher is stopped here, so no chunk of the record reaches the chunk copy.
 func TestADeleteThatReadNothingKeepsARowWhoseChunksHaveNotArrived(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
-	useKV(t, reg, missingGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_early"})
+	useKV(t, reg, missingGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_early", leader: reg.watcher.KV()})
 	reg.watcher.Stop()
 	topics := kvchunktest.Topics("early", 400)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_early", MachineID: "m1"}, topics); err != nil {

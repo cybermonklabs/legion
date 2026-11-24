@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead,
-// which reads a value that is no row of sessionID again from the stream's leader: rowOf), each
-// bucket call waiting no longer than ctx (bus.Bounded), and then the chunks of the record it
+// deleteInterest deletes sessionID's interest at the revision the bucket stream's leader reports
+// (bus.KeyValue.DeleteAtRead, whose read is never a copy's), each bucket call waiting no longer
+// than ctx (bus.Bounded), and then the chunks of the record it
 // deleted when that record is the one the cache holds, joined, for the session, and no other
 // session's row names them (ownLayout). A manifest the delete read but no read of this listener
 // joined names chunks never proved to be this record's, so they are left to the reaper's
@@ -35,9 +35,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	revision := r.cache.FenceFor(epoch, sessionID)
 	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) {
-		return kv.DeleteAtRead(ctx, sessionID, rowOf(sessionID))
-	})
+	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(ctx, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -74,9 +72,10 @@ func (r *Registry) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.La
 }
 
 // rowOf is whether a value is a row of sessionID (boundInterest), the test a read fenced on a
-// revision takes (bus.KeyValue.ReadStored): a value it refuses is read again from the stream's
-// leader, whose revision is the one the value is stored at. A manifest this build writes is such a
-// row, since the view it carries for an earlier build names the session (ChunkedRecordView).
+// revision takes (bus.KeyValue.ReadStored, readRow's bucket read): a value it refuses is read again
+// from the stream's leader, whose revision is the one the value is stored at. A manifest this build
+// writes is such a row, since the view it carries for an earlier build names the session
+// (ChunkedRecordView).
 func rowOf(sessionID string) func(value []byte) bool {
 	return func(value []byte) bool {
 		_, err := boundInterest(sessionID, value)
