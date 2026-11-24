@@ -150,10 +150,9 @@ test("the first step ends the stuck call's own processes, and only those", async
 
   // Every one of them is in the agent's tree, running the program its case names, with the
   // environment its case needs. A child the agent has forked but not yet exec'd is still a copy
-  // of the agent's shell: its command is the shell's and its environment names no call, so a
-  // scan made then reads `other` or `ended` as a process of no call started inside the call,
-  // which the second rule rightly takes (measured under gVisor: one such child was still unexec'd
-  // 15 ms after the agent printed `ready`).
+  // of the agent's shell, with the shell's command line and environment, and a scan made then
+  // judges it as that copy (src/stall-recovery.ts, "Four things it never ends"), not as the
+  // process it is about to become, so the case waits until every child runs its own program.
   const sleepers = ["before", "stuck", "other", "ended", "plain"];
   await until(async () => {
     const scan = await readStallProcesses({ agentPid: agent.pid });
