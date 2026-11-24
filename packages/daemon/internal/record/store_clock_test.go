@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -139,8 +140,7 @@ func clockRows() []clockRow {
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimStep"}, check: checkClaimStep},
 		{statement: nowStatement{"internal/store/claims.go", "upsertClaim"}, check: checkClaimWrite},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "open"}, check: checkTreeOpened},
-		{statement: nowStatement{"internal/store/idle.go", "(*Store).ReleaseIdleIssue"},
-			never: "the idle release's mark (internal/daemon's idle sweep), made outside every fact; a replay releases no pod"},
+		{statement: nowStatement{"internal/store/idle.go", "(*Store).ReleaseIdleIssue"}, check: checkReleaseMark},
 		{statement: nowStatement{"internal/store/idle.go", "insertOutboxRow"}, check: checkPauseRows},
 		{statement: nowStatement{"internal/store/tree_lifecycle.go", "(*Store).IssueSandboxHome"},
 			never: "the Sandbox runtime's orphan sweep (internal/runtime/sandbox); a replay runs no runtime"},
@@ -306,6 +306,35 @@ func checkRoleRunAge(t *testing.T) {
 			t.Error("the start reads as no lane's, want running: its lease runs to an hour after the store's clock")
 		}
 	})
+}
+
+// An unowned release marks and queues its teardown at the same store time.
+func checkReleaseMark(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	st.UseClock(clockAt)
+	const issue = "ACME-7"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, NewStoreWithClock(clockAt).PutIssue(ctx, tx, clockIssue(issue)))
+	})
+	row, err := NewOutboxRow(issue, IssueRelease{Tree: issue, Generation: 1, TreeGeneration: 1}, clockTime)
+	must(t, err)
+	marked, err := st.ReleaseIdleIssue(ctx, "acme", issue, func(pods.IdleView) (store.IdleReleaseMark, error) {
+		return store.IdleReleaseMark{Generation: 1, SuspendsNoRole: true, Rows: []store.IdleReleaseRow{
+			{Kind: string(row.Kind), Payload: row.Payload, Boundary: true},
+		}}, nil
+	})
+	must(t, err)
+	if !marked {
+		t.Fatal("the release left no mark")
+	}
+	var at, created, due time.Time
+	must(t, st.Pool().QueryRow(ctx, `select m.marked_at, o.created_at, o.next_at
+		from issue_releases m join outbox o on o.id = m.boundary_row
+		where m.project = 'acme' and m.issue = $1`, issue).Scan(&at, &created, &due))
+	wantClock(t, "the release's marked_at", at)
+	wantClock(t, "the teardown's created_at", created)
+	wantClock(t, "the teardown's next_at", due)
 }
 
 // clockClaim is the implementer's claim of ACME-7, which the claim checks write.
