@@ -103,11 +103,13 @@ export function finished(runDir: string): boolean {
 }
 
 /** How a daemon answers a completion from a role that does not run the issue's current phase (a
- * late role), in the two shapes an engine (packages/daemon/internal/workflow/engine.go) has had:
- *   - `recorded`: an engine whose `handoff` asks `leftItsPhase`, this checkout's. It records the
- *     completion on the role's own row and moves nothing when the daemon started the role on the
- *     issue and the role's row holds no completion (`row.Completed()`: no handoff commit and no
- *     handoff record a taken completion wrote). It takes the completion as one of the phase the
+ * late role), in the two answers an engine (packages/daemon/internal/workflow) has had:
+ *   - `recorded`: an engine whose `handoff` asks `leftItsPhase`, this checkout's (main's since
+ *     #4611 asks it through `pastCompletion` and `pastReportOf`, daemon-completion.go's
+ *     `recordingChains`). It records the completion on the role's own row and moves nothing when
+ *     the daemon started the role on the issue and the role's row holds no completion
+ *     (`row.Completed()`: no handoff commit and no handoff record a taken completion wrote). It
+ *     takes the completion as one of the phase the
  *     role left (`phase.Of`), and that phase's record is required (`phase.Handoff(reported)`, a
  *     409 HANDOFF_RECORD_REQUIRED through `refused`). Any other late completion is refused 409
  *     HANDOFF_NOT_CURRENT_PHASE, a second one after the role's first was taken among them.

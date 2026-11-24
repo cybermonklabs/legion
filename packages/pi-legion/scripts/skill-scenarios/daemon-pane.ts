@@ -302,11 +302,12 @@ export const SCOPES_GO = "packages/envoy/internal/dispatch/api/routes_table.go";
  * is. */
 export const CLIENT_TS = "packages/envoy-client/src/dispatch-http.ts";
 /** The sources a reader reads of a run's label, under the checkout's root: the daemon's
- * (`labelRoutes`, `labelDaemon`), and its Dispatch's table of the scopes each route needs and its
- * agents' client (SCOPES_GO and CLIENT_TS, which person-routes.ts's `labelPersonRoutes` reads). */
+ * (`labelRoutes`, `labelDaemon`, whose engine asks methods across its workflow package since
+ * main's #4611), and its Dispatch's table of the scopes each route needs and its agents' client
+ * (SCOPES_GO and CLIENT_TS, which person-routes.ts's `labelPersonRoutes` reads). */
 export const LABEL_SOURCES = [
   "packages/daemon/internal/api",
-  "packages/daemon/internal/workflow/engine.go",
+  "packages/daemon/internal/workflow",
   SCOPES_GO,
   CLIENT_TS,
 ];
@@ -535,7 +536,7 @@ const OWNER_SETUP_ERROR: readonly Marker[] = [
   },
 ];
 
-/** Each refusal `labelDaemon` met in this process, by the daemon module and the bytes of the two
+/** Each refusal `labelDaemon` met in this process, by the daemon module and the bytes of the
  * sources it read. The facts cache keeps no failed read (`cachedRead`), so without this a source
  * that cannot be read was run again for each answer that asked for it: health asks once a rule a
  * run, and the tester's fixture of 21 runs, whose built-from names checkouts that are not there,
@@ -544,30 +545,30 @@ const OWNER_SETUP_ERROR: readonly Marker[] = [
 const daemonRefusals = new Map<string, Error>();
 
 /** How the daemon of `checkout` takes a completion (completion-answers.ts's `LabelDaemon`): its
- * engine's late role and its route's record, read out of that checkout's
- * internal/workflow/engine.go and internal/api/handoff.go by daemon-completion.go
- * (`runStandalone`), which parses the two files and compiles nothing of them, so a substitute
- * checkout holding the two alone is read the same way. A label's contract is so read once per
- * label source: the stand-in reads it at its boot (`standinFacts`) out of the facts cache, which
- * rig.sh's label_facts fills for each label before any run starts, and health and the scorer read
- * the run's own label's through the same cache (rig.sh gives both the work directory), keyed by the
- * two files' bytes (`cachedRead`), so a label whose checkout moves is read anew and never by its
- * name. A source that is not there is refused here, naming it, with no program run: what a
- * checkout lacks needs no compile to say, and a run whose built-from names a checkout that is
- * gone costs health nothing a slow host could stretch. A refusal is kept for the process
- * (`daemonRefusals`). Throws what the reading refused, naming the file and the shapes it looked
- * for, and for a printout that is no late role and record route. */
+ * engine's late role and its route's record, read out of that checkout's internal/workflow
+ * package (engine.go's `handoff` and the engine's methods it asks, which main's since #4611 asks
+ * across engine.go and plan.go) and internal/api/handoff.go by daemon-completion.go
+ * (`runStandalone`), which parses those files and compiles nothing of them, so a substitute
+ * checkout holding engine.go and handoff.go alone is read the same way. A label's contract is so
+ * read once per label source: the stand-in reads it at its boot (`standinFacts`) out of the facts
+ * cache, which rig.sh's label_facts fills for each label before any run starts, and health and the
+ * scorer read the run's own label's through the same cache (rig.sh gives both the work directory),
+ * keyed by the bytes of the files it parses (`cachedRead`), so a label whose checkout moves is read
+ * anew and never by its name. An engine.go or a handoff.go that is not there is refused here,
+ * naming it, with no program run: what a checkout lacks needs no compile to say, and a run whose
+ * built-from names a checkout that is gone costs health nothing a slow host could stretch. A
+ * refusal is kept for the process (`daemonRefusals`). Throws what the reading refused, naming the
+ * file and the shapes it looked for, and for a printout that is no late role and record route. */
 export function labelDaemon(checkout: string): LabelDaemon {
   const daemon = daemonOf(checkout);
-  const sources = [
-    path.join(daemon, "internal", "workflow", "engine.go"),
-    path.join(daemon, "internal", "api", "handoff.go"),
-  ];
-  const absent = sources.find((source) => !existsSync(source));
+  const workflow = path.join(daemon, "internal", "workflow");
+  const route = path.join(daemon, "internal", "api", "handoff.go");
+  const absent = [path.join(workflow, "engine.go"), route].find((source) => !existsSync(source));
   if (absent !== undefined)
     throw new Error(
       `${absent} is not there, so how the daemon of ${checkout} takes a completion is unknown (daemon-completion.go reads it)`
     );
+  const sources = [...goSources(workflow), route];
   const key = [daemon, ...sources.map((source) => readFileSync(source, "utf8"))].join("\0");
   const refused = daemonRefusals.get(key);
   if (refused !== undefined) throw refused;
@@ -874,8 +875,9 @@ export interface LabelShapes {
    * after that end, whose executor sends `PUT /api/v1/issues/{key}/steps/{id}` under the daemon's
    * own session (outbox.go's `publishStepRecord` and `stepWriteOf`, workflow/steps.go's
    * `startStep`, `endStep` and `reportEndedStep`, main's since #4400, 53980e0e32, the steps of a
-   * phase read off workflow/plan.go's `DefaultSteps` since #4488), in the fields, the words, the
-   * places and the id step-records.ts restates (`WRITES_STEPS`). False for main `ff2a10ef`'s
+   * phase read off workflow/plan.go's `DefaultSteps` from #4488 and off the walk of the run since
+   * #4611, 5dfd9cdbb0a), in the fields, the words, the places and the id step-records.ts restates
+   * (`WRITES_STEPS`, with `STEPS_OF_PHASE` or `STEPS_ON_WALK`). False for main `ff2a10ef`'s
    * daemon, whose outbox has no such kind. */
   readonly writesSteps: boolean;
   /** A completion that carries a rating of the plan (`planRating` with `planReason`) and does not
@@ -1102,31 +1104,41 @@ const BY_COMMIT_ID: readonly Marker[] = [
   },
 ];
 
-/** The files the daemon writes a run's record of a step through (main's since #4400), and the one
- * it reads the steps of a phase from (main's since #4488). */
+/** The files the daemon writes a run's record of a step through (main's since #4400); the one it
+ * read the steps of a phase from from #4488 until #4611, which builds a plan's rows of steps since;
+ * and those main's daemon since #4611 (5dfd9cdbb0a) reads the step a run stands at from: the walk
+ * of the run (line.go), the roles a step runs as and a task's line (plan/plan.go), a task's place
+ * (record/plan.go), the project's default steps (config/stage3.go) and today's line of phases
+ * (phase/phase.go). */
 const STEPS_GO = "daemon/internal/workflow/steps.go";
 const PLAN_GO = "daemon/internal/workflow/plan.go";
 const DAEMON_OUTBOX = "daemon/internal/daemon/outbox.go";
+const LINE_GO = "daemon/internal/workflow/line.go";
+const PLAN_PACKAGE_GO = "daemon/internal/plan/plan.go";
+const RECORD_PLAN_GO = "daemon/internal/record/plan.go";
+const STAGE3_GO = "daemon/internal/config/stage3.go";
+const PHASE_GO = "daemon/internal/phase/phase.go";
+/** `word` after `prefix`, its first letter capitalised, as a Go constant names it
+ * (`steprecord.KindStep`, `TypeReview`, `record.PlaceRetro`, …). */
+const goConstant = (prefix: string, word: string) =>
+  `${prefix}${word[0]?.toUpperCase() ?? ""}${word.slice(1)}`;
 /** `kind` as the constant of steprecord names it (`steprecord.KindStep`, `KindRetro`, …). */
-const kindConstant = (kind: string) =>
-  `steprecord.Kind${kind[0]?.toUpperCase() ?? ""}${kind.slice(1)}`;
-/** The texts a daemon that records each run of a step holds, each built from step-records.ts's
- * tables where one restates it, so a daemon that writes another field, word, place, result or id
- * is of no shape the rig reads: the outbox's kind, its executor's write of every field of the row
+const kindConstant = (kind: string) => goConstant("steprecord.Kind", kind);
+/** STEPS' runs of a step of the task, at a place from 1, and its retro and its merge, at place 0,
+ * each in STEPS' order. */
+const STEP_RUNS = Object.values(STEPS).filter(({ kind }) => kind === "step");
+const ACT_RUNS = Object.values(STEPS).filter(({ kind }) => kind !== "step");
+/** The texts every daemon that records each run of a step holds, each built from step-records.ts's
+ * tables where one restates it, so a daemon that writes another field, word, result or id is of no
+ * shape the rig reads: the outbox's kind, its executor's write of every field of the row
  * (`stepWriteOf`) through the client's route under the daemon's actor and the body that route
  * takes, and the wait `execute` makes of the router's 404 of a Dispatch older than the route
- * (`waitsForTheRoute`, for the record lane and the role holders' publication); the task; the steps
- * of the task in order (plan.go's `DefaultSteps`), the role and the type of the step each working
- * phase runs (`stepWork`), its place, one plus the index of the first step of its role (`stepIn`),
- * and the retro's and the merge's step at place 0, which steps.go's `stepOf` reads through
- * `stepIn` over `DefaultSteps`; the result of each move (`endOf`, which ends no step stopped since
- * #4464: a head that conflicts with its base moves no issue); the id's namespace and name; and
- * which fields each of the three writes carries — the identity on every one, the moment alone at
- * the start, the moments, the result, the return, the report and the agent's session and model at
- * the end, and the report alone after it. The end reads its agent in the fact's own transaction
- * (`e.readAgent(ctx, tx, agent)`, main's since #4220, 46795520eb), which names the claim's
- * session only while the claim holds it: a world's one claim holds the session it registered, so
- * the end names that session, as before #4220. */
+ * (`waitsForTheRoute`, for the record lane and the role holders' publication); the result of each
+ * move (`endOf`, which ends no step stopped since #4464: a head that conflicts with its base moves
+ * no issue); the id's namespace and name; the identity every write carries (`stepWrite`); the
+ * moment alone at the start; and the report alone after the end. Where the task, its steps and a
+ * phase's place are read, and how the end is written, are each shape's own (`STEPS_OF_PHASE`,
+ * `STEPS_ON_WALK`). */
 const WRITES_STEPS: readonly Marker[] = [
   {
     file: "daemon/internal/record/outbox.go",
@@ -1156,33 +1168,6 @@ const WRITES_STEPS: readonly Marker[] = [
     file: "daemon/internal/dispatch/types.go",
     text: `type StepWrite struct {\n${STEP_WRITE_FIELDS.map(([name, type, key]) => `\t${name.padEnd(11)}${type.padEnd(11)}\`json:"${key}"\``).join("\n")}\n}`,
   },
-  { file: STEPS_GO, text: `const defaultTask = "${STEP_TASK}"` },
-  { file: STEPS_GO, text: "\treturn stepIn(DefaultSteps(), p)\n}" },
-  {
-    file: PLAN_GO,
-    text: `func DefaultSteps() []string {\n\treturn []string{${DEFAULT_STEPS.map((step) => JSON.stringify(step)).join(", ")}}\n}`,
-  },
-  {
-    file: PLAN_GO,
-    text: `\tswitch p {\n${Object.values(STEPS)
-      .filter(({ kind }) => kind === "step")
-      .map(({ go, role, type }) => `\tcase phase.${go}:\n\t\treturn "${role}", "${type}", true`)
-      .join("\n")}\n\t}\n\treturn "", "", false`,
-  },
-  {
-    file: PLAN_GO,
-    text: `\tswitch p {\n${Object.values(STEPS)
-      .filter(({ kind }) => kind !== "step")
-      .map(
-        ({ go, kind, role, type }) =>
-          `\tcase phase.${go}:\n\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant(kind)}}, "${role}", "${type}", true`
-      )
-      .join("\n")}\n\t}\n\trole, typ, ok = stepWork(p)`,
-  },
-  {
-    file: PLAN_GO,
-    text: `if head, _, _ := strings.Cut(named, ":"); stepRole(head) == role {\n\t\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant("step")}, Place: i + 1}, role, typ, true`,
-  },
   {
     file: STEPS_GO,
     text: `\tswitch trigger {\n\tcase ${FAILED_TRIGGERS.join(", ")}:\n\t\treturn ResultFailed, true\n\t}\n\treturn ResultPassed, false`,
@@ -1205,17 +1190,163 @@ const WRITES_STEPS: readonly Marker[] = [
   },
   {
     file: STEPS_GO,
-    text: 'write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)\n\tif !startedAt.IsZero() {\n\t\twrite.StartedAt = new(startedAt)\n\t}\n\twrite.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo\n\tif end.Report != "" {\n\t\twrite.Report = new(end.Report)\n\t}\n\tread := e.readAgent(ctx, tx, agent)\n\tif read.Session != "" {\n\t\twrite.Session = new(read.Session)\n\t}\n\tif read.Model != "" {\n\t\twrite.Model = new(read.Model)\n\t}',
+    text: "write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)\n\twrite.Report = new(report)",
+  },
+];
+/** The end's moments, result, return, report and agent's session and model, its agent read in the
+ * fact's own transaction (`e.readAgent(ctx, tx, …)`, main's since #4220, 46795520eb), which names
+ * the claim's session only while the claim holds it: a world's one claim holds the session it
+ * registered, so the end names that session, as before #4220. `startedAt` and `agent` are how a
+ * shape's source names the moment the run's start wrote and the claim it read the run's agent by;
+ * the two shapes write the end alike but for those names. */
+const endWrite = (startedAt: string, agent: string) =>
+  `if !${startedAt}.IsZero() {\n\t\twrite.StartedAt = new(${startedAt})\n\t}\n\twrite.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo\n\tif end.Report != "" {\n\t\twrite.Report = new(end.Report)\n\t}\n\tread := e.readAgent(ctx, tx, ${agent})\n\tif read.Session != "" {\n\t\twrite.Session = new(read.Session)\n\t}\n\tif read.Model != "" {\n\t\twrite.Model = new(read.Model)\n\t}`;
+/** What main's daemon from #4488 until #4611 holds where the step of a phase is read and the end
+ * written: the task (steps.go's `defaultTask`); the steps of the task in order (plan.go's
+ * `DefaultSteps`), the role and the type of the step each working phase runs (`stepWork`), its
+ * place, one plus the index of the first step of its role (`stepIn`), and the retro's and the
+ * merge's step at place 0, which steps.go's `stepOf` reads through `stepIn` over `DefaultSteps`;
+ * the end (`endStep`); and the return an end names (`endOfTransition`, the place of the step the
+ * work goes back into). */
+const STEPS_OF_PHASE: readonly Marker[] = [
+  { file: STEPS_GO, text: `const defaultTask = "${STEP_TASK}"` },
+  { file: STEPS_GO, text: "\treturn stepIn(DefaultSteps(), p)\n}" },
+  {
+    file: PLAN_GO,
+    text: `func DefaultSteps() []string {\n\treturn []string{${DEFAULT_STEPS.map((step) => JSON.stringify(step)).join(", ")}}\n}`,
+  },
+  {
+    file: PLAN_GO,
+    text: `\tswitch p {\n${STEP_RUNS.map(({ go, role, type }) => `\tcase phase.${go}:\n\t\treturn "${role}", "${type}", true`).join("\n")}\n\t}\n\treturn "", "", false`,
+  },
+  {
+    file: PLAN_GO,
+    text: `\tswitch p {\n${ACT_RUNS.map(
+      ({ go, kind, role, type }) =>
+        `\tcase phase.${go}:\n\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant(kind)}}, "${role}", "${type}", true`
+    ).join("\n")}\n\t}\n\trole, typ, ok = stepWork(p)`,
+  },
+  {
+    file: PLAN_GO,
+    text: `if head, _, _ := strings.Cut(named, ":"); stepRole(head) == role {\n\t\t\treturn record.StepPlace{Task: defaultTask, Kind: ${kindConstant("step")}, Place: i + 1}, role, typ, true`,
   },
   {
     file: STEPS_GO,
-    text: "write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)\n\twrite.Report = new(report)",
+    text: `write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)\n\t${endWrite("startedAt", "agent")}`,
   },
   {
     file: STEPS_GO,
     text: "if into, _, _, ok := stepOf(to); returns && ok {\n\t\tend.ReturnedTo = new(into.Place)\n\t}\n\tif handoff.Role == phase.RoleFor(from) {\n\t\tend.Report = handoff.HandoffRecord\n\t}",
   },
 ];
+/** What main's daemon since #4611 (5dfd9cdbb0a) holds in their place, where the step a run stands
+ * at is read off the walk of its run (line.go's `walk`): a run with plan rows walks its one task's
+ * steps, which the first step of each run of this release writes, the project's default steps for
+ * an owner who gives no plan (workflow/plan.go's `planFirstStep` and `defaultRows`); a run with
+ * none walks today's line, `phase.Order`, as the default steps of a project that names none
+ * (`todaysWalk`, `todaysSteps`). No owner gives a world's issue a plan and the rig's project names
+ * no `default_steps`, so either walk runs the steps DEFAULT_STEPS restates, and both place a
+ * phase's step at the place STEPS restates, as these hold: the task's id (steps.go's
+ * `defaultTask`, plan's `DefaultTask`); the default steps (config's `defaultStepWords`, read where
+ * a project names none, `RunsByDefault`) as the rows of both walks' steps (`planSteps`: each at
+ * one plus its index, with its role's type); the type and the phase each step's role runs as
+ * (plan's `builtinRoles` and its types' words), which a stored walk's line reads (`plan.Line`),
+ * and today's line, in the same order (phase's `Order`); a phase's place, one plus the index of
+ * its step on the line but for the retro and the merge, each at place 0 (`PlaceOf`), the role and
+ * the type each place runs (`stepOfWalk`) and the place's kind as steprecord names it (record's
+ * `StepPlace` and its kinds), under the walk's task (`placeOnWalk`); the end, which `endStep`
+ * writes through `endRun` with the identity it builds from the start the end reads; and the return
+ * an end names (`endOfTransition`, through `placeOnWalk`). At main 7e75126f: steps.go:22, :45-61,
+ * :105, :213 and :230-245, :434-439; line.go:54, :61, :65, :81, :103-122; workflow/plan.go:194 and
+ * :202-203; plan/plan.go:30-33, :50, :116-122 and :163-166; record/plan.go:55-58 and :85;
+ * config/stage3.go:123, :127 and :141-144; phase/phase.go:63. */
+const STEPS_ON_WALK: readonly Marker[] = [
+  { file: STEPS_GO, text: "const defaultTask = plan.DefaultTask" },
+  { file: PLAN_PACKAGE_GO, text: `const DefaultTask = "${STEP_TASK}"` },
+  {
+    file: STAGE3_GO,
+    text: `var defaultStepWords = []string{${DEFAULT_STEPS.map((step) => JSON.stringify(step)).join(", ")}}`,
+  },
+  { file: STAGE3_GO, text: 'steps, err := plan.ParseSteps(strings.Join(defaultStepWords, " "))' },
+  {
+    file: STAGE3_GO,
+    text: "\tif p.DefaultSteps != nil {\n\t\treturn slices.Clone(p.DefaultSteps)\n\t}\n\treturn slices.Clone(unsetDefaultSteps)",
+  },
+  {
+    file: PLAN_GO,
+    text: "planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)",
+  },
+  {
+    file: LINE_GO,
+    text: 'var todaysSteps = planSteps("", 0, defaultTask, config.Project{}.RunsByDefault())',
+  },
+  {
+    file: PLAN_GO,
+    text: "rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,\n\t\t\tType: builtinDeployment.Roles[step.Role].Type, AgentKey: step.Key}",
+  },
+  {
+    file: LINE_GO,
+    text: "var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}",
+  },
+  {
+    file: PLAN_PACKAGE_GO,
+    text: `var builtinRoles = []RoleDef{\n${STEP_RUNS.map(({ go, role, type }) => `\t{Name: "${role}", Type: ${goConstant("Type", type)}, Phase: phase.${go}},`).join("\n")}\n}`,
+  },
+  ...[...new Set(STEP_RUNS.map(({ type }) => type))].map((type) => ({
+    file: PLAN_PACKAGE_GO,
+    text: `\t${goConstant("Type", type).padEnd(18)} Type = "${type}"`,
+  })),
+  {
+    file: PLAN_PACKAGE_GO,
+    text: "\tfor _, step := range steps {\n\t\tline = append(line, d.Roles[step.Role].Phase)\n\t}\n\treturn append(line, phase.Retro, phase.Merging)",
+  },
+  { file: LINE_GO, text: "line := plan.Line(namedSteps(steps), builtinDeployment)" },
+  {
+    file: LINE_GO,
+    text: "func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }",
+  },
+  {
+    file: PHASE_GO,
+    text: `var Order = []Phase{${Object.values(STEPS)
+      .map(({ go }) => go)
+      .join(", ")}}`,
+  },
+  {
+    file: LINE_GO,
+    text: `\tswitch p {\n${ACT_RUNS.map(({ go, kind }) => `\tcase phase.${go}:\n\t\treturn record.TaskPlace{Kind: ${goConstant("record.Place", kind)}}, true`).join("\n")}\n\t}\n\tif at := slices.Index(w.steps(), p); at >= 0 {\n\t\treturn record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true\n\t}`,
+  },
+  { file: LINE_GO, text: "\treturn w.Line[:len(w.Line)-2]" },
+  {
+    file: STEPS_GO,
+    text: `\tswitch place.Kind {\n${ACT_RUNS.map(({ kind, role, type }) => `\tcase ${goConstant("record.Place", kind)}:\n\t\treturn "${role}", "${type}", true`).join("\n")}\n\tcase record.PlaceStep:\n\t\tif place.Position >= 1 && place.Position <= len(w.Steps) {\n\t\t\tnamed := w.Steps[place.Position-1]\n\t\t\treturn stepRole(named.Role), named.Type, true\n\t\t}\n\t}`,
+  },
+  { file: STEPS_GO, text: "return stands.StepPlace(w.Task), role, typ, true" },
+  { file: RECORD_PLAN_GO, text: "return StepPlace{Task: task, Kind: p.Kind, Place: p.Position}" },
+  {
+    file: RECORD_PLAN_GO,
+    text: [...new Set(Object.values(STEPS).map(({ kind }) => kind))]
+      .map((kind) => `\t${goConstant("Place", kind).padEnd(10)} = ${kindConstant(kind)}`)
+      .join("\n"),
+  },
+  {
+    file: STEPS_GO,
+    text: "return stepWrite(before, step.place, step.role, step.typ, start.Agent, start.Starts)",
+  },
+  {
+    file: STEPS_GO,
+    text: `write := identity(start)\n\t${endWrite("start.StartedAt", "claim.Token(start.Agent)")}`,
+  },
+  {
+    file: STEPS_GO,
+    text: "if into, _, _, ok := placeOnWalk(w, to); returns && ok {\n\t\tend.ReturnedTo = new(into.Place)\n\t}\n\tif handoff.Role == phase.RoleFor(from) {\n\t\tend.Report = handoff.HandoffRecord\n\t}",
+  },
+];
+/** Dispatch's route of a step write, which every daemon that records each run of a step writes
+ * through. */
+const STEP_ROUTE: Marker = {
+  file: "envoy/internal/dispatch/api/routes_table.go",
+  text: '{http.MethodPut, "/api/v1/issues/{key}/steps/{id}", authAny,',
+};
 
 /** The refusal of a completion that rates the plan and does not end the retro, as main's daemon
  * since #4488 words it: its code, the description of the completion the workflow fills with the
@@ -1233,7 +1364,10 @@ export const PLAN_RATING_UNEXPECTED = {
  * unspent, of every completion that does not end the retro; and its description and message in
  * the words `PLAN_RATING_UNEXPECTED` restates. The request's members end at the rating in main's
  * daemon from #4488 until #3659, and #3659 reads `ready` after them (`RETIRES_READY`), so the
- * marker names the two members and not the end of the request. */
+ * marker names the two members and not the end of the request. The fact ends at the rating from
+ * #4488 until #4611, and #4611 (5dfd9cdbb0a) hands it the step a fail returns to after it
+ * (`ReturnTo: returnTo`, handoff.go:428-429 at main 7e75126f), so that marker names the rating and
+ * not the end of the fact. */
 const REFUSES_RATING: readonly Marker[] = [
   {
     file: "daemon/internal/api/handoff.go",
@@ -1241,7 +1375,7 @@ const REFUSES_RATING: readonly Marker[] = [
   },
   {
     file: "daemon/internal/api/handoff.go",
-    text: "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})",
+    text: "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract",
   },
   {
     file: "daemon/internal/workflow/engine.go",
@@ -1633,15 +1767,17 @@ export function repositoriesLive(checkout: string): boolean {
  * `OUTBOX_WITHOUT_HOLDERS`, `ROW_AS_QUEUED`, `BY_ROW_SESSION`, `BY_COMMIT_ID`,
  * `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`, `HEALTH_UNSTATED`). The refusal of `ready` has
  * a third, main's from #4488 until #3659, whose request ends at the rating
- * (`REQUEST_WITHOUT_READY`). The refusal of a body holding U+0000 has four: main's words since
- * #4463 written through the answer writer since #3659 and as a body of their own before it,
- * #4488's words before them, and main `ff2a10ef`'s store in their place (`STORES_NUL`). The
- * state's repositories block is main's since #4493 or the mapping every daemon before it serves
- * (`REPOSITORIES_MAPPED`). The
- * completion refusals have one shape, every daemon the rig runs holding them, and the route's
- * verdict rule one in each writer of a refusal (`FAILURE_WRITERS`). Throws, naming each marker and
- * its file, for a source of no shape or of more than one (`sourceShape`), which refuses the batch
- * at rig.sh's label_facts and a stand-in's boot. */
+ * (`REQUEST_WITHOUT_READY`), and so has the record of each run of a step, main's from #4488 until
+ * #4611, which read the step of a phase off `DefaultSteps` (`STEPS_OF_PHASE`) where main's since
+ * reads it off the walk of the run (`STEPS_ON_WALK`). The refusal of a body holding U+0000 has
+ * four: main's words since #4463 written through the answer writer since #3659 and as a body of
+ * their own before it, #4488's words before them, and main `ff2a10ef`'s store in their place
+ * (`STORES_NUL`). The state's repositories block is main's since #4493 or the mapping every daemon
+ * before it serves (`REPOSITORIES_MAPPED`). The completion refusals have one shape, every daemon
+ * the rig runs holding them, and the route's verdict rule one in each writer of a refusal
+ * (`FAILURE_WRITERS`). Throws, naming each marker and its file, for a source of no shape or of
+ * more than one (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's
+ * boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
     sourceShape(checkout, `the completion refusal ${code}`, [
@@ -1745,14 +1881,13 @@ export function labelShapes(checkout: string): LabelShapes {
     ]),
     writesSteps: sourceShape(checkout, "the record of each run of a step", [
       {
-        name: "main's daemon and Dispatch since #4400",
-        markers: [
-          ...WRITES_STEPS,
-          {
-            file: "envoy/internal/dispatch/api/routes_table.go",
-            text: '{http.MethodPut, "/api/v1/issues/{key}/steps/{id}", authAny,',
-          },
-        ],
+        name: "main's daemon and Dispatch since #4611, which read the step a run stands at off the walk of its run",
+        markers: [...WRITES_STEPS, ...STEPS_ON_WALK, STEP_ROUTE],
+        value: true,
+      },
+      {
+        name: "main's daemon and Dispatch from #4488 until #4611, which read the step of a phase off DefaultSteps",
+        markers: [...WRITES_STEPS, ...STEPS_OF_PHASE, STEP_ROUTE],
         value: true,
       },
       {

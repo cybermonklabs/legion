@@ -761,10 +761,55 @@ test.skipIf(skip)(
 // read out of the checkout the label is built from and never by the label's name: the base label
 // was main ff2a10ef and is now main at the commit the head's newest forward merge brought in, so a
 // table keyed by the name answered every base run as a daemon its checkout no longer has. Each
-// file is read in two shapes, this checkout's and an older daemon's (main ff2a10ef's among them),
+// file is read in two answers, this checkout's and an older daemon's (main ff2a10ef's among them),
 // each written here as that daemon writes it, so no row needs a checkout of the older daemon on
 // the host.
-/** An engine of this checkout's shape (`recorded`): `handoff` asks `leftItsPhase`, which reads
+/** An engine of this checkout's shape (`recorded`, main's since #4611): `handoff` asks
+ * `pastCompletion`, which asks `pastReportOf`, declared in plan.go (`PAST_REPORT`), which asks
+ * `leftItsPhase`, which asks `ranUnreported`, which reads `row.Completed()`. */
+const ASKING_ENGINE = [
+  "func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {",
+  "\treturn e.ranUnreported(ctx, tx, issue, role, token)",
+  "}",
+  "",
+  "func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {",
+  "\trow, err := e.phaseRow(ctx, tx, issue.Key, role)",
+  "\tif err != nil || row.Completed() {",
+  "\t\treturn false, err",
+  "\t}",
+  "\treturn true, nil",
+  "}",
+  "",
+  "func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (now, late *intake.Refusal, err error) {",
+  "\tpast, err := e.pastReportOf(ctx, tx, issue, fact, reported)",
+  "\tif past != leftPhaseReported {",
+  "\t\treturn intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key), nil, nil",
+  "\t}",
+  "\treturn nil, nil, err",
+  "}",
+  "",
+  "func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {",
+  "\treported := phase.Of(fact.Role, issue.Phase)",
+  "\tif reported != issue.Phase {",
+  "\t\tif now, _, err := e.pastCompletion(ctx, tx, *issue, fact, reported); err != nil || now != nil {",
+  "\t\t\treturn intake.Result{Refusal: now}, err",
+  "\t\t}",
+  "\t}",
+  "\treturn intake.Result{}, nil",
+  "}",
+].join("\n");
+/** The method of main's engine since #4611 that asks `leftItsPhase`, as its workflow/plan.go
+ * declares it, beside ASKING_ENGINE. */
+const PAST_REPORT = [
+  "func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {",
+  "\tleft, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)",
+  "\tif err != nil || !left {",
+  "\t\treturn noRunReported, err",
+  "\t}",
+  "\treturn leftPhaseReported, nil",
+  "}",
+].join("\n");
+/** An engine of main's shape before #4611 (`recorded`): `handoff` asks `leftItsPhase`, which reads
  * `row.Completed()`. */
 const RECORDED_ENGINE = [
   "func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (bool, error) {",
@@ -822,14 +867,16 @@ const ISSUE_ROUTE = [
   "\trecordBacked := handoffPhase && writer == grant.Role",
   "}",
 ].join("\n");
-/** A substitute checkout whose daemon's engine.go holds `engine` and whose api/handoff.go holds
- * `route`, each after its package clause; undefined writes no such file. */
-function completionOver(name: string, engine?: string, route?: string): string {
+/** A substitute checkout whose daemon's engine.go holds `engine`, whose api/handoff.go holds
+ * `route` and whose workflow/plan.go holds `plan`, each after its package clause; undefined writes
+ * no such file. */
+function completionOver(name: string, engine?: string, route?: string, plan?: string): string {
   const checkout = path.join(rig, `completion-${name}`);
   const daemon = path.join(checkout, "packages", "daemon", "internal");
   for (const [dir, file, body] of [
     ["workflow", "engine.go", engine],
     ["api", "handoff.go", route],
+    ["workflow", "plan.go", plan],
   ] as const) {
     mkdirSync(path.join(daemon, dir), { recursive: true });
     if (body !== undefined)
@@ -838,9 +885,9 @@ function completionOver(name: string, engine?: string, route?: string): string {
   return checkout;
 }
 
-// This checkout's own daemon, read out of its own engine.go and handoff.go. Catches: a reading
-// that knows the older shape alone, which reads the head's daemon as no daemon, and a reading
-// that finds the route in one function by name (the route's statements moved out of
+// This checkout's own daemon, read out of its own workflow package and handoff.go. Catches: a
+// reading that knows the older shape alone, which reads the head's daemon as no daemon, and a
+// reading that finds the route in one function by name (the route's statements moved out of
 // `handoffComplete` into `answerCompletion`).
 test.skipIf(skip)(
   "the completion reading takes this checkout's daemon as recorded and left",
@@ -854,8 +901,9 @@ test.skipIf(skip)(
 );
 
 // Each shape of each file, in a checkout holding it and the other file in either shape, so each
-// file is read for itself. Catches: either shape of either file dropped, which reads a checkout
-// holding it as no daemon, and a reading that takes one file's shape as the other's.
+// file is read for itself, and main's engine since #4611, whose `leftItsPhase` its plan.go asks.
+// Catches: either shape of either file dropped, which reads a checkout holding it as no daemon, a
+// reading that takes one file's shape as the other's, and one that reads engine.go's methods alone.
 test.skipIf(skip)(
   "the completion reading takes each file in either shape, in either pairing",
   () => {
@@ -871,19 +919,23 @@ test.skipIf(skip)(
       ["refused-left", REFUSED_ENGINE, LEFT_ROUTE, { lateRole: "refused", recordRoute: "left" }],
     ] as const)
       expect([name, labelDaemon(completionOver(name, engine, route))]).toEqual([name, read]);
+    expect(
+      labelDaemon(completionOver("asking-left", ASKING_ENGINE, LEFT_ROUTE, PAST_REPORT))
+    ).toEqual({ lateRole: "recorded", recordRoute: "left" });
   },
   600_000
 );
 
 // A source in neither shape, or in both, is refused, naming the file and what was looked for,
 // never read as a shape. Catches: a reading that defaults to one shape where it finds neither or
-// both, one that takes a leftItsPhase reading no row.Completed() as `recorded`, a gate refusing
-// with another code as `refused`, and a route whose record-backed rule is neither shape's.
+// both, one that takes a leftItsPhase reading no row.Completed() as `recorded`, one that takes
+// main's `pastCompletion` as `recorded` where no method of the package asks `leftItsPhase`, a gate
+// refusing with another code as `refused`, and a route whose record-backed rule is neither shape's.
 test.skipIf(skip)(
   "the completion reading refuses a file in neither shape or in both, naming it",
   () => {
     const engineShapes =
-      'a call of leftItsPhase, a method of the file that reads row.Completed() (recorded), or `if RoleFor(issue.Phase) != fact.Role { return refused("HANDOFF_NOT_CURRENT_PHASE", …) }` (refused)';
+      'a call of pastCompletion, which calls pastReportOf, which calls leftItsPhase, which calls ranUnreported, which reads row.Completed(), or of leftItsPhase, which reads row.Completed(), each a method of the package (recorded), or `if RoleFor(issue.Phase) != fact.Role { return refused("HANDOFF_NOT_CURRENT_PHASE", …) }` (refused)';
     const routeShapes =
       "`of := phase.Of(grant.Role, issue.Phase); word, writer, handoffPhase := phase.Handoff(of); recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)` (left) nor `word, writer, handoffPhase := phase.Handoff(issue.Phase); recordBacked := handoffPhase && writer == grant.Role` (issue)";
     const engine = path.join("workflow", "engine.go");
@@ -912,6 +964,7 @@ test.skipIf(skip)(
         engine,
         `holds neither ${engineShapes}`,
       ],
+      ["unasked-left", ASKING_ENGINE, LEFT_ROUTE, engine, `holds neither ${engineShapes}`],
       [
         "other-code",
         REFUSED_ENGINE.replace('"HANDOFF_NOT_CURRENT_PHASE"', '"HANDOFF_STALE_ENTRY"'),
@@ -1477,10 +1530,9 @@ describe("the label's build and its facts", () => {
 
   /** A checkout under the row's directory holding what facts reads, copied from this one as
    * gh-standin.test.ts's per-label rows copy the wrapper: the daemon's API package and engine.go,
-   * the eleven other files the source shapes are read from (labelShapes), and the wrapper's
-   * package, internal/ghconfig, internal/leakguard (whose words the wrapper refuses an owner in)
-   * and saved gh help, with `edit` applied to the wrapper's gh_help.go: a later wrapper's own
-   * source. */
+   * the other files the source shapes are read from (labelShapes), and the wrapper's package,
+   * internal/ghconfig, internal/leakguard (whose words the wrapper refuses an owner in) and saved
+   * gh help, with `edit` applied to the wrapper's gh_help.go: a later wrapper's own source. */
   function factsCheckout(at: string, edit: (source: string) => string): string {
     const checkout = path.join(rig, at);
     const daemon = path.join(checkout, "packages", "daemon");
@@ -1503,6 +1555,11 @@ describe("the label's build and its facts", () => {
       "internal/daemon/outbox.go",
       "internal/workflow/steps.go",
       "internal/workflow/plan.go",
+      "internal/workflow/line.go",
+      "internal/plan/plan.go",
+      "internal/record/plan.go",
+      "internal/config/stage3.go",
+      "internal/phase/phase.go",
       "cmd/legion/testdata/gh-help",
     ]) {
       mkdirSync(path.dirname(path.join(daemon, file)), { recursive: true });
@@ -1663,8 +1720,8 @@ describe("the label's build and its facts", () => {
 // (labelShapes): main's since the change that brought it, by its own marker, or main `ff2a10ef`'s,
 // which predates it, by the code it has in its place. A marker it cannot find refuses the batch,
 // naming the marker and its file, and is never read as an older daemon (the architect's ruling of
-// 2026-11-18). Each source here is a copy of the thirteen files the readers read, so a row reads them
-// and nothing else.
+// 2026-11-18). Each source here is a copy of the twenty-eight files the readers read, so a row
+// reads them and nothing else.
 describe("the shapes of a label's daemon source", () => {
   const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
   /** The files labelShapes reads, under a checkout's `packages/`. */
@@ -1692,6 +1749,12 @@ describe("the shapes of a label's daemon source", () => {
     "daemon/internal/api/shaping.go",
     "daemon/internal/api/version.go",
     "daemon/internal/api/updatestate.go",
+    // Main's since #4611 reads the step a run stands at off the walk of its run.
+    "daemon/internal/workflow/line.go",
+    "daemon/internal/plan/plan.go",
+    "daemon/internal/record/plan.go",
+    "daemon/internal/config/stage3.go",
+    "daemon/internal/phase/phase.go",
   ];
   const EFFECTS = "daemon/internal/workflow/effects.go";
   const ROUND_WORDS = "daemon/internal/reviewround/reviewround.go";
@@ -1774,7 +1837,7 @@ describe("the shapes of a label's daemon source", () => {
   // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
   // the daemon refuses it, a body holding U+0000 taken or refused in #4488's words, a pull
   // request counting fix attempts main's daemon keeps no count of, answers stating no contract
-  // and a completion's `ready: true` taken; and a reader that needs a file the twenty-three are
+  // and a completion's `ready: true` taken; and a reader that needs a file the twenty-eight are
   // not.
   test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000 in main's words since #4463, counts no fix attempt, states its contract and refuses ready", () => {
     expect(DAEMON_API_VERSION).toBeGreaterThan(188);
@@ -1786,9 +1849,9 @@ describe("the shapes of a label's daemon source", () => {
   // steps` then lists otherwise than production (main's since #4400). Each text the stand-in and
   // the seeds restate is held to the label's source: a field the executor stops sending, a write
   // that sends another body, a Dispatch older than the route no longer waited for, a phase whose
-  // step moves (main's steps of a phase since #4488), a result a move gives otherwise, and an id
-  // named another way each leave the source of neither shape, refused naming the reader, never
-  // read as a daemon that writes none.
+  // step moves or whose type changes (main's steps of a phase since #4488, read off the walk of
+  // its run since #4611), a result a move gives otherwise, and an id named another way each leave
+  // the source of no shape, refused naming the reader, never read as a daemon that writes none.
   test("a daemon source that writes a step record otherwise than step-records.ts restates is of no shape", () => {
     for (const [file, marker, renamed] of [
       [
@@ -1812,25 +1875,25 @@ describe("the shapes of a label's daemon source", () => {
         "return kind == record.OutboxKindRoleHoldersPublish",
       ],
       [
-        "daemon/internal/workflow/plan.go",
+        "daemon/internal/config/stage3.go",
         '"planner", "implementer", "tester", "reviewer", "acceptance:owner"',
         '"planner", "tester", "implementer", "reviewer", "acceptance:owner"',
       ],
       [
-        "daemon/internal/workflow/plan.go",
-        'return "reviewer", "review", true',
-        'return "reviewer", "reviewing", true',
+        "daemon/internal/plan/plan.go",
+        '{Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing}',
+        '{Name: "reviewer", Type: TypeTesting, Phase: phase.Reviewing}',
       ],
-      ["daemon/internal/workflow/plan.go", "Place: i + 1}", "Place: i}"],
-      [
-        "daemon/internal/workflow/plan.go",
-        'Kind: steprecord.KindRetro}, "implementer", "", true',
-        'Kind: steprecord.KindRetro}, "architect", "", true',
-      ],
+      ["daemon/internal/workflow/line.go", "Position: at + 1}", "Position: at}"],
       [
         "daemon/internal/workflow/steps.go",
-        "\treturn stepIn(DefaultSteps(), p)",
-        '\treturn stepIn([]string{"planner"}, p)',
+        'case record.PlaceRetro:\n\t\treturn "implementer", "", true',
+        'case record.PlaceRetro:\n\t\treturn "architect", "", true',
+      ],
+      [
+        "daemon/internal/phase/phase.go",
+        "var Order = []Phase{Planning, Implementing,",
+        "var Order = []Phase{Implementing, Planning,",
       ],
       [
         "daemon/internal/workflow/steps.go",
@@ -1926,10 +1989,10 @@ describe("the shapes of a label's daemon source", () => {
   const TESTER_VERDICT_BEFORE = TESTER_VERDICT.replace("s.writeFailure(w, r, ", "writeFailure(w, ");
   const OTHER_VERDICT_BEFORE = OTHER_VERDICT.replace("s.writeFailure(w, r, ", "writeFailure(w, ");
   // The refusal of a rating the completion does not take, main's since #4488 (daemon-pane.ts's
-  // `REFUSES_RATING`).
+  // `REFUSES_RATING`), whose fact goes on past the rating since #4611.
   const RATING_FIELDS =
     'PlanRating     *int       `json:"planRating,omitempty"`\n\tPlanReason     *string    `json:"planReason,omitempty"`';
-  const RATING_ON_FACT = "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})";
+  const RATING_ON_FACT = "PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract";
   const RATING_UNSPENT =
     "if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {\n\t\treturn intake.Result{Refusal: refusal, Unspent: true}, nil\n\t}";
   const RATING_WHAT =

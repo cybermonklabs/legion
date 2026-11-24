@@ -3,40 +3,47 @@
 // and the report alone of a completion that lands after that end, each an outbox `step_record`
 // row its executor sends as `PUT /api/v1/issues/{key}/steps/{id}` under the daemon's own session
 // (packages/daemon/internal/daemon/outbox.go's `publishStepRecord`, workflow/steps.go's
-// `startStep`, `endStep` and `reportEndedStep`). Dispatch writes each field once and keeps what a
-// write leaves out, so the writes of one run merge in any order. `dispatch steps` and the route's
-// GET are answered by the run's own Dispatch server, the label's own build, so the world fakes the
-// write alone: the world's seeds write the history's runs (seed-handoffs.ts's `stepsSeed`), and
-// the daemon stand-in each run it starts or ends (daemon-standin.ts's `queueStep`). Every table
-// here restates the label daemon's source, which daemon-pane.ts's `labelShapes` holds it to by
-// marker (`writesSteps`), so a daemon that writes otherwise is of no shape the rig reads.
+// `startStep`, `endStep` through `endRun`, and `reportEndedStep`). Dispatch writes each field
+// once and keeps what a write leaves out, so the writes of one run merge in any order. `dispatch
+// steps` and the route's GET are answered by the run's own Dispatch server, the label's own build,
+// so the world fakes the write alone: the world's seeds write the history's runs
+// (seed-handoffs.ts's `stepsSeed`), and the daemon stand-in each run it starts or ends
+// (daemon-standin.ts's `queueStep`). Every table here restates the label daemon's source, which
+// daemon-pane.ts's `labelShapes` holds it to by marker (`writesSteps`), so a daemon that writes
+// otherwise is of no shape the rig reads.
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { STEP_AGENT_TEXT_PATTERN } from "@legion/contracts/dispatch-tools";
 import { sessionId, transcriptEntries } from "./transcript";
 
-/** The task every step of today's fixed phases is a step of (workflow/steps.go's `defaultTask`). */
+/** The task every step of a world's issue is a step of: the task of an issue whose owner gives no
+ * plan (workflow/steps.go's `defaultTask`, plan's `DefaultTask` since main's #4611). */
 export const STEP_TASK = "default";
 
-/** The steps of that task, in order, each a role or `role:key` (workflow/plan.go's
- * `DefaultSteps`, main's since #4488): a working phase's step is at the place of the first step
- * whose role works it (`placeOf`). */
+/** The steps of that task, in order, each a role or `role:key`: the default steps of a project
+ * that names none, which every world's is (config's `defaultStepWords` since main's #4611, which
+ * the run's walk reads, workflow/line.go's `todaysSteps` and plan.go's `defaultRows`; plan.go's
+ * `DefaultSteps` from #4488): a working phase's step is at the place of the first step whose role
+ * works it (`placeOf`). */
 export const DEFAULT_STEPS = ["planner", "implementer", "tester", "reviewer", "acceptance:owner"];
 
 /** The place in the task of the step `role` works: one plus the index of the first of
- * DEFAULT_STEPS whose role, the part before its `:key`, is `role` (workflow/plan.go's `stepIn`).
- * Throws for a role no step names. */
+ * DEFAULT_STEPS whose role, the part before its `:key`, is `role` (workflow/line.go's `PlaceOf`
+ * over the line of the default steps, plan's `Line`; plan.go's `stepIn` from #4488). Throws for a
+ * role no step names. */
 function placeOf(role: string): number {
   const at = DEFAULT_STEPS.findIndex((named) => named.split(":")[0] === role);
   if (at < 0) throw new Error(`no step of DEFAULT_STEPS is the ${role}'s`);
   return at + 1;
 }
 
-/** The step each phase runs (workflow/steps.go's `stepOf`, workflow/plan.go's `stepIn` over
- * `DefaultSteps`): its phase's Go name, the kind of the run (`step` at its place from 1, from
- * `placeOf`; `retro` and `merge` at place 0, which no plan names), the role and the type its
- * record names (plan.go's `stepWork` for a step). A phase not here runs no step. */
+/** The step each phase runs (workflow/steps.go's `placeOnWalk` and `stepOfWalk` over the walk of
+ * the run, since main's #4611; its `stepOf` through plan.go's `stepIn` over `DefaultSteps` from
+ * #4488): its phase's Go name, the kind of the run (`step` at its place from 1, from `placeOf`;
+ * `retro` and `merge` at place 0, which no plan names), the role and the type its record names
+ * (plan's `builtinRoles` for a step; plan.go's `stepWork` from #4488). A phase not here runs no
+ * step. */
 export const STEPS = {
   planning: {
     go: "Planning",

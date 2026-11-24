@@ -91,7 +91,7 @@ import {
 // The Legion gh wrapper's reading of the owners a call names, by its own selector table, and of
 // the calls it runs on the pane's own token: one reading for this stand-in's refusal and health's
 // judgement of it.
-import { runsOnPaneToken } from "./gh-pane-token";
+import { capturedRead, runsOnPaneToken } from "./gh-pane-token";
 // The GraphQL reader the sweep of the role texts reads their queries with, and the executor that
 // answers a query from the world's graph: one reading of a query for the texts and the world.
 import {
@@ -151,8 +151,6 @@ import {
   reviewNode,
   unknownField,
 } from "./gh-view";
-// Production's answers to the reads of the actions the world's workflow pins (`PINNED_READS`).
-import pinnedActions from "./pinned-actions.json";
 // GitHub's REST objects more than one route carries — an account, an App, the repository, the
 // pull request — built one way for this stand-in and the HTTP one Dispatch reads.
 import {
@@ -479,12 +477,11 @@ let onPaneToken = false;
  * token instead (main's since #4035: a call that writes nothing, naming only owners outside the
  * project, from a pane that names its GH_CONFIG_DIR, gh-pane-token.ts's `runsOnPaneToken`), the
  * call goes on to the world's GitHub as any other does (`onPaneToken`), and gets what it answers
- * for that owner: production's own answer to a read round 33's agents made of an action the
- * world's workflow pins (`pinned`, read from `PINNED_READS`), and GitHub's 404 for any other
- * repository the world does not hold, as GitHub answers a token that cannot see it. A run with no
- * world names no project; a world whose selectors cannot be read, or name no words of the
- * wrapper's refusal, is the rig's fault, and the call ends with 2, naming the file, as a world.json
- * that is no world ends it.
+ * for that owner: production's own answer to a read agents made of an action the world's workflow
+ * pins (`pinned`, the capture's), and GitHub's 404 for any other repository the world does not
+ * hold, as GitHub answers a token that cannot see it. A run with no world names no project; a
+ * world whose selectors cannot be read, or name no words of the wrapper's refusal, is the rig's
+ * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it.
  *
  * The wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's read of
  * its visibility, exit 2 before gh runs, saying that GitHub answers 404 for the repository (main's
@@ -540,33 +537,18 @@ if (as === "gh" && world !== undefined) {
   onPaneToken = refusal !== undefined;
   handler = "unrouted";
 }
-/** Production's answers to the reads agents made of the two actions the world's workflow pins
- * (pinned-actions.json, the tester's capture of INFRA-764's round 33 reads: legion gh under the
- * issue's token, 2026-11-22T17:55:33Z to 17:55:39Z, each exit 0), each by the command it was read
- * with. Imported, so the bundle a run's `gh` runs carries it (rig.sh's standins). */
-const PINNED_READS = z
-  .object({
-    reads: z.array(
-      z.object({
-        command: z.array(z.string()),
-        read_at: z.string(),
-        exit: z.literal(0),
-        body: z.unknown(),
-      })
-    ),
-  })
-  .parse(pinnedActions).reads;
-/** The body production's gh answered this call with where it is a `gh api` read of a path
- * pinned-actions.json captured and the label's wrapper ran it on the pane's token
+/** Production's answer to this call where it is a `gh api` read the capture holds
+ * (gh-pane-token.ts's `capturedRead`) and the label's wrapper ran it on the pane's token
  * (`onPaneToken`): the architect's rulings of 2026-11-22T17:49:24Z and 18:00:12Z, which answer
  * those reads, in every form legion gh runs that way, from the capture in place of the world's
- * 404. Its `--jq`, `--paginate` and `--slurp` read that body below, as every answer's do. Undefined
- * for any other call: a form the wrapper refuses (`-i`) is refused above, and no other read of
+ * 404, and of 2026-11-23T05:52:25Z, under which a captured 404 is answered so too, with its body,
+ * its stderr and its exit, where the world printed its own 404 (round 34's a167a5bc6341 met it
+ * formatted over five lines, naming no page of GitHub's REST reference). The `--jq`, `--paginate`
+ * and `--slurp` of a read answered exit 0 read its body below, as every answer's do; gh prints a
+ * refused read's body as GitHub sent it and runs no `--jq` over it (`refuseWith`). Undefined for
+ * any other call: a form the wrapper refuses (`-i`) is refused above, and no other read of
  * another owner is modelled. */
-const pinned =
-  onPaneToken && args[0] === "api"
-    ? PINNED_READS.find(({ command }) => command.join(" ") === `gh api ${endpointPath(args)}`)?.body
-    : undefined;
+const pinned = onPaneToken && args[0] === "api" ? capturedRead(args) : undefined;
 /** What `git -C <run>/remote.git <args...>` prints, or undefined when the command fails: the
  * run's own bare remote, read at the call. A run with no remote of its own fails every call. */
 function fromRemote(...args: string[]): string | undefined {
@@ -3138,8 +3120,9 @@ function reviewCommentJson(thread: Json, comment: Json, form: "pull" | "review")
 }
 let output: unknown;
 if (pinned !== undefined) {
-  output = pinned;
   handler = "pinned read";
+  if (pinned.exit !== 0) refuseWith(pinned.body, pinned.stderr ?? "", pinned.exit);
+  output = pinned.body;
 } else if (compared !== undefined) {
   output = compared;
   handler = "comparison";

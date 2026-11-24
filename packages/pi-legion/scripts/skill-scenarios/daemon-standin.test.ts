@@ -1635,9 +1635,9 @@ let older: string | undefined;
  * differs: it registers no `claims/turn-outcome` and no `claims/activity`; its engine's `handoff`
  * refuses every late role with `if RoleFor(issue.Phase) != fact.Role { return
  * refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(OLDER_SENTENCE, …)) }` and asks no
- * `leftItsPhase` (the `refused` shape); and its completion route holds a completion's record to
- * the phase the issue stands in (`phase.Handoff(issue.Phase)`, the `issue` shape). Made once for
- * the file. */
+ * `leftItsPhase`, nor main's `pastCompletion` since #4611 (the `refused` shape); and its
+ * completion route holds a completion's record to the phase the issue stands in
+ * (`phase.Handoff(issue.Phase)`, the `issue` shape). Made once for the file. */
 function olderCheckout(): string {
   if (older !== undefined) return older;
   const { checkout, daemon } = daemonCheckout("older-checkout");
@@ -1655,8 +1655,10 @@ function olderCheckout(): string {
   writeFileSync(server, fewer);
   const engine = path.join(daemon, "internal", "workflow", "engine.go");
   const taking = readFileSync(engine, "utf8");
+  // The gate goes before this checkout's ask of a late role, which it drops: main's since #4611
+  // declares the refusal it may answer late (`var late`) between the two and the ask.
   const refusing = taking.replace(
-    /\treported := phase\.Of\(fact\.Role, issue\.Phase\)\n\tcurrent := reported == issue\.Phase\n\tif !current \{\n[\s\S]*?\n\t\}\n/,
+    /\treported := phase\.Of\(fact\.Role, issue\.Phase\)\n\tcurrent := reported == issue\.Phase\n(?:\tvar late \*intake\.Refusal\n)?\tif !current \{\n[\s\S]*?\n\t\}\n/,
     (block) =>
       `\tif RoleFor(issue.Phase) != fact.Role {\n\t\treturn refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("${OLDER_SENTENCE}", fact.Role, issue.Phase, issue.Key)), nil\n\t}\n${block.slice(0, block.indexOf("\tif !current {"))}`
   );

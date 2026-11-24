@@ -105,6 +105,12 @@
       "reason": "every completion reaches the stand-in on a grant of the claim its booted agent registered for the stand-in's own role, and rig.sh's worker_boot starts one stand-in for each agent it boots"
     },
     {
+      "name": "main's late refusal of a report of the run a stop of its task ended",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(workflow/plan\\.go's `lateReport`\\) is not modelled\\. Unreachable: ",
+      "reason": "main's engine since #4611 refuses it only for a task its stop ended (record.HoldTaskStopped), which an owner's stop_task or a failed step no earlier step takes the work back from (workflow/plan_stop.go's stopUnreturned) writes; no scenario boots an owner (rig.sh's worker_boots), and every failed step of the default steps has the implementer's before it"
+    },
+    {
       "name": "MISSING_FIELD and CHECK_WAKE_UNEXPECTED",
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ .*\\(MISSING_FIELD\\) and on a `wakeAt` \\(CHECK_WAKE_UNEXPECTED\\) are not modelled\\. Unreachable: ",

@@ -5,10 +5,52 @@
 // ghWritesNothing and ghGraphQLQueryRead), which daemon-pane.ts's `labelGhSelectors` carries in
 // the run's selectors (gh-selectors.ts's `paneToken`) where the label's source holds that shape.
 // The gh stand-in lets such a call go on to the world's GitHub (gh-standin.ts), and health reads
-// it the same way (health.ts's rule 7). It is a module of its own, apart from gh-selectors.ts, so
-// a boot's reading of the selectors (boot-refusal.ts) takes in no reader of a call's verb.
-import { FIELD_FLAGS, FILE_FIELD_FLAGS, methodsOf } from "./gh-call";
+// it the same way (health.ts's rule 7); both read production's answer to such a read off the one
+// capture (`capturedRead`). It is a module of its own, apart from gh-selectors.ts, so a boot's
+// reading of the selectors (boot-refusal.ts) takes in no reader of a call's verb.
+import { z } from "zod";
+import { endpointOf, FIELD_FLAGS, FILE_FIELD_FLAGS, methodsOf } from "./gh-call";
 import { type GhSelectors, ghCallOf, type ReadGrammar } from "./gh-selectors";
+import pinnedActions from "./pinned-actions.json";
+
+/** Production's answers to the reads agents made of the two actions the world's workflow pins
+ * (pinned-actions.json, the tester's capture,
+ * dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt v4: legion gh under the
+ * issue's token, round 33's reads at 2026-11-22T17:55:33Z to 17:55:39Z, each exit 0; round 34's
+ * reads of a tag object at the commit each pinned tag names at 2026-11-23T05:52:16Z and 05:52:17Z,
+ * each GitHub's 404, exit 1; and its reads of those commits and of each action's tags at 05:59:46Z
+ * to 05:59:55Z, each exit 0), each by the command it was read with: its exit, the body gh printed
+ * on stdout, and what it printed on stderr where it exited non-zero. Imported, so the bundle a
+ * run's `gh` runs carries it (rig.sh's standins). */
+const CAPTURED_READS = z
+  .object({
+    reads: z.array(
+      z.object({
+        command: z.array(z.string()),
+        read_at: z.string(),
+        exit: z.number().int(),
+        body: z.unknown(),
+        stderr: z.string().optional(),
+      })
+    ),
+  })
+  .parse(pinnedActions).reads;
+export type CapturedRead = (typeof CAPTURED_READS)[number];
+
+/** The capture's read of the `gh api` call `argv` (CAPTURED_READS), found by the endpoint the call
+ * names, its query string with it and its leading slash cut, as gh sends it: every form of it
+ * legion gh runs on the pane's token, whatever its `--jq`, is that one read, and a query is a read
+ * of its own (`actions/checkout/tags?per_page=100` lists 68 tags where `tags` lists 30). A
+ * `--paginate` of a read whose captured body is a list asks GitHub for pages the capture does not
+ * hold, so it is none of them. Undefined where the capture holds none, whose production answer is
+ * not known. */
+export function capturedRead(argv: readonly string[]): CapturedRead | undefined {
+  const command = `gh api ${(endpointOf(argv) ?? "").replace(/^\//, "")}`;
+  const paged = argv.includes("--paginate");
+  return CAPTURED_READS.find(
+    (read) => read.command.join(" ") === command && !(paged && Array.isArray(read.body))
+  );
+}
 
 /** Whether the label's wrapper runs the call `argv` under `env` with the pane's own GH_CONFIG_DIR
  * where it would refuse it for its owner (gh-selectors.ts's `ownerRefusal`): `selectors` carry the

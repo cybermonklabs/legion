@@ -47,17 +47,18 @@
  *   7. gh: no `gh` call the gh stand-in refused (calls.jsonl, exit not 0) with a refusal the
  *      scenario does not declare for the calling role (GH_DECLARED, `ghRefusal`), and no call
  *      naming an owner outside the project the world answered, with any status, otherwise than
- *      production's gh answers it (`outsideAnswer`, the architect's ruling (a) of 2026-11-22): a
- *      write refused exit 2, a `gh api` read of the label's wrapper's read grammar answered exit 0,
- *      any other `gh api` call refused exit 2, and any other gh command naming such an owner
- *      failing closed. The owners a call names are read by the selector table of the wrapper of
- *      the run's label, which the world refused it by (<run>/gh-selectors.json, gh-selectors.ts's
- *      `runSelectors`). A worker run with a call whose selectors cannot
- *      be read is unhealthy, since which refusal it was is unknown. A write naming no such owner
- *      that the stand-in refused as one nothing of the world models is rule 20's. Rules 7 and 20
- *      read only a call an agent of the run made itself (`typedBy`: its first word stands after a
- *      `gh` the agent ran), so a `gh send-telemetry` gh itself starts after a command is no call
- *      of the run's;
+ *      production's gh answers it (`outsideAnswer`, the architect's rulings (a) of 2026-11-22 and
+ *      of 2026-11-23T05:52:25Z): a write refused exit 2, a `gh api` read of the label's wrapper's
+ *      read grammar answered the exit the capture of production's answer holds for it, and failing
+ *      closed where the capture holds none, any other `gh api` call refused exit 2, and any other
+ *      gh command naming such an owner failing closed. The owners a call names are read by the
+ *      selector table of the wrapper of the run's label, which the world refused it by
+ *      (<run>/gh-selectors.json, gh-selectors.ts's `runSelectors`). A worker run with a call whose
+ *      selectors cannot be read is unhealthy, since which refusal it was is unknown. A write naming
+ *      no such owner that the stand-in refused as one nothing of the world models is rule 20's.
+ *      Rules 7 and 20 read only a call an agent of the run made itself (`typedBy`: its first word
+ *      stands after a `gh` the agent ran), so a `gh send-telemetry` gh itself starts after a
+ *      command is no call of the run's;
  *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
@@ -333,7 +334,7 @@ import {
   runNamed,
   submitsReview,
 } from "./gh-call";
-import { runsOnPaneToken } from "./gh-pane-token";
+import { capturedRead, runsOnPaneToken } from "./gh-pane-token";
 import { isObject } from "./gh-routes";
 import { type GhSelectors, ghTargetOf, namesOwnerOutside, runSelectors } from "./gh-selectors";
 import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } from "./gh-threads";
@@ -684,18 +685,26 @@ const NO_RUN = [JOBS_404, RUN_404, VIEW_ID_REQUIRED, WATCH_ID_REQUIRED];
 const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
 /** What production's gh answers a call naming an owner outside the world's project, as the
  * architect's rulings of 2026-11-22T16:36:59Z and 17:57Z read it (ruling (a), on the tester's
- * capture, dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt v2, and as the
- * tester's reader world-health.py v79 reads it). The call is read for such an owner by the label's
- * wrapper's own selector table (`ghTargetOf`) whatever its status, before any route, and each
- * answer production does not give is named (`outsideAnswer`):
+ * capture, dispatch://INFRA-764/artifact/infra-764-pinned-actions-capture-txt, and as the
+ * tester's reader world-health.py v79 reads it), and of 2026-11-23T05:52:25Z: ruling (a) means "as
+ * production answers", and the capture is the record of production's answer, its 404s included.
+ * The call is read for such an owner by the label's wrapper's own selector table (`ghTargetOf`)
+ * whatever its status, before any route, and each answer production does not give is named
+ * (`outsideAnswer`):
  *   - a write (gh-writes.ts's `callWrites`) is refused by the Legion gh wrapper, exit 2 before gh
  *     runs (gh.go's runGh: a call naming an owner the bundle holds no directory for, but one that
  *     writes nothing, R4 of INFRA-3399), so another non-zero status is OWNER_NOT_REFUSED;
  *   - a `gh api` read whose every word is in the label's wrapper's read grammar (gh-pane-token.ts's
  *     `runsOnPaneToken`: gh_reads.go's ghAPIReadOptions, `-X` exactly GET, no method override) is
- *     run on the issue's token and answered by GitHub, exit 0 (the capture: round 33's six reads of
- *     the pinned actions, 2026-11-22T17:55:33Z to 17:55:39Z), so any other status is
- *     OUTSIDE_READ_UNANSWERED;
+ *     run on the issue's token and answered by GitHub with the exit the capture holds for it
+ *     (gh-pane-token.ts's `capturedRead`: v4's round 33 reads of the pinned actions, exit 0, its
+ *     round 34 reads of a tag object GitHub has not got, its 404 and exit 1, and of the commits
+ *     and the tags of each action, exit 0), so any other
+ *     status is OUTSIDE_READ_UNANSWERED; one the capture holds no answer for is one whose
+ *     production answer is not known, and fails closed whatever its status
+ *     (OUTSIDE_READ_UNCAPTURED), naming the call so that it can be captured. The rule before was
+ *     "exit 0 or unhealthy", which voided round 34's world-health run a167a5bc6341 for
+ *     production's own 404 and passed at exit 0 a read no capture holds;
  *   - any other `gh api` call (`-i` among them, measured refused at 17:55Z) is refused, exit 2, so
  *     any other status, 0 among them, is OUTSIDE_FORM_NOT_REFUSED;
  *   - any other gh command naming such an owner, and every read of a label whose wrapper reads no
@@ -709,7 +718,9 @@ const JOBS = /^\/?repos\/[^/]+\/[^/]+\/actions\/runs\/\d+\/jobs(?:\?.*)?$/;
 const OWNER_NOT_REFUSED =
   "the refusal of an owner outside the project with another status than the Legion gh wrapper's 2";
 const OUTSIDE_READ_UNANSWERED =
-  "a read of an owner outside the project in the Legion gh wrapper's read grammar answered otherwise than production's gh, which runs it on the issue's token and exits 0";
+  "a read of an owner outside the project in the Legion gh wrapper's read grammar answered otherwise than production's gh, which runs it on the issue's token and exits as the capture of its answer holds";
+const OUTSIDE_READ_UNCAPTURED =
+  "a read of an owner outside the project in the Legion gh wrapper's read grammar that no capture of production's answer holds, so it fails closed: capture it";
 const OUTSIDE_FORM_NOT_REFUSED =
   "a `gh api` call of an owner outside the project in a form outside the Legion gh wrapper's read grammar answered otherwise than the wrapper's refusal, exit 2";
 const OUTSIDE_UNHELD =
@@ -796,9 +807,10 @@ const OWN_READ = /\/compare\/[^?]+\.\.|\/pulls\/\d+\/reviews\/\d+(?:\?|$)/;
 
 /** How `call`, naming an owner outside the project of the world's repository `repo` by
  * `selectors`, was answered otherwise than production's gh answers it (OWNER_NOT_REFUSED's
- * comment: a write refused exit 2, a `gh api` read of the label's read grammar answered exit 0,
- * any other `gh api` call refused exit 2, and every other read failing closed); undefined where
- * production gives that answer. `writes`: whether the call writes (`callWrites`). */
+ * comment: a write refused exit 2, a `gh api` read of the label's read grammar answered the exit
+ * the capture holds for it and failing closed where it holds none, any other `gh api` call refused
+ * exit 2, and every other read failing closed); undefined where production gives that answer.
+ * `writes`: whether the call writes (`callWrites`). */
 function outsideAnswer(
   call: RecordedCall,
   writes: boolean,
@@ -812,8 +824,11 @@ function outsideAnswer(
   // pane's GH_REPO the world's repository (daemon-pane.go's pane), which the record keeps neither
   // of.
   const pane = { GH_CONFIG_DIR: "<the pane's own>", GH_REPO: repo };
-  if (runsOnPaneToken(argv, selectors, repo, pane))
-    return call.exit === 0 ? undefined : OUTSIDE_READ_UNANSWERED;
+  if (runsOnPaneToken(argv, selectors, repo, pane)) {
+    const captured = capturedRead(argv);
+    if (captured === undefined) return OUTSIDE_READ_UNCAPTURED;
+    return call.exit === captured.exit ? undefined : OUTSIDE_READ_UNANSWERED;
+  }
   return call.exit === 2 ? undefined : OUTSIDE_FORM_NOT_REFUSED;
 }
 

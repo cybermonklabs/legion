@@ -2040,14 +2040,15 @@ test("on main's wrapper since #4035, a read naming only owners outside the proje
   ] as const)
     expect(asked(dir, "reviewer", argv, PANE_GH)).toEqual([2, "", line]);
   expect(asked(dir, "reviewer", TAG_READ)).toEqual([2, "", repositoryRefused("actions/checkout")]);
-  // A `gh api` read may name its method only as exactly GET (gh_reads.go's ghAPIReadValue).
-  const [status, , err] = asked(
+  // A `gh api` read may name its method only as exactly GET (gh_reads.go's ghAPIReadValue); it runs
+  // on the pane's token, and capture v4 holds production's answer to this read, its 30 tags.
+  const [status, out, err] = asked(
     dir,
     "reviewer",
     ["api", "-X", "GET", "repos/actions/checkout/tags"],
     PANE_GH
   );
-  expect([status, err]).toEqual([1, "gh: Not Found (HTTP 404)\n"]);
+  expect([status, JSON.parse(String(out)).length, err]).toEqual([0, 30, ""]);
 }, 60_000);
 
 // Main's wrapper before #4035 refuses every call naming an owner outside the project, a read on a
@@ -2194,8 +2195,10 @@ test("a selector form a label's wrapper holds that the world does not model fail
  * than production's gh answers it (`outsideAnswer`): a `gh api` read of the label's read grammar,
  * which production runs on the issue's token and GitHub answers, exit 0; and a read by any other gh
  * command, or of a label whose wrapper reads no grammar, which fails closed. */
-const READ_UNANSWERED =
-  "a read of an owner outside the project in the Legion gh wrapper's read grammar answered otherwise than production's gh, which runs it on the issue's token and exits 0";
+// A read of the grammar no capture holds fails closed under the architect's ruling of
+// 2026-11-23T05:52:25Z (health.ts's OUTSIDE_READ_UNCAPTURED), where it read as unanswered before.
+const READ_UNCAPTURED =
+  "a read of an owner outside the project in the Legion gh wrapper's read grammar that no capture of production's answer holds, so it fails closed: capture it";
 const FAILS_CLOSED =
   "a read of an owner outside the project by a gh command other than a `gh api` call of the label's read grammar, which no answer of production's gh held here covers, so it fails closed";
 
@@ -2272,10 +2275,12 @@ test("health holds a read the label's wrapper runs on the pane's token to produc
     expect(ghUndeclared({ dir, scenario })).toBeUndefined();
   const calls = path.join(dir, "calls.jsonl");
   const answered = readFileSync(calls, "utf8");
-  const tags = ["api", "repos/actions/checkout/tags"];
+  // A read of the grammar no capture holds (capture v4 holds `…/tags`, so this one is a branch
+  // list), which the world's GitHub answers 404.
+  const uncaptured = ["api", "repos/actions/checkout/branches"];
   const [view] = MEASURED[0] ?? [[]];
   for (const [argv, why] of [
-    [tags, READ_UNANSWERED],
+    [uncaptured, READ_UNCAPTURED],
     [view, FAILS_CLOSED],
   ] as const) {
     writeFileSync(calls, answered);
@@ -9017,16 +9022,32 @@ test("a body edit gives each object of a list answer that has a body the new bod
   const head = "099b05dc19f7f7e5058e791d16ae05f0b123a2cc";
   const run = runWith([
     { match: "^gh pr edit", stdout: "https://example.invalid/7" },
-    { match: "^gh pr list", stdout: [{ number: 7, headRefOid: head, body: "old" }] },
-    { match: "^gh pr view", stdout: { number: 7, headRefOid: head, body: "old" } },
+    { match: "^gh pr list", stdout: [{ number: 7, headRefOid: head, body: "old", state: "OPEN" }] },
+    { match: "^gh pr view", stdout: { number: 7, headRefOid: head, body: "old", state: "OPEN" } },
     { match: "^gh api .*comments", stdout: [{ id: 1 }] },
   ]);
+  // This stand-in takes a body edit of a world's own pull request alone (gh-standin.ts's
+  // `prWriteModelled`) and lists that pull request while it is open (`listsPull`), so the run
+  // holds a world whose pull request this is, and the selectors its gh refuses an owner by.
+  writeFileSync(
+    path.join(run, "world.json"),
+    JSON.stringify({
+      key: "LWEVAL-1",
+      repo: "fernbrook/widgets",
+      pr: 7,
+      branch: "legion/LWEVAL-1",
+      base: "main",
+      head,
+    })
+  );
+  writeGhSelectors(run);
   expect(gh(run, "pr", "edit", "7", "--body", "new").code).toBe(0);
   expect(gh(run, "pr", "list", "--json", "number,body").stdout).toBe(
     '[{"number":7,"body":"new"}]\n'
   );
   expect(gh(run, "pr", "view", "7", "--json", "body").stdout).toBe('{"body":"new"}\n');
-  expect(gh(run, "api", "repos/fernbrook/widgets/issues/7/comments").stdout).toBe('[{"id":1}]\n');
+  // gh 2.98.0 prints a `gh api` body with no line end (measured 2026-11-18, gh-standin.ts:3455).
+  expect(gh(run, "api", "repos/fernbrook/widgets/issues/7/comments").stdout).toBe('[{"id":1}]');
   const edit = readFileSync(path.join(run, "calls.jsonl"), "utf8")
     .trimEnd()
     .split("\n")

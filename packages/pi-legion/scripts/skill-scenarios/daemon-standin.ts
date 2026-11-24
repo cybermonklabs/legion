@@ -75,6 +75,13 @@
  *     is not modelled. Unreachable: a completion reaches this stand-in only on a grant its
  *     booted agent's claim minted, the claim `claims/register` gave that agent for the role this
  *     stand-in was started in, and rig.sh's worker_boot starts a stand-in for each agent it boots.
+ *     Main's engine since #4611 asks `leftItsPhase` through `pastCompletion` and `pastReportOf`
+ *     (daemon-completion.go's `recordingChains`), which take the same late roles; their refusal
+ *     of a late report of the run a stop of its task ended (workflow/plan.go's `lateReport`) is
+ *     not modelled. Unreachable: a task stops only by its owner's `stop_task`, and no scenario
+ *     boots an owner, or by a failed step no earlier step can take the work back from
+ *     (`stopUnreturned`), and every failed step of the default steps has the implementer's before
+ *     it.
  *   - an older engine (`refused`, main `ff2a10ef`'s among them) has no `leftItsPhase` and refuses
  *     every late completion 409 HANDOFF_NOT_CURRENT_PHASE (`if RoleFor(issue.Phase) !=
  *     fact.Role`).
