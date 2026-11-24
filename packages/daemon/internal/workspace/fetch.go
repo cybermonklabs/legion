@@ -198,16 +198,17 @@ type FetchReport struct {
 // first, and no retry starts past the bound. A transfer still failing after the last wait, and
 // every other failure, is the answer at once. Every token the fetch holds - each provisioning token
 // it has read and the repository cache's bearer (fetchCredential) - is taken out by one filter
-// (fetchCredential.withoutTokens, scrubTokens): whole, and every run of oauth2call.TokenPiece
+// (fetchCredential.scrub, withoutCredentials): whole, and every run of oauth2call.TokenPiece
 // characters of it or of the Basic credential git sends it in, as the text is written and
-// percent-decoded. Each attempt's stderr goes through that filter as soon as the attempt returns,
-// and then through the URL rule, and what Fetch logs or returns of it goes through the fail-closed
-// rule too (transferWithRetries), so nothing Fetch logs or returns carries a token, wherever git
-// echoed it, nor a query value or user information of any URL git names, a redirect's Location
-// among them. Every line Fetch logs, and fsck's stderr on what the cache streamed, go through the
-// same filter: a line names what the cache streamed or what GitHub answered - a ref the feed drops,
-// the branch GitHub's HEAD names - the words of whatever answers at either address. A tar entry's
-// name prints through the same filter (scrubTokens) of the cache's bearer, the one token the /tar
+// percent-decoded, and then the query and user information of every URL. Everything Fetch logs or
+// returns of what git wrote or read from GitHub or the cache, the words of whatever answers at
+// either address, goes through that filter: each attempt's stderr and its argv, which names the
+// branch GitHub's HEAD names (transferWithRetries); fsck's, and the commands that name a ref either
+// wrote (feedGitWithin); the branch a refusal of GitHub's HEAD names (remoteRefs); and every line
+// Fetch logs. A stderr an error prints is read once more by the fail-closed rule. So nothing Fetch
+// logs or returns carries a token, wherever git or either party echoed it, nor a query value or
+// user information of any URL it names, a redirect's Location among them. A tar entry's name
+// prints through the token filter (scrubTokens) of the cache's bearer, the one token the /tar
 // request carries.
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
@@ -256,9 +257,9 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	// A line Fetch logs can name what the cache streamed, a ref it held (pruneToGitHub), or the
 	// branch GitHub's HEAD names (followHead), the words of whatever answers at the cache's address
 	// or GitHub's, which can echo the bearer the /tar request carried or the provisioning token git
-	// presented: every line goes through the filter of every token the fetch holds.
+	// presented: every line goes through the fetch's one filter.
 	log := request.Log
-	request.Log = func(line string) { log(held.withoutTokens(line)) }
+	request.Log = func(line string) { log(held.scrub(line)) }
 	present, err := ownFeedRepository(feed, request.Repo, request.Clock.Now(), request.Log)
 	if err != nil {
 		return FetchReport{}, err
@@ -273,7 +274,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		if err != nil {
 			return FetchReport{}, err
 		}
-		if err := pruneToGitHub(ctx, run, request, feed, narrowed, heads); err != nil {
+		if err := pruneToGitHub(ctx, run, request, feed, narrowed, heads, held); err != nil {
 			return FetchReport{}, err
 		}
 		if err := report.fromGitHub(ctx, run, request, fetchInto(feed, request.Repo, narrowed), feed, held, deadline); err != nil {
@@ -322,7 +323,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	if err != nil {
 		return FetchReport{}, err
 	}
-	if err := pruneToGitHub(ctx, run, request, staging, narrowed, heads); err != nil {
+	if err := pruneToGitHub(ctx, run, request, staging, narrowed, heads, held); err != nil {
 		return FetchReport{}, err
 	}
 	if err := report.fromGitHub(ctx, run, request, fetchInto(staging, request.Repo, narrowed), staging, held, deadline); err != nil {
@@ -434,17 +435,19 @@ func deltaBranches(ctx context.Context, run Runner, request FetchRequest, gitDir
 // this such a feed would keep a branch GitHub deleted, the old name of a default branch GitHub renamed,
 // and the tip it was first streamed at of a branch GitHub moved. A branch created on GitHub after
 // the read is not in heads and is not in the feed either, since nothing the fetch takes is deleted
-// here: only branches the feed held before the delta are candidates.
-func pruneToGitHub(ctx context.Context, run Runner, request FetchRequest, gitDir string, exact []string, heads map[string]string) error {
+// here: only branches the feed held before the delta are candidates. A ref the feed held is the
+// cache's words, or a stand-in's at its address, so a removal that fails names it, and prints what
+// git said, through the fetch's filter (feedGitWithin under held).
+func pruneToGitHub(ctx context.Context, run Runner, request FetchRequest, gitDir string, exact []string, heads map[string]string, held *fetchCredential) error {
 	if heads == nil {
 		return nil
 	}
-	held, err := feedRefs(ctx, run, gitDir, true)
+	refs, err := feedRefs(ctx, run, gitDir, true)
 	if err != nil {
 		return err
 	}
 	gone := []string{}
-	for ref, tip := range held {
+	for ref, tip := range refs {
 		if !strings.HasPrefix(ref, "refs/heads/") || slices.Contains(exact, ref) || strings.HasPrefix(ref, strings.TrimSuffix(issueBranches, "*")) {
 			continue
 		}
@@ -454,7 +457,7 @@ func pruneToGitHub(ctx context.Context, run Runner, request FetchRequest, gitDir
 	}
 	slices.Sort(gone)
 	for _, ref := range gone {
-		if _, err := FeedGit(ctx, run, gitDir, "update-ref", "--no-deref", "-d", ref); err != nil {
+		if _, err := feedGitWithin(ctx, run, gitDir, run.Timeout(), held, "update-ref", "--no-deref", "-d", ref); err != nil {
 			return err
 		}
 		why := "GitHub no longer has it"
@@ -476,7 +479,8 @@ func remoteHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // remoteRefs is the ref GitHub's HEAD names, and every ref GitHub lists matching patterns with the
 // object it names (`git ls-remote --symref <url> HEAD <patterns…>`), run as a transfer under the
 // fetch's credential, retries and deadline; "" when GitHub names no HEAD. A HEAD that names
-// anything but a branch is the fetch's failure.
+// anything but a branch is the fetch's failure, which names what it names through the fetch's
+// filter: GitHub's words, or a stand-in's at its address, which can echo the token git presented.
 func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, patterns ...string) (string, map[string]string, error) {
 	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns)
 	result, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "ls-remote", argv: argv, dir: gitDir}, held, deadline)
@@ -495,7 +499,7 @@ func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir st
 		}
 	}
 	if target != "" && !strings.HasPrefix(target, "refs/heads/") {
-		return "", nil, fmt.Errorf("GitHub's HEAD of %s names %q, not a branch", request.Repo, target)
+		return "", nil, fmt.Errorf("GitHub's HEAD of %s names %q, not a branch", request.Repo, held.scrub(target))
 	}
 	return target, listed, nil
 }
@@ -510,7 +514,8 @@ func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // a branch among fetched, the refs the fetch left: GitHub renaming its branch between the fetch and
 // this read names one the fetch did not bring, so HEAD stays, logged, until a fetch brings it. A
 // clone takes GitHub's HEAD itself. A repository GitHub answers with no default branch (nothing
-// pushed yet) keeps its HEAD.
+// pushed yet) keeps its HEAD. The branch HEAD moves to is GitHub's words, so a move that fails
+// names it, and prints what git said, through the fetch's filter (feedGitWithin under held).
 func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir string, fetched map[string]string, held *fetchCredential, deadline time.Time) error {
 	target, err := remoteHead(ctx, run, request, gitDir, held, deadline)
 	if err != nil {
@@ -532,7 +537,7 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 		request.Log(fmt.Sprintf("GitHub's default branch of %s is now %s, which this fetch did not bring: HEAD stays at %s until a fetch brings it", request.Repo, strings.TrimPrefix(target, "refs/heads/"), cmp.Or(was, "nothing")))
 		return nil
 	}
-	if _, err := FeedGit(ctx, run, gitDir, "symbolic-ref", "HEAD", target); err != nil {
+	if _, err := feedGitWithin(ctx, run, gitDir, run.Timeout(), held, "symbolic-ref", "HEAD", target); err != nil {
 		return err
 	}
 	request.Log(fmt.Sprintf("the default branch of %s is now %s (HEAD named %s)", request.Repo, strings.TrimPrefix(target, "refs/heads/"), cmp.Or(was, "nothing")))
@@ -855,11 +860,8 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	}
 	// fsck names the refs it reads, and a ref's name is the cache's words, or a stand-in's at its
 	// address, which can echo the bearer the /tar request carried: the stderr its failure prints
-	// goes through the filter of every token the fetch holds (fetchCredential.withoutTokens).
-	fsck := slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
-	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
-	result.Stderr = held.withoutTokens(result.Stderr)
-	if _, err := checkedResult(fsck, result, err); err != nil {
+	// goes through the fetch's filter (feedGitWithin under held).
+	if _, err := feedGitWithin(ctx, run, staging, left, held, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -1200,8 +1202,20 @@ func FeedGit(ctx context.Context, run Runner, gitDir string, args ...string) (Re
 // command on such a repository whose duration follows the repository's size, as the cache's repack
 // does. A `-c` among args comes after feedGit's, so it wins over them for its key.
 func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
+	return feedGitWithin(ctx, run, gitDir, timeout, nil, args...)
+}
+
+// feedGitWithin is FeedGitWithin, and with held set, a command of Fetch's on what GitHub or the
+// repository cache wrote - fsck of what the cache streamed, the removal of a ref it streamed, HEAD
+// moved to the branch GitHub's HEAD names - whose argv and stderr can hold those words, which can
+// echo a token the fetch holds: its error names the command (fetchCredential.words) and prints its
+// stderr (fetchCredential.shown) through the fetch's filter.
+func feedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, held *fetchCredential, args ...string) (Result, error) {
 	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
+	if held != nil {
+		argv, result.Stderr = held.words(argv), held.shown(result.Stderr)
+	}
 	return checkedResult(argv, result, err)
 }
 
@@ -1213,7 +1227,9 @@ func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.
 // it, the error this answers and the line a retry logs, is read once more by the fail-closed rule
 // (oauth2call.Field), which prints a stderr it cannot read as clean as WordsNotReadable, and on one
 // line. It reads the text after the URL rule, as remote.shown does and for its reason: a redirect
-// refusal read before it would print as WordsNotReadable.
+// refusal read before it would print as WordsNotReadable. The error names the attempt's argv
+// through the same filter (fetchCredential.words): the delta's refspecs name the branch GitHub's
+// HEAD names (fetchInto), GitHub's words.
 func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
 	if _, err := remaining(request, deadline, "the "+transfer.verb+" from GitHub"); err != nil {
@@ -1227,7 +1243,7 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		result.Stderr = held.scrub(result.Stderr)
 		shown := result
 		shown.Stderr = oauth2call.Field(strings.TrimSpace(result.Stderr))
-		_, failed := checkedResult(transfer.argv, shown, runErr)
+		_, failed := checkedResult(held.words(transfer.argv), shown, runErr)
 		if failed == nil {
 			return result, nil
 		}
@@ -1290,18 +1306,30 @@ func (c *fetchCredential) renew() error {
 	return nil
 }
 
-// withoutTokens is text with every token the fetch holds taken out (scrubTokens): the one filter
-// of what a run of the fetch wrote - git's stderr, fsck's - and of every line Fetch logs.
-func (c *fetchCredential) withoutTokens(text string) string {
-	return scrubTokens(text, c.held...)
+// scrub is text with every token the fetch holds, and every URL's query and user information,
+// taken out (withoutCredentials): the fetch's one filter, of what a run of the fetch wrote, of a
+// word of a command that names what GitHub or the cache wrote, and of every line Fetch logs. The
+// classifiers read what it answers of a transfer's stderr.
+func (c *fetchCredential) scrub(text string) string {
+	return withoutCredentials(text, c.held...)
 }
 
-// scrub is text with every token the fetch holds taken out (withoutTokens), and then through the
-// URL rule (redact.URLCredentials), as remote.scrub gives it: a redirect's Location that git names
-// keeps no query value or user information. The classifiers read what it answers;
-// transferWithRetries reads it once more, by the fail-closed rule, where it leaves the process.
-func (c *fetchCredential) scrub(text string) string {
-	return redact.URLCredentials(c.withoutTokens(text))
+// shown is text a run of the fetch wrote, its stderr, as an error made of it prints it: the
+// filter's text read once more by the fail-closed rule (shownWithoutCredentials).
+func (c *fetchCredential) shown(text string) string {
+	return shownWithoutCredentials(text, c.held...)
+}
+
+// words is argv, a command of the fetch's, as an error names it: each word through the filter
+// (scrub), since a word can be what GitHub or the cache wrote - a refspec naming the branch
+// GitHub's HEAD names (fetchInto), a ref the cache streamed (pruneToGitHub) - which can echo a
+// token the fetch holds.
+func (c *fetchCredential) words(argv []string) []string {
+	shown := make([]string, len(argv))
+	for i, word := range argv {
+		shown[i] = c.scrub(word)
+	}
+	return shown
 }
 
 // Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.

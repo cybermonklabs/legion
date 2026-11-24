@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -50,18 +49,6 @@ type remote struct {
 	token    string
 	branches []string
 	feed     string
-}
-
-// scrub is text as a run under the credential hands it on: the credential's token taken out
-// wherever git echoed it, whole, cut short, percent-encoded or inside the Basic credential git
-// sent (scrubTokens), and then through the URL rule (redact.URLCredentials): git names a redirect's
-// Location as GitHub, or whatever answers in its place, wrote it, query values and user information
-// and all, and that text is not the token's. What leaves the process of it is read once more, by
-// the fail-closed rule, where the shared clone's steps make their error of it (remote.shown). Fetch,
-// which rewrites the token before each transfer (setToken), scrubs every token it has held itself
-// (fetchCredential.scrub), under the same rules.
-func (r remote) scrub(text string) string {
-	return redact.URLCredentials(scrubTokens(text, r.token))
 }
 
 // newProvisioningCredential ports workspace.ts's createProvisioningCredential, the one-shot
