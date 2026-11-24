@@ -154,15 +154,18 @@ const (
 	// holds, found by the lookup or made by another client between the lookup and the create,
 	// opening, raising and updating nothing: CreateMissingCopiedBucket's.
 	//
-	// Its create is the normal path's: nats.go's CreateKeyValue made one request at a time
-	// (createBucketStream). JetStream answers a create of a stream that exists with the same
-	// configuration as done, which changes nothing, and with another as "stream name already in
-	// use". The create follows that answer, as nats.go does, with an update only when the stream it
-	// then reads equals the configuration asked for in all but the discard policy and direct get,
-	// its metadata included (nats.go@v1.55.0 kv.go:534-543). nats-server 2.15.1, the hubs'
-	// version, answers every stream with metadata of its own (_nats.ver, _nats.level,
-	// _nats.req.level), which that configuration never carries, so there the update is never sent
-	// (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
+	// Its create is the normal path's up to the create itself (addBucketStream): nats.go's
+	// checks, the account's JetStream info and the STREAM.CREATE. JetStream answers a create of a
+	// stream that exists with the same configuration as done, which changes nothing, and with
+	// another as "stream name already in use". The normal path follows that answer as nats.go
+	// does, with a read of the stream and an update when the stream equals the configuration asked
+	// for in all but its discard policy and direct get (createBucketStream, nats.go@v1.55.0
+	// kv.go:534-543); a create-only open sends neither, so it updates no bucket another client
+	// made, whatever configuration a server reports for it. Following the answer as the normal
+	// path does would leave that update unsent only where the server answers the stream with
+	// metadata of its own, as nats-server 2.15.1 does (_nats.ver, _nats.level, _nats.req.level),
+	// which the configuration asked for never carries; a server that answers with none, as one
+	// before 2.11 does, would draw it (TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse).
 	createOnly
 )
 
@@ -212,10 +215,18 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 		// That update goes again with the rest of the step where updateStream leaves an
 		// unanswered update alone, because it carries the configuration the stream already holds:
 		// it changes nothing when it lands twice, while the replica or age change updateStream
-		// guards is a write another one can race. A request of the step the server refuses under
-		// the connection's grant ends the step at that send instead (refusedBy): it would be
-		// refused again.
-		_, err = sentAgain(ctx, create, func() (struct{}, error) { return struct{}{}, createBucketStream(conn, js, config) })
+		// guards is a write another one can race. A create-only open's step ends at the create
+		// (addBucketStream). A request of the step the server refuses under the connection's grant
+		// ends the step at that send instead (refusedBy): it would be refused again. No request of
+		// the step is sent once ctx has ended, though Bounded has stopped waiting for it.
+		send := func() (struct{}, error) { return struct{}{}, createBucketStream(ctx, conn, js, config) }
+		if mode == createOnly {
+			send = func() (struct{}, error) {
+				_, err := addBucketStream(ctx, conn, js, config)
+				return struct{}{}, err
+			}
+		}
+		_, err = sentAgain(ctx, create, send)
 		switch {
 		case errors.Is(err, nats.ErrStreamNameAlreadyInUse) && mode == createOnly:
 			// Another client made the bucket between this call's lookup and its create, with

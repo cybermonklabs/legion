@@ -7,8 +7,7 @@
 //
 // It is a test fixture, not a product: it refuses a server that is not on this machine's loopback,
 // and nothing deployed runs it. The operator creates a deployment's buckets with `envoy-infra
-// buckets`: its normal create once every writer of them has ended, its break-glass create while
-// they run.
+// buckets create`, which makes only an absent bucket and needs no writer stopped.
 package main
 
 import (

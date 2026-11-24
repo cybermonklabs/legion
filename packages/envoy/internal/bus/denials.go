@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -19,6 +20,27 @@ import (
 // double quote or a backslash reaches the text escaped, and is recorded under the name the
 // publisher sent.
 var publishRefusal = regexp.MustCompile(`Publish to ("(?:[^"\\]|\\.)*")`)
+
+// unloggedPublishRefusals is the nats.Option WithPublishRefusalsUnlogged adds to a client's
+// connections: the server's refusal of a publish goes to record, the client's async error callback
+// (onAsyncError), which records it for the publish that drew it, and not to the callback options
+// sets before it, which logs each refusal at ERROR and then records it the same way. Every other
+// error the connection reports goes to that callback as it would without the option.
+func unloggedPublishRefusals(record func(*nats.Conn, error)) nats.Option {
+	return func(o *nats.Options) error {
+		logged := o.AsyncErrorCB
+		o.AsyncErrorCB = func(nc *nats.Conn, sub *nats.Subscription, err error) {
+			if sub == nil && errors.Is(err, nats.ErrPermissionViolation) && publishRefusal.MatchString(err.Error()) {
+				record(nc, err)
+				return
+			}
+			if logged != nil {
+				logged(nc, sub, err)
+			}
+		}
+		return nil
+	}
+}
 
 // publishDenialRetention is how long a recorded violation can still be read (deniedPublish). It
 // outlasts, with room to spare, every wait a publish of this package makes for the answer a denied

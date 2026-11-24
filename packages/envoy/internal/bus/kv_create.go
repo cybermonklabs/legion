@@ -4,6 +4,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -29,27 +30,12 @@ import (
 // stream's info with a function it does not export, so EnsureKeyValue looks the bucket up once the
 // stream is there (awaitBucketApplied). The checks nats.go makes before it sends anything are made
 // first, in its order, and answer its errors; the server's version is read where nats.go reads it.
-func createBucketStream(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) error {
-	if !natsServerMinVersion(conn.ConnectedServerVersion(), 2, 6, 2) {
-		return errKeyValueServerTooOld
-	}
-	if config == nil {
-		return nats.ErrKeyValueConfigRequired
-	}
-	if !natsBucketName.MatchString(config.Bucket) {
-		return nats.ErrInvalidBucketName
-	}
-	if _, err := js.AccountInfo(); err != nil {
-		return err
-	}
-	stream, err := bucketStreamConfig(config, conn.ConnectedServerVersion())
-	if err != nil {
-		return err
-	}
-	_, err = js.AddStream(stream)
-	if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+// No request is sent once ctx has ended (addBucketStream).
+func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) error {
+	stream, err := addBucketStream(ctx, conn, js, config)
+	if errors.Is(err, nats.ErrStreamNameAlreadyInUse) && ctx.Err() == nil {
 		// nats.go drops the read's own error: a stream it cannot read stays "already in use".
-		if info, _ := js.StreamInfo(stream.Name); info != nil {
+		if info, _ := js.StreamInfo(stream.Name); info != nil && ctx.Err() == nil {
 			info.Config.Discard = stream.Discard
 			info.Config.AllowDirect = stream.AllowDirect
 			if reflect.DeepEqual(&info.Config, stream) {
@@ -58,6 +44,43 @@ func createBucketStream(conn *nats.Conn, js nats.JetStreamContext, config *nats.
 		}
 	}
 	return err
+}
+
+// addBucketStream is createBucketStream up to its create and no further: nats.go's checks, the
+// account's JetStream info and the stream's create, answering the stream it asked for with the
+// create's answer. A create the server answers "stream name already in use" is answered so, with
+// no read of that stream and no update of it, whatever configuration the server reports for it:
+// a create-only open's create (createOnly), which leaves a bucket another client made as it is.
+//
+// ctx is read before each request, and none is sent once it has ended: a caller that stops waiting
+// (sentAgain, through Bounded) leaves this call running on its own goroutine, and without the read
+// that call would still send the create after its caller had answered, such as an operator's
+// `envoy-infra buckets create` interrupted while the account's info was in flight.
+func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (*nats.StreamConfig, error) {
+	if !natsServerMinVersion(conn.ConnectedServerVersion(), 2, 6, 2) {
+		return nil, errKeyValueServerTooOld
+	}
+	if config == nil {
+		return nil, nats.ErrKeyValueConfigRequired
+	}
+	if !natsBucketName.MatchString(config.Bucket) {
+		return nil, nats.ErrInvalidBucketName
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := js.AccountInfo(); err != nil {
+		return nil, err
+	}
+	stream, err := bucketStreamConfig(config, conn.ConnectedServerVersion())
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return stream, err
+	}
+	_, err = js.AddStream(stream)
+	return stream, err
 }
 
 // errKeyValueServerTooOld is the error nats.go's CreateKeyValue answers, before it sends anything,

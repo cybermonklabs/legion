@@ -56,6 +56,7 @@ type connectOpts struct {
 	promptReconnect             bool
 	inboxPrefix                 string
 	streamMessageReads          bool
+	publishRefusalsUnlogged     bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -281,6 +282,19 @@ func WithInboxPrefix(prefix string) DialOption {
 // $JS.API. is taken by the JetStream API as a request of the account's.
 func WithStreamMessageReads() ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamMessageReads = true })
+}
+
+// WithPublishRefusalsUnlogged has the client's connections log no line for the server's refusal of
+// a publish (`Permissions Violation for Publish to "<subject>"`), which every other client logs at
+// ERROR once for each refused message (options' async error callback, unloggedPublishRefusals).
+// The refusal is still recorded for the publish that drew it, which answers ErrPublishDenied
+// naming it (recordPublishDenial), so it is for a client that reports each refusal from that answer
+// itself: `envoy-infra buckets create` sends a refused request again every 5 seconds for up to 180
+// seconds and says so once, where a line for each refused send would fill that wait with ERROR
+// lines. A refusal of a subscription, and every other error a connection reports, is logged as
+// every client logs it.
+func WithPublishRefusalsUnlogged() ConnectOption {
+	return clientOption(func(o *connectOpts) { o.publishRefusalsUnlogged = true })
 }
 
 type subscriptionTransport uint8
@@ -622,6 +636,10 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		streamMessageReads:          opts.streamMessageReads,
 		requestExpiry:               opts.requestExpiry,
 		stopCh:                      make(chan struct{}),
+	}
+	if opts.publishRefusalsUnlogged {
+		// In connectionSettings, so every connection the client dials takes it, a replacement too.
+		c.connectionSettings = allOf(c.connectionSettings, unloggedPublishRefusals(c.onAsyncError))
 	}
 	stream := opts.streamConfig()
 	if ownsStream {

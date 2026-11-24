@@ -54,20 +54,19 @@ serves without (the last bullet):
   answers 404. The store opens the bucket within a check of the operator creating it, with no
   restart.
 
-A deployment's buckets therefore come from the operator. **The command's proof is best effort**
-until the coming server-side hold lands: it checks only the Kubernetes contexts, hosts and
-machine (`--this-machine`) it is given, by process name, and holds nothing once it has checked.
-Before each step below, stop every listener of the deployment (and every envoy-dispatch, for
+A deployment's buckets therefore come from the operator. `envoy-infra buckets create` makes each
+bucket that is absent and takes no writer proof, so it needs nothing stopped: an absent bucket holds
+no write to lose. It can run again: a bucket there at the copies asked for with its own
+configuration is left as it is. **The proof `recreate` and `check` take is best effort** until the
+coming server-side hold lands: it checks only the Kubernetes contexts, hosts and machine
+(`--this-machine`) it is given, by process name, and holds nothing once it has checked. Before
+each of those, stop every listener of the deployment (and every envoy-dispatch, for
 `envoy_ci_state`) and confirm on each host that it has ended ([`envoy-infra buckets`](#envoy-infra-buckets)).
-A `create` that finds every bucket it names already there changes nothing and takes no proof, so it
-needs nothing stopped.
 
-- **A first deployment:** once the NATS server is up and before any listener or envoy-dispatch
-  starts, run `envoy-infra buckets create --first-deployment` with the inventory of every place a
-  writer will run. A `gcp:NatsHub` VM starts its own listener with the VM (`envoy-listener.service`):
-  stop it (`sudo systemctl stop envoy-listener.service`) before the command and start it after.
-  That listener's first connect creates the `ENVOY_NOTIFICATIONS` stream, which `--first-deployment`
-  refuses; leave the flag off for such a hub, and name the VM with `--host`.
+- **A first deployment:** once the NATS server is up, run `envoy-infra buckets create` at the
+  deployment's copies (`--replicas`, or `ENVOY_NATS_REPLICAS`). It needs no listener or
+  envoy-dispatch stopped, before or after they start: a listener that starts first waits for the
+  buckets and serves once they exist.
 - **Deleting a bucket under running listeners does not empty it for them:** each serves its last
   copy for reads within its stale bound, answers every write that needs the bucket 503, and never
   brings the bucket back. To empty a bucket, or to replace one, stop every listener of the
@@ -75,15 +74,17 @@ needs nothing stopped.
   `envoy-infra buckets recreate --bucket <name>` with the inventory, then start them again. Never
   delete one with `nats kv rm` or `nats stream rm`.
 - **A hub whose storage is replaced** (`gcp:NatsHub` on a new disk, a new `hostname` or `zone`,
-  [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: stop every
-  listener and envoy-dispatch that reaches it before its clients reconnect, stop the new VM's own
-  `envoy-listener.service`, run `envoy-infra buckets create` with the inventory (the VM included),
-  then start them all.
+  [docs/nats-hub.md](docs/nats-hub.md#updating-a-hub)) comes up with no bucket: run
+  `envoy-infra buckets create` against it. Its listeners wait for the buckets and serve once they
+  exist.
 - **A clustered hub restored from a backup** (`nats stream restore`) recreates each bucket from
   its snapshot: scale every listener and envoy-dispatch to zero, run `envoy-infra buckets check`
   with the inventory, restore, run `envoy-infra buckets create` for any bucket the restore did not
-  bring while they are still at zero, then start them. Nothing holds the checked state through the
-  restore; that is the "unheld restore" the command warns of.
+  bring, then start them. A restored bucket at other copies than `create` asks for, or with another
+  configuration than its own, stops that `create` with exit 1, a `differs:` line naming each
+  difference, and nothing is created, the missing buckets included: run it again with a `--bucket`
+  for each bucket the restore did not bring, which leaves the restored ones as they are. Nothing
+  holds the checked state through the restore; that is the "unheld restore" the command warns of.
 - **A hub moving from a listener that created its buckets:** such a listener created
   `envoy_known_sessions` the first time it opened it once its NATS user held that bucket's grant,
   which `envoy-infra` 10.33.0 is the first release to render, and a hub without that grant holds
@@ -98,12 +99,12 @@ needs nothing stopped.
   listener's check, every 30 seconds, wakes it once a read finds the bucket there.
 
 Until the auth service's cutover gives the operator an identity the auth service admits, no
-hub has the buckets user's key, and a missing bucket is created with `envoy-infra buckets create
---break-glass` instead, as the in-cluster `gke` listener's NATS user, whose seed
-`envoy-nats-seed-gke` is read for that run alone and never written to disk
-([the runbook line](#until-the-cutover-create---break-glass)). It creates only a missing bucket,
-and needs no listener stopped. The pull request that removes the listener users' create grant at
-the cutover deletes the flag.
+hub has the buckets user's key, and `envoy-infra buckets create` runs with `--break-glass`
+instead, as the in-cluster `gke` listener's NATS user, whose seed `envoy-nats-seed-gke` is read for
+that run alone and never written to disk
+([the runbook line](#until-the-cutover-create---break-glass)). It is the same create: it makes only
+an absent bucket, leaves one that is there as it is, and needs no listener stopped. The pull
+request that removes the listener users' create grant at the cutover deletes the flag.
 
 A test or a dev rig that starts a listener on a NATS server of its own provisions that server
 first, with the one fixture helper: `internal/bus/bustest` in Go (`Provision` or `ProvisionURL`, or
@@ -3391,20 +3392,18 @@ the one output format. The listener's first filter, for a listener named `exampl
 
 ## `envoy-infra buckets`
 
-`envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one, once it
-has checked that no writer of them runs: every envoy-listener of the deployment, and every
-envoy-dispatch when `envoy_ci_state` is among the buckets.
+`envoy-infra buckets` creates the key-value buckets a listener copies, and recreates one once it
+has checked that no writer of it runs: every envoy-listener of the deployment, and every
+envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no such check: it makes
+only a bucket that is absent, which holds no write to lose.
 
-**The check is best effort.** Every run but a break-glass create prints so first, on standard
-error. A writer gets past it four ways: a host or dev box you do not name, a binary renamed to a
-name the check does not know, a writer that starts between the final scan and the create, and a
-restore after `check` that nothing holds. So before every run of the normal `create` that makes a
-bucket, `recreate` or `check`, stop every listener of the deployment (and every envoy-dispatch, for
-`envoy_ci_state`) and confirm on each host that it has ended; the check confirms what you did,
-and does not replace it. Two runs need no listener stopped. A `create` that finds every bucket it
-names already there changes nothing and takes no proof (below). The break-glass create
-([Until the cutover](#until-the-cutover-create---break-glass)) creates only a bucket the server
-reports missing, which loses nothing to a create.
+**The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
+writer gets past it four ways: a host or dev box you do not name, a binary renamed to a name the
+check does not know, a writer that starts between the final scan and the create, and a restore
+after `check` that nothing holds. So before every `recreate` or `check`, stop every listener of
+the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it
+has ended; the check confirms what you did, and does not replace it. `create` needs no listener
+stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
 every server's connz shows the operator alone, and a server it cannot reach stops the hold. Four
@@ -3412,18 +3411,19 @@ tests (`TestBestEffort...`) assert today's outcome of each way, and must be inve
 hold leaves no writer a connection.
 
 ```sh
-NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 \
-  --kube-context <cluster> --host <machine> --connz http://<hub>:8222
+NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 --replicas 3
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets recreate --bucket envoy_sessions \
   --nats nats://<hub>:4222 --kube-context <cluster> --host <machine>
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
 ```
 
 The command reaches a hub on another machine: it sets `ENVOY_ALLOW_REMOTE_NATS=1` for its own
-connection, as `--nats` names the hub. Its NATS user is granted exactly what it sends
-(`buckets.Grant`). A listener's user cannot run it, since its replies come under a prefix that user
-may not subscribe; only `create --break-glass` runs as one
-([Until the cutover](#until-the-cutover-create---break-glass)):
+connection, as `--nats` names the hub. It takes its replies under `--inbox-prefix`, by default
+`_INBOX_envoy_buckets`, the buckets user's. A listener's user subscribes `_INBOX.>` and no other
+reply prefix, so it runs the command with `--inbox-prefix _INBOX.`, as a Job running as the
+clustered hub's `gke` user does, or with `create --break-glass`
+([Until the cutover](#until-the-cutover-create---break-glass)). The buckets user is granted exactly
+what the command sends (`buckets.Grant`):
 
 - publish `$JS.API.INFO`, `$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS` (for `--first-deployment`),
   and for each copied bucket `<B>`: `$JS.API.STREAM.INFO.KV_<B>`, `$JS.API.STREAM.CREATE.KV_<B>`,
@@ -3435,22 +3435,55 @@ may not subscribe; only `create --break-glass` runs as one
 
 This static user lasts until the cutover to the auth service's callout, which replaces it.
 
-`create` creates every copied bucket that is missing (or each `--bucket`), with its configuration
-(file storage, `--replicas` copies or else `ENVOY_NATS_REPLICAS`, each 1 to 5 and refused with exit
-2 outside it, and the session bucket's 5 minutes, the known sessions' 30 days and the CI state's 7
-days of age), and leaves a bucket that exists as it is. It reads each named bucket first: a read
-the server does not answer fails the run with exit 1, and when every bucket exists it prints
-`every bucket named exists (<buckets>): nothing to create, so no writer proof is taken` and exits 0
-with no proof, since the run changes nothing. That is what lets a provisioning step that runs on
-every start, such as the single-node compose file's `buckets` service, run beside the listener it
-provisioned. A `create` with any bucket missing takes the whole check, and `--first-deployment`,
-which says the server holds no bucket, always takes its check. `recreate` deletes each `--bucket`,
-checks again that no writer runs, since one started between the check and the delete may have
-written to the deleted bucket, and only then creates it.
+`create` makes every copied bucket that is absent (or each `--bucket`), at `--replicas` copies or
+else `ENVOY_NATS_REPLICAS` (each 1 to 5, and refused with exit 2 outside it), with the bucket's
+own configuration: `bus.CopiedBucketConfig` (`packages/envoy/internal/bus/stream.go`), the
+configuration the listeners' bus declares for it - file storage, one value a key, and the session
+bucket's 5 minutes, the known sessions' 30 days and the CI state's 7 days of age. It reads each
+named bucket first, and changes no bucket that is there, so it can run again:
+
+- a bucket there at those copies with that configuration is present: the run prints
+  `<bucket> present at <n> copies with its own configuration: left as it is` and exits 0;
+- a bucket there at other copies, or with another history, age, storage, size limit, compression,
+  discard policy, direct get or subjects, or a mirror, a source or a republish, refuses the run
+  with exit 1, naming each difference (`differs: KV_<bucket>: replicas 1, want 3`), and nothing is
+  created, the absent buckets included. It is compared with the stream nats.go's create makes of
+  the bucket's configuration (`bus.CopiedBucketStreamConfig`). The session bucket's age is the
+  exception: the listeners set it from `ENVOY_SESSION_MAX_AGE` on the running bucket, so its age is
+  not compared;
+- a read the server does not answer fails the run with exit 1, and nothing is created.
+
+Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
+the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
+version: it never raises or changes a bucket, and a create the server answers "stream name already
+in use" is followed by no read or update of that stream, where nats.go's own create follows it with
+an update when the stream differs only in its discard policy and direct get. A bucket another
+client makes between the read and the create is read again and judged as above: present, exit 0,
+or refused naming each difference, exit 1. That is what lets
+a provisioning step that runs on every start, such as the single-node compose file's `buckets`
+service, and a Job that runs on every apply run beside the listeners they provision. `create`
+takes none of the proof's flags below, and refuses each with exit 2: it would check nothing with
+them.
+
+A read or a create the server refuses under the run's grant (`Permissions Violation for Publish`)
+is sent again every 5 seconds, for up to 180 seconds from the run's start, and only then fails the
+run with exit 1, naming the request and the refusal. A grant just applied reaches a hub when its
+configuration reloader reloads `auth.conf`, which the apply that made it cannot see, so a run
+right after that apply can be refused for a while; a refused request changes nothing. The run
+says so once, on standard error, at the first refusal of each request, and its connection logs
+no line for each refused send.
+
+An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 1 with
+`envoy-infra buckets create: stopped: <the signal>; nothing more is created` and sends no create
+after it. A bucket a `created` line above names stays.
+
+`recreate` deletes each `--bucket`, checks again that no writer runs, since one started between
+the check and the delete may have written to the deleted bucket, and only then creates it.
 `check` takes the check and changes nothing, for a step another tool makes, such as a `nats stream
 restore`.
 
-The check needs an inventory of every place a writer runs, and refuses with exit 2 without one:
+`recreate` and `check` need an inventory of every place a writer runs, and refuse with exit 2
+without one:
 
 - `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
   pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
@@ -3469,9 +3502,7 @@ The check needs an inventory of every place a writer runs, and refuses with exit
   `sh -c` with no ssh, judged as a host's, and its blockers name `this machine`. In a container it
   reads only the processes of the container's PID namespace, so give the container the machine's
   (`docker run --pid host`, compose's `pid: host`); without it the query reads the container's own
-  processes, finds no listener among them and passes, proving nothing. The single-node compose file
-  (`packages/envoy/deploy/compose/single-node.compose.yml`) runs `create --this-machine` this way,
-  as a one-shot before its listener.
+  processes, finds no listener among them and passes, proving nothing.
 - `--connz <url>`, a hub server's monitoring URL, adds to the check: each page of its
   `/connz?auth=true` is read, and an open connection named `envoy-role-lane` (every listener opens
   one) or `envoy-session-consumers` (or `dispatch`) blocks. An empty census proves nothing absent: a
@@ -3494,8 +3525,8 @@ seed is refused the same way, naming the flag, before anything reads it.
 ### Until the cutover: `create --break-glass`
 
 No hub has the buckets user's key until the auth service's cutover, after which the operator
-connects through the auth service as an operator identity it admits. Until then, make a missing
-copied bucket with `--break-glass`, as the in-cluster `gke` listener's NATS user. Read its seed,
+connects through the auth service as an operator identity it admits. Until then, run `create` with
+`--break-glass`, as the in-cluster `gke` listener's NATS user. Read its seed,
 `envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it to
 disk:
 
@@ -3506,21 +3537,16 @@ NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-
   --nats nats://<hub>:4222
 ```
 
-It creates each `--bucket` that `STREAM.INFO KV_<bucket>` reports missing, with `create`'s
-configuration at `--replicas` or `ENVOY_NATS_REPLICAS` copies (set it to the deployment's count, 3
-on a clustered hub), and does nothing else:
+It is `create` with another credential: each `--bucket` is judged and made as `create` does, at
+`--replicas` or `ENVOY_NATS_REPLICAS` copies (set it to the deployment's count, 3 on a clustered
+hub), present when it is there with its own configuration and refused naming each difference when
+it is there with another, and nothing is updated or deleted. Besides:
 
-- it refuses, and creates none, when any `--bucket` exists or its read answers anything but "not
-  found"; it never updates or deletes a bucket;
 - it takes its replies on the default `_INBOX.` prefix, which a listener's user may receive on;
-- it takes no writer proof, prints no best-effort warning, and needs no listener stopped: a missing
-  bucket only gains a create, since the writes its deleted stream acknowledged were lost with it and
-  every listener has answered its writes 503 since, so a create while listeners run loses nothing
-  more. The proof cannot reach the production VM hub's processes either;
-- it logs one line to standard error for each bucket, naming the operator (`--operator`, required),
-  the hub, the bucket and `break-glass`;
-- it is refused with `recreate` or `check`, beside a proof flag (`--kube-context`, `--host`,
-  `--this-machine`, `--ssh`, `--connz`, `--first-deployment`), and without a `--bucket`.
+- it logs one line to standard error before each create, naming the operator (`--operator`,
+  required), the hub, the bucket and `break-glass`;
+- it is refused with `recreate` or `check`, beside `--inbox-prefix` (it takes `_INBOX.` already),
+  and without a `--bucket`.
 
 The pull request that removes the create grant from the listener users at the cutover deletes the
 flag and this section.

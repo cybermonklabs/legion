@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -39,10 +40,9 @@ import (
 func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	stream := "KV_" + bus.SessionBucket
-	proven := map[string][]string{"box-1": {clean(150)}}
 	// The normal path's stream, on a server of its own, before the listener user's seed is set.
 	normalURI, normalJS := server(t)
-	if code, stdout, stderr := runCommand(t, &world{hostAnswers: proven}, nil, "create", "--nats", normalURI, "--bucket", bus.SessionBucket, "--host", "box-1"); code != 0 {
+	if code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--nats", normalURI, "--bucket", bus.SessionBucket); code != 0 {
 		t.Fatalf("the normal path's create = %d\n%s%s", code, stdout, stderr)
 	}
 	normal, err := normalJS.StreamInfo(stream)
@@ -58,7 +58,7 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 	// The server's refusal reaches the connection as an async error, which the bus logs (slog).
 	logs := &logtest.Buffer{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	code, stdout, stderr := runCommand(t, &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket, "--host", "box-1")
+	code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket)
 	const unanswered = "envoy-infra buckets: read " + bus.SessionBucket + ": context deadline exceeded"
 	refusal := `Permissions Violation for Subscription to \"` + InboxPrefix + `.`
 	if code != 1 || !strings.Contains(stderr, unanswered) || !strings.Contains(logs.String(), refusal) {
@@ -102,12 +102,14 @@ func TestBreakGlassCreatesAMissingBucketAsAListenersUser(t *testing.T) {
 	}
 }
 
-// A break-glass create only creates. With the session bucket there, holding a key, it refuses,
-// sends the bucket's stream one read and nothing else, and leaves the stream as it was: the same
-// stream, configuration, messages and key. With a missing bucket named beside it, it creates
-// neither. --break-glass with recreate is refused as a usage error before it connects, and sends
-// the stream nothing.
-func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
+// A break-glass create changes no bucket that is there. With the session bucket there at one copy,
+// holding a key, a create at one copy says it is present and exits 0; a create at three copies,
+// with a missing bucket named beside it, is refused naming the copies and creates neither. Each
+// sends the buckets' streams one read each and nothing else, and leaves the stream as it was: the
+// same stream, configuration, messages and key. --break-glass with recreate is refused as a usage
+// error before it connects, and sends the stream nothing. At b20f45e30a (#4296's head) the present
+// bucket refused the run, exit 1 ("refused: KV_envoy_sessions exists").
+func TestBreakGlassLeavesABucketThatIsThereAsItIs(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	uri, seed := listenerUserServer(t)
 	watcher, js := jetStream(t, uri)
@@ -134,10 +136,10 @@ func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
 		says string
 		sent []string
 	}{
-		{"create of the bucket that exists", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
-			1, "refused: " + stream + " exists", []string{"INFO." + stream}},
-		{"create of a missing bucket beside it", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
-			1, "refused: " + stream + " exists", []string{"INFO." + missing, "INFO." + stream}},
+		{"create of the bucket there at its copies", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
+			0, bus.SessionBucket + " present at 1 copies with its own configuration", []string{"INFO." + stream}},
+		{"create at other copies, a missing bucket beside it", []string{"create", "--break-glass", "--operator", "op", "--replicas", "3", "--bucket", bus.RoleClaimBucket, "--bucket", bus.SessionBucket},
+			1, "differs: " + stream + ": replicas 1, want 3", []string{"INFO." + missing, "INFO." + stream}},
 		{"recreate", []string{"recreate", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
 			2, "--break-glass is create's alone", nil},
 		{"--break-glass before recreate", []string{"--break-glass", "recreate", "--operator", "op", "--bucket", bus.SessionBucket},
@@ -147,7 +149,7 @@ func TestBreakGlassRefusesABucketThatExistsAndChangesNothing(t *testing.T) {
 			requests.take(t) // the test's own reads of the streams, after the run before
 			w := &world{}
 			code, stdout, stderr := runCommand(t, w, nil, append(c.args, "--nats", uri)...)
-			if code != c.code || !strings.Contains(stderr, c.says) || strings.Contains(stdout, "created") || len(w.calls) != 0 {
+			if code != c.code || !strings.Contains(stdout+stderr, c.says) || strings.Contains(stdout, "created") || len(w.calls) != 0 {
 				t.Fatalf("%v = %d, want %d saying %q, nothing created and no proof taken (%v)\n%s%s", c.args, code, c.code, c.says, w.calls, stdout, stderr)
 			}
 			if got := requests.take(t); !slices.Equal(got, c.sent) {
@@ -188,7 +190,7 @@ func TestBreakGlassIsRefusedWhereItIsMisused(t *testing.T) {
 		{[]string{"create", "--break-glass", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
 		{[]string{"create", "--break-glass", "--operator", " ", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
 		{[]string{"create", "--break-glass", "--operator", "op\nenvoy-infra buckets: forged", "--bucket", bus.SessionBucket}, "--break-glass needs --operator"},
-		{[]string{"create", "--break-glass", "--operator", "op"}, "--break-glass needs each missing --bucket"},
+		{[]string{"create", "--break-glass", "--operator", "op"}, "--break-glass needs each --bucket it creates"},
 		{[]string{"create", "--operator", "op", "--bucket", bus.SessionBucket, "--host", "box-1"}, "--operator names who runs a --break-glass create"},
 	} {
 		w := &world{}
@@ -331,9 +333,13 @@ func race(t *testing.T, uri string, relay *holdingRelay, stream string, makeBuck
 	if err != nil {
 		t.Fatalf("the racer's jetstream: %v", err)
 	}
-	replies, err := conn.SubscribeSync(natsgo.InboxPrefix + ">")
-	if err != nil {
-		t.Fatalf("the racer's watch of the run's answers: %v", err)
+	// The run's replies arrive under nats.go's _INBOX. on the break-glass path and under the
+	// command's own prefix on the normal one, so both are watched.
+	replies := make(chan *natsgo.Msg, 1024)
+	for _, prefix := range []string{natsgo.InboxPrefix, InboxPrefix + "."} {
+		if _, err := conn.ChanSubscribe(prefix+">", replies); err != nil {
+			t.Fatalf("the racer's watch of the run's answers under %s: %v", prefix, err)
+		}
 	}
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the racer's watch: %v", err)
@@ -360,15 +366,16 @@ func race(t *testing.T, uri string, relay *holdingRelay, stream string, makeBuck
 }
 
 // answerTo is the payload of the first message on replies whose subject is reply.
-func answerTo(replies *natsgo.Subscription, reply string) (string, error) {
-	deadline := time.Now().Add(10 * time.Second)
+func answerTo(replies <-chan *natsgo.Msg, reply string) (string, error) {
+	deadline := time.After(10 * time.Second)
 	for {
-		msg, err := replies.NextMsg(time.Until(deadline))
-		if err != nil {
-			return "", fmt.Errorf("no answer to %s: %w", reply, err)
-		}
-		if msg.Subject == reply {
-			return string(msg.Data), nil
+		select {
+		case msg := <-replies:
+			if msg.Subject == reply {
+				return string(msg.Data), nil
+			}
+		case <-deadline:
+			return "", fmt.Errorf("no answer to %s in 10 s", reply)
 		}
 	}
 }
@@ -454,27 +461,37 @@ func distinctSends(t *testing.T, requests []string, logs *logtest.Recorder) []st
 	return distinct
 }
 
-// A bucket another client makes after a break-glass run's read is left as it is, and the run is
-// refused for it, rather than raising, updating or deleting it. The other client is a racer (race):
-// the run reaches a three-member hub through a relay that holds it after its first request on the
-// trigger (holdingRelay), and in that hold the racer makes the bucket, then lets the run go on.
+// A bucket another client makes after a break-glass run's read is left as it is: the run reads it
+// again and applies create's rule to it, rather than raising, updating or deleting it. The other
+// client is a racer (race): the run reaches a three-member hub through a relay that holds it after
+// its first request on the trigger (holdingRelay), and in that hold the racer makes the bucket, then
+// lets the run go on.
 //
 //   - At the run's read of the session bucket, which the hub answers "stream not found", the racer
 //     makes the bucket at one copy where the run asks for three. The create's own lookup finds it,
-//     and the run is refused there, having sent the bucket's stream its two reads alone. The control
-//     is the open the normal path takes (bus.CreateCopiedBucket), which raises a bucket its lookup
-//     finds with a stream update.
+//     the run reads it again, and is refused naming the copies, having sent the bucket's stream its
+//     three reads alone.
 //   - Between the create's lookup and its create - at the account info the create asks for first,
-//     as nats.go does (bus, createBucketStream) - the racer makes the role-claim bucket with the
+//     as nats.go does (bus, addBucketStream) - the racer makes the role-claim bucket with the
 //     discard policy and direct get of a KV made before nats-server 2.7.2 and 2.9. The hub answers
-//     the create "stream name already in use"; the create reads the stream, as nats.go does, and
-//     sends no update, since the hub's metadata keeps the two configurations apart (bus,
-//     createOnly); and the run is refused.
+//     the create "stream name already in use"; the create neither reads nor updates the stream
+//     after that answer (bus, createOnly), so no metadata of the hub's keeps an update unsent
+//     (bus, TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse); the run reads it
+//     again and is refused naming both.
+//   - At the run's read of the known-session bucket, the racer makes it at the three copies the run
+//     asks for, with its own configuration. The create's own lookup finds it, the run reads it again
+//     and says it is present, exit 0. At b20f45e30a (#4296's head) that run was refused, exit 1.
+//
+// Each case runs on both paths: --break-glass, as the gke listener's user on the default _INBOX.
+// prefix, and the normal create, its replies under InboxPrefix, as the hub's unrestricted watcher
+// user. Neither sends a STREAM.UPDATE or anything else but reads and the one create: at b20f45e30a
+// (#4296's head) the normal create, with the inventory it then required, created through
+// bus.CreateCopiedBucket, which raises a bucket its own lookup finds with a stream update.
 //
 // Each request is counted once however often the bus sent it (distinctSends): the hold keeps the
 // run's next request from the hub for as long as the racer takes, and a lookup held past its read
 // limit, 630 ms, is sent again by design, which a loaded machine reaches.
-func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
+func TestCreateLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 	config, seed := listenerUsers(t)
 	cluster := testnats.StartClusterConfig(t, 3, config)
 	uri := cluster.Servers[0].URL()
@@ -486,6 +503,7 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 		name, bucket, trigger string
 		makeBucket            func(natsgo.JetStreamContext) error
 		answered              string // what the hub answered the run's request on trigger
+		code                  int
 		says                  []string
 		sent                  []string // the run's requests of the bucket's stream, by verb
 	}{
@@ -499,8 +517,10 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 				return err
 			},
 			answered: "stream not found",
-			says:     []string{"KV_" + bus.SessionBucket + " STREAM.INFO"},
-			sent:     []string{"INFO", "INFO"},
+			code:     1,
+			says: []string{"refused: KV_" + bus.SessionBucket + " was made by another client after the read", "KV_" + bus.SessionBucket + " STREAM.INFO",
+				"differs: KV_" + bus.SessionBucket + ": replicas 1, want 3"},
+			sent: []string{"INFO", "INFO", "INFO"},
 		},
 		{
 			name:    "with another discard policy and direct get between the create's lookup and its create",
@@ -520,45 +540,78 @@ func TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs(t *testing.T) {
 				_, err = js.UpdateStream(&legacy)
 				return err
 			},
-			says: []string{"KV_" + bus.RoleClaimBucket + " create", "stream name already in use"},
+			code: 1,
+			says: []string{"refused: KV_" + bus.RoleClaimBucket + " was made by another client after the read", "KV_" + bus.RoleClaimBucket + " create", "stream name already in use",
+				"discard policy DiscardOld, want DiscardNew", "direct get false, want true"},
+			// The run's read, the create's lookup, the create, and the run's read again: no read of
+			// the stream after the create's "already in use", and no update.
 			sent: []string{"INFO", "INFO", "CREATE", "INFO"},
 		},
+		{
+			name:    "at the copies asked for with its own configuration when the run's read arrives",
+			bucket:  bus.KnownSessionBucket,
+			trigger: "$JS.API.STREAM.INFO.KV_" + bus.KnownSessionBucket,
+			makeBucket: func(js natsgo.JetStreamContext) error {
+				config, _ := bus.CopiedBucketConfig(bus.KnownSessionBucket, 3)
+				_, err := js.CreateKeyValue(&config)
+				return err
+			},
+			answered: "stream not found",
+			code:     0,
+			says:     []string{bus.KnownSessionBucket + " present at 3 copies with its own configuration, made by another client after the read"},
+			sent:     []string{"INFO", "INFO", "INFO"},
+		},
 	} {
-		t.Run(c.name, func(t *testing.T) {
-			stream := "KV_" + c.bucket
-			requests.take(t)
-			resends := recordResends(t)
-			relay := startHoldingRelay(t, uri, c.trigger)
-			r := race(t, uri, relay, stream, c.makeBucket)
-			code, stdout, stderr := runCommand(t, &world{}, nil, "create", "--break-glass", "--operator", "op", "--bucket", c.bucket, "--nats", relay.url)
-			<-r.done
-			if r.err != nil || !strings.Contains(r.answer, c.answered) {
-				t.Fatalf("the racer: %v; the hub answered the run's request %q, want %q", r.err, r.answer, c.answered)
-			}
-			// The run's requests are taken before the read below, which is the test's own.
-			var sent []string
-			for _, request := range distinctSends(t, requests.take(t), resends) {
-				verb, _ := strings.CutSuffix(request, "."+stream)
-				if verb != "INFO" && verb != "CREATE" {
-					t.Errorf("the run sent %s, which changes a stream", request)
+		for _, path := range []string{"break-glass", "normal"} {
+			t.Run(c.name+", "+path, func(t *testing.T) {
+				args := []string{"create", "--break-glass", "--operator", "op", "--bucket", c.bucket}
+				if path == "normal" {
+					args = []string{"create", "--bucket", c.bucket}
+					// No seed: the run connects as the hub's no_auth_user, the watcher.
+					t.Setenv("NATS_NKEY_SEED", "")
+					if err := os.Unsetenv("NATS_NKEY_SEED"); err != nil {
+						t.Fatalf("unset NATS_NKEY_SEED: %v", err)
+					}
 				}
-				sent = append(sent, verb)
-			}
-			if after, err := js.StreamInfo(stream); err != nil || !after.Created.Equal(r.made.Created) || !reflect.DeepEqual(after.Config, r.made.Config) {
-				t.Errorf("%s after the run: %v, %+v; want it as the racer made it, %+v", stream, err, after, r.made)
-			}
-			if !slices.Equal(sent, c.sent) {
-				t.Errorf("the run sent %v to %s, want %v", sent, stream, c.sent)
-			}
-			refused := "refused: " + stream + " was made by another client after the read"
-			if code != 1 || !strings.Contains(stderr, refused) || strings.Contains(stdout, "created") {
-				t.Errorf("the run = %d, want 1 and %q\n%s%s", code, refused, stdout, stderr)
-			}
-			for _, says := range c.says {
-				if !strings.Contains(stderr, says) {
-					t.Errorf("the refusal does not name %q:\n%s", says, stderr)
+				stream := "KV_" + c.bucket
+				t.Cleanup(func() {
+					if err := js.DeleteStream(stream); err != nil && !errors.Is(err, natsgo.ErrStreamNotFound) {
+						t.Errorf("delete %s for the next run: %v", stream, err)
+					}
+				})
+				requests.take(t)
+				resends := recordResends(t)
+				relay := startHoldingRelay(t, uri, c.trigger)
+				r := race(t, uri, relay, stream, c.makeBucket)
+				code, stdout, stderr := runCommand(t, &world{}, nil, append(args, "--nats", relay.url)...)
+				<-r.done
+				if r.err != nil || !strings.Contains(r.answer, c.answered) {
+					t.Fatalf("the racer: %v; the hub answered the run's request %q, want %q", r.err, r.answer, c.answered)
 				}
-			}
-		})
+				// The run's requests are taken before the read below, which is the test's own.
+				var sent []string
+				for _, request := range distinctSends(t, requests.take(t), resends) {
+					verb, _ := strings.CutSuffix(request, "."+stream)
+					if verb != "INFO" && verb != "CREATE" {
+						t.Errorf("the run sent %s, which changes a stream", request)
+					}
+					sent = append(sent, verb)
+				}
+				if after, err := js.StreamInfo(stream); err != nil || !after.Created.Equal(r.made.Created) || !reflect.DeepEqual(after.Config, r.made.Config) {
+					t.Errorf("%s after the run: %v, %+v; want it as the racer made it, %+v", stream, err, after, r.made)
+				}
+				if !slices.Equal(sent, c.sent) {
+					t.Errorf("the run sent %v to %s, want %v", sent, stream, c.sent)
+				}
+				if code != c.code || strings.Contains(stdout, "created") {
+					t.Errorf("the run = %d, want %d and nothing created\n%s%s", code, c.code, stdout, stderr)
+				}
+				for _, says := range c.says {
+					if !strings.Contains(stdout+stderr, says) {
+						t.Errorf("the run does not name %q:\n%s%s", says, stdout, stderr)
+					}
+				}
+			})
+		}
 	}
 }

@@ -103,12 +103,11 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 // A create-only open whose create the server answers "stream name already in use" - another client
 // made the bucket between its lookup and its create, with another configuration - answers
 // ErrBucketExists named for the create, at once, with no handle: it neither waits a member out
-// for that bucket nor opens it. The member here answers the lookup, and the create's read of the
-// stream after that answer (createBucketStream), as one that has not applied the other client's
-// create does, and sends the create to the server, which answers it as the cluster does
-// (behindMember). The control is CreateCopiedBucket with the same member, which waits the member
-// out and opens the bucket. A member whose misses were not all taken would hold nothing: the open
-// never met the member behind.
+// for that bucket nor opens it, and reads the stream no further (addBucketStream). The member here
+// answers the lookup as one that has not applied the other client's create does, and sends the
+// create to the server, which answers it as the cluster does (behindMember). The control is
+// CreateCopiedBucket with the same member, which waits the member out and opens the bucket. A
+// member whose misses were not all taken would hold nothing: the open never met the member behind.
 func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T) {
 	stream := "KV_" + SessionBucket
 	_, uri := testnats.Start(t)
@@ -121,9 +120,9 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 		t.Fatalf("create the bucket another client made: %v", err)
 	}
 
-	// The lookup and the create's read of the stream.
+	// The lookup.
 	member := &behindMember{JetStreamContext: js}
-	member.misses.Store(2)
+	member.misses.Store(1)
 	start := time.Now()
 	kv, err := CreateMissingCopiedBucket(t.Context(), conn, member, SessionBucket, 1)
 	waited := time.Since(start)
@@ -149,6 +148,84 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 	}
 	if left := control.misses.Load(); left != 0 {
 		t.Fatalf("control: the member was behind for %d reads CreateCopiedBucket never made", left)
+	}
+}
+
+// serverBefore211 answers each read of a stream (StreamInfo) as a nats-server before 2.11 does,
+// with the stream's configuration and no metadata of the server's own (_nats.ver, _nats.level,
+// _nats.req.level), and passes every other request to its member.
+type serverBefore211 struct{ *behindMember }
+
+func (s serverBefore211) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info, err := s.behindMember.StreamInfo(stream, opts...)
+	if info != nil {
+		info.Config.Metadata = nil
+	}
+	return info, err
+}
+
+// A create-only open updates no stream its create finds in use, whatever configuration the server
+// reports for it. Another client made the session bucket, between the open's lookup (which the
+// member misses, behindMember) and its create, with the discard policy and direct get of a KV made
+// before nats-server 2.7.2 and 2.9, and the server answers each read of the stream with no metadata
+// of its own, as one before 2.11 does (serverBefore211). The open answers ErrBucketExists named for
+// the create, sends the stream its create alone and leaves the bucket as the other client made it.
+// The control is the normal path's step on the same answers (createBucketStream), which reads the
+// stream, finds it equal to its own but for those two settings, and updates it. On nats-server
+// 2.15.1's own answers, which carry that metadata, the normal path sends no update either, so that
+// alone kept a create-only open from updating the bucket at 6e52228ad6, whose create was the normal
+// path's: the open there answered no error, having updated the bucket and opened it.
+func TestCreateMissingCopiedBucketUpdatesNoStreamItsCreateFindsInUse(t *testing.T) {
+	stream := "KV_" + SessionBucket
+	_, uri := testnats.Start(t)
+	conn, js := serverJetStream(t, uri)
+	config, _ := CopiedBucketConfig(SessionBucket, 1)
+	if _, err := js.CreateKeyValue(&config); err != nil {
+		t.Fatalf("create the bucket another client made: %v", err)
+	}
+	made, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the bucket: %v", err)
+	}
+	legacy := made.Config
+	legacy.Discard, legacy.AllowDirect = nats.DiscardOld, false
+	if _, err := js.UpdateStream(&legacy); err != nil {
+		t.Fatalf("give the bucket an old discard policy and no direct get: %v", err)
+	}
+	before, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the bucket: %v", err)
+	}
+	writes := testnats.WatchStreamWrites(t, uri)
+
+	// The lookup.
+	member := &behindMember{JetStreamContext: js}
+	member.misses.Store(1)
+	kv, err := CreateMissingCopiedBucket(t.Context(), conn, serverBefore211{member}, SessionBucket, 1)
+	if !errors.Is(err, ErrBucketExists) || !errors.Is(err, nats.ErrStreamNameAlreadyInUse) || !strings.Contains(err.Error(), stream+" create") || kv.Opened() {
+		t.Fatalf("a create-only open whose create finds the stream in use, on a server answering no metadata = %v (handle opened: %t), want ErrBucketExists named for the create and no handle", err, kv.Opened())
+	}
+	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.CREATE."+stream {
+		t.Fatalf("the create-only open sent %v, want its create alone", got)
+	}
+	after, err := js.StreamInfo(stream)
+	if err != nil || !reflect.DeepEqual(after.Config, before.Config) {
+		t.Fatalf("the bucket after the create-only open: %v, %+v; want it as the other client made it, %+v", err, after, before)
+	}
+	if left := member.misses.Load(); left != 0 {
+		t.Fatalf("the member was behind for %d reads the create-only open never made, so this row holds nothing", left)
+	}
+
+	// The control: the normal path's step on the same answers updates the stream.
+	control := serverBefore211{&behindMember{JetStreamContext: js}}
+	if err := createBucketStream(t.Context(), conn, control, &config); err != nil {
+		t.Fatalf("control: the normal path's create on a server answering no metadata = %v, want the stream updated", err)
+	}
+	if got := writes.Take(t); len(got) != 2 || got[1] != "$JS.API.STREAM.UPDATE."+stream {
+		t.Fatalf("control: the normal path's create sent %v, want its create and the update", got)
+	}
+	if updated, err := js.StreamInfo(stream); err != nil || updated.Config.Discard != nats.DiscardNew || !updated.Config.AllowDirect {
+		t.Fatalf("control: the bucket after the normal path's create: %v, %+v; want discard new and direct get", err, updated)
 	}
 }
 
@@ -200,5 +277,21 @@ func TestCreateMissingCopiedBucketWaitsForTheMemberToApplyItsCreate(t *testing.T
 	}
 	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the bucket's stream through the handle: %v", err)
+	}
+}
+
+// Every bucket a listener copies has the stream its create makes (CopiedBucketStreamConfig), at
+// any copies and on any server version, and a bucket no listener copies has none.
+func TestEveryCopiedBucketHasAStreamConfig(t *testing.T) {
+	for _, bucket := range CopiedBuckets() {
+		for _, version := range []string{"2.6.2", "2.15.1"} {
+			stream, ok := CopiedBucketStreamConfig(bucket, 3, version)
+			if !ok || stream.Name != "KV_"+bucket || stream.Replicas != 3 {
+				t.Errorf("CopiedBucketStreamConfig(%s, 3, %s) = %+v, %t; want the bucket's stream at three copies", bucket, version, stream, ok)
+			}
+		}
+	}
+	if stream, ok := CopiedBucketStreamConfig("envoy_not_copied", 1, "2.15.1"); ok {
+		t.Errorf("CopiedBucketStreamConfig of a bucket no listener copies = %+v, want none", stream)
 	}
 }

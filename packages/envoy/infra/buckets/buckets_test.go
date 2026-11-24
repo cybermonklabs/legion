@@ -278,15 +278,20 @@ func TestRecreateLeavesTheBucketDeletedWhenAWriterStartsBetweenItsProofs(t *test
 	}
 }
 
-// A first deployment's server holds no notification stream and no bucket, and create makes every
-// copied bucket with its configuration once the inventory is proven; a server a listener has
-// connected to holds the stream, and --first-deployment refuses it.
-func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testing.T) {
+// A first deployment's server holds no notification stream and no bucket: check --first-deployment
+// proves it beside the inventory, and create then makes every copied bucket with its
+// configuration. A server a listener has connected to holds the stream, and --first-deployment
+// refuses it.
+func TestFirstDeploymentProvesOnlyAServerNoWriterReached(t *testing.T) {
 	uri, js := server(t)
 	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
-	code, stdout, stderr := runCommand(t, w, nil, "create", "--nats", uri, "--first-deployment", "--host", "box-1", "--replicas", "1")
+	code, stdout, stderr := runCommand(t, w, nil, "check", "--nats", uri, "--first-deployment", "--host", "box-1")
+	if code != 0 || !strings.Contains(stdout, "proven: the server holds no notification stream and no copied bucket") {
+		t.Fatalf("check --first-deployment = %d\n%s%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCommand(t, &world{}, nil, "create", "--nats", uri, "--replicas", "1")
 	if code != 0 {
-		t.Fatalf("create --first-deployment = %d\n%s%s", code, stdout, stderr)
+		t.Fatalf("create after the proof = %d\n%s%s", code, stdout, stderr)
 	}
 	for _, bucket := range bus.CopiedBuckets() {
 		want, _ := bus.CopiedBucketConfig(bucket, 1)
@@ -299,15 +304,9 @@ func TestFirstDeploymentCreatesEveryBucketOnlyOnAServerNoWriterReached(t *testin
 	if _, err := js.AddStream(&natsgo.StreamConfig{Name: bus.Stream, Subjects: []string{"notifications.>"}}); err != nil {
 		t.Fatalf("add the notification stream, as a listener's first connect does: %v", err)
 	}
-	if err := js.DeleteKeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("delete a bucket: %v", err)
-	}
-	code, stdout, stderr = runCommand(t, w, nil, "create", "--nats", uri, "--first-deployment", "--host", "box-1")
+	code, stdout, stderr = runCommand(t, w, nil, "check", "--nats", uri, "--first-deployment", "--host", "box-1")
 	if code != 1 || !strings.Contains(stderr, "the server holds "+bus.Stream) {
-		t.Fatalf("create --first-deployment on a server a writer reached = %d\n%s%s", code, stdout, stderr)
-	}
-	if _, err := js.KeyValue(bus.SessionBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
-		t.Fatalf("the refused create made the bucket: %v", err)
+		t.Fatalf("check --first-deployment on a server a writer reached = %d\n%s%s", code, stdout, stderr)
 	}
 }
 
@@ -332,16 +331,16 @@ func bucketFlags(buckets ...string) []string {
 	return flags
 }
 
-// A writer of the buckets "runs" on every place named, and a create whose buckets all exist still
-// exits 0: it changes nothing, so it runs no proof - the fake runner records no call - says that
-// every bucket exists, and leaves each as it was. That holds for the four buckets a listener with
-// no GitHub route copies, the single-node compose file's, named with --bucket, and for every
-// copied bucket, named by none. At 036c9e7a60 the create took the proof and refused, exit 1.
+// A create whose buckets all exist with their own configuration exits 0: it changes nothing, runs
+// no proof (noProof fails the test if any part of one runs), says that each bucket is present, and
+// leaves each as it was. That holds for the four buckets a listener with no GitHub route copies,
+// the single-node compose file's, named with --bucket, and for every copied bucket, named by none.
+// At 036c9e7a60 the create took the proof and refused, exit 1.
 func TestACreateWithEveryBucketThereTakesNoProof(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
 	uri, js := server(t)
 	single := []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket}
 	makeBuckets(t, js, single...)
-	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
 	for _, c := range []struct {
 		name    string
 		make    []string
@@ -354,14 +353,14 @@ func TestACreateWithEveryBucketThereTakesNoProof(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			makeBuckets(t, js, c.make...)
 			before := map[string]time.Time{}
+			want := ""
 			for _, bucket := range c.buckets {
 				before[bucket] = created(t, js, bucket)
+				want += bucket + " present at 1 copies with its own configuration: left as it is\n"
 			}
-			w := &world{hostAnswers: map[string][]string{"box-1": {writer}, here: {writer}}}
-			code, stdout, stderr := runCommand(t, w, nil, append([]string{"create", "--nats", uri, "--host", "box-1", "--this-machine"}, c.flags...)...)
-			want := "every bucket named exists (" + strings.Join(c.buckets, ", ") + "): nothing to create, so no writer proof is taken\n"
-			if code != 0 || stdout != want || len(w.calls) != 0 {
-				t.Fatalf("create with every bucket there while a writer runs = %d, calls %q, want 0, no call and %q\n%s%s", code, w.calls, want, stdout, stderr)
+			code, stdout, stderr := runCreate(t, append([]string{"create", "--nats", uri}, c.flags...)...)
+			if code != 0 || stdout != want {
+				t.Fatalf("create with every bucket there = %d, want 0 and\n%s\nstdout: %s\nstderr: %s", code, want, stdout, stderr)
 			}
 			for bucket, at := range before {
 				if after := created(t, js, bucket); !after.Equal(at) {
@@ -372,52 +371,17 @@ func TestACreateWithEveryBucketThereTakesNoProof(t *testing.T) {
 	}
 }
 
-// A create with one named bucket missing takes the whole proof: while a writer runs it refuses
-// naming it and makes nothing, and once none runs it makes the missing bucket alone. The control
-// is the same writer once every bucket exists: that create exits 0 with no proof, so the refusal
-// was the missing bucket's (at 036c9e7a60 the control fails, refused). --first-deployment, which
-// says the server holds no bucket, keeps its proof with every bucket there, and refuses.
-func TestACreateWithABucketMissingTakesTheProof(t *testing.T) {
-	uri, js := server(t)
-	single := []string{bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket, bus.KnownSessionBucket}
-	makeBuckets(t, js, bus.InterestBucket, bus.RoleClaimBucket, bus.SessionBucket)
-	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
-	args := append([]string{"create", "--nats", uri, "--host", "box-1"}, bucketFlags(single...)...)
-
-	w := &world{hostAnswers: map[string][]string{"box-1": {writer}}}
-	code, stdout, stderr := runCommand(t, w, nil, args...)
-	if code != 1 || !strings.Contains(stderr, "blocked: host box-1: process 4242 envoy-listener runs") || len(w.calls) != 1 {
-		t.Fatalf("create with %s missing while a writer runs = %d, calls %q, want refused by the proof\n%s%s", bus.KnownSessionBucket, code, w.calls, stdout, stderr)
-	}
-	if _, err := js.KeyValue(bus.KnownSessionBucket); !errors.Is(err, natsgo.ErrBucketNotFound) {
-		t.Fatalf("the refused create made %s: %v", bus.KnownSessionBucket, err)
-	}
-
-	w = &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
-	code, stdout, stderr = runCommand(t, w, nil, args...)
-	if code != 0 || !strings.Contains(stdout, "created "+bus.KnownSessionBucket+" (1 copies)") || !strings.Contains(stdout, bus.SessionBucket+" exists; left as it is") || len(w.calls) != 1 {
-		t.Fatalf("create with %s missing and no writer = %d, calls %q, want it created after the proof\n%s%s", bus.KnownSessionBucket, code, w.calls, stdout, stderr)
-	}
-
-	w = &world{hostAnswers: map[string][]string{"box-1": {writer}}}
-	if code, stdout, stderr := runCommand(t, w, nil, args...); code != 0 || len(w.calls) != 0 {
-		t.Fatalf("control: create with every bucket there while the writer runs = %d, calls %q, want 0 with no proof\n%s%s", code, w.calls, stdout, stderr)
-	}
-
-	w = &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
-	code, stdout, stderr = runCommand(t, w, nil, append(args, "--first-deployment")...)
-	if code != 1 || !strings.Contains(stderr, "--first-deployment: the server holds KV_") || len(w.calls) != 1 {
-		t.Fatalf("create --first-deployment with every bucket there = %d, calls %q, want its proof taken and refused\n%s%s", code, w.calls, stdout, stderr)
-	}
-}
-
-// No inventory is a usage error, with --first-deployment as without it: an empty server is no
-// proof that no writer runs (a hub on a new disk is empty while its old clients still run), so
-// nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and created the
-// buckets with no writer proof. --this-machine alone is an inventory, of the machine the command
-// runs on; at 1160350af8 it was no flag at all.
+// No inventory is a usage error for recreate and check, with --first-deployment as without it: an
+// empty server is no proof that no writer runs (a hub on a new disk is empty while its old clients
+// still run), so nothing would be proven. At 7b262c2e0a --first-deployment alone was accepted and
+// created the buckets with no writer proof. --this-machine alone is an inventory, of the machine
+// the command runs on; at 1160350af8 it was no flag at all.
 func TestTheCommandNeedsAnInventory(t *testing.T) {
-	for _, args := range [][]string{{"create", "--nats", "nats://127.0.0.1:1"}, {"create", "--nats", "nats://127.0.0.1:1", "--first-deployment"}} {
+	for _, args := range [][]string{
+		{"check", "--nats", "nats://127.0.0.1:1"},
+		{"check", "--nats", "nats://127.0.0.1:1", "--first-deployment"},
+		{"recreate", "--nats", "nats://127.0.0.1:1", "--bucket", bus.SessionBucket},
+	} {
 		code, _, stderr := runCommand(t, &world{}, nil, args...)
 		if code != 2 || !strings.Contains(stderr, "name every place a writer of the deployment runs") {
 			t.Fatalf("%v with no inventory = %d: %s", args, code, stderr)
@@ -428,9 +392,9 @@ func TestTheCommandNeedsAnInventory(t *testing.T) {
 		t.Fatalf("recreate of a bucket no listener copies = %d: %s", code, stderr)
 	}
 	// --this-machine names a place: the run goes on to connect, and fails there, at a closed port.
-	code, _, stderr = runCommand(t, &world{}, nil, "create", "--nats", "nats://127.0.0.1:1", "--this-machine")
+	code, _, stderr = runCommand(t, &world{}, nil, "check", "--nats", "nats://127.0.0.1:1", "--this-machine")
 	if code != 1 || !strings.Contains(stderr, "connect to nats://127.0.0.1:1") {
-		t.Fatalf("create --this-machine = %d, want past the inventory check and refused at the connect: %s", code, stderr)
+		t.Fatalf("check --this-machine = %d, want past the inventory check and refused at the connect: %s", code, stderr)
 	}
 }
 
@@ -558,8 +522,7 @@ func TestAUserGrantedOnlyTheCommandsInboxRunsIt(t *testing.T) {
 		t.Fatal("control: the user got a JetStream answer on the default _INBOX prefix, so its grant does not restrict replies")
 	}
 
-	w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
-	code, stdout, stderr := runCommand(t, w, nil, "create", "--nats", uri, "--bucket", bus.SessionBucket, "--host", "box-1")
+	code, stdout, stderr := runCreate(t, "create", "--nats", uri, "--bucket", bus.SessionBucket)
 	if code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
 		t.Fatalf("create as a user granted only %s.> = %d\n%s%s", InboxPrefix, code, stdout, stderr)
 	}
@@ -583,12 +546,23 @@ func grantConfig(t *testing.T, public string, publish, subscribe []string, unres
 }
 
 // A NATS user granted exactly Grant() - the deployment's buckets user - runs every step the command
-// has, against a real server, with no refusal: create --first-deployment, check, recreate and
-// create. The control removes one subject at a time from the grant and runs the step that needs
-// it, which is refused, and the test names the subject. At 7b262c2e0a no such grant existed, and
-// the command's default _INBOX prefix was refused by any user granted its own inbox alone.
+// has, against a real server, with no refusal: check --first-deployment, create, check, recreate
+// and create again. The control removes one subject at a time from the grant and runs the step that
+// needs it, which the server refuses, exit 1, and the test names the subject. recreate and check
+// take the inventory (--host box-1), and create none. At 7b262c2e0a no such grant existed, and the
+// command's default _INBOX prefix was refused by any user granted its own inbox alone.
 func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	// A control's refused create or read is sent again until refusalWait (untilGranted): a second
+	// here, not 180.
+	shortenRefusalWait(t, time.Second, 100*time.Millisecond)
 	publish, subscribe := Grant()
+	withInventory := func(args ...string) []string {
+		if args[0] == "create" {
+			return args
+		}
+		return append(args, "--host", "box-1")
+	}
 	run := func(t *testing.T, publish []string, args ...string) (int, string) {
 		t.Helper()
 		seed, public := testnats.User(t)
@@ -599,7 +573,7 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 			answers = append(answers, clean(150))
 		}
 		w := &world{hostAnswers: map[string][]string{"box-1": answers}}
-		code, stdout, stderr := runCommand(t, w, nil, append(append([]string{}, args...), "--nats", uri, "--host", "box-1")...)
+		code, stdout, stderr := runCommand(t, w, nil, withInventory(append(append([]string{}, args...), "--nats", uri)...)...)
 		return code, stdout + stderr
 	}
 	t.Run("every step with the whole grant", func(t *testing.T) {
@@ -607,13 +581,14 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 		_, uri := testnats.StartConfig(t, grantConfig(t, public, publish, subscribe), []string{"-js"}, false)
 		t.Setenv("NATS_NKEY_SEED", seed)
 		for _, args := range [][]string{
-			{"create", "--first-deployment"},
+			{"check", "--first-deployment"},
+			{"create"},
 			{"check"},
 			{"recreate", "--bucket", bus.SessionBucket},
 			{"create"},
 		} {
 			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}}}
-			code, stdout, stderr := runCommand(t, w, nil, append(append([]string{}, args...), "--nats", uri, "--host", "box-1")...)
+			code, stdout, stderr := runCommand(t, w, nil, withInventory(append(append([]string{}, args...), "--nats", uri)...)...)
 			if code != 0 {
 				t.Fatalf("%v as a user granted exactly Grant() = %d:\n%s%s", args, code, stdout, stderr)
 			}
@@ -626,15 +601,15 @@ func TestAUserGrantedExactlyTheCommandsGrantRunsEveryStep(t *testing.T) {
 		{"$JS.API.STREAM.CREATE.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
 		{"$JS.API.STREAM.INFO.KV_" + bus.SessionBucket, []string{"create", "--bucket", bus.SessionBucket}},
 		{"$JS.API.STREAM.DELETE.KV_" + bus.SessionBucket, []string{"recreate", "--bucket", bus.SessionBucket}},
-		{"$JS.API.STREAM.INFO." + bus.Stream, []string{"create", "--first-deployment", "--bucket", bus.SessionBucket}},
+		{"$JS.API.STREAM.INFO." + bus.Stream, []string{"check", "--first-deployment", "--bucket", bus.SessionBucket}},
 	} {
 		t.Run("control without "+c.subject, func(t *testing.T) {
 			without := slices.DeleteFunc(slices.Clone(publish), func(subject string) bool { return subject == c.subject })
 			if len(without) != len(publish)-1 {
 				t.Fatalf("%s is not in Grant()", c.subject)
 			}
-			if code, output := run(t, without, c.args...); code == 0 {
-				t.Fatalf("%v as a user granted Grant() without %s = 0, want refused:\n%s", c.args, c.subject, output)
+			if code, output := run(t, without, c.args...); code != 1 {
+				t.Fatalf("%v as a user granted Grant() without %s = %d, want refused, 1:\n%s", c.args, c.subject, code, output)
 			}
 		})
 	}
@@ -742,11 +717,10 @@ func ownProcesses(own func() []*exec.Cmd) Runner {
 	}
 }
 
-// Every run but a break-glass create prints the best-effort warning first, on standard error,
-// whatever it then does: a run whose proof holds, a refused one, a usage error. A break-glass
-// create takes no proof, and TestBreakGlassCreatesAMissingBucketAsAListenersUser asserts it prints
-// no warning. At 7b262c2e0a no run printed it.
-func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
+// Every recreate and check prints the best-effort warning first, on standard error, whatever it
+// then does: a run whose proof holds, a refused one, a usage error. create takes no proof and
+// prints none, its own usage errors included. At 7b262c2e0a no run printed it.
+func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 	uri, _ := server(t)
 	for _, c := range []struct {
 		name  string
@@ -756,7 +730,7 @@ func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 	}{
 		{"a proof that holds", &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 0},
 		{"a refused run", &world{hostAnswers: map[string][]string{"box-1": {"7 envoy-listener\nprocesses=150\n" + hostQueryDone + "\n"}}}, []string{"check", "--nats", uri, "--host", "box-1"}, 1},
-		{"a usage error", &world{}, []string{"create", "--nats", uri}, 2},
+		{"a usage error", &world{}, []string{"recreate", "--nats", uri, "--bucket", bus.SessionBucket}, 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			code, _, stderr := runCommand(t, c.world, nil, c.args...)
@@ -769,6 +743,14 @@ func TestEveryRunPrintsTheBestEffortWarning(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, args := range [][]string{
+		{"create", "--nats", uri, "--bucket", bus.SessionBucket},
+		{"create", "--nats", uri, "--host", "box-1"},
+	} {
+		if _, _, stderr := runCreate(t, args...); strings.Contains(stderr, "WARNING: this proof is best effort") {
+			t.Errorf("%v printed the best-effort warning, which tells the operator to stop every listener:\n%s", args, stderr)
+		}
 	}
 }
 
@@ -795,75 +777,78 @@ func TestTheUsageListsEveryFlag(t *testing.T) {
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
-// writer on a host the operator did not name gets past the check: the command creates the bucket
-// while it runs. Today's outcome, asserted so that the hold, which excludes every writer at the
-// server whatever host it runs on, has to invert it. The same writer named with --host refuses, so
-// the pass is not vacuous.
+// writer on a host the operator did not name gets past the check: recreate deletes and creates the
+// bucket while it runs. Today's outcome, asserted so that the hold, which excludes every writer at
+// the server whatever host it runs on, has to invert it. The same writer named with --host refuses,
+// so the pass is not vacuous.
 func TestBestEffortProofMissesAWriterOnAnOmittedHostUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	writer := "4242 envoy-listener\nprocesses=180\n" + hostQueryDone + "\n"
-	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
-	if code, _, stderr := runCommand(t, named, nil, "create", "--nats", uri, "--host", "box-1", "--host", "dev-box", "--bucket", bus.SessionBucket); code != 1 || !strings.Contains(stderr, "host dev-box: process 4242 envoy-listener runs") {
-		t.Fatalf("control: create with the writer's host named = %d, want refused naming it:\n%s", code, stderr)
+	named := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}, "dev-box": {writer}}}
+	if code, _, stderr := runCommand(t, named, nil, "recreate", "--nats", uri, "--host", "box-1", "--host", "dev-box", "--bucket", bus.SessionBucket); code != 1 || !strings.Contains(stderr, "host dev-box: process 4242 envoy-listener runs") {
+		t.Fatalf("control: recreate with the writer's host named = %d, want refused naming it:\n%s", code, stderr)
 	}
-	omitted := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}, "dev-box": {writer}}}
-	code, stdout, stderr := runCommand(t, omitted, nil, "create", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket)
+	omitted := &world{hostAnswers: map[string][]string{"box-1": {clean(150), clean(150)}, "dev-box": {writer}}}
+	code, stdout, stderr := runCommand(t, omitted, nil, "recreate", "--nats", uri, "--host", "box-1", "--bucket", bus.SessionBucket)
 	if code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
-		t.Fatalf("create with the writer's host omitted = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout, stderr)
+		t.Fatalf("recreate with the writer's host omitted = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout, stderr)
 	}
 	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the create: %v", err)
+		t.Fatalf("the bucket after the recreate: %v", err)
 	}
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
-// writer whose binary was renamed gets past the host check, which reads process names: the command
+// writer whose binary was renamed gets past the host check, which reads process names: recreate
 // creates the bucket while the renamed writer runs on the named host. The hold refuses and kicks
 // its connection whatever its name. The stand-in runs throughout, so the pass is not vacuous.
 func TestBestEffortProofMissesARenamedBinaryUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	renamed := startStandIn(t, "renamed-writer")
 	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), []string{"create", "--nats", uri, "--host", "this-machine", "--ssh", localSSH(t), "--bucket", bus.SessionBucket}, &stdout, &stderr,
+	code := command(context.Background(), []string{"recreate", "--nats", uri, "--host", "this-machine", "--ssh", localSSH(t), "--bucket", bus.SessionBucket}, &stdout, &stderr,
 		ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{renamed} }), http.DefaultClient)
 	if !running(renamed, "renamed-writer") {
 		t.Fatal("the renamed stand-in ended during the proof, so the test proves nothing")
 	}
 	if code != 0 {
-		t.Fatalf("create while a renamed writer runs = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
+		t.Fatalf("recreate while a renamed writer runs = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
 	}
 	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the create: %v", err)
+		t.Fatalf("the bucket after the recreate: %v", err)
 	}
 }
 
 // BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A
 // writer that starts after the final scan and before the create gets past the check: here it starts
-// the moment the host query returns clean, and the command still creates the bucket. The hold, kept
-// from the check through the change, refuses its connection. The writer runs when the create
-// completes, so the pass is not vacuous.
+// the moment recreate's second host query, the one before its create, returns clean, and the
+// command still creates the bucket. The hold, kept from the check through the change, refuses its
+// connection. The writer runs when the create completes, so the pass is not vacuous.
 func TestBestEffortProofMissesAWriterStartedAfterTheFinalScanUntilTheServerSideHoldLands(t *testing.T) {
 	uri, js := server(t)
 	ssh := localSSH(t)
 	var writer *exec.Cmd
+	scans := 0
 	judged := ownProcesses(func() []*exec.Cmd { return []*exec.Cmd{writer} })
 	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		out, err := judged(ctx, name, args...)
-		if name == ssh && writer == nil {
-			writer = startStandIn(t, "envoy-listener")
+		if name == ssh {
+			if scans++; scans == 2 {
+				writer = startStandIn(t, "envoy-listener")
+			}
 		}
 		return out, err
 	}
 	var stdout, stderr bytes.Buffer
-	code := command(context.Background(), []string{"create", "--nats", uri, "--host", "this-machine", "--ssh", ssh, "--bucket", bus.SessionBucket}, &stdout, &stderr, run, http.DefaultClient)
+	code := command(context.Background(), []string{"recreate", "--nats", uri, "--host", "this-machine", "--ssh", ssh, "--bucket", bus.SessionBucket}, &stdout, &stderr, run, http.DefaultClient)
 	if writer == nil || !running(writer, "envoy-listener") {
-		t.Fatal("no writer started after the scan, so the test proves nothing")
+		t.Fatal("no writer started after the final scan, so the test proves nothing")
 	}
 	if code != 0 {
-		t.Fatalf("create with a writer started after the final scan = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
+		t.Fatalf("recreate with a writer started after the final scan = %d, want today's best-effort outcome, the bucket created:\n%s%s", code, stdout.String(), stderr.String())
 	}
 	if _, err := js.KeyValue(bus.SessionBucket); err != nil {
-		t.Fatalf("the bucket after the create: %v", err)
+		t.Fatalf("the bucket after the recreate: %v", err)
 	}
 }
 
@@ -1010,7 +995,7 @@ func TestNoLineTheCommandWritesCarriesTheURLsCredential(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"create", "--break-glass", "--operator", "op", "--bucket", bus.SessionBucket},
-		{"create", "--host", "box-1"},
+		{"create"},
 	} {
 		code, stdout, stderr := runCommand(t, &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}, nil, append(args, "--nats", "user:"+secret+"@127.0.0.1:1")...)
 		if code != 1 || !strings.Contains(stderr, "connect to nats://127.0.0.1:1:") {
@@ -1083,9 +1068,6 @@ func TestAReplicaCountOutsideOneToFiveIsAUsageError(t *testing.T) {
 		t.Run(fmt.Sprintf("%s=%q %v", bus.ReplicasEnvVar, c.env, c.args), func(t *testing.T) {
 			t.Setenv(bus.ReplicasEnvVar, c.env)
 			args := append([]string{"create", "--nats", nowhere}, c.args...)
-			if !slices.Contains(c.args, "--break-glass") {
-				args = append(args, "--host", "box-1")
-			}
 			w := &world{hostAnswers: map[string][]string{"box-1": {clean(150)}}}
 			code, stdout, stderr := runCommand(t, w, nil, args...)
 			if code != 2 || !strings.Contains(stderr, c.says) || !strings.Contains(stderr, "from 1 to 5") || len(w.calls) != 0 {
@@ -1114,10 +1096,10 @@ func TestCreateMakesTheCopiedBucketsAtTheDeploymentsCopies(t *testing.T) {
 		buckets  []string
 		copies   int
 	}{
-		{"control: neither setting", "", []string{"create", "--host", "box-1", "--bucket", bus.SessionBucket}, []string{bus.SessionBucket}, 1},
-		{"--replicas 3", "", []string{"create", "--host", "box-1", "--replicas", "3", "--bucket", bus.InterestBucket, "--bucket", bus.RoleClaimBucket},
+		{"control: neither setting", "", []string{"create", "--bucket", bus.SessionBucket}, []string{bus.SessionBucket}, 1},
+		{"--replicas 3", "", []string{"create", "--replicas", "3", "--bucket", bus.InterestBucket, "--bucket", bus.RoleClaimBucket},
 			[]string{bus.InterestBucket, bus.RoleClaimBucket}, 3},
-		{"ENVOY_NATS_REPLICAS=3", "3", []string{"create", "--host", "box-1", "--bucket", bus.KnownSessionBucket}, []string{bus.KnownSessionBucket}, 3},
+		{"ENVOY_NATS_REPLICAS=3", "3", []string{"create", "--bucket", bus.KnownSessionBucket}, []string{bus.KnownSessionBucket}, 3},
 		{"--break-glass at ENVOY_NATS_REPLICAS=3", "3", []string{"create", "--break-glass", "--operator", "op", "--bucket", bus.CIStateBucket}, []string{bus.CIStateBucket}, 3},
 	} {
 		t.Setenv(bus.ReplicasEnvVar, step.replicas)

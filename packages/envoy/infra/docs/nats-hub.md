@@ -840,27 +840,17 @@ A hub that comes up on a new, empty data disk (a new `hostname` or `zone` above)
 bucket, and no listener creates one ([the module README](../README.md#envoy-infra-buckets)).
 Every listener that reaches it answers 503 to each write and names the missing buckets on
 `/healthz` until the operator creates them: a running one as 200 `degraded`, and one that starts
-meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. And
-`envoy-infra buckets` refuses while any listener runs, the hub's own included. So:
-
-1. Before `pulumi up`, stop every listener and envoy-dispatch that reaches the hub.
-2. `pulumi up`. The new VM starts its own listener with the VM (`envoy-listener.service`), which
-   waits for its buckets; stop it on the VM: `sudo systemctl stop envoy-listener.service`.
-3. Confirm on each host that its listener has ended, then run `envoy-infra buckets create --nats
-   nats://<h>.<tailnetDnsName>:4222` with the inventory of every writer (`--host` for each machine,
-   the hub's VM included). Its check is best effort; your stop in steps 1 and 2 is what it confirms.
-4. Start the hub's listener (`sudo systemctl start envoy-listener.service`), then every other.
-
-A first deployment of a hub is the same from step 2: its VM's listener starts with the VM and
-creates the `ENVOY_NOTIFICATIONS` stream at its first connect, so run `create` without
-`--first-deployment`. A replacement that keeps the disk (`recreate-instances`, a new template)
-keeps every bucket, and needs none of this.
+meanwhile as 503 `waiting`, since its start serves no route, so its health check fails. So, once
+`pulumi up` has brought the hub up, run `envoy-infra buckets create --nats
+nats://<h>.<tailnetDnsName>:4222` at the deployment's copies. It makes only the buckets that are
+absent and takes no writer proof, so it needs no listener stopped, the hub's own included: an absent
+bucket holds no write to lose. A first deployment of a hub is the same. A replacement that keeps
+the disk (`recreate-instances`, a new template) keeps every bucket, and needs none of this.
 
 Until the auth service's operator kind lets the operator connect through the auth service, no
-hub has the buckets user's key, so step 3 cannot run as written. Create each missing bucket with
-the break-glass flag instead, as the in-cluster `gke` listener's NATS user. Read its seed,
-`envoy-nats-seed-gke`, from Secret Manager for that run alone, through a pipe, and never write it
-to disk:
+hub has the buckets user's key, so run that create with the break-glass flag instead, as the
+in-cluster `gke` listener's NATS user. Read its seed, `envoy-nats-seed-gke`, from Secret Manager
+for that run alone, through a pipe, and never write it to disk:
 
 ```sh
 NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-seed-gke \
@@ -870,8 +860,7 @@ NATS_NKEY_SEED_FILE=<(gcloud secrets versions access latest --secret=envoy-nats-
   --bucket envoy_ci_state --nats nats://<h>.<tailnetDnsName>:4222
 ```
 
-It creates only buckets the hub reports missing, takes no writer proof and needs no listener
-stopped: a missing bucket only gains a create, so steps 1, 2 and 4 are not needed for it
+It is the same create, as a listener's user
 ([the module README](../README.md#until-the-cutover-create---break-glass)). The pull request that
 removes the listener users' create grant at the cutover deletes the flag and this paragraph.
 
@@ -1073,8 +1062,13 @@ must have ended first: a write the old hub acknowledged after the snapshot is in
    included (scale it to 0), and confirm on each host that it has ended.
 2. Run `envoy-infra buckets check` with the inventory of every writer; it must hold.
 3. Restore.
-4. While every writer is still at zero, run `envoy-infra buckets create` with the same inventory:
-   it creates any copied bucket the restore did not bring, and leaves the others.
+4. While every writer is still at zero, run `envoy-infra buckets create`: it creates any copied
+   bucket the restore did not bring, and leaves the others. A restored bucket at other copies than
+   the run asks for (one copy, say, where the run asks for the clustered hub's three), or with
+   another configuration than its own, stops the run with exit 1, a `differs:` line naming each
+   difference, and nothing is created, the missing buckets included: run it again with a
+   `--bucket` for each bucket the restore did not bring, which leaves the restored ones as they
+   are.
 5. Start them.
 
 Nothing holds the state `check` found through the restore: a writer that starts between steps 2

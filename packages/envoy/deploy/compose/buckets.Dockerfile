@@ -28,8 +28,7 @@ COPY packages/envoy /src/packages/envoy
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /out/envoy-infra ./cmd/envoy-infra
 
-# The listener image's runtime (packages/envoy/docker/Dockerfile). It has the `sh` the writer proof
-# needs: --this-machine runs its process scan through `sh -c`.
+# The listener image's runtime (packages/envoy/docker/Dockerfile).
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:bookworm-slim (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
@@ -37,8 +36,7 @@ LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
 COPY --from=build /out/envoy-infra /usr/local/bin/envoy-infra
 
-# nobody: the scan reads each process's /proc/<pid>/comm, which every user may read, and the
-# command needs no other privilege.
+# nobody: the command needs no privilege; it reaches only the NATS server.
 USER 65534:65534
 
 ENTRYPOINT ["envoy-infra"]

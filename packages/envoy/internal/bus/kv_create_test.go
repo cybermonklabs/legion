@@ -82,7 +82,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 			t.Cleanup(func() { _ = js.DeleteStream(stream) })
 
 			_, natsFirst := js.CreateKeyValue(row.config(bucket))
-			ours := createBucketStream(conn, js, row.config(bucket))
+			ours := createBucketStream(t.Context(), conn, js, row.config(bucket))
 			_, natsSecond := js.CreateKeyValue(row.config(bucket))
 
 			if natsFirst == nil {
@@ -119,7 +119,7 @@ func TestABucketStreamIsCreatedAsNatsGoCreatesIt(t *testing.T) {
 		}
 		config := &nats.KeyValueConfig{Bucket: "envoy_create_unconnected"}
 		_, natsErr := unconnected.CreateKeyValue(config)
-		if ours := createBucketStream(client.Conn, unconnected, config); natsErr == nil || !sameErrorText(ours, natsErr) {
+		if ours := createBucketStream(t.Context(), client.Conn, unconnected, config); natsErr == nil || !sameErrorText(ours, natsErr) {
 			t.Fatalf("a create on a connection that has not connected answered nats.go %v, createBucketStream %v, want the same refusal", natsErr, ours)
 		}
 	})

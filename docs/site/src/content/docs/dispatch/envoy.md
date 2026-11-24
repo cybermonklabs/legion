@@ -964,36 +964,26 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
 
 No listener creates a key-value bucket it keeps a copy of: a bucket deleted and created again
 under a running listener loses every write the deleted one acknowledged. Only
-`envoy-infra buckets create` makes one, once it has checked that no listener runs, and a listener
-that starts with one missing waits, answering `/healthz` `503` `waiting` and every route `503`
+`envoy-infra buckets create` makes one, and it makes only a bucket that is absent, which holds no
+write to lose, so it needs no listener stopped. A listener that starts with one missing waits,
+answering `/healthz` `503` `waiting` and every route `503`
 ([Health and readiness](#health-and-readiness)), but for `envoy_known_sessions`, which it serves
 without. The `buckets` service runs that command for the
 four buckets this listener copies: `envoy_interests`, `envoy_roles`, `envoy_sessions` and
-`envoy_known_sessions` (it mounts no GitHub route, so it opens no `envoy_ci_state`). Its check is
-`--this-machine`: it reads the name of every process on the machine and refuses while one runs as
-`envoy-listener` or `listener`, and it reads the NATS server's open connections for a listener's
-(`--connz`). The service runs with `pid: host`, which is what lets it read the machine's processes
-rather than only its own container's; without it the check would find no listener and prove
-nothing.
+`envoy_known_sessions` (it mounts no GitHub route, so it opens no `envoy_ci_state`).
 
-Every `up` runs `buckets` again, an upgrade's included. When every bucket exists it changes
-nothing, takes no check and exits 0, and its log (`docker compose -f single-node.compose.yml logs
-buckets`) says `every bucket named exists (...): nothing to create, so no writer proof is taken`,
-so `up -d --wait` goes on while the listener serves. When a bucket is missing, such as one deleted
-by hand under the running listener, `buckets` refuses while the listener runs, and `up` fails with
-`service "buckets" didn't complete successfully: exit 1`. Its log names the listener:
+Every `up` runs `buckets` again, an upgrade's included. A bucket that is there at one copy with its
+own configuration is left as it is, and its log (`docker compose -f single-node.compose.yml logs
+buckets`) says `envoy_sessions present at 1 copies with its own configuration: left as it is`. A
+missing bucket, such as one deleted by hand under the running listener, is made while the listener
+runs, and the log says `created envoy_sessions (1 copies)`; the listener serves its writes again
+once it reads the bucket back. Either way `up -d --wait` goes on. A bucket there at other copies or
+with another configuration fails `buckets`, changing nothing, and `up` fails with
+`service "buckets" didn't complete successfully: exit 1`. Its log names each difference:
 
 ```text
-envoy-infra buckets create: refused: a writer of the buckets may still run, and a bucket created under it loses every write the deleted one acknowledged
-  blocked: this machine: process 65543 envoy-listener runs
-  blocked: connz http://127.0.0.1:8222: connection "envoy-role-lane" from 127.0.0.1:37246 as "" is open
-```
-
-Stop the listener, then run `up` again, which makes the missing bucket and starts the listener:
-
-```sh
-docker compose -f single-node.compose.yml stop listener
-docker compose -f single-node.compose.yml up -d --wait
+envoy-infra buckets create: refused: a bucket named is there with other copies or another configuration than its own at 1 copies, and is left as it is; nothing is created
+  differs: KV_envoy_sessions: history 2, want 1
 ```
 
 `down -v` deletes the buckets with the rest of the volume, and the next `up` makes them again.
