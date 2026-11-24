@@ -21,6 +21,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -81,7 +82,10 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is logged as Envoy's address allows
+		// (redact.Cause): a transport failure's own text, or its class.
+		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.Cause(err, e.URL))
 		return
 	}
 	defer resp.Body.Close()

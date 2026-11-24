@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -42,7 +43,7 @@ func (t *modelTransport) client() *http.Client {
 		// more of it than the server a credential would have gone to. (Go's own
 		// client wraps the error in a *url.Error that names the Location in full.)
 		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
-			t.kind, req.Response.Status, req.URL.Host)
+			t.kind, redact.StatusLine(req.Response.StatusCode), req.URL.Host)
 	}}
 }
 
@@ -92,8 +93,10 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp, err := t.base.RoundTrip(r)
 		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {
 			if resp != nil {
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
+				// Drained as data no one reads, so the connection goes back to the pool.
+				drained := redact.StreamAnswer(resp, answerLimit)
+				_, _ = io.Copy(io.Discard, drained)
+				_ = drained.Close()
 			}
 			select {
 			case <-time.After(wait):

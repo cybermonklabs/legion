@@ -129,7 +129,7 @@ func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) 
 	for _, p := range seedProjects {
 		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{person: seedPerson}, map[string]any{"key": p.key, "name": "Load " + p.key})
 		if !res.ok() && res.status != 409 {
-			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, trunc(res.body), res.err)
+			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, res.text(), res.err)
 		}
 		sf.Projects = append(sf.Projects, p.key)
 	}
@@ -188,7 +188,7 @@ func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) 
 			route := "session:" + sessionID(i)
 			res := a.callRetry(gctx, "PATCH", "/api/v1/issues/"+sf.Issues[i].Key, who{}, map[string]any{"route": route, "actor": sessionActor("ses-seed")})
 			if !res.ok() {
-				return fmt.Errorf("route %s: %d %s %v", sf.Issues[i].Key, res.status, trunc(res.body), res.err)
+				return fmt.Errorf("route %s: %d %s %v", sf.Issues[i].Key, res.status, res.text(), res.err)
 			}
 			sf.Issues[i].Route = route
 			return nil
@@ -215,14 +215,22 @@ func seedIssueWith(ctx context.Context, a *api, sess, project string, projectInd
 		"spec": spec, "force": true, "actor": sessionActor(sess),
 	})
 	if !res.ok() {
-		return seedIssue{}, fmt.Errorf("create issue %s: %d %s %v", placeholder, res.status, trunc(res.body), res.err)
+		return seedIssue{}, fmt.Errorf("create issue %s: %d %s %v", placeholder, res.status, res.text(), res.err)
 	}
+	// The key, the primary document's id and each comment's id are Dispatch's words, or the words
+	// of whatever answers in its place, which can echo the request's bearer. seed.json keeps them
+	// and every later run's lines name them, so the seed keeps each only in Dispatch's shape
+	// (isIssueKey, isDispatchID) and refuses an answer naming anything else, which it names only
+	// as the rule reads the answer (res.text).
 	var created struct {
 		Key               string `json:"key"`
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}
-	if err := json.Unmarshal(res.body, &created); err != nil || created.Key == "" || created.PrimaryArtifactID == "" {
-		return seedIssue{}, fmt.Errorf("decode issue %s: %v %s", placeholder, err, trunc(res.body))
+	if err := res.answer.Decode(&created); err != nil {
+		return seedIssue{}, fmt.Errorf("decode issue %s: %v %s", placeholder, err, res.text())
+	}
+	if !isIssueKey(created.Key) || !isDispatchID(created.PrimaryArtifactID) {
+		return seedIssue{}, fmt.Errorf("decode issue %s: the answer names no issue key and primary document id in Dispatch's shape: %s", placeholder, res.text())
 	}
 	is := seedIssue{Key: created.Key, Project: project, ArtifactID: created.PrimaryArtifactID, SpecName: specName, SpecBytes: len(spec), Quotes: quotes}
 	for c := range comments {
@@ -236,10 +244,10 @@ func seedIssueWith(ctx context.Context, a *api, sess, project string, projectInd
 			ID string `json:"id"`
 		}
 		if res.ok() {
-			_ = json.Unmarshal(res.body, &comment)
+			_ = res.answer.Decode(&comment)
 		}
-		if comment.ID == "" {
-			return seedIssue{}, fmt.Errorf("seed comment on %s: %d %s %v", is.Key, res.status, trunc(res.body), res.err)
+		if !isDispatchID(comment.ID) {
+			return seedIssue{}, fmt.Errorf("seed comment on %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		if anchored {
 			is.AnchoredCommentIDs = append(is.AnchoredCommentIDs, comment.ID)

@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -225,14 +227,18 @@ type fakeRoleListener struct {
 	holders map[string]string
 }
 
-func (l *fakeRoleListener) lookup(_ context.Context, role string) (string, string, error) {
+func (l *fakeRoleListener) lookup(_ context.Context, role string) (oauth2call.RemoteText, string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if session, ok := l.holders[role]; ok {
-		return session, "live", nil
+		return oauth2calltest.Said(session), "live", nil
 	}
-	return "", "", nil
+	return oauth2call.RemoteText{}, "", nil
 }
+
+// roleLookup is the supervisor's lookup of a role's holder at the Envoy listener
+// (supervise.Deps.RoleHolder), as a test answers it.
+type roleLookup = func(ctx context.Context, role string) (oauth2call.RemoteText, string, error)
 
 // free is the role claim reaper taking role's claim: the listener names no holder of it.
 func (l *fakeRoleListener) free(role string) {
@@ -245,7 +251,7 @@ func (l *fakeRoleListener) free(role string) {
 // roleHolder the supervisor's listener lookup (nil asks none), and log the outbox's (nil is quiet).
 type heldTopicsOptions struct {
 	launched   bool
-	roleHolder func(ctx context.Context, role string) (string, string, error)
+	roleHolder roleLookup
 	log        *slog.Logger
 }
 

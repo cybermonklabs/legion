@@ -2,7 +2,6 @@ package judge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ErrNoIssue is Dispatch answering 404 for the key a request's reason named: the key has an
@@ -238,16 +238,22 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	}
 	answer, err := client.Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("dispatch did not answer: %w", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is named by its class alone (redact.Class).
+		return 0, fmt.Errorf("dispatch did not answer: %w", redact.Class(err))
 	}
 	defer answer.Body.Close()
 	if answer.StatusCode != http.StatusOK {
-		// A refusal's body says nothing a run acts on. It is drained to the same bound
-		// rather than read, so the connection goes back to the pool.
-		_, _ = io.Copy(io.Discard, io.LimitReader(answer.Body, maxDispatchAnswer))
+		// A refusal's body says nothing a run acts on. It is drained to the same bound as data
+		// no one reads, so the connection goes back to the pool.
+		_, _ = io.Copy(io.Discard, redact.StreamAnswer(answer, maxDispatchAnswer))
 		return answer.StatusCode, nil
 	}
-	if err := json.NewDecoder(io.LimitReader(answer.Body, maxDispatchAnswer)).Decode(into); err != nil {
+	read, err := redact.ReadAnswer(answer, maxDispatchAnswer)
+	if err != nil {
+		return answer.StatusCode, fmt.Errorf("dispatch's answer could not be read: %w", err)
+	}
+	if err := read.Decode(into); err != nil {
 		return answer.StatusCode, fmt.Errorf("dispatch's answer could not be read: %w", err)
 	}
 	return answer.StatusCode, nil

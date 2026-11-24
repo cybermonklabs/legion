@@ -26,7 +26,6 @@ package projectaccess
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The member kinds Dispatch answers for a person.
@@ -483,8 +483,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	answer := wire.Answer
 	// A visibility that is neither of the two is no answer: it is never kept, and no caller can
 	// read it as public, which is what a missing field would otherwise decode to beside Private.
+	// The refusal names the field and none of its value, which is Dispatch's words.
 	if !answer.Public() && !answer.Private() {
-		return Answer{}, fmt.Errorf("%w: %q for %s", ErrUnknownVisibility, answer.Visibility, project)
+		return Answer{}, fmt.Errorf("%w (visibility) for %s", ErrUnknownVisibility, project)
 	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
@@ -497,7 +498,10 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL, unless
 // ctx is one Fresh made: one of MemberFull, MemberRestricted and MemberNone. Any other answer, an
 // empty one included, is ErrUnknownMemberKind naming it, never kept as an answer; like any other
-// failure of a call to Dispatch, it is kept failureTTL as that person's failure.
+// failure of a call to Dispatch, it is kept failureTTL as that person's failure. The kind is
+// Dispatch's word, or a stand-in's, held as redact.RemoteText with the question's record
+// (readKind): it is told apart as it came (RemoteText.Equal), and an unknown one prints only as the
+// rule reads it, with the account token the question carried redacted.
 //
 // Reads of one person in flight together share one call to Dispatch, which runs on none of their
 // contexts, so a reader that gives up ends only its own wait; and a read that failed is the
@@ -620,7 +624,7 @@ func (c *Client) settleKindLocked(person string, asked time.Time, kind string, e
 // requestTimeout.
 func (c *Client) readKind(ctx context.Context, person string) (string, error) {
 	var answer struct {
-		MemberKind string `json:"member_kind"`
+		MemberKind redact.RemoteText `json:"member_kind"`
 	}
 	status, err := c.get(ctx, personPath, url.Values{"person": {person}}, &answer)
 	if err != nil {
@@ -629,12 +633,22 @@ func (c *Client) readKind(ctx context.Context, person string) (string, error) {
 	if status == http.StatusNotFound {
 		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
 	}
-	switch answer.MemberKind {
-	case MemberFull, MemberRestricted, MemberNone:
-	default:
+	kind := knownKind(answer.MemberKind)
+	if kind == "" {
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
 	}
-	return answer.MemberKind, nil
+	return kind, nil
+}
+
+// knownKind is the one of MemberFull, MemberRestricted and MemberNone that kind is, compared as it
+// came, and "" for any other kind.
+func knownKind(kind redact.RemoteText) string {
+	for _, known := range []string{MemberFull, MemberRestricted, MemberNone} {
+		if kind.Equal(known) {
+			return known
+		}
+	}
+	return ""
 }
 
 // States answers each of projects as it is to a question naming no person, and Missing for each
@@ -730,7 +744,9 @@ func (c *Client) sweepLocked() {
 // whose body names no code, or one of outageCodes, and a 500 whose body names no code or
 // internalCode, are errUnavailable, Dispatch not answering now (Unanswered); one naming any other
 // code is Dispatch's answer. Every other status, a transport failure and a body it could not read
-// or decode are errors naming what failed and never the token.
+// or decode are errors naming what failed and never the token. The code is decided on as it came
+// and named as the rule reads it (dispatchread.RefusalCode), and the body decodes through
+// redact.Answer.Decode, so a box into holds carries the record of the call.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	answer, err := c.read.Get(ctx, path, query)
 	if err != nil {
@@ -738,24 +754,25 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
+		shown := dispatchread.Clip(code.String())
 		switch answer.Status {
 		case http.StatusNotFound:
-			if code == projectNotFoundCode {
+			if code.Equal(projectNotFoundCode) {
 				return http.StatusNotFound, nil
 			}
-			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
+			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, shown)
 		case http.StatusInternalServerError:
-			if code == "" || code == internalCode {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			if code.IsEmpty() || code.Equal(internalCode) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if code == "" || slices.Contains(outageCodes, code) {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			if code.IsEmpty() || slices.ContainsFunc(outageCodes, code.Equal) {
+				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, shown)
 			}
 		}
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, code)
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, shown)
 	}
-	if err := json.Unmarshal(answer.Body, into); err != nil {
+	if err := answer.Body.Decode(into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil

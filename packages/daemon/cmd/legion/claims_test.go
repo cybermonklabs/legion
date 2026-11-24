@@ -897,7 +897,7 @@ func TestClaimsPrintsTheDaemonsRefusalAndFails(t *testing.T) {
 		{
 			name: "a bearer the daemon does not hold",
 			args: func(d *operatorDaemon) []string {
-				return []string{"list", "--port", strconv.Itoa(d.port), "--operator-token-file", writeFile(d.t, "wrong", "not-the-operator-bearer\n")}
+				return []string{"list", "--port", strconv.Itoa(d.port), "--operator-token-file", writeFile(d.t, "wrong", "wrong-9f3c27e1b04d\n")}
 			},
 			want: "the daemon answered 403 Forbidden: Invalid operator token",
 		},
@@ -918,7 +918,7 @@ func TestClaimsPrintsTheDaemonsRefusalAndFails(t *testing.T) {
 			if !strings.HasPrefix(errb, "legion claims "+args[0]+": ") || !strings.Contains(errb, testCase.want) {
 				t.Fatalf("stderr = %q, want it to name the command and carry %q", errb, testCase.want)
 			}
-			if strings.Contains(errb, "not-the-operator-bearer") {
+			if strings.Contains(errb, "wrong-9f3c27e1b04d") {
 				t.Fatalf("stderr = %q names the bearer the command sent", errb)
 			}
 		})

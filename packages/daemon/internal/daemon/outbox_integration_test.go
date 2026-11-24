@@ -3,9 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -224,15 +222,6 @@ func isolatedOutboxPool(t *testing.T) *store.Pool {
 	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
 }
 
-func outboxSuffix(t *testing.T) string {
-	t.Helper()
-	var bytes [8]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		t.Fatalf("random database suffix: %v", err)
-	}
-	return hex.EncodeToString(bytes[:])
-}
-
 type blockingDispatch struct {
 	noArtifacts
 	mu      sync.Mutex
@@ -275,7 +264,7 @@ func (d *blockingDispatch) PostMessage(context.Context, string, string) error { 
 func (d *blockingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *blockingDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *blockingDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *blockingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
@@ -356,7 +345,7 @@ func TestAPermanentlyRefusedStatusWriteDoesNotHoldBackTheIssuesLaterWrites(t *te
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("testing", "in_progress", ""), now))
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("needs_review", "testing", ""), now))
 	board := &refusingDispatch{status: "in_progress", refuse: map[string]*dispatch.Error{
-		"testing": {Status: 422, Code: "INVALID_STATUS", Message: "testing is not a status of this issue"},
+		"testing": {Status: 422, Code: oauth2calltest.Said("INVALID_STATUS"), Message: "testing is not a status of this issue"},
 	}}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, now: func() time.Time { return now }, log: quietLogger()}
 
@@ -405,10 +394,10 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 		name    string
 		refusal *dispatch.Error
 	}{
-		{"a revoked token", &dispatch.Error{Status: 401, Code: "UNAUTHORIZED", Message: "token revoked"}},
-		{"a token without the scope", &dispatch.Error{Status: 403, Code: "FORBIDDEN", Message: "forbidden"}},
+		{"a revoked token", &dispatch.Error{Status: 401, Code: oauth2calltest.Said("UNAUTHORIZED"), Message: "token revoked"}},
+		{"a token without the scope", &dispatch.Error{Status: 403, Code: oauth2calltest.Said("FORBIDDEN"), Message: "forbidden"}},
 		{"a refusal Dispatch did not make", &dispatch.Error{Status: 422, Message: "<html>gateway</html>"}},
-		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: dispatch.ParentContended, Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
+		{"a parent a concurrent reparent moved at every attempt", &dispatch.Error{Status: 409, Code: oauth2calltest.Said(dispatch.ParentContended), Message: "LEGION-208's parent changed at each of 2 attempts while this request waited to lock it, so nothing was applied: read the issue and retry"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -477,7 +466,7 @@ func (d *refusingDispatch) PostMessage(context.Context, string, string) error { 
 func (d *refusingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *refusingDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *refusingDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *refusingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
@@ -550,7 +539,7 @@ func (d *boardDispatch) PostMessage(_ context.Context, _ string, body string) er
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *boardDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *boardDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
@@ -847,7 +836,7 @@ func TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting(t *testing.T) {
 			// finishRefused asks the kind what it leaves behind, so a kind with no rule fails
 			// there before the finishing transaction opens: the runner holds no pool, and the
 			// failure arriving all the same is what says the question is asked first.
-			return runner.finishRefused(ctx, row, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CLOSED"})
+			return runner.finishRefused(ctx, row, &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CLOSED")})
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1043,7 +1032,7 @@ type refusedOnceDispatch struct {
 func (d *refusedOnceDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	if d.refusals == 0 {
 		d.refusals, d.issue = 1, d.reread
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CHANGED"), Message: "issue changed"}
 	}
 	d.at = issue.LastSeq
 	return d.outboxDispatch.SetStatusAt(ctx, issue, status)

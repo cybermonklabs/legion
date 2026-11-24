@@ -294,19 +294,19 @@ func (r *liveRig) pushRunCommit(branch, parent, path, content string) (string, e
 			SHA string `json:"sha"`
 		} `json:"tree"`
 	}
-	if err := github.Get(r.ctx, "/git/commits/"+parent, &commit); err != nil {
+	if err := github.Get(r.ctx, "/git/commits/"+parent, "", &commit); err != nil {
 		return "", fmt.Errorf("read the commit %s: %w", parent, err)
 	}
 	var tree, created struct {
 		SHA string `json:"sha"`
 	}
-	if err := github.Post(r.ctx, "/git/trees", map[string]any{
+	if err := github.Post(r.ctx, "/git/trees", "", map[string]any{
 		"base_tree": commit.Tree.SHA,
 		"tree":      []map[string]string{{"path": path, "mode": "100644", "type": "blob", "content": content}},
 	}, &tree); err != nil {
 		return "", fmt.Errorf("write the tree adding %s: %w", path, err)
 	}
-	if err := github.Post(r.ctx, "/git/commits", map[string]any{
+	if err := github.Post(r.ctx, "/git/commits", "", map[string]any{
 		"message": runCommitMessage(branch), "tree": tree.SHA, "parents": []string{parent},
 	}, &created); err != nil {
 		return "", fmt.Errorf("write the commit adding %s: %w", path, err)
@@ -316,7 +316,7 @@ func (r *liveRig) pushRunCommit(branch, parent, path, content string) (string, e
 			fmt.Printf("teardown: could not delete branch %s of %s: %v\n", branch, r.env.repo, err)
 		}
 	})
-	if err := github.Post(r.ctx, "/git/refs", map[string]string{"ref": "refs/heads/" + branch, "sha": created.SHA}, nil); err != nil {
+	if err := github.Post(r.ctx, "/git/refs", "", map[string]string{"ref": "refs/heads/" + branch, "sha": created.SHA}, nil); err != nil {
 		return "", fmt.Errorf("create refs/heads/%s at %s: %w", branch, created.SHA, err)
 	}
 	return created.SHA, nil
@@ -335,7 +335,7 @@ func (r *liveRig) sweepStaleRunBranches() error {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(r.ctx, "/git/matching-refs/heads/legion/S4A-", &refs); err != nil {
+	if err := github.Get(r.ctx, "/git/matching-refs/heads/legion/S4A-", "", &refs); err != nil {
 		return fmt.Errorf("list the legion/S4A- branches of %s: %w", r.env.repo, err)
 	}
 	var branches []runBranch
@@ -347,7 +347,7 @@ func (r *liveRig) sweepStaleRunBranches() error {
 				Date time.Time `json:"date"`
 			} `json:"committer"`
 		}
-		if err := github.Get(r.ctx, "/git/commits/"+ref.Object.SHA, &commit); err != nil {
+		if err := github.Get(r.ctx, "/git/commits/"+ref.Object.SHA, "", &commit); err != nil {
 			return fmt.Errorf("read the commit %s of %s: %w", ref.Object.SHA, ref.Ref, err)
 		}
 		name := strings.TrimPrefix(ref.Ref, "refs/heads/")
@@ -377,7 +377,7 @@ func (r *liveRig) deleteBranchAt(branch, sha string) error {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+branchPath(branch), &ref); err != nil {
+	if err := github.Get(ctx, "/git/ref/heads/"+branchPath(branch), "", &ref); err != nil {
 		var answer *githubrest.Answer
 		if errors.As(err, &answer) && answer.Status == http.StatusNotFound {
 			return nil
@@ -466,7 +466,7 @@ func (r *liveRig) githubHead(branch string) (string, error) {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(r.ctx, "/git/ref/heads/"+branchPath(branch), &ref); err != nil {
+	if err := github.Get(r.ctx, "/git/ref/heads/"+branchPath(branch), "", &ref); err != nil {
 		return "", fmt.Errorf("read refs/heads/%s of %s: %w", branch, r.env.repo, err)
 	}
 	if ref.Object.SHA == "" {
@@ -501,7 +501,7 @@ func (r *liveRig) headAtFetch(branch, now string, health repocache.Health) error
 				SHA string `json:"sha"`
 			} `json:"parents"`
 		}
-		if err := github.Get(r.ctx, "/commits/"+child, &commit); err != nil {
+		if err := github.Get(r.ctx, "/commits/"+child, "", &commit); err != nil {
 			return fmt.Errorf("read commit %s of %s: %w", child, r.env.repo, err)
 		}
 		if len(commit.Parents) == 0 {

@@ -404,8 +404,8 @@ func TestTokenModeRefusesAMalformedReleaseWithoutQuotingIt(t *testing.T) {
 
 // No token reaches a log or an error: a token on the command's stderr is redacted in both, a
 // release keyed by something other than a GitHub login is refused without naming the key (here a
-// token form tokenPattern names, short enough to pass a login's 39 characters), and output past
-// releaseLimit ends the command rather than filling memory.
+// token form githubrest.HoldsToken names, short enough to pass a login's 39 characters), and
+// output past releaseLimit ends the command rather than filling memory.
 func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -433,12 +433,13 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	}
 }
 
-// A release is keyed by GitHub account logins as ghrepo reads an owner: a managed user's, which
-// ends in `_<shortcode>`, is read like any other, up to GitHub's 39 characters, under its
-// lowercased login, and so is one that merely opens like a token (`ghs_acme`) while holding no
+// A release is keyed by GitHub account logins as ghrepo reads an owner (ghrepo.IsLogin): a managed
+// user's, which ends in `_<shortcode>`, is read like any other, up to GitHub's 39 characters, under
+// its lowercased login, and so is one that merely opens like a token (`ghs_acme`) while holding no
 // token form. What no login can be is refused without being named: a dot, a slash, a leading
-// hyphen or underscore, 40 characters, the empty key, and a token form tokenPattern names that is
-// shorter than a real token, which the underscore a login now holds would otherwise let through.
+// hyphen or underscore, 40 characters, the empty key, and a token form githubrest.HoldsToken names
+// that is shorter than a real token, which the underscore a login holds would otherwise let
+// through.
 func TestTokenModeReleaseKeysAreGitHubLogins(t *testing.T) {
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	release := func(owner string) []byte {

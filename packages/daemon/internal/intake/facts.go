@@ -576,7 +576,10 @@ func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, gener
 	if recorded != nil {
 		against = fmt.Sprintf("%d/%s/%s", recorded.Number, recorded.State, recorded.HeadUpdatedAt.UTC().Format(time.RFC3339Nano))
 	}
-	return fact, fmt.Sprintf("opened-read:%s:%s#%d:%s:%s:%d:%s", project, repo, pull.Number, pull.Head.SHA, pull.UpdatedAt.UTC().Format(time.RFC3339Nano), generation, against)
+	// The head is GitHub's words, or those of whatever answers in its place, and the id prints in an
+	// apply's error: it names the head as a commit's sha, or by a digest of what GitHub wrote, which
+	// tells two such heads apart as they came (githubrest.SHAKey).
+	return fact, fmt.Sprintf("opened-read:%s:%s#%d:%s:%s:%d:%s", project, repo, pull.Number, githubrest.SHAKey(pull.Head.SHA), pull.UpdatedAt.UTC().Format(time.RFC3339Nano), generation, against)
 }
 
 // PullRequestSynchronized records a new observed head, including the fields the shipped reducer

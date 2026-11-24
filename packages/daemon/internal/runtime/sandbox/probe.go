@@ -1110,9 +1110,9 @@ func (r *Runtime) probeLog(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	defer stream.Close()
-	// The read keeps its own form rather than redact.ReadBounded's, which holds the head of the
-	// read, probeLogReadBytes of it, in memory: a refusal quotes the log's end, and tailBytes holds
-	// only that end (three times probeLogBytes at most), however long the log is.
+	// The read keeps the log's end, not its head: a refusal quotes the log's end, and tailBytes
+	// holds only that end (three times probeLogBytes at most), however long the log is, where a
+	// read of the head would hold probeLogReadBytes of it in memory.
 	text, err := lastBytes(io.LimitReader(stream, probeLogReadBytes), probeLogBytes)
 	if err != nil {
 		return "", err

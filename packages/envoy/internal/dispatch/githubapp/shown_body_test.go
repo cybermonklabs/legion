@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // largeRefusal is a body GitHub could answer a refused request with: a JSON object that names its
@@ -29,7 +30,7 @@ func TestAnErrorShowsGitHubsBodyToABound(t *testing.T) {
 	ctx := context.Background()
 	failing := refusingGitHub(t, false)
 	answering := refusingGitHub(t, true)
-	refused := githubapp.CheckResponse(http.StatusInternalServerError, http.Header{}, []byte(largeRefusal))
+	refused := githubapp.CheckResponse(http.StatusInternalServerError, http.Header{}, answertest.Of(http.StatusInternalServerError, largeRefusal))
 	for _, call := range []struct {
 		name   string
 		status string
@@ -69,8 +70,10 @@ func TestAnErrorShowsGitHubsBodyToABound(t *testing.T) {
 			}
 		})
 	}
+	// The error keeps the whole body, GitHub's words (redact.RemoteText): what it prints of them is
+	// cut to the bound and names the whole body's 1048576 bytes.
 	var status *githubapp.StatusError
-	if !errors.As(refused, &status) || status.Message() != "Server Error" || len(status.Body) != 1<<20 {
+	if !errors.As(refused, &status) || !status.Message().Equal("Server Error") || !strings.Contains(status.PrintedBody(), "1048576 bytes") {
 		t.Errorf("the status error is %T, want a *githubapp.StatusError that keeps the whole body and its message", refused)
 	}
 }

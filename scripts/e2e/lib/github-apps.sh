@@ -387,7 +387,7 @@ app_token_mint() {
 }
 # app_token_redact copies its stdin to its stdout, line by line as it arrives, with every GitHub
 # token form in it replaced by [redacted], as the daemon redacts a token command's stderr
-# (internal/appauth, tokenPattern): gh[opsur]_ or github_pat_ and 16 or more characters after it,
+# (internal/githubrest, RedactTokens): gh[opsur]_ or github_pat_ and 16 or more characters after it,
 # which is the 20 and the 27 of the key relay below. It is the relay of the implement App's
 # release mints and of nothing else, and its channel is agent-secrets' own stderr: the broker's
 # own words, among them what a request waits on and the link a person approves a human-tier grant

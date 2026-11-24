@@ -77,7 +77,7 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	}
 	keyDir := writeKeyDir(t, boxKey, enrolled.EnrollmentID)
 	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, "request", "TEST_AUTO_SECRET", "--json")
-	var granted RequestResult
+	var granted grantedJSON
 	if err := json.Unmarshal([]byte(stdout), &granted); exit != 0 || err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("request TEST_AUTO_SECRET from the box: exit %d, stdout %q, stderr %q; want it granted at once", exit, stdout, stderr)
 	}

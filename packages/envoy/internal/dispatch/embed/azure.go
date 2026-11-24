@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -154,10 +154,15 @@ type azureEmbedResponse struct {
 	} `json:"data"`
 }
 
+// azureErrorResponse is a refusal's body, its code held as Azure's word with the request's record
+// (redact.Answer.Decode): a stand-in can echo the key the call carried there.
 type azureErrorResponse struct {
-	Error struct {
-		Code string `json:"code"`
-	} `json:"error"`
+	Error azureErrorBody `json:"error"`
+}
+
+// azureErrorBody is azureErrorResponse's error object.
+type azureErrorBody struct {
+	Code redact.RemoteText `json:"code"`
 }
 
 // azureInputType maps this package's InputType (Bedrock's names) to Azure's.
@@ -215,22 +220,24 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("embed: azure embeddings: %w", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is named by its class alone (redact.Class).
+		return nil, fmt.Errorf("embed: azure embeddings: %w", redact.Class(err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, azureStatusError(response)
 	}
-	// One byte past the cap is read, so a body that fills the cap exactly is told apart from one
-	// that runs past it, which is refused rather than decoded as far as the cap allows.
-	limited := &io.LimitedReader{R: response.Body, N: azureResponseBodyLimit + 1}
-	var decoded azureEmbedResponse
-	decodeErr := json.NewDecoder(limited).Decode(&decoded)
-	if limited.N == 0 {
+	answer, err := redact.ReadAnswer(response, azureResponseBodyLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, fmt.Errorf("embed: azure response exceeds %d bytes", azureResponseBodyLimit)
 	}
-	if decodeErr != nil {
-		return nil, fmt.Errorf("embed: azure decode response: %w", decodeErr)
+	if err != nil {
+		return nil, fmt.Errorf("embed: azure read response: %w", err)
+	}
+	var decoded azureEmbedResponse
+	if err := answer.Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("embed: azure decode response: %w", err)
 	}
 	return placeAzureVectors(decoded, len(texts))
 }
@@ -240,11 +247,12 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 // anything about the texts.
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
-	body, _ := io.ReadAll(io.LimitReader(response.Body, azureErrorBodyLimit))
-	_ = json.Unmarshal(body, &decoded)
-	err := fmt.Errorf("embed: azure embeddings: HTTP %s", response.Status)
-	if decoded.Error.Code != "" {
-		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", response.Status, decoded.Error.Code)
+	if answer, readErr := redact.ReadAnswer(response, azureErrorBodyLimit); readErr == nil {
+		_ = answer.Decode(&decoded)
+	}
+	err := fmt.Errorf("embed: azure embeddings: HTTP %s", redact.StatusLine(response.StatusCode))
+	if !decoded.Error.Code.IsEmpty() {
+		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", redact.StatusLine(response.StatusCode), decoded.Error.Code)
 	}
 	if azureThrottled(response.StatusCode) {
 		return &throttleError{err: err}

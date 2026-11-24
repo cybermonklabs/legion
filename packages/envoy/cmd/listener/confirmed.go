@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -165,11 +164,11 @@ type roleSend struct {
 	// holders this send's answers may name (edgeScope.holderConfirmed).
 	scope *edgeScope
 	item  contracts.Envelope
-	// expectsReply is the request's own expects_reply bytes, whichever of the field's spellings
-	// it wrote, which each answer writes back for the envelope it answers (expectsReplyAnswer,
+	// expectsReply is the request's own expects_reply, as validateMessageBody read it
+	// (api.go), which each answer writes back for the envelope it answers (expectsReplyAnswer,
 	// api.go): the forwarded envelope's, or the kept copy's for a repeat a keep answers (kept). The
 	// envelope the holder is forwarded is untouched by it, and carries the parsed value.
-	expectsReply json.RawMessage
+	expectsReply listenerwire.ExpectsAsSpoken
 	role         string
 	// keep is the request's keep field as the route read it, true when it set none: whether
 	// this send's give-up keeps the message for the role's next holder (noHolder). It is the
@@ -579,14 +578,14 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
 // none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
 // an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
-// (windowEnded). expectsReply is the request's own expects_reply bytes, which each answer writes
-// back for the envelope it answers (expectsReplyAnswer, api.go); the envelope this send forwards
-// and keeps carries the envelope's own value. scope is the edge's scope of the request, nil on
-// every other listener: an answer names only a holder it shows (edgeScope.holderConfirmed), and
-// the send forwards to the holder whatever it names. sender is who the request speaks for
-// (senderOf), which decides how much of a copy the stream or the kept lane already held an answer
-// carries. warnings is what its 200 and 202 name of the topic's old form.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+// (windowEnded). expectsReply is the request's own expects_reply, as validateMessageBody read it
+// (api.go), which each answer writes back for the envelope it answers (expectsReplyAnswer,
+// api.go); the envelope this send forwards and keeps carries the envelope's own value. scope is the
+// edge's scope of the request, nil on every other listener: an answer names only a holder it shows
+// (edgeScope.holderConfirmed), and the send forwards to the holder whatever it names. sender is who
+// the request speaks for (senderOf), which decides how much of a copy the stream or the kept lane
+// already held an answer carries. warnings is what its 200 and 202 name of the topic's old form.
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, sender requestSender, expectsReply listenerwire.ExpectsAsSpoken, role string, keep bool, arrived time.Time, warnings []string) {
 	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, sender: sender, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the

@@ -222,18 +222,24 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	}
 }
 
-// GitHub refusing the read is refused with its status and the first line of its answer, and a
-// refused read is not kept: the next ask reads again.
+// GitHub refusing the read is refused with its status and GitHub's message, as the rule prints it,
+// and not the rest of its answer (its documentation URL, which in compact JSON the rule cannot read
+// as clean); a proxy's page that is no JSON prints as the rule reads it. A refused read is not
+// kept: the next ask reads again.
 func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
 		answer string
+		said   string
 	}{
 		{"a tag the repository does not hold", http.StatusNotFound,
-			`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar","status":"404"}`},
+			`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar","status":"404"}`,
+			"Not Found"},
 		{"a token the repository does not admit", http.StatusForbidden,
-			`{"message":"Resource not accessible by integration","status":"403"}`},
+			`{"message":"Resource not accessible by integration","status":"403"}`,
+			"Resource not accessible by integration"},
+		{"a proxy's page", http.StatusBadGateway, "upstream connect error", "upstream connect error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refuse atomic.Bool
@@ -242,7 +248,6 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 				if refuse.Load() {
 					w.WriteHeader(tc.status)
 					_, _ = fmt.Fprintln(w, tc.answer)
-					_, _ = fmt.Fprintln(w, "a second line the cause does not carry")
 					return
 				}
 				_, _ = w.Write(wholeCheck(t, marked(tag)))
@@ -250,7 +255,7 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.said)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -293,15 +298,18 @@ func TestARefusalCutInsideAURLsUserNameIsRefusedWithNoPartOfIt(t *testing.T) {
 
 // A 401 is GitHub no longer taking the token the read was made with: the read calls Forget once,
 // so the next mint is a new token, and the read is not kept. Any other refusal forgets nothing.
+// The refusal names GitHub's message, as the rule prints it, as a refused read's does
+// (TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept).
 func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
 		answer string
+		said   string
 		forget int32
 	}{
-		{"a read answered 401", http.StatusUnauthorized, `{"message":"Bad credentials","status":"401"}`, 1},
-		{"a read answered 404", http.StatusNotFound, `{"message":"Not Found","status":"404"}`, 0},
+		{"a read answered 401", http.StatusUnauthorized, `{"message":"Bad credentials","status":"401"}`, "Bad credentials", 1},
+		{"a read answered 404", http.StatusNotFound, `{"message":"Not Found","status":"404"}`, "Not Found", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refuse atomic.Bool
@@ -318,7 +326,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.said)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -546,7 +554,8 @@ func closedAddress(t *testing.T) string {
 // of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
 // a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
-// that names the failure and the URL's host and path, and holds no part of the credential.
+// that names the URL the daemon asked and the failure by its class (redact.Unanswered): no part of
+// the redirect's target, which is the answering party's own words, and none of the credential.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := closedAddress(t)
 	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
@@ -589,8 +598,11 @@ func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t
 				t.Fatalf("the read through the redirect to %s was served, want it refused", dead)
 			}
 			cause := err.Error()
-			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + dead + download + `": `; !strings.HasPrefix(cause, want) {
-				t.Errorf("the cause is %q, want it to begin %q: the URL's host and path, and nothing of its credential", cause, want)
+			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "` + api + tarballRoute + theTag + `": the request was redirected to another host`; !strings.HasPrefix(cause, want) {
+				t.Errorf("the cause is %q, want it to begin %q: the URL the daemon asked and the failure's class, nothing of the redirect's target", cause, want)
+			}
+			if strings.Contains(cause, dead) || strings.Contains(cause, download) {
+				t.Errorf("the cause %q names the redirect's target", cause)
 			}
 			if part := partOf(cause, plantedToken); part != "" {
 				t.Errorf("the cause %q holds %q of the planted token", cause, part)

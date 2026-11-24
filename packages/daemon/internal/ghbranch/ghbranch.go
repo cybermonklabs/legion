@@ -5,13 +5,13 @@ package ghbranch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -22,7 +22,9 @@ import (
 // itself and never release). A branch GitHub already has is left where it is, and Create reports
 // success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
 // the read of base or to the create, is an error naming the repository, the ref and GitHub's
-// answer (a *githubrest.Answer, its status and body).
+// answer (a *githubrest.Answer, its status and body). The base is the repository's default branch
+// as GitHub's answer named it (Read), which the daemon records, so the error and the read's own
+// name print it only in a branch's shape (githubrest.ShownBranch); the read asks for it as it came.
 //
 // The ref name passes this repository's own private-name rules before anything is sent
 // (leakguard.Rules): a name they match, and a rule pass that could not be made to run, are each
@@ -44,20 +46,23 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), &read); err != nil {
-		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
+	shown := githubrest.ShownBranch(base)
+	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), "/git/ref/heads/"+shown, &read); err != nil {
+		return fmt.Errorf("read refs/heads/%s of %s: %w", shown, repo, err)
 	}
 	head := read.Object.SHA
 	if head == "" {
-		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", base, repo)
+		return fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", shown, repo)
 	}
 
-	err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
+	err := github.Post(ctx, "/git/refs", "", map[string]string{"ref": ref, "sha": head}, nil)
 	var answer *githubrest.Answer
-	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
+	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer) {
 		return nil
 	}
-	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
+	// The base's commit is GitHub's words, or those of whatever answers in its place, so the
+	// refusal names it only as a commit's sha (githubrest.ShownSHA).
+	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, githubrest.ShownSHA(head), err)
 }
 
 // RefPath is branch as a path under any route of GitHub's REST API that takes a branch name with
@@ -90,13 +95,15 @@ type Repository struct {
 // read through github, the repository's REST API. An answer naming no default branch, or a
 // full_name that is not owner/name, is refused by name, as is every answer other than 2xx, whose
 // refusal wraps GitHub's *githubrest.Answer so a caller can tell GitHub's rate limit (RateLimited,
-// with how long GitHub asks it to wait) from GitHub's verdict on the repository.
+// with how long GitHub asks it to wait) from GitHub's verdict on the repository. The full_name is
+// GitHub's words, or those of whatever answers in its place, so its refusal names the field and the
+// repository asked for, and nothing the answer wrote there.
 func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository) (Repository, error) {
 	var info struct {
 		FullName      string `json:"full_name"`
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := github.Get(ctx, "", &info); err != nil {
+	if err := github.Get(ctx, "", "", &info); err != nil {
 		return Repository{}, fmt.Errorf("read the default branch of %s: %w", repo, err)
 	}
 	if info.DefaultBranch == "" {
@@ -104,16 +111,17 @@ func Read(ctx context.Context, github githubrest.Client, repo ghrepo.Repository)
 	}
 	name, err := ghrepo.Parse("GitHub's full_name of "+repo.String(), info.FullName)
 	if err != nil {
-		return Repository{}, err
+		return Repository{}, fmt.Errorf("read the default branch of %s: GitHub's full_name of it is not an owner/name GitHub allows", repo)
 	}
 	return Repository{Name: name, DefaultBranch: info.DefaultBranch}, nil
 }
 
-// alreadyExists says whether a 422's body is GitHub's answer to a ref it already has. GitHub answers
-// other refusals of a create with 422 too, such as a malformed ref name or an unknown commit.
-func alreadyExists(body string) bool {
-	var refusal struct {
-		Message string `json:"message"`
-	}
-	return json.Unmarshal([]byte(body), &refusal) == nil && refusal.Message == "Reference already exists"
+// alreadyExists says whether a 422 is GitHub's answer to a ref it already has, decided on GitHub's
+// message as it came (oauth2call.GitHubRefusal, decoded from the answer): the rule's reading of the
+// body, which the answer prints, is not readable whole beside the documentation URL GitHub sends.
+// GitHub answers other refusals of a create with 422 too, such as a malformed ref name or an
+// unknown commit.
+func alreadyExists(answer *githubrest.Answer) bool {
+	var refusal oauth2call.GitHubRefusal
+	return answer.Decode(&refusal) == nil && refusal.Message.Equal("Reference already exists")
 }

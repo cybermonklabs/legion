@@ -99,28 +99,26 @@ func TestDecideSendsTheQuestionsAndReadsEveryAnswerShape(t *testing.T) {
 		"answered": {Type: "noul", Noul: 0.92},
 		"fruit":    {Type: "choice", Choice: "plum", Confidence: 0.81, Probabilities: map[string]float64{"plum": 0.81, "pear": 0.19}},
 		"clarity": {
-			Type: "score", Score: json.RawMessage("2.4"), Confidence: 0.7,
+			Type: "score", Score: 2.4, Confidence: 0.7,
 			Legend:        json.RawMessage(`{"0":"unreadable","1":"muddled","2":"clear"}`),
 			Probabilities: map[string]float64{"0": 0.05, "1": 0.5, "2": 0.45},
 		},
-		"signature": {Type: "box", Box: json.RawMessage(`{"top":0.1,"bottom":0.42,"left":0.05,"right":0.6}`), Confidence: 0.64},
+		"signature": {Type: "box", Box: &Box{Top: 0.1, Bottom: 0.42, Left: 0.05, Right: 0.6}, Confidence: 0.64},
 	}
 	if len(result.Answers) != len(want) {
 		t.Fatalf("%d answers, want %d: %+v", len(result.Answers), len(want), result.Answers)
 	}
 	for name, want := range want {
 		got := result.Answers[name]
-		if got.Type != want.Type || got.Choice != want.Choice || got.Noul != want.Noul ||
+		if got.Type != want.Type || got.Choice != want.Choice || got.Score != want.Score || got.Noul != want.Noul ||
 			got.Confidence != want.Confidence || !reflect.DeepEqual(got.Probabilities, want.Probabilities) {
 			t.Errorf("the %s answer is %+v, want %+v", name, got, want)
 		}
-		for _, raw := range []struct {
-			field     string
-			got, want json.RawMessage
-		}{{"score", got.Score, want.Score}, {"legend", got.Legend, want.Legend}, {"box", got.Box, want.Box}} {
-			if (len(raw.want) == 0) != (len(raw.got) == 0) || (len(raw.want) > 0 && !sameJSON(t, raw.got, raw.want)) {
-				t.Errorf("the %s answer's %s is %s, want %s", name, raw.field, raw.got, raw.want)
-			}
+		if !reflect.DeepEqual(got.Box, want.Box) {
+			t.Errorf("the %s answer's box is %+v, want %+v", name, got.Box, want.Box)
+		}
+		if (len(want.Legend) == 0) != (len(got.Legend) == 0) || (len(want.Legend) > 0 && !sameJSON(t, got.Legend, want.Legend)) {
+			t.Errorf("the %s answer's legend is %s, want %s", name, got.Legend, want.Legend)
 		}
 	}
 
@@ -141,6 +139,30 @@ func asJSON(t *testing.T, v any, into any) {
 	}
 	if err := json.Unmarshal(raw, into); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A score question's levels are its criteria as the caller wrote them, each a string, an object
+// or an array, and the answer's legend names each level in that shape: the legend is read back as
+// the JSON the API sent, whole.
+func TestDecideKeepsALegendOfStructuredLevelsWhole(t *testing.T) {
+	t.Parallel()
+	const legend = `{"0":"unreadable","1":{"level":"muddled","examples":["a note with no verb"]},"2":["clear","signed"]}`
+	s := newStandIn(t, reply{body: []byte(`{"model":"systemone-standin","answers":{"clarity":{"type":"score","score":1.3,` +
+		`"confidence":0.4,"legend":` + legend + `,"probabilities":{"0":0.1,"1":0.5,"2":0.4}}},"usage":{"input_tokens":12,"output_tokens":2}}`)})
+	req := newDecideFixture(t, s)
+	req.Questions = map[string]Question{"clarity": {Type: "score", Instructions: "How clear is the note?",
+		Criteria: json.RawMessage(`["unreadable",{"level":"muddled","examples":["a note with no verb"]},["clear","signed"]]`)}}
+	result, err := Decide(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, answered := result.Answers["clarity"]
+	if result.Fault != "" || !answered {
+		t.Fatalf("result %+v, want the score answer and no fault: %s", result, result.Detail)
+	}
+	if got.Score != 1.3 || !sameJSON(t, got.Legend, []byte(legend)) {
+		t.Errorf("the score answer's score is %v and its legend %s, want 1.3 and %s", got.Score, got.Legend, legend)
 	}
 }
 

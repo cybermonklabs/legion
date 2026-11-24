@@ -22,7 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // The placeholders the recording carries (testdata/gke-metadata.json): the pool of a project named
@@ -78,6 +78,8 @@ type fakeSTS struct {
 	refusing  bool
 	refused   int
 	exchanges []stsExchange
+	// description is the error_description a refusal answers; "" for the long default.
+	description string
 }
 
 // stsExchange is one exchange the fake answered: the scope it was asked for, the subject token it
@@ -115,7 +117,12 @@ func (s *fakeSTS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.refused++
 		w.WriteHeader(http.StatusBadRequest)
 		// A long answer, of characters that take two bytes each, which the failure line cuts.
-		_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"`+strings.Repeat("é", 300)+`"}`)
+		description := strings.Repeat("é", 300)
+		if s.description != "" {
+			description = s.description
+		}
+		body, _ := json.Marshal(map[string]string{"error": "invalid_grant", "error_description": description})
+		_, _ = w.Write(body)
 		return
 	}
 	token := "fake-access-token-" + strconv.Itoa(len(s.exchanges)+1)
@@ -136,6 +143,13 @@ func (s *fakeSTS) refuse() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refusing = true
+}
+
+// refuseWith refuses every exchange with description as the answer's error_description.
+func (s *fakeSTS) refuseWith(description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refusing, s.description = true, description
 }
 
 // answered is every exchange the fake answered with a token, in order.
@@ -219,13 +233,10 @@ func (g *metadataRig) get(t *testing.T, path string, headers map[string]string) 
 	return getMetadata(t, g.url, path, headers)
 }
 
-// noRedirects is a client that hands back a redirect as it is answered, since a 301 is one of the
-// endpoint's answers, which a test compares with GKE's. It keeps no connection between requests,
-// so no idle connection of the client's outlives the server a test closes.
-var noRedirects = &http.Client{
-	Transport:     &http.Transport{DisableKeepAlives: true},
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
+// noRedirects is a client that hands back a redirect as it is answered (redirects.Refused), since
+// a 301 is one of the endpoint's answers, which a test compares with GKE's. It keeps no connection
+// between requests, so no idle connection of the client's outlives the server a test closes.
+var noRedirects = redirects.Refused(&http.Client{Transport: &http.Transport{DisableKeepAlives: true}})
 
 // getMetadata asks the endpoint at base for path with headers and answers the response and its
 // body.
@@ -718,69 +729,6 @@ func TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart(t *testing.T) {
 	}
 }
 
-// The controller's launcher, the single-role form, in a microVM pod whose deployment names the
-// endpoint (INFRA-4567), serves it as an issue pod's launcher does: it listens before the role's
-// first connection, and so before its first generation, names the address it bound in its own
-// environment, exchanges what the token file holds for a token of the pool it was named, and
-// tells each generation that address in both variables, over whatever the daemon's start command
-// carried. Where no test names a token file, it reads the one the daemon mounts in the
-// controller's pod, under FixedRoot, since that pod has no roles directory; an issue pod's
-// launcher reads its own under its roles directory. Both paths are read from the configuration the
-// launcher would serve (Config.servedMetadata) without listening: that one listens on
-// MetadataAddress, which no test holds.
-func TestTheControllersLauncherServesTheMetadataEndpoint(t *testing.T) {
-	named := func() *MetadataConfig {
-		return &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider}
-	}
-	controller := Config{Token: "launcher-token", Role: "controller", PrivateDir: "/private", MicroVM: true, Metadata: named()}
-	if got := controller.servedMetadata(); got.tokenFile != "/var/run/legion/workload-identity/token" || got.listenAddress() != MetadataAddress {
-		t.Errorf("the controller's endpoint reads the token %q and listens at %q, want /var/run/legion/workload-identity/token and %q",
-			got.tokenFile, got.listenAddress(), MetadataAddress)
-	}
-	issuePod := Config{RolesDir: "/roles", Roles: []string{"tester"}, MicroVM: true, Metadata: named()}
-	if got := issuePod.servedMetadata().tokenFile; got != "/roles/workload-identity/token" {
-		t.Errorf("an issue pod's endpoint reads the token %q, want /roles/workload-identity/token", got)
-	}
-
-	holdMetadataVariables(t, "")
-	tokenFile := filepath.Join(t.TempDir(), WorkloadIdentityTokenFile)
-	writeSubjectToken(t, tokenFile, "fake-subject-token-1")
-	sts := &fakeSTS{t: t, tokenFile: tokenFile, expiresIn: 3600}
-	service := httptest.NewServer(sts)
-	t.Cleanup(service.Close)
-	metadata := named()
-	metadata.address, metadata.tokenFile, metadata.tokenURL = "127.0.0.1:0", tokenFile, service.URL
-	// The rig has taken the launcher's first connection, and no generation has started.
-	g := newSessionRig(t, Config{StopGrace: 2 * time.Second, MicroVM: true, Metadata: metadata})
-	address := servedMetadataAddress(t)
-	if got := os.Getenv(MetadataIPVariable); got != address {
-		t.Errorf("the launcher's own %s=%q once its role connected, want %q as %s", MetadataIPVariable, got, address, MetadataHostVariable)
-	}
-	if strings.Contains(g.stderr.String(), "launcher: metadata: ") {
-		t.Errorf("the launcher logged a metadata line, want none: %s", g.stderr.String())
-	}
-	response, body := getMetadata(t, "http://"+address, tokenPath, flavor)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("a token request at %s answered %d %q, want 200", address, response.StatusCode, redacted(body))
-	}
-	var token metadataToken
-	if err := json.Unmarshal([]byte(body), &token); err != nil {
-		t.Fatalf("a token request answered no token: %v", err)
-	}
-	if exchanges := sts.answered(); len(exchanges) != 1 || exchanges[0].subject != "fake-subject-token-1" || exchanges[0].token != token.AccessToken {
-		t.Fatalf("the endpoint made %d exchanges, want one of the token file's contents whose token it answered", len(exchanges))
-	}
-	const expansion = "${" + MetadataHostVariable + "-unset}|${" + MetadataIPVariable + "-unset}"
-	want := address + "|" + address
-	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
-	if got := g.told(1, expansion, carried, ""); got != want {
-		t.Errorf("a generation whose start command carried the node's address ran with %q, want %q", got, want)
-	}
-	if got := g.told(2, expansion, nil, ""); got != want {
-		t.Errorf("a generation whose start command named no address ran with %q, want %q", got, want)
-	}
-}
-
 // metadataEnv names the endpoint's address over whatever a generation's environment carried where
 // its launcher serves it, and leaves that environment exactly as it is where it does not.
 func TestMetadataEnvNamesTheAddressOnlyWhereItsLauncherServes(t *testing.T) {
@@ -933,135 +881,5 @@ func holdMetadataVariables(t *testing.T, carried string) {
 	}
 	for _, name := range []string{MetadataHostVariable, MetadataIPVariable} {
 		t.Setenv(name, carried)
-	}
-}
-
-// newMetadataFleet starts a microVM issue pod's launcher told to serve the endpoint at address,
-// with one role, the tester, over a process environment whose two variables hold carried
-// (holdMetadataVariables).
-func newMetadataFleet(t *testing.T, carried, address string) *fleet {
-	t.Helper()
-	holdMetadataVariables(t, carried)
-	return newFleetOf(t, Config{
-		StopGrace: 2 * time.Second, MicroVM: true,
-		Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider, address: address},
-	}, "tester")
-}
-
-// servedMetadataAddress is the address the launcher named in its own environment once it listens,
-// failing the test unless it is a port the listener bound on the loopback.
-func servedMetadataAddress(t *testing.T) string {
-	t.Helper()
-	address := os.Getenv(MetadataHostVariable)
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || host != "127.0.0.1" || port == "" || port == "0" {
-		t.Fatalf("the launcher's own %s=%q, want the loopback port its endpoint bound", MetadataHostVariable, address)
-	}
-	return address
-}
-
-// takeAPort listens on a loopback port of its own for the rest of the test, as another process of
-// the container could on the endpoint's, and answers its address.
-func takeAPort(t *testing.T) string {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	return listener.Addr().String()
-}
-
-// toldMetadata starts generation of the tester with env as its start command's own Env, answers
-// what the endpoint's two variables held in its environment ("unset" for one it does not hold),
-// and stops it.
-func (f *fleet) toldMetadata(generation uint64, env []string) string {
-	f.t.Helper()
-	told := "told-" + strconv.FormatUint(generation, 10)
-	script := `printf '%s' "${` + MetadataHostVariable + `-unset}|${` + MetadataIPVariable + `-unset}" > /tmp/` + told + `.tmp && ` +
-		`/bin/mv /tmp/` + told + `.tmp /tmp/` + told + `; exec /bin/sleep 600`
-	if got := f.role("tester").start(shimwire.LauncherStart{
-		ID: "start-" + strconv.FormatUint(generation, 10), Generation: generation, Argv: []string{"/bin/sh", "-c", script}, Env: env,
-	}); !got.OK {
-		f.t.Fatalf("start of generation %d = %#v; the launcher's log: %s", generation, got, f.stderr.String())
-	}
-	said := f.waitForRoleFile(f.roleTmp("tester", told))
-	f.role("tester").stop(generation)
-	return said
-}
-
-// The launcher listens before it serves any role and names the address it bound in its own
-// environment, over whatever the container's environment carried, so its own Google clients (the
-// session database's proxy) read it too; and the endpoint answers there for the pool it was named.
-func TestMetadataLauncherServesAtItsAddressAndNamesItInItsOwnEnvironment(t *testing.T) {
-	newMetadataFleet(t, "169.254.169.254", "127.0.0.1:0")
-	address := servedMetadataAddress(t)
-	if got := os.Getenv(MetadataIPVariable); got != address {
-		t.Errorf("the launcher's own %s=%q once its roles connected, want %q as %s", MetadataIPVariable, got, address, MetadataHostVariable)
-	}
-	response, body := getMetadata(t, "http://"+address, metadataPrefix+"project/project-id", flavor)
-	if response.StatusCode != http.StatusOK || body != "example-project" {
-		t.Errorf("project-id at %s answered %d %q, want 200 example-project", address, response.StatusCode, body)
-	}
-}
-
-// Every generation of a launcher that serves the endpoint is told the address it bound in both
-// variables, over whatever the daemon's start command carried, so a role is told only the address
-// its own launcher serves.
-func TestEveryGenerationIsToldTheMetadataAddressItsLauncherServes(t *testing.T) {
-	requireRoleNamespaces(t)
-	f := newMetadataFleet(t, "", "127.0.0.1:0")
-	address := servedMetadataAddress(t)
-	want := address + "|" + address
-	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
-	if got := f.toldMetadata(1, carried); got != want {
-		t.Errorf("a generation whose start command carried the node's address ran with %q, want %q", got, want)
-	}
-	if got := f.toldMetadata(2, nil); got != want {
-		t.Errorf("a generation whose start command named no address ran with %q, want %q", got, want)
-	}
-}
-
-// A launcher that serves no endpoint, a gVisor pod's, leaves each generation's environment as it
-// is: a value its start command carried reaches it, and none is added.
-func TestEveryGenerationIsToldTheMetadataAddressOfNoLauncherThatServesNone(t *testing.T) {
-	holdMetadataVariables(t, "")
-	none := newSessionRig(t, Config{})
-	const expansion = "${" + MetadataHostVariable + "-unset}|${" + MetadataIPVariable + "-unset}"
-	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
-	if got := none.told(1, expansion, carried, ""); got != "169.254.169.254|169.254.169.254" {
-		t.Errorf("a generation whose start command carried the node's address ran with %q, want it as carried", got)
-	}
-	if got := none.told(2, expansion, nil, ""); got != "unset|unset" {
-		t.Errorf("a generation whose start command named no address ran with %q, want neither variable", got)
-	}
-}
-
-// A launcher that cannot listen on the endpoint's address, which another process holds, says so
-// in one line and names the address nowhere: not in its own environment, and (below) not to any
-// generation.
-func TestMetadataThatCannotListenIsOffAndNamedNowhere(t *testing.T) {
-	f := newMetadataFleet(t, "", takeAPort(t))
-	if !strings.Contains(f.stderr.String(), "launcher: metadata: off reason=") {
-		t.Errorf("the launcher's log holds no off line: %s", f.stderr.String())
-	}
-	for _, name := range []string{MetadataHostVariable, MetadataIPVariable} {
-		if value, set := os.LookupEnv(name); set {
-			t.Errorf("the launcher's own environment holds %s=%q, want none", name, value)
-		}
-	}
-}
-
-// Every generation of a launcher whose endpoint could not listen is told what its start command
-// carried and nothing more, as a launcher that serves none tells it.
-func TestEveryGenerationIsToldTheMetadataAddressOnlyByALauncherThatListens(t *testing.T) {
-	requireRoleNamespaces(t)
-	f := newMetadataFleet(t, "", takeAPort(t))
-	carried := []string{MetadataHostVariable + "=169.254.169.254", MetadataIPVariable + "=169.254.169.254"}
-	if got := f.toldMetadata(1, carried); got != "169.254.169.254|169.254.169.254" {
-		t.Errorf("a generation whose start command carried the node's address ran with %q, want it as carried", got)
-	}
-	if got := f.toldMetadata(2, nil); got != "unset|unset" {
-		t.Errorf("a generation whose start command named no address ran with %q, want neither variable", got)
 	}
 }

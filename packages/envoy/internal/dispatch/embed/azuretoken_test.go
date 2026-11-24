@@ -132,33 +132,39 @@ func TestEntraTokenSourceAsksForTheScopeItWasGiven(t *testing.T) {
 }
 
 // TestEntraTokenSourceReusesItsTokenUntilFiveMinutesBeforeExpiry moves the clock to just inside
-// and then exactly at the refresh point, with expires_in sent as a string.
+// and then exactly at the refresh point, with expires_in sent as a JSON number and as a string of
+// digits: each is read as the token's lifetime, to the second.
 func TestEntraTokenSourceReusesItsTokenUntilFiveMinutesBeforeExpiry(t *testing.T) {
-	fake := &fakeEntra{expiresIn: `"3600"`}
-	source, _, now := testEntra(t, fake, "assertion")
-	ctx := context.Background()
-	start := *now
-	for _, step := range []struct {
-		at   time.Duration
-		want string
-	}{
-		{0, "token-1"},
-		{time.Minute, "token-1"},
-		{55*time.Minute - time.Second, "token-1"},
-		{55 * time.Minute, "token-2"},
-		{56 * time.Minute, "token-2"},
-	} {
-		*now = start.Add(step.at)
-		got, err := source.Token(ctx)
-		if err != nil {
-			t.Fatalf("Token at +%v: %v", step.at, err)
-		}
-		if got != step.want {
-			t.Errorf("Token at +%v = %q, want %q", step.at, got, step.want)
-		}
-	}
-	if hits := fake.hits.Load(); hits != 2 {
-		t.Errorf("exchanges = %d, want 2 (one at start, one at the refresh point)", hits)
+	const refresh = 5399*time.Second - 5*time.Minute
+	for name, expiresIn := range map[string]string{"number": `5399`, "string": `"5399"`} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeEntra{expiresIn: expiresIn}
+			source, _, now := testEntra(t, fake, "assertion")
+			ctx := context.Background()
+			start := *now
+			for _, step := range []struct {
+				at   time.Duration
+				want string
+			}{
+				{0, "token-1"},
+				{time.Minute, "token-1"},
+				{refresh - time.Second, "token-1"},
+				{refresh, "token-2"},
+				{refresh + time.Minute, "token-2"},
+			} {
+				*now = start.Add(step.at)
+				got, err := source.Token(ctx)
+				if err != nil {
+					t.Fatalf("Token at +%v: %v", step.at, err)
+				}
+				if got != step.want {
+					t.Errorf("Token at +%v = %q, want %q", step.at, got, step.want)
+				}
+			}
+			if hits := fake.hits.Load(); hits != 2 {
+				t.Errorf("exchanges = %d, want 2 (one at start, one at the refresh point)", hits)
+			}
+		})
 	}
 }
 
@@ -286,14 +292,28 @@ func TestEntraTokenSourceRefusesAnUnreadableOrEmptyTokenFile(t *testing.T) {
 	}
 }
 
+// TestEntraTokenSourceRefusesAnAnswerWithoutALifetime: an expires_in that is missing, of another
+// JSON kind, or no positive whole number of seconds is refused in fixed text, which quotes neither
+// the token nor the value: an answer in Entra's place can put the assertion there.
 func TestEntraTokenSourceRefusesAnAnswerWithoutALifetime(t *testing.T) {
-	for _, expiresIn := range []string{`null`, `"soon"`, `0`, `-5`} {
-		fake := &fakeEntra{expiresIn: expiresIn}
-		source, _, _ := testEntra(t, fake, "assertion")
-		_, err := source.Token(context.Background())
-		if err == nil || strings.Contains(err.Error(), "token-1") {
-			t.Errorf("Token with expires_in %s = %v, want an error that does not carry the token", expiresIn, err)
-		}
+	const refusal = "embed: entra answered an expires_in that is no positive number of seconds"
+	answers := map[string]http.Handler{
+		"missing": http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token_type":"Bearer","access_token":"token-1"}`))
+		}),
+	}
+	for _, expiresIn := range []string{`null`, `"soon"`, `0`, `-5`, `"0"`, `"-5"`, `3600.5`, `"3600.5"`, `"3600 "`, `1e3`,
+		`99999999999999999999`, `true`, `{}`, `["3600"]`, `"secret-assertion"`} {
+		answers[expiresIn] = &fakeEntra{expiresIn: expiresIn}
+	}
+	for name, answer := range answers {
+		t.Run(name, func(t *testing.T) {
+			source, _, _ := testEntra(t, answer, "secret-assertion")
+			if _, err := source.Token(context.Background()); err == nil || err.Error() != refusal {
+				t.Errorf("Token with expires_in %s = %v, want %q", name, err, refusal)
+			}
+		})
 	}
 }
 

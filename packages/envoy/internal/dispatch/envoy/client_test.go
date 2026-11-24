@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -441,6 +442,91 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 	}
 }
 
+// A send's answer carries the request's expects_reply back (listenerwire.ExpectsAsSpoken): the 200
+// (listenerwire.SendResponse) and a role send's 202 (listenerwire.KeptSendResponse) alike, and this
+// client reads both through decodeAnswer, the read Send makes of them. Each spelling a listener
+// writes back is read as the value it names - the literal false, "optional", "required", the
+// retired "none", and no key for a request that named none - with the embedded envelope's own
+// field left unset, and Send takes the answer. A value no listener writes back, since its route
+// refuses such a request before it answers, is an answer this client cannot read, and its error
+// quotes nothing of it.
+func TestASendsAnswerReadsExpectsReplyInEachSpellingAListenerWritesBack(t *testing.T) {
+	// answering is a listener whose send route answers with raw as its expects_reply, the 202 of a
+	// kept role send to target "kept" and the 200 to any other, leaving the key out for "".
+	answering := func(t *testing.T, raw string) *httptest.Server {
+		field := ""
+		if raw != "" {
+			field = `,"expects_reply":` + raw
+		}
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var request listenerwire.SendRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode send: %v", err)
+			}
+			if request.TargetSession == "kept" {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"event_id":"kept-envelope","recipient":"kept","kept":true,"kept_until":1800000000000` + field + `}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","recipient_state":"live","state":"connected"` + field + `}`))
+		}))
+		t.Cleanup(listener.Close)
+		return listener
+	}
+	answer := func(t *testing.T, listener *httptest.Server, target string) *http.Response {
+		t.Helper()
+		response, err := listener.Client().Post(listener.URL+"/v1/messages/send", "application/json", strings.NewReader(`{"target_session":"`+target+`"}`))
+		if err != nil {
+			t.Fatalf("post a send to %s: %v", target, err)
+		}
+		t.Cleanup(func() { _ = response.Body.Close() })
+		return response
+	}
+	for _, test := range []struct {
+		name, raw string
+		want      listenerwire.ExpectsAsSpoken
+	}{
+		{name: "absent", raw: ``, want: listenerwire.ExpectsAsSpoken{}},
+		{name: "false", raw: `false`, want: listenerwire.ExpectsAsSpoken{Value: listenerwire.ExpectsReplyNone}},
+		{name: "optional", raw: `"optional"`, want: listenerwire.ExpectsAsSpoken{Value: listenerwire.ExpectsReplyOptional}},
+		{name: "required", raw: `"required"`, want: listenerwire.ExpectsAsSpoken{Value: listenerwire.ExpectsReplyRequired}},
+		{name: "the old none", raw: `"none"`, want: listenerwire.ExpectsAsSpoken{Value: listenerwire.ExpectsReplyNone, LegacyNone: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener := answering(t, test.raw)
+			for target, envelope := range map[string]string{"s1": "envelope-1", "kept": "kept-envelope"} {
+				result, err := New(listener.URL).Send(context.Background(), SendInput{
+					TargetSession: target, Message: "m", IdempotencyKey: "k", ExpectsReply: test.want.Value,
+				})
+				if err != nil || result.EnvelopeID != envelope || result.Recipient != target {
+					t.Errorf("send to %s = %+v, %v; want envelope %s for %s", target, result, err, envelope, target)
+				}
+			}
+			var sent listenerwire.SendResponse
+			if err := decodeAnswer(answer(t, listener, "s1"), &sent); err != nil ||
+				sent.ExpectsReply != test.want || sent.Envelope.ExpectsReply != listenerwire.ExpectsReplyUnset {
+				t.Errorf("the 200 read expects_reply %+v and the envelope's %q (%v), want %+v and the envelope's unset",
+					sent.ExpectsReply, sent.Envelope.ExpectsReply, err, test.want)
+			}
+			var kept listenerwire.KeptSendResponse
+			if err := decodeAnswer(answer(t, listener, "kept"), &kept); err != nil ||
+				kept.ExpectsReply != test.want || kept.Envelope.ExpectsReply != listenerwire.ExpectsReplyUnset {
+				t.Errorf("the 202 read expects_reply %+v and the envelope's %q (%v), want %+v and the envelope's unset",
+					kept.ExpectsReply, kept.Envelope.ExpectsReply, err, test.want)
+			}
+		})
+	}
+	t.Run("a value no listener writes back", func(t *testing.T) {
+		listener := answering(t, `"later"`)
+		for _, target := range []string{"s1", "kept"} {
+			result, err := New(listener.URL).Send(context.Background(), SendInput{TargetSession: target, Message: "m", IdempotencyKey: "k"})
+			if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "later") {
+				t.Errorf("send to %s = %+v, %v; want ErrUnavailable quoting nothing of the answer", target, result, err)
+			}
+		}
+	})
+}
+
 func TestRolePreservesListenerNotFoundText(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -504,6 +590,55 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 	if _, err := client.Role(context.Background(), "legion-reviewer"); err == nil ||
 		err.Error() != "role legion-reviewer holder s9 lapsed; claim retained (last seen 1)" {
 		t.Fatalf("role error for a gone holder = %v, want the listener's own refusal", err)
+	}
+}
+
+// TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt: the holder a lapsed role refusal names is
+// sent back to the listener's session route only where the rule prints it as it came - a session
+// id, one outside the key alphabet among them - and holder_state is read as the closed set the
+// refusal is told apart by. A holder that quotes a credential's URL is read nowhere: the role is
+// the listener's refusal, which prints none of its secrets, and the session route is never asked.
+// A holder_state that is no string is a body this client cannot read.
+func TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt(t *testing.T) {
+	var asked []string
+	refusal := func(holder, state string) string {
+		body, _ := json.Marshal(map[string]any{"error": "holder lapsed", "reason": "holder_lapsed", "holder": holder, "holder_state": state, "claim_released": false})
+		return string(body)
+	}
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/roles/plain":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(refusal("ses:bad", "unresponsive")))
+		case "/v1/roles/credential":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(refusal(redacttest.Words, "unresponsive")))
+		case "/v1/roles/state-not-a-string":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"holder lapsed","holder":"s1","holder_state":7}`))
+		default:
+			asked = append(asked, r.URL.EscapedPath())
+			_, _ = w.Write([]byte(`{"session_id":"ses:bad","title":"planner","state":"unresponsive","last_seen":42}`))
+		}
+	}))
+	defer listener.Close()
+	client := New(listener.URL)
+
+	if holder, err := client.Role(context.Background(), "plain"); err != nil || holder.SessionID != "ses:bad" {
+		t.Fatalf("a holder the rule prints as it came: %+v, %v; want it read", holder, err)
+	}
+	if !reflect.DeepEqual(asked, []string{"/v1/registry/ses:bad"}) {
+		t.Fatalf("the session route was asked %v, want the holder once", asked)
+	}
+	asked = nil
+	_, err := client.Role(context.Background(), "credential")
+	redacttest.RequireNone(t, "envoy.role-sent-back", strings.Join(asked, "\n"))
+	if err == nil || len(asked) != 0 {
+		t.Fatalf("a holder that quotes a credential's URL: %v, session route asked %v; want the refusal and no read", err, asked)
+	}
+	redacttest.RequireNone(t, "the refusal", err.Error())
+	if _, err := client.Role(context.Background(), "state-not-a-string"); err == nil || len(asked) != 0 {
+		t.Fatalf("a holder_state that is no string: %v, asked %v; want the refusal", err, asked)
 	}
 }
 

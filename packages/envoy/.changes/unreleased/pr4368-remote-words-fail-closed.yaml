@@ -1,0 +1,62 @@
+kind: Fixed
+body: |-
+  A remote's words no longer print a credential a URL in them carries. The broker's code and
+  description printed whole beside a clean address, so a refusal that quoted
+  `https://user:password@host/path?access_token=…` printed the user, the password and the token in
+  the helper's ERROR line, the token client's renewal lines and every message made from the
+  refusal. A fail-closed rule (`redact.Remote`, `redact.Field`) now reads each remote field: it
+  prints the field with each URL's user information and each query and fragment value removed
+  only when it can read every URL in it, and `redact.WordsNotReadable` otherwise, the status and
+  the other field still printing. Whitespace that splits a URL or a credential does not hide it:
+  the rule reads the field again with its whitespace removed and fails closed, so every `?`, `#`,
+  `@` and key's `=` after a URL start must lie inside a URL the first reading read as clean,
+  whatever sits between; a key's split `user:secret@` is not readable whatever leads it
+  (`proxy=[user: secret@host]`), nor is a split `https://user: password/x`. A free-text error
+  that names a URL and then any `key=value`, `?` or `#` therefore prints as not readable, as
+  git's `Could not resolve host` would after such a word. Two forms still print by design, since
+  no syntax marks them: a bare `label: secret@host`, with no key before it, which reads as a
+  label and an address such as `sign-in: ada@example.com`; and the same in a JSON member.
+  The rule reads a field as a reader sees it first: each full-width form of ASCII as that
+  character and each HTML character reference of a URL's separators, or of their full-width forms
+  (`&sol;`, `&#47;`, `&#x2F;`, `&#xFF0F;`, `&amp;quest;` and the rest), as that separator, so a page
+  or a reason phrase that writes its URL that way prints no credential, from every caller.
+  `%u002F`, `\U0000002F`, `\u{2f}` and octal escapes of a separator make a field not readable, as
+  `%2F` does; a path parameter's value (`;jsessionid=…`) is removed; and a `://` that no scheme
+  comes before (`x;://host`, `9://host`) makes the field not readable, so a text such as
+  `ratio 3:// and` no longer prints.
+  Every client in the envoy and daemon modules reads an HTTP answer only through
+  `redact.ReadAnswer` (or `redact.StreamAnswer` for a body that is streamed data), whose
+  `redact.Answer` decodes into typed values that hold the request's record, prints its words only
+  as the rule reads them with every credential the request carried redacted, and quotes no value
+  in a decode's error: a 200 that echoed the helper's Proof JWT or a pod token into a field the
+  client could not decode printed it in the decoder's error. `githubapp.CheckResponse` and the
+  GitHub classifiers take a `redact.Answer`. The mutation gate's answer census fails on any read of
+  a response's body outside those readers, and on any read of a response's status line: every
+  client names an answer's status by its code and the standard phrase (`redact.StatusLine`, which
+  `oauth2call.StatusLine` forwards), never the reason phrase the answering party wrote. An answer's
+  header prints through `redact.Header`, as the rule reads it with the request's credentials
+  redacted; GitHub's GraphQL errors in the reconciler and the NATS monitor's server name in the
+  load test's guard are held as `redact.RemoteText`; and a commit's sha with no date, and a note
+  blob's encoding, print only as what the client checked them to be. The token client's retry
+  line, and `agent-secrets-devrelay`'s line for a looked-up state, print the broker's text as the
+  address lets it print (`cipheraddr.Address.WordsOf`): beside an address that is not clean, its
+  code printed whole while the trade's error withheld it. A client decides on an answer as it
+  came and the rule runs only where text leaves the process: `redact.Holds` tests an answer's
+  bytes in place and `redact.ContainsFold` finds a phrase of its wording in any case (both moved
+  from the GitHub App client, and forwarded by `oauth2call`), `oauth2call.CodedRefusal` decodes a
+  `{"code","error"}` refusal field by field, and `oauth2call/oauth2calltest` gives a module
+  outside this one the box print test for a holder it declares. An Authorization's scheme
+  (Bearer, token, Basic, any word before its first space) is no credential: only the part after
+  it is, so an answer's word beside the scheme is not cut with it.
+  The helper splits an `invalid_request` description at its first `": "` only where the rule reads
+  the whole description as clean. The broker's words in `redact.Error`, `redact.Cause` and
+  `cipheraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and
+  `agent-secrets-devrelay`'s refusals, `githubapp.StatusError`, `auth.CallbackError`, the Envoy
+  listener client's errors, a refused revocation's code and the load test's seed code print
+  through it; those error types hold the words behind pointers, so no fmt verb, `slog` field or
+  value that holds them prints them. Dispatch's Envoy listener client no longer prints the
+  configured listener URL in a transport failure. `scripts/check-redact-remote-text.sh` runs
+  every print site's test.
+time: 2026-11-18T05:15:23Z
+custom:
+    Issue: pr4368

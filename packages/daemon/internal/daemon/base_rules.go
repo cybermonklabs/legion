@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -23,38 +23,66 @@ import (
 const planRefusal = "make this repository public to enable this feature"
 
 // githubBranchRule is one rule GET /rules/branches/{branch} answers: every rule of every ruleset
-// that applies to the branch, its parameters read only for a `required_status_checks` rule
-// (requiredStatusChecks), since each type of rule has parameters of its own.
+// that applies to the branch, its parameters read as a `required_status_checks` rule's
+// (requiredStatusChecks) and kept only for one, since each type of rule has parameters of its own
+// and none of the others names their two fields.
 type githubBranchRule struct {
-	Type       string          `json:"type"`
-	Parameters json.RawMessage `json:"parameters"`
+	Type       string               `json:"type"`
+	Parameters requiredStatusChecks `json:"parameters"`
 }
 
 // requiredStatusChecks is the parameters of a `required_status_checks` rule: the contexts it
 // requires, and whether it requires a pull request to be current with the branch before it
 // merges.
 type requiredStatusChecks struct {
-	RequiredStatusChecks []struct {
-		Context string `json:"context"`
-	} `json:"required_status_checks"`
-	Strict bool `json:"strict_required_status_checks_policy"`
+	RequiredStatusChecks []requiredCheck `json:"required_status_checks"`
+	Strict               bool            `json:"strict_required_status_checks_policy"`
 }
 
-// githubBranch is what GET /branches/{branch} answers of the branch's classic protection: whether
-// it is enabled, and its required status checks, which name their contexts twice over (`contexts`
-// and each `checks[].context`) and carry no `strict`. The read that does carry it
-// (/branches/{branch}/protection) needs Administration read, which the implement App lacks.
+// requiredCheck is one required status check, by its context, as a ruleset's rule and a classic
+// protection's `checks` name it.
+type requiredCheck struct {
+	Context githubText `json:"context"`
+}
+
+// githubBranch is what GET /branches/{branch} answers of the branch's classic protection
+// (branchProtection). The read that does carry its `strict` (/branches/{branch}/protection)
+// needs Administration read, which the implement App lacks.
 type githubBranch struct {
-	Protection struct {
-		Enabled              bool `json:"enabled"`
-		RequiredStatusChecks struct {
-			EnforcementLevel string   `json:"enforcement_level"`
-			Contexts         []string `json:"contexts"`
-			Checks           []struct {
-				Context string `json:"context"`
-			} `json:"checks"`
-		} `json:"required_status_checks"`
-	} `json:"protection"`
+	Protection branchProtection `json:"protection"`
+}
+
+// branchProtection is a branch's classic protection: whether it is enabled, and its required
+// status checks (protectionChecks).
+type branchProtection struct {
+	Enabled              bool             `json:"enabled"`
+	RequiredStatusChecks protectionChecks `json:"required_status_checks"`
+}
+
+// protectionChecks is a classic protection's required status checks, which name their contexts
+// twice over (`contexts` and each `checks[].context`) and carry no `strict`.
+type protectionChecks struct {
+	EnforcementLevel string          `json:"enforcement_level"`
+	Contexts         []githubText    `json:"contexts"`
+	Checks           []requiredCheck `json:"checks"`
+}
+
+// githubText is a string member of GitHub's answer the daemon both decides on and prints - a
+// status check context, a pull request's base branch - read twice: Name as it came, which the
+// daemon keeps and decides on (record.BaseRules.Required, the base the rules read asks for), and
+// Said, GitHub's words, which the answer's Decode holds with the read's record
+// (oauth2call.Answer.Decode), so a line that names the member prints it as the rule reads it.
+type githubText struct {
+	Name string
+	Said oauth2call.RemoteText
+}
+
+// UnmarshalJSON reads data, a JSON string, as the member as it came and as GitHub's words.
+func (t *githubText) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, &t.Name); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, &t.Said)
 }
 
 // readBaseRules reads the rules base, the base branch of pr, holds for its required status checks
@@ -74,6 +102,8 @@ type githubBranch struct {
 //
 // base is path-escaped with its slashes kept (ghbranch.RefPath), so a branch whose name holds a
 // `#`, a `?` or a `%` reads that branch and no other. Required holds each context once, sorted.
+// base is GitHub's base.ref, or the record's base where GitHub's answer named none
+// (applyMergeability), and the line and Unread name it as shownBase does.
 //
 // GitHub's 403 whose message carries planRefusal, on either read, is the answer of a plan that
 // holds neither rulesets nor classic protection, so it reads as no rules: Required empty, Strict
@@ -81,11 +111,11 @@ type githubBranch struct {
 // branch that does not exist), a 5xx, a read that runs out of issueRead, which bounds each read as
 // it bounds the per-issue read's - is a read whose rules the daemon does not know: Unread says why,
 // R0 acts on it at once (record.ConflictRulesUnread), and nothing else fails. Each call logs one
-// line with what it read.
-func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base string) record.BaseRules {
-	rules := baseRules(ctx, github, base)
-	attributes := []any{"repo", pr.Repo, "pullRequest", pr.Number, "base", base,
-		"required", rules.Required, "strict", rules.Strict, "unread", rules.Unread}
+// line with what it read, the base and the contexts as the rule reads GitHub's words.
+func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.Client, pr record.PullRequest, base githubText) record.BaseRules {
+	rules, said := baseRules(ctx, github, base)
+	attributes := []any{"repo", pr.Repo, "pullRequest", pr.Number, "base", shownBase(base),
+		"required", said, "strict", rules.Strict, "unread", rules.Unread}
 	if rules.Unread != "" {
 		w.log.Warn("github: read the base's rules for a conflicting head", attributes...)
 	} else {
@@ -94,65 +124,88 @@ func (w *workflowRuntime) readBaseRules(ctx context.Context, github githubrest.C
 	return rules
 }
 
-// baseRules is readBaseRules' two reads and what they come to, without its log line.
-func baseRules(ctx context.Context, github githubrest.Client, base string) record.BaseRules {
-	path := ghbranch.RefPath(base)
+// baseRules is readBaseRules' two reads and what they come to, without its log line, with each
+// required context as GitHub's words (said), in the order of Required.
+func baseRules(ctx context.Context, github githubrest.Client, base githubText) (rules record.BaseRules, said []oauth2call.RemoteText) {
+	path, shown := ghbranch.RefPath(base.Name), shownBase(base)
 	read, cancel := context.WithTimeout(ctx, issueRead)
-	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path)
+	rulesets, err := githubrest.GetPages[githubBranchRule](read, github, "/rules/branches/"+path, "/rules/branches/"+shown)
 	cancel()
 	if err != nil {
-		return unreadRules(err)
+		return unreadRules(err), nil
 	}
+	words := map[string]oauth2call.RemoteText{}
 	var required []string
+	add := func(named githubText) {
+		required = append(required, named.Name)
+		if _, seen := words[named.Name]; !seen {
+			words[named.Name] = named.Said
+		}
+	}
 	strict := false
 	for _, rule := range rulesets {
 		if rule.Type != "required_status_checks" {
 			continue
 		}
-		var checks requiredStatusChecks
-		if err := json.Unmarshal(rule.Parameters, &checks); err != nil {
-			return record.BaseRules{Unread: fmt.Sprintf("decode a required_status_checks rule of %s: %v", base, err)}
+		for _, check := range rule.Parameters.RequiredStatusChecks {
+			add(check.Context)
 		}
-		for _, check := range checks.RequiredStatusChecks {
-			required = append(required, check.Context)
-		}
-		strict = strict || checks.Strict
+		strict = strict || rule.Parameters.Strict
 	}
 	var branch githubBranch
 	read, cancel = context.WithTimeout(ctx, issueRead)
-	err = github.Get(read, "/branches/"+path, &branch)
+	err = github.Get(read, "/branches/"+path, "/branches/"+shown, &branch)
 	cancel()
 	if err != nil {
-		return unreadRules(err)
+		return unreadRules(err), nil
 	}
 	if protection := branch.Protection; protection.Enabled && protection.RequiredStatusChecks.EnforcementLevel != "off" {
-		required = append(required, protection.RequiredStatusChecks.Contexts...)
+		for _, named := range protection.RequiredStatusChecks.Contexts {
+			add(named)
+		}
 		for _, check := range protection.RequiredStatusChecks.Checks {
-			required = append(required, check.Context)
+			add(check.Context)
 		}
 	}
 	slices.Sort(required)
-	return record.BaseRules{Required: slices.Compact(required), Strict: strict}
+	required = slices.Compact(required)
+	for _, name := range required {
+		said = append(said, words[name])
+	}
+	return record.BaseRules{Required: required, Strict: strict}, said
 }
 
-// unreadRules is what a failed read of the base's rules comes to: no rules for GitHub's refusal of
-// rulesets to a plan that has none (planRefusal), and otherwise rules the daemon could not read,
-// Unread naming GitHub's answer - the request, its status and GitHub's message - or the error.
+// shownBase is base as the rules read names it on its line and in Unread: GitHub's words for it as
+// the rule reads them (githubText.Said), and the record's base as it is where GitHub named none
+// (applyMergeability), which has no Said.
+func shownBase(base githubText) string {
+	if base.Said.IsEmpty() {
+		return base.Name
+	}
+	return base.Said.String()
+}
+
+// unreadRules is what err, a failed read of the base's rules, comes to: no rules for GitHub's
+// refusal of rulesets to a plan that has none (planRefusal), and otherwise rules the daemon could
+// not read, Unread saying why: GitHub's method, path and status and its message, or the read's
+// own error. The path the read asked holds the base as it came, so baseRules names each read by
+// its route with the base as shownBase names it, and githubrest prints that name in GitHub's answer
+// (Answer.Path) and in net/http's error for a request that got no answer (url.Error.URL). The
+// refusal is decided on GitHub's message as it came (oauth2call.GitHubRefusal, decoded from the
+// answer), and the message prints as the rule reads it.
 func unreadRules(err error) record.BaseRules {
 	var answer *githubrest.Answer
 	if !errors.As(err, &answer) {
 		return record.BaseRules{Unread: err.Error()}
 	}
-	var body struct {
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal([]byte(answer.Body), &body)
-	if answer.Status == http.StatusForbidden && !answer.RateLimited && strings.Contains(body.Message, planRefusal) {
+	var refusal oauth2call.GitHubRefusal
+	_ = answer.Decode(&refusal)
+	if answer.Status == http.StatusForbidden && !answer.RateLimited && refusal.Message.Contains(planRefusal) {
 		return record.BaseRules{}
 	}
 	unread := fmt.Sprintf("GitHub answered %s %s with %d", answer.Method, answer.Path, answer.Status)
-	if body.Message != "" {
-		unread += ": " + body.Message
+	if !refusal.Message.IsEmpty() {
+		unread += ": " + refusal.Message.String()
 	}
 	return record.BaseRules{Unread: unread}
 }

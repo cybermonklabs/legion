@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // The clean stop is one DELETE of the session's own key, with the listener's bearer, and it names
@@ -26,7 +28,7 @@ func TestDeleteSessionAsksTheSessionRouteWithTheBearerTheMomentAndTheInstance(t 
 	goneAt := time.Now()
 
 	stopped, err := New(server.URL+"/", "envoy-bearer").DeleteSession(context.Background(), "ses_implementer",
-		DeleteConditions{ClientInstanceID: "pi/omp 1+1", NotRegisteredAfter: goneAt})
+		DeleteConditions{ClientInstanceID: oauth2calltest.Said("pi/omp 1+1"), NotRegisteredAfter: goneAt})
 	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
@@ -77,11 +79,11 @@ func TestDeleteSessionReportsARegistrationTheListenerKept(t *testing.T) {
 	defer server.Close()
 
 	stopped, err := New(server.URL, "").DeleteSession(context.Background(), "ses_relaunched",
-		DeleteConditions{ClientInstanceID: "inst_dead", NotRegisteredAfter: time.Now()})
+		DeleteConditions{ClientInstanceID: oauth2calltest.Said("inst_dead"), NotRegisteredAfter: time.Now()})
 	if err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
-	if stopped.Deleted || stopped.Reason != reason {
+	if stopped.Deleted || !stopped.Reason.Equal(reason) {
 		t.Fatalf("DeleteSession = %+v, want the registration kept with the listener's reason", stopped)
 	}
 }
@@ -111,7 +113,7 @@ func TestDeleteSessionTellsAnAlreadyGoneSessionFromARefusal(t *testing.T) {
 			defer server.Close()
 
 			stopped, err := New(server.URL, "").DeleteSession(context.Background(), "ses_implementer",
-				DeleteConditions{ClientInstanceID: "inst_dead", NotRegisteredAfter: time.Now()})
+				DeleteConditions{ClientInstanceID: oauth2calltest.Said("inst_dead"), NotRegisteredAfter: time.Now()})
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Fatalf("DeleteSession = %v, want the session taken as stopped", err)
@@ -145,9 +147,8 @@ func TestReadSessionRegistrationAsksTheRegistryForTheEntrysInstance(t *testing.T
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration: %v", err)
 	}
-	want := SessionRegistration{Registered: true, ClientInstanceID: "inst_dead", LastSeen: 1762560000000}
-	if registration != want {
-		t.Fatalf("ReadSessionRegistration = %+v, want %+v", registration, want)
+	if !registration.Registered || !registration.ClientInstanceID.Equal("inst_dead") || registration.LastSeen != 1762560000000 {
+		t.Fatalf("ReadSessionRegistration = %+v, want inst_dead's registration last seen at 1762560000000", registration)
 	}
 	if method != http.MethodGet || path != "/v1/registry/ses/dead" || bearer != "Bearer envoy-bearer" {
 		t.Fatalf("%s %s with %q, want a GET of the session's registry entry with the listener's bearer", method, path, bearer)
@@ -171,7 +172,7 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration = %v, want a registry holding none taken as no failure", err)
 	}
-	if registration != (SessionRegistration{}) {
+	if registration.Registered || !registration.ClientInstanceID.IsEmpty() || registration.LastSeen != 0 {
 		t.Fatalf("ReadSessionRegistration = %+v, want no registration at all", registration)
 	}
 }
@@ -206,9 +207,8 @@ func TestReadSessionRegistrationReadsAnEntryPastTheRefusalBodyLimit(t *testing.T
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration of a %d-byte entry: %v", len(entry), err)
 	}
-	want := SessionRegistration{Registered: true, ClientInstanceID: "inst_busy", LastSeen: 1762560000000}
-	if registration != want {
-		t.Fatalf("ReadSessionRegistration = %+v, want %+v", registration, want)
+	if !registration.Registered || !registration.ClientInstanceID.Equal("inst_busy") || registration.LastSeen != 1762560000000 {
+		t.Fatalf("ReadSessionRegistration = %+v, want inst_busy's registration last seen at 1762560000000", registration)
 	}
 }
 

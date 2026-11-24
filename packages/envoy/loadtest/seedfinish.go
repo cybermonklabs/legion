@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -17,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // seedFinishPoll is how often seed-finish reads a count it waits on.
@@ -85,6 +85,12 @@ type coverageReader interface {
 // so the gate sends the agent bearer and times a call out exactly as every other call does. A
 // non-200 answer and a body that does not decode are both returned as errors: to the gate they
 // are the same transient condition, a deployment that is not answering for now.
+//
+// The embedder's identity, place and model are Dispatch's words, or the words of whatever answers
+// in its place, which can echo the read's bearer or quote a URL with a credential in it. The gate
+// decides only whether each is null, and its record (coverageRecord) prints them, so the report it
+// answers holds each as the rule reads it with the read's record (redact.RemoteText, which
+// redact.Answer.Decode holds so), null where Dispatch named none.
 type dispatchCoverage struct{ a *api }
 
 func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverage, error) {
@@ -94,12 +100,33 @@ func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverag
 	case res.err != nil:
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, res.err)
 	case res.status != http.StatusOK:
-		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, trunc(res.body))
+		return coverage, fmt.Errorf("GET %s: HTTP %d %s", searchCoveragePath, res.status, res.text())
 	}
-	if err := json.Unmarshal(res.body, &coverage); err != nil {
+	var embedder struct {
+		Identity redact.RemoteText `json:"identity"`
+		Place    redact.RemoteText `json:"place"`
+		Model    redact.RemoteText `json:"model"`
+	}
+	if err := res.answer.Decode(&coverage); err != nil {
 		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)
 	}
+	if err := res.answer.Decode(&embedder); err != nil {
+		return coverage, fmt.Errorf("GET %s: %w", searchCoveragePath, err)
+	}
+	coverage.Identity = readingOf(coverage.Identity, embedder.Identity)
+	coverage.Place = readingOf(coverage.Place, embedder.Place)
+	coverage.Model = readingOf(coverage.Model, embedder.Model)
 	return coverage, nil
+}
+
+// readingOf is the rule's reading of held, a member of the coverage report held as Dispatch's
+// words, which member holds as it came: nil where member is, for a report that names none.
+func readingOf(member *string, held redact.RemoteText) *string {
+	if member == nil {
+		return nil
+	}
+	shown := held.String()
+	return &shown
 }
 
 // seedFinisher runs the steps after `loadgen seed`, while Dispatch still runs: each wait polls its
@@ -301,9 +328,10 @@ func (f seedFinisher) waitZero(ctx context.Context, db pgSession, query, pending
 func seconds(d time.Duration) string { return fmt.Sprintf("%.0f s", d.Seconds()) }
 
 // coverageRecord is what the embedding gate writes beside the seed's other outputs
-// (-embed-progress): the embedder it waited on, one entry per poll, and how the wait ended, so a
-// seed that waited hours can be read afterwards without the log. WaitedSeconds is the whole wait,
-// TimeoutSeconds the bound it was given and PollSeconds how often it read.
+// (-embed-progress): the embedder it waited on (Dispatch's words as the rule reads them,
+// dispatchCoverage), one entry per poll, and how the wait ended, so a seed that waited hours can
+// be read afterwards without the log. WaitedSeconds is the whole wait, TimeoutSeconds the bound it
+// was given and PollSeconds how often it read.
 type coverageRecord struct {
 	Identity       *string        `json:"identity"`
 	Place          *string        `json:"place"`

@@ -1,13 +1,10 @@
 package redact
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"math/rand/v2"
 	"strings"
 	"testing"
-	"testing/iotest"
 )
 
 // plantedUser and plantedQuery are what the cut tests write into a URL as its user name and its
@@ -346,34 +343,5 @@ func TestReadOfAnyCutKeepsNoPartOfWhatTheURLRuleRemovesFromTheWholeText(t *testi
 	}
 	if leaks == 0 {
 		t.Fatal("the rule alone keeps a part of what it removes from the whole text after no cut of the texts: the test tests nothing")
-	}
-}
-
-// ReadBounded answers the first limit bytes of a read and whether its bound cut them: cut where
-// there was more to read than limit, kept whole and not cut at limit bytes or fewer, and cut where
-// the read ended on an error, which it answers with what came before the error.
-func TestReadBoundedTellsAReadItsBoundCutFromOneReadWhole(t *testing.T) {
-	reset := errors.New("connection reset mid-body")
-	for _, tc := range []struct {
-		name    string
-		r       io.Reader
-		want    string
-		wantCut bool
-		wantErr error
-	}{
-		{name: "a body longer than the limit", r: strings.NewReader("0123456789"), want: "01234567", wantCut: true},
-		{name: "a body of exactly the limit", r: strings.NewReader("01234567"), want: "01234567"},
-		{name: "a body shorter than the limit", r: strings.NewReader("0123"), want: "0123"},
-		{
-			name: "a read that ended on an error", r: io.MultiReader(strings.NewReader("0123"), iotest.ErrReader(reset)),
-			want: "0123", wantCut: true, wantErr: reset,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			kept, cut, err := ReadBounded(tc.r, 8)
-			if string(kept) != tc.want || cut != tc.wantCut || !errors.Is(err, tc.wantErr) {
-				t.Fatalf("ReadBounded = %q, %t, %v; want %q, %t, %v", kept, cut, err, tc.want, tc.wantCut, tc.wantErr)
-			}
-		})
 	}
 }

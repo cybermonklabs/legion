@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // A grant ends for good when a release finds its secret's type changed or its lifetime over the
@@ -28,12 +29,13 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			secret := requestTypeSecret("QUIET_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 			retag(t, machine, secret)
 			var githubCalls, googleCalls int
+			installationToken := githubtest.InstallationToken(t.Name())
 			var minted []string
 			machine.Minters = map[string]Minter{
 				policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 					githubCalls++
 					minted = append(minted, req.Value)
-					return secrets.Minted{Value: "github-installation-token"}, nil
+					return secrets.Minted{Value: installationToken}, nil
 				},
 				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 					googleCalls++
@@ -44,7 +46,7 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			if err != nil || grant.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", grant, err)
 			}
-			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, ReleaseCall{}); err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
+			if release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, ReleaseCall{}); err != nil || release.Values["QUIET_TYPE_KEY"] != installationToken {
 				t.Fatalf("Values before the retag = %v, %v; want the GitHub App minter's token", release.Values, err)
 			}
 			moved := secret
@@ -60,7 +62,7 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			retag(t, machine, moved)
 			retag(t, machine, secret)
 			release, err := machine.Values(t.Context(), *grant.GrantID, enrollmentID, ReleaseCall{})
-			if err != nil || release.Values["QUIET_TYPE_KEY"] != "github-installation-token" {
+			if err != nil || release.Values["QUIET_TYPE_KEY"] != installationToken {
 				t.Fatalf("Values once the type is back, with no release while it was away = %v, %v; want the GitHub App minter's token: the grant is as it was", release.Values, err)
 			}
 			if release.Values["QUIET_TYPE_KEY"] == secret.Value {

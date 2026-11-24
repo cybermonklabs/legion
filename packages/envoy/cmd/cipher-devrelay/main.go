@@ -27,6 +27,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,6 +35,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -145,22 +147,41 @@ type apiClient struct {
 }
 
 // apiError is a refusal in the broker's {"code":...,"error":...} error envelope: the HTTP status
-// it came with, and Answer, its code and words as a message may print them
-// (cipheraddr.Address.Words). Beside an address that is not clean, whoever answers at that
-// address can repeat the credential it carries in any text of its answer, so there Answer is
-// cipheraddr.WordsNotPrinted, and of the answer the refusal prints its status alone.
+// it came with, and its code and words, held as redact.RemoteText, which prints only the rule's
+// reading of them, under every verb, in JSON and in a log field. Error, Format and LogValue print
+// the code and the words each as the address lets it print (cipheraddr.Address.WordsOf): beside a
+// clean address as the field prints itself, so a field the rule cannot read prints as
+// redact.WordsNotReadable while the status and the other field still print; beside an address
+// that is not clean, where whoever answers can repeat the credential it carries in any text of its
+// answer, cipheraddr.WordsNotPrinted, so of the answer the refusal prints its status alone.
 type apiError struct {
 	Status int
-	Answer string
+	base   cipheraddr.Address
+	code   redact.RemoteText
+	reason redact.RemoteText
 }
 
 func (e *apiError) Error() string {
-	return fmt.Sprintf("%s (HTTP %d)", e.Answer, e.Status)
+	if !e.base.Clean() {
+		return fmt.Sprintf("%s (HTTP %d)", cipheraddr.WordsNotPrinted, e.Status)
+	}
+	return fmt.Sprintf("%s: %s (HTTP %d)", e.base.WordsOf(e.code), e.base.WordsOf(e.reason), e.Status)
 }
 
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this refusal's fields.
+func (e *apiError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
+}
+
+// LogValue is Error, so a structured log field names the refusal only as a message may.
+func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
+
 // do sends a request carrying the caller's ServiceAccount token and, on a 2xx response, returns
-// its raw body; any other status decodes the broker's error envelope into an *apiError.
-func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]byte, error) {
+// its raw body; any other status decodes the broker's error envelope into an *apiError, its code
+// and words held with every credential the request carried redacted (redact.Carried), since
+// whatever answers in the broker's place can echo the bearer back.
+func (c *apiClient) do(ctx context.Context, method, path string, body any) (*redact.Answer, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -184,25 +205,25 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 		return nil, c.base.Error(err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return nil, c.base.Error(err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
+			Code  redact.RemoteText `json:"code"`
+			Error redact.RemoteText `json:"error"`
 		}
-		_ = json.Unmarshal(raw, &envelope)
-		return nil, &apiError{Status: resp.StatusCode, Answer: c.base.Words(envelope.Code + ": " + envelope.Error)}
+		_ = answer.Decode(&envelope)
+		return nil, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code, reason: envelope.Error}
 	}
-	return raw, nil
+	return &answer, nil
 }
 
-// writeVerbatim prints raw (a broker response body) followed by a newline, for terminal
-// readability.
-func writeVerbatim(w io.Writer, raw []byte) {
-	w.Write(raw)
+// writeVerbatim prints answer (a broker response body) followed by a newline, for terminal
+// readability: the data the person asked for, through redact.Answer.StreamTo.
+func writeVerbatim(w io.Writer, answer *redact.Answer) {
+	_, _ = answer.StreamTo(w)
 	fmt.Fprintln(w)
 }
 
@@ -236,33 +257,35 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	ctx := context.Background()
-	lookupRaw, err := client.do(ctx, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": *code})
+	lookup, err := client.do(ctx, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": *code})
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: lookup: %v\n", err)
 		return 1
 	}
 	var rec struct {
-		RecordID string `json:"record_id"`
-		State    string `json:"state"`
+		RecordID string            `json:"record_id"`
+		State    redact.RemoteText `json:"state"`
 	}
-	if err := json.Unmarshal(lookupRaw, &rec); err != nil {
+	if err := lookup.Decode(&rec); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: decode lookup: %v\n", err)
 		return 1
 	}
-	if rec.State != "pending" {
-		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, rec.State)
+	if !rec.State.Equal("pending") {
+		// The state is the broker's text, so it prints as the address lets the text of its answer
+		// print (cipheraddr.Address.WordsOf), as the call's refusal prints its words.
+		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, client.base.WordsOf(rec.State))
 		return 1
 	}
 	action := "approve"
 	if *deny {
 		action = "deny"
 	}
-	decideRaw, err := client.do(ctx, http.MethodPost, "/v1/credential-requests/"+url.PathEscape(rec.RecordID)+"/"+action,
+	decided, err := client.do(ctx, http.MethodPost, "/v1/credential-requests/"+url.PathEscape(rec.RecordID)+"/"+action,
 		map[string]any{"approver": c.login, "code": *code})
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: %v\n", err)
 		return 1
 	}
-	writeVerbatim(stdout, decideRaw)
+	writeVerbatim(stdout, decided)
 	return 0
 }

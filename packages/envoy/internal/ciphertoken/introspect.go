@@ -2,9 +2,7 @@ package ciphertoken
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -13,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -111,12 +110,14 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	request.Header.Set("Authorization", "Bearer "+account)
 	response, err := v.http.Do(request)
 	if err != nil {
-		// The error carries the request's URL, which is the broker's and never the token: the
-		// token is in the body, which http.Client puts in no error.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
+		// The token is in the body, which http.Client puts in no error, but net/http's error can
+		// quote the answering party's words - a Location that does not parse, read before any
+		// redirect policy, or the one a followed redirect asked - so it prints as the broker's
+		// address allows (redact.Cause): a transport failure's own text, or its class.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Cause(err, v.brokerURL))
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))
+	read, err := redact.ReadAnswer(response, maxIntrospectionBytes)
 	if err != nil {
 		return Introspection{}, fmt.Errorf("%w: read the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
@@ -131,13 +132,14 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// LegacyProject is the field a broker before the list answered a named token's one
 		// project under. This reader reads no such field, so an answer carrying it would pass as
 		// a named token naming no project — the public-session account's shape, which Dispatch
-		// holds to no project — and is refused instead, whatever else it says.
-		LegacyProject json.RawMessage `json:"project"`
+		// holds to no project — and is refused instead, whatever else it says, null included.
+		// Its value is only checked for presence, never kept.
+		LegacyProject presence `json:"project"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := read.Decode(&answer); err != nil {
 		return Introspection{}, fmt.Errorf("%w: decode the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
-	if answer.LegacyProject != nil {
+	if answer.LegacyProject {
 		return Introspection{}, ErrNotASession
 	}
 	// The person is read in its canonical form (fold.Login, which Dispatch's model.CanonicalLogin
@@ -151,4 +153,13 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	// names nobody, and sessionCaller reads it as it reads an absent one.
 	answer.Person = fold.Login(answer.Person)
 	return answer.Introspection, nil
+}
+
+// presence is whether a JSON member was in an answer at all, whatever its value, null included:
+// encoding/json calls UnmarshalJSON for each member it meets, and for no member it does not.
+type presence bool
+
+func (p *presence) UnmarshalJSON([]byte) error {
+	*p = true
+	return nil
 }

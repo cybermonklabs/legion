@@ -28,6 +28,7 @@
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { errorClass, isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   allowInsecureRequests,
@@ -36,9 +37,7 @@ import {
   customFetch,
   genericGrantRequest,
   None,
-  ResponseBodyError,
   type TokenEndpointResponse,
-  WWWAuthenticateChallengeError,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
 import { messageOf } from "./error-text";
@@ -80,8 +79,10 @@ export interface BrokerToken {
   /** The token itself, presented as `Authorization: DPoP <token>` beside a proof of the key it is
    *  bound to. */
   readonly accessToken: string;
-  /** The answer's `token_type`, `DPoP` for every token this grant mints. */
-  readonly tokenType: string;
+  /** The answer's `token_type`, read as the closed set this grant mints: `DPoP` alone, since
+   *  `#read` refuses an answer naming any other, in whatever case. It holds none of the broker's
+   *  text. */
+  readonly tokenType: typeof TOKEN_TYPE_DPOP;
   /** When the token lapses, from the answer's `expires_in`. */
   readonly expiresAt: Date;
   /** The launcher credential the trade minted for this machine or sign-in, under which sessions
@@ -242,23 +243,13 @@ export interface BrokerTokenClientOptions {
 }
 
 /**
- * The HTTP status behind `error`, or 0 where it carries none: an OAuth error answer and a
- * `WWW-Authenticate` challenge carry the status of the answer they were read from (their `cause`
- * is the body and the challenge), and a status `openid-client` reports as an unconforming answer
- * is left in the response it hangs off the error's `cause` chain. The person's identity source
- * reads its issuer's errors with it too (`person-identity.ts`).
+ * The HTTP status behind `error`, or 0 where it carries none: the status of the answer behind an
+ * error `openid-client` threw, which {@link callLibrary} keeps on the {@link LibraryError} it makes
+ * of it. The person's identity source reads its issuer's errors with it too
+ * (`person-identity.ts`).
  */
 export function statusOf(error: unknown): number {
-  let cause: unknown = error;
-  for (let depth = 0; depth < 4; depth += 1) {
-    if (cause instanceof Response) return cause.status;
-    if (cause instanceof ResponseBodyError || cause instanceof WWWAuthenticateChallengeError) {
-      return cause.status;
-    }
-    if (typeof cause !== "object" || cause === null || !("cause" in cause)) return 0;
-    cause = cause.cause;
-  }
-  return 0;
+  return error instanceof LibraryError ? error.status : 0;
 }
 
 /**
@@ -271,7 +262,9 @@ export function statusOf(error: unknown): number {
  * is one and by the error's class, never by its message, which can repeat the URL it was handed,
  * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
  * is the body it read), and that answer can hold a minted token, which no log may carry.
- * `context` is what the request sent that a known refusal may name.
+ * `context` is what the request sent that a known refusal may name. `error` crossed
+ * {@link callLibrary}, so it is a {@link LibraryError}, whose code and description are the
+ * broker's words held as {@link RemoteText} and whose words print only as the rule reads them.
  */
 export function brokerRefusal(
   doing: string,
@@ -280,20 +273,17 @@ export function brokerRefusal(
   error: unknown,
   context: RefusalContext = {}
 ): BrokerRefusedError | BrokerTradeFailedError {
-  if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
-    // The library checks only that `error` is a string; a description of any other type is a
-    // peer's value the client reads as none.
-    const description: unknown = error.error_description;
-    return new BrokerRefusedError(
-      error.status,
-      error.error,
-      typeof description === "string" ? description : "",
-      refused,
-      context
-    );
+  if (
+    error instanceof LibraryError &&
+    error.name === "ResponseBodyError" &&
+    error.status >= 400 &&
+    error.status < 500
+  ) {
+    return new BrokerRefusedError(error.status, error.code, error.description, refused, context);
   }
   const status = statusOf(error);
-  const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
+  const failure = error instanceof LibraryError ? error.thrownClass : errorClass(error);
+  const said = status === 0 ? failure : `HTTP ${status}: ${failure}`;
   return new BrokerTradeFailedError(
     `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
   );
@@ -334,6 +324,8 @@ export interface DpopNonce {
  * the server answers `use_dpop_nonce` with a nonce to carry. A nonce any answer sends is kept in
  * `nonce` for the next proof. The broker's exchange and a device login's poll and refresh
  * (`device-login.ts`) send through it, so every request to the token endpoint is proved alike.
+ * The request goes out through {@link refusalFetch} below the proof as well as above it (the
+ * fetch handed to openid-client), so a refusal's record holds the DPoP proof set here.
  */
 export async function sendWithProof(
   proved: { readonly key: DpopKey; readonly fetch: typeof fetch; readonly nonce: DpopNonce },
@@ -341,13 +333,14 @@ export async function sendWithProof(
   options: CustomFetchOptions,
   signal: AbortSignal | undefined
 ): Promise<Response> {
+  const recorded = refusalFetch((target: string, init: RequestInit) => proved.fetch(target, init));
   const send = async (): Promise<Response> => {
     const headers = new Headers(options.headers);
     headers.set(
       "DPoP",
       await proved.key.proof({ method: options.method, url, nonce: proved.nonce.value })
     );
-    return await proved.fetch(url, requestInit(options, signal, headers));
+    return await recorded(url, requestInit(options, signal, headers));
   };
   let answer = await send();
   const given = answer.headers.get("DPoP-Nonce") ?? "";
@@ -817,19 +810,24 @@ export class BrokerTokenClient {
     }
     const endpoint = this.#brokerUrl + TOKEN_PATH;
     const raw: { body: unknown } = { body: undefined };
-    const config = new Configuration(
-      { issuer: this.#brokerUrl, token_endpoint: endpoint },
-      EXCHANGE_CLIENT_ID,
-      {},
-      None()
+    const config = callLibrary(
+      () =>
+        new Configuration(
+          { issuer: this.#brokerUrl, token_endpoint: endpoint },
+          EXCHANGE_CLIENT_ID,
+          {},
+          None()
+        )
     );
     // The broker is wherever the deployment put it, which in a cluster and on a dev stack is an
     // http origin; the client posts where it is told, as the Go client does.
-    allowInsecureRequests(config);
-    config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
+    callLibrary(() => allowInsecureRequests(config));
+    config[customFetch] = refusalFetch((url, options) => this.#send(url, options, signal, raw));
     let answered: TokenEndpointResponse;
     try {
-      answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
+      answered = await callLibrary(() =>
+        genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form)
+      );
     } catch (error) {
       throw brokerRefusal("trade", this.#subject.describe(), endpoint, error, {
         ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
@@ -867,20 +865,23 @@ export class BrokerTokenClient {
   /**
    * The answer as a token, refusing one that is not this grant's: a token type that is not DPoP,
    * no usable expiry, or a refresh token — the exchange issues none, and a client that kept one
-   * would hold a credential this contract says is never minted.
+   * would hold a credential this contract says is never minted. A refusal here quotes no value the
+   * broker wrote.
    *
    * Every member but one is read from what `openid-client` validated. `token_type` is read from
    * `raw`, the answer's own body: the library lowercases it, RFC 6749 Section 7.1 making it
    * case-insensitive, while the corpus names the spelling the broker wrote and holds both clients
-   * to it.
+   * to it. `token_type` and `credential_expires_at` are the broker's text, so each is held as
+   * {@link RemoteText} and read only through it: the one compared (`equalsIgnoringCase`), the other
+   * parsed (`date`).
    */
   #read(endpoint: string, answered: TokenEndpointResponse, raw: unknown): BrokerToken {
     const written =
       typeof raw === "object" && raw !== null && "token_type" in raw ? raw.token_type : undefined;
-    const tokenType = typeof written === "string" ? written : "";
+    const tokenType = new RemoteText(typeof written === "string" ? written : "");
     // No value the broker wrote is quoted in these refusals: a peer at AGENT_SECRETS_URL can put
     // there the subject token it was sent (`KNOWN_BROKER_REFUSALS`).
-    if (tokenType.toLowerCase() !== TOKEN_TYPE_DPOP.toLowerCase()) {
+    if (!tokenType.equalsIgnoringCase(TOKEN_TYPE_DPOP)) {
       throw new BrokerTradeFailedError(
         `the broker at ${endpoint} answered a token_type that is not DPoP, and this grant mints DPoP-bound tokens alone`
       );
@@ -896,23 +897,23 @@ export class BrokerTokenClient {
         `the broker at ${endpoint} answered no usable expires_in (a positive number of seconds)`
       );
     }
-    const expiresAtText =
-      typeof answered["credential_expires_at"] === "string"
-        ? answered["credential_expires_at"]
-        : "";
+    const expiresAt = new RemoteText(
+      typeof answered["credential_expires_at"] === "string" ? answered["credential_expires_at"] : ""
+    );
     let credentialExpiresAt: Date | null = null;
-    if (expiresAtText !== "") {
-      credentialExpiresAt = new Date(expiresAtText);
-      if (Number.isNaN(credentialExpiresAt.getTime())) {
+    if (!expiresAt.isEmpty) {
+      const parsed = expiresAt.date();
+      if (parsed === undefined) {
         throw new BrokerTradeFailedError(
           `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time`
         );
       }
+      credentialExpiresAt = parsed;
     }
     return {
       // Lapsing on the real clock, which the held-secret registry forgets by.
       accessToken: holdSecret(answered.access_token, Date.now() + seconds * 1000),
-      tokenType,
+      tokenType: TOKEN_TYPE_DPOP,
       expiresAt: new Date(this.#now() + seconds * 1000),
       credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,

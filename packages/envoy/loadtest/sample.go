@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/pprof/profile"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // clkTck is the kernel's USER_HZ, the unit of /proc/<pid>/stat CPU times.
@@ -571,7 +573,9 @@ func (s *sampler) all() []sample {
 
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
-// getOK GETs url with client, until ctx ends; an answer other than 200 is an error.
+// getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
+// printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
+// which closing the stream closes.
 func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -582,11 +586,11 @@ func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser,
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		refused, _ := redact.ReadAnswer(resp, 4096)
 		resp.Body.Close()
-		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, trunc(b))
+		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, answerWords(refused))
 	}
-	return resp.Body, nil
+	return redact.StreamAnswer(resp, answerLimit), nil
 }
 
 // goroutineCounts reads Dispatch's goroutine total and how many wait in pgx's pool Acquire
@@ -646,7 +650,9 @@ func goroutineCounts(pprof string) (total, poolWait int, err error) {
 // the runtime has already scaled from its sampled records to estimates of the whole heap. It never
 // reads ?debug=1: that text formats every heap record, grew past 500 MB, and its reads took 29% of
 // Dispatch's CPU in the r16 replay. An error when the read fails, the profile does not parse, or it
-// has no inuse_space or inuse_objects.
+// has no inuse_space or inuse_objects. The profile is the profiler's words, or the words of
+// whatever answers in its place: the parser's error can quote a line of it (a legacy text
+// profile's attribute) and its sample types are its own names, so an error names neither.
 func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err error) {
 	url := pprof + "/debug/pprof/heap"
 	body, err := getOK(ctx, &http.Client{Timeout: heapReadTimeout}, url)
@@ -654,17 +660,18 @@ func heapLive(ctx context.Context, pprof string) (bytes, objects float64, err er
 		return 0, 0, err
 	}
 	defer body.Close()
-	p, err := profile.Parse(body)
+	data, err := io.ReadAll(body)
 	if err != nil {
 		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
 	}
-	bi, err := valueIndex(p, "inuse_space")
+	p, err := profile.ParseData(data)
 	if err != nil {
-		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
+		return 0, 0, fmt.Errorf("GET %s: the answer is not a heap profile (the parser's error, which can quote it, is not printed)", redactURL(url))
 	}
-	oi, err := valueIndex(p, "inuse_objects")
-	if err != nil {
-		return 0, 0, fmt.Errorf("GET %s: %w", redactURL(url), err)
+	bi, bErr := valueIndex(p, "inuse_space")
+	oi, oErr := valueIndex(p, "inuse_objects")
+	if bErr != nil || oErr != nil {
+		return 0, 0, fmt.Errorf("GET %s: the profile has no inuse_space or no inuse_objects sample type", redactURL(url))
 	}
 	var b, o int64
 	for _, s := range p.Sample {
@@ -715,8 +722,8 @@ func natsJsz(mon string) map[string]float64 {
 			Errors float64 `json:"errors"`
 		} `json:"api"`
 	}
-	b, _ := io.ReadAll(resp.Body)
-	if json.Unmarshal(b, &v) != nil {
+	read, err := redact.ReadAnswer(resp, answerLimit)
+	if err != nil || read.Decode(&v) != nil {
 		return nil
 	}
 	return map[string]float64{"js_streams": v.Streams, "js_consumers": v.Consumers, "js_messages": v.Messages, "js_api_total": v.API.Total, "js_api_errors": v.API.Errors}

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -224,14 +223,17 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 		t.Errorf("a status with no link and no description maps to %+v, want both empty and its time kept", license)
 	}
 
-	entries := []graphQLError{{Type: "FORBIDDEN", Message: "Resource not accessible by integration",
-		Path: []any{"repository", "pullRequests", "nodes", float64(0), "commits", "nodes", float64(0), "commit", "status"}}}
-	refused := headOf(statusPagePull(t), false, entries)
+	var entry graphQLError
+	if err := json.Unmarshal([]byte(`{"type":"FORBIDDEN","message":"Resource not accessible by integration",`+
+		`"path":["repository","pullRequests","nodes",0,"commits","nodes",0,"commit","status"]}`), &entry); err != nil {
+		t.Fatalf("decode the errors entry: %v", err)
+	}
+	refused := headOf(statusPagePull(t), false, []graphQLError{entry})
 	if refused.overflow != "" || len(refused.statuses) != 0 {
 		t.Fatalf("a head whose status field GitHub refused is read over REST for %q with statuses %v; want it answered whole with none", refused.overflow, refused.statuses)
 	}
-	if !reflect.DeepEqual(refused.statusesRefused, entries) {
-		t.Fatalf("a head whose status field GitHub refused keeps the entries %+v, want %+v for the pass to name at WARN", refused.statusesRefused, entries)
+	if want := "FORBIDDEN Resource not accessible by integration"; refused.statusesRefused != want {
+		t.Fatalf("a head whose status field GitHub refused keeps %q, want %q for the pass to name at WARN", refused.statusesRefused, want)
 	}
 	if len(refused.runs) != len(head.runs) || len(refused.suites) != len(head.suites) {
 		t.Fatalf("a refused status field left %d runs and %d suites, want the head's %d and %d", len(refused.runs), len(refused.suites), len(head.runs), len(head.suites))

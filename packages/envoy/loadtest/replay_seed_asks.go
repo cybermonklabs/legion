@@ -42,13 +42,15 @@ func (s *replaySeeder) ensureAsk(ctx context.Context, key string, docs map[strin
 	switch {
 	case a.BlockID != nil:
 		// A typed ask block lives in its document's text, which the history wrote; settlement
-		// indexed it.
+		// indexed it. The refusal names the ask by its id and not the block by its own: a block id
+		// is any text a pasted block names (pmdoc's storedBlockID), so it has no shape a line could
+		// hold it to.
 		local, err := adopt(`select id::text from public.asks where issue_key = $1 and block_id = $2 order by created_at, id`, key, *a.BlockID)
 		if err != nil {
 			return "", err
 		}
 		if local == "" {
-			return "", fmt.Errorf("ask %s: no ask was indexed from its typed block %s", a.ID, *a.BlockID)
+			return "", fmt.Errorf("ask %s: no ask was indexed from its typed block", a.ID)
 		}
 		return local, s.ids.put(ctx, idAsk, a.ID, local)
 	case a.Approval != nil:
@@ -266,7 +268,7 @@ func (s *replaySeeder) waitVersion(ctx context.Context, d *issueDoc, want int) e
 func (s *replaySeeder) askEditedAt(ctx context.Context, logged, local string) (json.RawMessage, error) {
 	res := s.api.call(ctx, "GET", "/api/v1/asks/"+local, who{}, nil)
 	if !res.ok() {
-		return nil, &seedError{step: "ask-read", logged: logged, status: res.status, code: errorCode(res.body)}
+		return nil, newSeedError("ask-read", logged, res.status, res.errorCode())
 	}
 	var r struct {
 		EditedAt json.RawMessage `json:"edited_at"`
@@ -291,7 +293,7 @@ func (s *replaySeeder) askEditedAt(ctx context.Context, logged, local string) (j
 func (s *replaySeeder) finishIssue(ctx context.Context, p seedIssuePlan) error {
 	res := s.api.call(ctx, "GET", "/api/v1/issues/"+p.Key, who{}, nil)
 	if !res.ok() {
-		return &seedError{step: "issue-read", logged: p.Key, status: res.status, code: errorCode(res.body)}
+		return newSeedError("issue-read", p.Key, res.status, res.errorCode())
 	}
 	var cur liveIssue
 	if err := json.Unmarshal(res.body, &cur); err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 	"github.com/sjawhar/envoy/internal/tlsalert"
 )
@@ -235,12 +236,16 @@ func mintAttempt(client *http.Client, request *http.Request, attempt int, now fu
 		return nil, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), sent: !noConnection && !beforeConnection(err)}
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	// A mint's answer is data: the minted secret, which no line prints, and a refusal no error
+	// quotes (each decode here wraps none of its error). It is read as such, through
+	// redact.StreamAnswer, as much of it as arrives: a token request's cut-off 201 still names the
+	// token given back (answeredToken).
+	body, err := io.ReadAll(redact.StreamAnswer(response, limit))
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return body, &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
+	}
 	if err != nil {
 		return body, &mintTransportError{what: what, who: who, class: TransportFailure(request.Context(), err), read: true, sent: true, status: response.StatusCode}
-	}
-	if int64(len(body)) > limit {
-		return body[:limit], &mintOversizeError{what: what, who: who, limit: limit, status: response.StatusCode}
 	}
 	if response.StatusCode != want {
 		limited := rateLimited(response, body)

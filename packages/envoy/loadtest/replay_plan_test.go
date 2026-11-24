@@ -422,7 +422,9 @@ func TestReplayIssueCreatedVersion1Spec(t *testing.T) {
 		// No readable version 1: a synthetic spec of the created documents' median.
 		rpEvent(4, "issue.created", "ACME-5", rpSession, 4*time.Second, map[string]any{"key": "ACME-5", "title": "newest", "primary_artifact_id": "D5"}),
 	}
-	b := rpBundle(t, rpState(), lines, map[string]string{"created-docs/D3.md": text, "created-docs/D4.md": text + text})
+	// A created document's file is named as replay-fetch names it (bundleCreatedRel): D3 and D4 are
+	// not in Dispatch's id shape, so their files are named after their SHA-256.
+	b := rpBundle(t, rpState(), lines, map[string]string{bundleCreatedRel("D3"): text, bundleCreatedRel("D4"): text + text})
 	b.Meta.CreatedSpecs = map[string]string{"ACME-3": "D3", "ACME-4": "D4"}
 	p, err := planReplay(b, rpOptions())
 	if err != nil {
@@ -455,7 +457,7 @@ func TestReplayDocCreated(t *testing.T) {
 	text := "Created document text for the test, one sentence.\n"
 	a := onlyWrite(t, rpPlan(t, rpOptions(), []string{rpEvent(1, "artifact.created", "ACME-1", rpSession, time.Second,
 		map[string]any{"artifact": map[string]any{"id": "D5", "name": "notes", "kind": "doc", "versions": []any{map[string]any{"size": len(text)}}}})},
-		map[string]string{"created-docs/D5.md": text}))
+		map[string]string{bundleCreatedRel("D5"): text}))
 	wantRoutes(t, a, []string{"POST /api/v1/issues/{key}/artifacts [doc-create]"})
 	if b := lastBody(a); b["content"] != text || b["name"] != "notes" {
 		t.Fatal("the created document is not sent as its created-docs version 1")

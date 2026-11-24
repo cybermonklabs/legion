@@ -5,8 +5,8 @@ package githubapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Prefix is the route the web app reads GitHub under: /api/github/rest/<GitHub API path>.
@@ -118,7 +119,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 	}
 	read := client.Read
 	if match[3] != "" {
-		read = func(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
+		read = func(ctx context.Context, token, path string) (redact.Answer, int, http.Header, error) {
 			return client.ReadWithin(ctx, token, path, workflowRunsResponseLimit)
 		}
 	}
@@ -143,7 +144,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 	}
 	if match[3] != "" && status == http.StatusOK {
 		var runs workflowRuns
-		if err := json.Unmarshal(body, &runs); err != nil {
+		if err := body.Decode(&runs); err != nil {
 			slog.Warn("dispatch: GitHub proxy could not decode the workflow runs", "path", target, "error", err)
 			api.WriteJSON(w, http.StatusBadGateway, map[string]string{"error": "GitHub answered the workflow runs with a body that does not decode", "code": "GITHUB_UPSTREAM"})
 			return
@@ -155,7 +156,15 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client)
 		w.Header().Set("Content-Type", contentType)
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(body)
+	// A 2xx answer is the data the caller asked for, forwarded whole (redact.Answer.StreamTo). Any
+	// other is GitHub's refusal, or a stand-in's, which can echo the installation token the read
+	// carried: it goes to the caller as the rule prints it, with that token redacted
+	// (redact.Answer.Words).
+	if status/100 == 2 {
+		_, _ = body.StreamTo(w)
+		return
+	}
+	_, _ = io.WriteString(w, body.Words().String())
 }
 
 func unavailable(w http.ResponseWriter, message string) {

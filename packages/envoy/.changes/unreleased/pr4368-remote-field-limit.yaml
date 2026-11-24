@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The rule for another party's words (`redact.Remote`, `redact.Field`, and `readRemoteText` in
+  `@legion/contracts/remote-text`) reads a field of at most 1 MiB (`redact.FieldLimit`), the
+  largest body any client here reads and shows. A longer field prints as
+  `redact.WordsNotReadable`, its status and code still printing: a 64 MiB answer of one long
+  numeric character reference took 34 s to read on every print, and is now refused at once. A
+  reference's name is read as at most 32 letters, as HTML names none longer, which keeps one long
+  name from costing each decoding pass far more than its length.
+time: 2026-11-23T09:00:36Z
+custom:
+    Issue: pr4368

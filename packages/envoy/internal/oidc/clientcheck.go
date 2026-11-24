@@ -9,6 +9,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ClientCheck is what one check of a code flow's client at its issuer found. The three words are
@@ -57,13 +58,13 @@ const (
 func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
 	client := tokenClient()
-	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, client), issuer, clientID, clientSecret)
+	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, redact.RefusalClient(client)), issuer, clientID, clientSecret)
 	if err != nil {
 		return ClientCheckIssuerUnreachable, err
 	}
 	// GenerateVerifier is PKCE's random high-entropy string, which is all this needs of it: a
 	// code no issuer has ever issued.
-	_, err = flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, client), oauth2.GenerateVerifier())
+	_, err = redact.OAuth2(flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(client)), oauth2.GenerateVerifier()))
 	var retrieve *oauth2.RetrieveError
 	switch {
 	case err == nil:
@@ -72,14 +73,14 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve) || retrieve.Response == nil:
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
-	case oauthrefusal.Refusal(err) == "invalid_grant":
+	case oauthrefusal.Refusal(err) == redact.InvalidGrant:
 		return ClientCheckReady, nil
 	case oauthrefusal.Refuses(retrieve.Response.StatusCode):
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: HTTP %d with the OAuth error %q",
-			issuer, clientID, retrieve.Response.StatusCode, retrieve.ErrorCode)
+			issuer, clientID, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode))
 	case oauthrefusal.Outage(retrieve.Response.StatusCode):
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s could not answer the client check: HTTP %d: %w", issuer, retrieve.Response.StatusCode, err)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check HTTP %d with the OAuth error %q and no refusal, which says nothing about the client: %w",
-		issuer, retrieve.Response.StatusCode, retrieve.ErrorCode, err)
+		issuer, retrieve.Response.StatusCode, redact.NewRemoteText(retrieve.ErrorCode), err)
 }

@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // Post sends its body as JSON with the installation token, reads a 2xx answer such as GitHub's
@@ -41,10 +44,10 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 	var created struct {
 		Ref string `json:"ref"`
 	}
-	if err := client.Post(context.Background(), "/git/refs", map[string]string{"ref": "refs/heads/new"}, &created); err != nil || created.Ref != "refs/heads/new" {
+	if err := client.Post(context.Background(), "/git/refs", "", map[string]string{"ref": "refs/heads/new"}, &created); err != nil || created.Ref != "refs/heads/new" {
 		t.Fatalf("Post = %+v, %v; want the 201 answer read", created, err)
 	}
-	err := client.Post(context.Background(), "/git/refs?x=1", map[string]string{"ref": "refs/heads/taken"}, nil)
+	err := client.Post(context.Background(), "/git/refs?x=1", "", map[string]string{"ref": "refs/heads/taken"}, nil)
 	var answer *Answer
 	if !errors.As(err, &answer) || answer.Method != http.MethodPost || answer.Path != "/git/refs" || answer.Status != http.StatusUnprocessableEntity {
 		t.Fatalf("Post of a taken ref = %v, want an *Answer for POST /git/refs with 422", err)
@@ -56,7 +59,8 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose
 // message names the secondary limit, whatever x-ratelimit-remaining says, is GitHub's secondary
 // limit, which every call of the token meets; a primary limit spends the budget
-// x-ratelimit-resource names, or the REST API's core budget when it names none. Any other error is
+// x-ratelimit-resource names where it is a resource GitHub documents, or the REST API's core budget
+// when it names none or any other (TestARateLimitsBudgetIsAResourceGitHubDocumentsOrTheCoreBudget). Any other error is
 // no limit.
 func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
@@ -90,7 +94,7 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 				w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			err := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", nil)
+			err := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}.Get(context.Background(), "/git/ref/heads/main", "", nil)
 			after, budget := RetryAfter(fmt.Errorf("wrapped: %w", err))
 			if budget != tc.budget || after < tc.least || after > tc.most {
 				t.Fatalf("RetryAfter(%v) = %s, %q; want %q between %s and %s", err, after, budget, tc.budget, tc.least, tc.most)
@@ -102,17 +106,14 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	}
 }
 
-// GetPages and GetListPages follow GitHub's next pages wherever GitHub names them on the API's own
-// origin, its /repositories/<id>/ form included, and an answer on such a page names that page's
-// path. A next page on another host is refused before the token is sent there.
+// GetPages follows GitHub's next pages wherever GitHub names them on the API's own origin, its
+// /repositories/<id>/ form included, and an answer on such a page names that page by its number
+// under the caller's path. A next page on another host is refused before the token is sent there,
+// naming the origin the token is sent to and nothing of the page GitHub named.
 func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 	var elsewhere atomic.Int32
-	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		elsewhere.Add(1)
-		if strings.HasSuffix(r.URL.Path, "/check-runs") {
-			w.Write([]byte(`{"total_count":1,"check_runs":["leaked"]}`))
-			return
-		}
 		w.Write([]byte(`["leaked"]`))
 	}))
 	defer other.Close()
@@ -130,12 +131,6 @@ func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 				return
 			}
 			w.Write([]byte(`["second"]`))
-		case "/repos/acme/widgets/commits/head/check-runs":
-			next := *nextHost.Load() + "/repositories/42/commits/head/check-runs?per_page=100&page=2"
-			w.Header().Set("Link", "<"+next+`>; rel="next"`)
-			w.Write([]byte(`{"total_count":2,"check_runs":["first"]}`))
-		case "/repositories/42/commits/head/check-runs":
-			w.Write([]byte(`{"total_count":2,"check_runs":["second"]}`))
 		default:
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
@@ -145,56 +140,51 @@ func TestGetPagesFollowsNextPagesOnTheAPIsOriginOnly(t *testing.T) {
 
 	nextHost.Store(&server.URL)
 	pageTwo.Store(http.StatusOK)
-	if got, err := GetPages[string](context.Background(), client, "/rules/branches/main"); err != nil || !slices.Equal(got, []string{"first", "second"}) {
+	if got, err := GetPages[string](context.Background(), client, "/rules/branches/main", ""); err != nil || !slices.Equal(got, []string{"first", "second"}) {
 		t.Fatalf("GetPages = %v, %v; want both pages", got, err)
-	}
-	if got, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "check_runs"); err != nil || !slices.Equal(got, []string{"first", "second"}) {
-		t.Fatalf("GetListPages = %v, %v; want both pages' check runs", got, err)
 	}
 
 	pageTwo.Store(http.StatusForbidden)
-	_, err := GetPages[string](context.Background(), client, "/rules/branches/main")
+	_, err := GetPages[string](context.Background(), client, "/rules/branches/main", "")
 	var answer *Answer
-	if !errors.As(err, &answer) || answer.Path != "/repositories/42/rules/branches/main" || answer.Status != http.StatusForbidden {
-		t.Fatalf("GetPages with page 2 refused = %v, want an *Answer naming /repositories/42/rules/branches/main with 403", err)
+	if !errors.As(err, &answer) || answer.Path != "/rules/branches/main (page 2)" || answer.Status != http.StatusForbidden {
+		t.Fatalf("GetPages with page 2 refused = %v, want an *Answer naming /rules/branches/main (page 2) with 403", err)
 	}
 
 	nextHost.Store(&other.URL)
-	got, err := GetPages[string](context.Background(), client, "/rules/branches/main")
-	if err == nil || !strings.Contains(err.Error(), other.URL) || got != nil {
-		t.Fatalf("GetPages with a next page on another host = %v, %v; want an error naming it and no items", got, err)
-	}
-	list, err := GetListPages[string](context.Background(), client, "/commits/head/check-runs", "check_runs")
-	if err == nil || !strings.Contains(err.Error(), other.URL) || list != nil {
-		t.Fatalf("GetListPages with a next page on another host = %v, %v; want an error naming it and no items", list, err)
+	got, err := GetPages[string](context.Background(), client, "/rules/branches/main", "")
+	if err == nil || !strings.Contains(err.Error(), "is not on "+server.URL) || strings.Contains(err.Error(), other.URL) || got != nil {
+		t.Fatalf("GetPages with a next page on another host = %v, %v; want an error naming the API's origin alone and no items", got, err)
 	}
 	if n := elsewhere.Load(); n != 0 {
 		t.Fatalf("the other host saw %d requests, want none", n)
 	}
 }
 
-// A list GitHub answers as an object's field is read from that field, and an answer without it is
-// an error naming the field, never an empty list a caller would read as nothing required or run.
-func TestGetListPagesRefusesAnAnswerWithoutTheField(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/acme/widgets/actions/runs" {
-			w.Write([]byte(`{"total_count":1,"workflow_runs":[{"id":37}]}`))
+// TestAPageThatDoesNotDecodePrintsNoTokenItEchoes: a page GitHub answers, or a stand-in answers in
+// its place, can echo the call's token into a time its items hold, and a decoder's error quotes
+// such a time whole. GetPages refuses the page with an error that holds no run of the token.
+func TestAPageThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
+	token := githubtest.InstallationToken(t.Name())
+	server := githubtest.Serve(t, githubtest.Spec{Token: token, Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/widgets/pulls/7/reviews" {
+			githubtest.Unexpected(t, w, r)
 			return
 		}
-		w.Write([]byte(`{"total_count":0,"message":"no list here"}`))
-	}))
-	defer server.Close()
-	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
-	type run struct {
-		ID int `json:"id"`
+		echo := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		fmt.Fprintf(w, `[{"id":1,"submitted_at":%q}]`, echo)
+	}})
+	client := Client{Token: token, API: server.URL + "/repos/acme/widgets"}
+	type review struct {
+		ID          int64     `json:"id"`
+		SubmittedAt time.Time `json:"submitted_at"`
 	}
-	if runs, err := GetListPages[run](context.Background(), client, "/actions/runs", "workflow_runs"); err != nil || len(runs) != 1 || runs[0].ID != 37 {
-		t.Fatalf("GetListPages = %+v, %v; want the one run read from workflow_runs", runs, err)
+	reviews, err := GetPages[review](context.Background(), client, "/pulls/7/reviews", "")
+	var answer *Answer
+	if err == nil || reviews != nil || errors.As(err, &answer) {
+		t.Fatalf("GetPages of a page that does not decode = %+v, %v; want the page refused as not the shape the call reads", reviews, err)
 	}
-	runs, err := GetListPages[run](context.Background(), client, "/commits/head/check-runs", "check_runs")
-	if err == nil || runs != nil || err.Error() != `GitHub answered GET /commits/head/check-runs with no "check_runs" list` {
-		t.Fatalf("GetListPages of an answer without the field = %+v, %v; want an error naming check_runs", runs, err)
-	}
+	oauth2calltest.RequireNoPiece(t, "githubrest.decode-echo/page", err.Error(), token)
 }
 
 // GitHub's secondary rate limit can answer a 403 with only its message to say so: no retry-after,
@@ -220,7 +210,7 @@ func TestASecondaryRateLimitNamedOnlyByItsMessageIsARateLimit(t *testing.T) {
 			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 			var answer *Answer
-			if err := client.Get(context.Background(), "/collaborators/a-writer/permission", nil); !errors.As(err, &answer) {
+			if err := client.Get(context.Background(), "/collaborators/a-writer/permission", "", nil); !errors.As(err, &answer) {
 				t.Fatalf("Get = %v, want an *Answer", err)
 			}
 			if answer.RateLimited != tc.limited || answer.RetryAfter != tc.wantAfter {
@@ -244,7 +234,7 @@ func TestARateLimitsResetFarInTheFutureWaitsNoLongerThanAnHour(t *testing.T) {
 	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 	var answer *Answer
-	if err := client.Get(context.Background(), "/collaborators/a-writer/permission", nil); !errors.As(err, &answer) {
+	if err := client.Get(context.Background(), "/collaborators/a-writer/permission", "", nil); !errors.As(err, &answer) {
 		t.Fatalf("Get = %v, want an *Answer", err)
 	}
 	if !answer.RateLimited || answer.RetryAfter != time.Hour {
@@ -267,7 +257,7 @@ func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
 	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 
 	var answer *Answer
-	if err := client.Get(context.Background(), "", nil); !errors.As(err, &answer) {
+	if err := client.Get(context.Background(), "", "", nil); !errors.As(err, &answer) {
 		t.Fatalf("Get = %v, want an *Answer", err)
 	}
 	if answer.RateLimited || answer.RetryAfter != 0 || answer.Budget != "" {
@@ -279,7 +269,7 @@ func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
 }
 
 // Limit reads an answer another client received as this client reads its own. Whether the answer
-// is GitHub's rate limit is RateLimited's rule: a 429, or a 403 with X-RateLimit-Remaining: 0, a
+// is GitHub's rate limit is rateLimited's rule: a 429, or a 403 with X-RateLimit-Remaining: 0, a
 // Retry-After, or a message naming the secondary limit (spelled "rate limit" or "rate-limit") or
 // GitHub's abuse detection mechanism. Which limit it is, is spent's rule, which never reads the
 // status: the secondary limit where the message names it, whatever X-RateLimit-Remaining says
@@ -343,10 +333,11 @@ func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
 			for name, value := range tc.headers {
 				response.Header.Set(name, value)
 			}
-			if limited, budget := Limit(response, []byte(tc.body)); limited != tc.limited || budget != tc.budget {
+			limited, budget := Limit(response, []byte(tc.body))
+			if limited != tc.limited || budget != tc.budget {
 				t.Errorf("Limit = %v, %q; want %v, %q", limited, budget, tc.limited, tc.budget)
 			}
-			if wait := retryAfter(response, []byte(tc.body), now); wait != tc.wait {
+			if wait := retryAfter(response, limited, now); wait != tc.wait {
 				t.Errorf("the wait = %s, want %s", wait, tc.wait)
 			}
 		})

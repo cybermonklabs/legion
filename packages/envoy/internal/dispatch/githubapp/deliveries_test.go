@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 const deliveriesClientID = "Iv1.deliveries"
@@ -225,7 +226,7 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 			if header == nil {
 				header = http.Header{}
 			}
-			limited, secondary := githubapp.GraphQLRateLimit(want.status, header, []byte(want.body))
+			limited, secondary := githubapp.GraphQLRateLimit(want.status, header, answertest.Of(want.status, want.body))
 			if (limited != nil) != want.limited {
 				t.Fatalf("the answer read as limited = %v (%v), want %v", limited != nil, limited, want.limited)
 			}
@@ -259,10 +260,10 @@ func TestTheTextOfA2xxAnswerLeavesItsBodyOut(t *testing.T) {
 		{name: "StatusText of a 200 with data", text: githubapp.StatusText(http.StatusOK, data), want: "status 200"},
 		{name: "StatusText of a 201 with data, as bytes", text: githubapp.StatusText(http.StatusCreated, []byte(data)), want: "status 201"},
 		{name: "StatusText of a 204 with a body", text: githubapp.StatusText(http.StatusNoContent, data), want: "status 204"},
-		{name: "StatusError of a 200 with data", text: (&githubapp.StatusError{Status: http.StatusOK, Body: data}).Error(), want: "status 200"},
-		{name: "StatusError of a 202 with data", text: (&githubapp.StatusError{Status: http.StatusAccepted, Body: data}).Error(), want: "status 202"},
+		{name: "StatusError of a 200 with data", text: githubapp.NewStatusError(http.StatusOK, answertest.Of(http.StatusOK, data)).Error(), want: "status 200"},
+		{name: "StatusError of a 202 with data", text: githubapp.NewStatusError(http.StatusAccepted, answertest.Of(http.StatusAccepted, data)).Error(), want: "status 202"},
 		{name: "StatusText of a refusal", text: githubapp.StatusText(http.StatusNotFound, `{"message":"Not Found"}`), want: `status 404: {"message":"Not Found"}`},
-		{name: "StatusError of a failure", text: (&githubapp.StatusError{Status: http.StatusInternalServerError, Body: `{"message":"Server Error"}`}).Error(), want: `status 500: {"message":"Server Error"}`},
+		{name: "StatusError of a failure", text: githubapp.NewStatusError(http.StatusInternalServerError, answertest.Of(http.StatusInternalServerError, `{"message":"Server Error"}`)).Error(), want: `status 500: {"message":"Server Error"}`},
 		{name: "StatusText of a refusal with no body", text: githubapp.StatusText(http.StatusConflict, ""), want: "status 409"},
 	}
 	for _, row := range rows {
@@ -308,7 +309,7 @@ func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
-			limited := githubapp.RateLimit(http.StatusTooManyRequests, row.header, nil)
+			limited := githubapp.RateLimit(http.StatusTooManyRequests, row.header, answertest.Of(http.StatusTooManyRequests, ""))
 			if limited == nil {
 				t.Fatal("a 429 read as no rate limit")
 			}

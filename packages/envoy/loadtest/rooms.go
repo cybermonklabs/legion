@@ -9,6 +9,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -151,14 +153,23 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 	return r
 }
 
-// getJSON decodes the body of a GET of url (getOK) into v.
+// getJSON decodes the body of a GET of url (getOK) into v. The body is the server's words, or the
+// words of whatever answers in its place, and a decoder's error can quote a value it could not read
+// (time.Time's does), so an answer that does not decode is named as such and none of it printed.
 func getJSON(url string, v any) error {
 	body, err := getOK(context.Background(), shortClient, url)
 	if err != nil {
 		return err
 	}
 	defer body.Close()
-	return json.NewDecoder(body).Decode(v)
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("GET %s: %w", redactURL(url), err)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("GET %s: the answer is not the JSON this reads (the decoder's error, which can quote it, is not printed)", redactURL(url))
+	}
+	return nil
 }
 
 type roomsSummary struct {

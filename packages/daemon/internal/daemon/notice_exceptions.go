@@ -159,7 +159,7 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 	default:
 		return fmt.Errorf("%w: exception %s names reason %q", errNoticeException, envelope.EventID, exception.Reason)
 	}
-	if err := r.reholdNotice(ctx, reported, exception.Reason, exception.RecipientSession); err != nil {
+	if err := r.reholdNotice(ctx, reported, exception.Reason, reportedSession(exception.RecipientSession)); err != nil {
 		return fmt.Errorf("re-hold the notice of exception %s: %w", envelope.EventID, err)
 	}
 	return nil
@@ -272,7 +272,7 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // reholdNotice queues reported's notice again after a publish its architect's session did not
 // take: the publish, under the dedupe key of reported's row (record.OutboxKey), went to the
 // architect's role topic, the listener named reason, and recipient is the session it forwarded to
-// ("" when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
+// (empty when it named none). It runs from a role-lane exception of an earlier listener (rehold) and
 // from the 504 `receipt_timeout` answer of a confirmed publish route of a listener older than
 // dispatch://INFRA-771, which this daemon still handles until that rollout finishes (a listener
 // of this release answers `delivery_failed` instead). A session that
@@ -311,7 +311,7 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // (parkDecision). Those checks read the claim from memory, outside ApplyFact's lock, which the
 // ready handler holds, so a copy can still lose the race to a ready; the notice executor checks
 // again when it runs the row.
-func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason, recipient string) error {
+func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reason string, recipient reportSession) error {
 	key := record.OutboxKey(reported.row)
 	issue, notice := reported.issue, reported.notice
 	topic := notify.RoleTopicPrefix + string(reported.architect)
@@ -448,22 +448,48 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 // copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
 // claim as this daemon supervises it (the zero Claim when it does not), resends, the copies of the
 // notice already sent, and recipient, the session the report (or the listener's 504 answer, as its
-// holder) names. A copy is due at once when the architect's agent has said it is ready
-// (supervise.SaidReady), and it is the first copy or its report names a session other than the
-// one the claim is ready on: that ready has passed, so no release (releaseWaiting) would make the
-// copy due, and every later notice to the architect would wait behind it. The first covers a
-// relaunch that reported ready inside the receipt window; a later copy that failed on another
-// session went where the role no longer is. A later copy whose report names no session (the
+// holder) names, compared as it came. A copy is due at once when the architect's agent has said it
+// is ready (supervise.SaidReady), and it is the first copy or its report names a session other
+// than the one the claim is ready on: that ready has passed, so no release (releaseWaiting) would
+// make the copy due, and every later notice to the architect would wait behind it. The first
+// covers a relaunch that reported ready inside the receipt window; a later copy that failed on
+// another session went where the role no longer is. A later copy whose report names no session (the
 // listener names none for no_holder, or when it could not read the holder) says nothing about
 // where the role went. It waits its delay, as does a later copy that failed on the claim's own
 // ready session and every copy while the claim has not reported ready, so a claim that reads live
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
 // keeps the notice for the whole schedule instead of spending its copies in seconds.
-func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
+func copyDueAtOnce(held supervise.Claim, resends int, recipient reportSession) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
+	return resends == 0 || !recipient.IsEmpty() && !recipient.Equal(held.Session)
+}
+
+// reportSession is the session a report of a forward its holder did not confirm names
+// (reholdNotice's recipient), as copyDueAtOnce compares it with the claim's own session (as the
+// store keeps it, supervise.Claim.Session): the 504 answer's holder, the listener's words as they
+// came (notify.ErrNotDelivered.Holder, an oauth2call.RemoteText), or the session a role-lane
+// exception names (reportedSession). Either is compared as it came, never as the rule prints it:
+// the rule cuts from the listener's answer every run of the publish's own message and payload,
+// which a notice that names its architect's session shares, and a holder read so would name
+// another session than the claim's and spend the copies at once. The listener names a holder by
+// the id a registration gave it, so an id the store rewrites (storetext.Text: a NUL, a byte that
+// is no UTF-8) is compared as written.
+type reportSession interface {
+	IsEmpty() bool
+	Equal(session string) bool
+}
+
+// reportedSession is the session a role-lane exception names (roleLaneException.RecipientSession),
+// as the envelope wrote it, compared with a claim's session as the store keeps it
+// (supervise.Claim.HoldsSession).
+type reportedSession string
+
+func (s reportedSession) IsEmpty() bool { return s == "" }
+
+func (s reportedSession) Equal(session string) bool {
+	return supervise.Claim{Session: session}.HoldsSession(string(s))
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or

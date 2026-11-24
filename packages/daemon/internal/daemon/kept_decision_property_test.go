@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -306,18 +307,18 @@ func (p *keptPublisher) answer(topic string, payload any, key string, raced *kep
 		return mode, fmt.Errorf("publish notice to %s: listener returned 404 Not Found: %w", topic, notify.ErrNoHolder)
 	case keptRefuses:
 		return mode, fmt.Errorf("publish notice to %s: listener returned 403 Forbidden: %w", topic,
-			notify.ErrRefusedByHolder{Holder: "ses-other"})
+			notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses-other")})
 	case keptDenied:
 		return mode, fmt.Errorf("publish notice to %s: listener returned 403 Forbidden: %w", topic,
-			notify.ErrPublishDenied{Message: fmt.Sprintf(
-				"envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to %q", topic)})
+			notify.ErrPublishDenied{Message: oauth2calltest.Said(fmt.Sprintf(
+				"envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to %q", topic))})
 	case keptDeliveryFailed:
 		return mode, fmt.Errorf("publish notice to %s: listener returned 504 Gateway Timeout: %w", topic,
-			notify.ErrNotDelivered{Reason: notify.ReasonDeliveryFailed, EventID: key})
+			notify.ErrNotDelivered{Reason: notify.ReasonDeliveryFailed, EventID: oauth2calltest.Said(key)})
 	case keptReceiptTimeout:
 		if notice, ok := payload.(record.Notice); ok && (raced != nil || notice.Resends == 0) {
 			return mode, fmt.Errorf("publish notice to %s: listener returned 504 Gateway Timeout: %w", topic,
-				notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-other"})
+				notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses-other")})
 		}
 	}
 	return keptDelivers, nil

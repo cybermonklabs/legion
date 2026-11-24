@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -576,7 +577,9 @@ func TestCodeFlowRevokeReportsTheIssuersRefusalWithoutTheToken(t *testing.T) {
 	}{{http.StatusBadRequest, "invalid_request", "HTTP 400 invalid_request"}, {http.StatusServiceUnavailable, "", "HTTP 503"}} {
 		issuer, flow := newCodeFlowFor(t)
 		issuer.FailRevocation(refusal.status, refusal.code)
-		token := "plain-refresh-token-" + refusal.code
+		// A token of its own per refusal, which, as a real refresh token, shares no run with the
+		// code: Revoke prints the code with each run of the token it sent redacted (redact.Carried).
+		token := "plain-refresh-token-" + strconv.Itoa(refusal.status)
 		err := flow.Revoke(context.Background(), token)
 		if err == nil || !strings.Contains(err.Error(), refusal.want) || strings.Contains(err.Error(), token) {
 			t.Errorf("Revoke against an issuer answering %d %q: err = %v, want one naming %s and not the token", refusal.status, refusal.code, err, refusal.want)

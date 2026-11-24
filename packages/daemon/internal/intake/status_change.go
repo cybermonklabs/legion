@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/sjawhar/envoy/oauth2call"
+
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
@@ -30,15 +32,11 @@ type StatusChange struct {
 // StatusChangeOf reads one event of an issue's Dispatch event log, as dispatch.Client.EventsAfter
 // serves it. The outbox reads the events after a set-back's sequence with it, so that the set-back
 // never writes over a later status change. Only a status change counts for that check: a comment,
-// a message or the daemon's own reason post moves the sequence and changes no status. An event
-// that does not decode as a Dispatch event, or an issue.updated whose payload does not decode, is
-// an error, because a log the daemon cannot read tells it nothing it can act on.
-func StatusChangeOf(raw json.RawMessage) (StatusChange, error) {
-	var event dispatchEvent
-	if err := json.Unmarshal(raw, &event); err != nil {
-		return StatusChange{}, fmt.Errorf("decode Dispatch event: %w", err)
-	}
-	change := StatusChange{Seq: event.Seq, Actor: dispatch.Actor(event.Actor), DaemonActor: event.daemonActor(), Changed: event.Type == "issue.closed"}
+// a message or the daemon's own reason post moves the sequence and changes no status. An
+// issue.updated whose payload does not decode is an error in fixed text (oauth2call.DecodeError),
+// because a log the daemon cannot read tells it nothing it can act on.
+func StatusChangeOf(event dispatch.Event) (StatusChange, error) {
+	change := StatusChange{Seq: event.Seq, Actor: event.Actor, DaemonActor: event.DaemonActor(), Changed: event.Type == "issue.closed"}
 	if event.Type != "issue.updated" {
 		return change, nil
 	}
@@ -47,7 +45,7 @@ func StatusChangeOf(raw json.RawMessage) (StatusChange, error) {
 	}
 	if len(event.Payload) > 0 {
 		if err := json.Unmarshal(event.Payload, &issue); err != nil {
-			return StatusChange{}, fmt.Errorf("decode the issue payload of Dispatch event %d: %w", event.Seq, err)
+			return StatusChange{}, fmt.Errorf("decode the issue payload of Dispatch event %d: %w", event.Seq, oauth2call.DecodeError(err, event.Payload, &issue))
 		}
 	}
 	change.Changed = slices.Contains(issue.Changed, "status")

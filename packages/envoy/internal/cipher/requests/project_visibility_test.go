@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // visibilityRewrite is an http.RoundTripper in front of the Dispatch stand-in that rewrites
@@ -126,6 +127,22 @@ func TestAVisibilityDispatchDoesNotKnowReleasesNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAVisibilityTheMachineDoesNotKnowPrintsNoneOfIt: the request machine is handed an answer, as
+// a client that kept it would, whose visibility is words that quote a credential's URL. The
+// release is refused as ErrProjectAccessUnavailable naming the field and the project, and none of
+// the words. Captures requests.answer-words/visibility.
+func TestAVisibilityTheMachineDoesNotKnowPrintsNoneOfIt(t *testing.T) {
+	m, enr, key, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
+	m.Projects = visibilityFront{inner: projectaccess.New(dispatch.URL, dispatch.Account, nil), project: teamProject, visibility: redacttest.Words}
+	_, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	// Control: the refusal is the unknown visibility's, naming the field and the project.
+	if !errors.Is(err, ErrProjectAccessUnavailable) || !strings.Contains(err.Error(), "(visibility) for "+teamProject) {
+		t.Fatalf("Values = %v, want ErrProjectAccessUnavailable naming the visibility field and %s", err, teamProject)
+	}
+	redacttest.RequireNone(t, "requests.answer-words/visibility", err.Error())
 }
 
 // TestAnApprovalOfASecretWhoseProjectTurnedPrivateIsRecordedAsADenial is the side review's

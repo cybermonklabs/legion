@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The daemon names a GitHub App's bot login, which it takes from GitHub's answer to an App read,
+  only as a login GitHub allows, and `(a login GitHub does not allow)` otherwise
+  (`githubrest.ShownLogin`), in three more places: the `supervise: the working copy was adopted for
+  the phase task` line's `identity`, the refusal of an adoption of a role's working copy (in pods
+  and in tmux panes, which no longer prints the identity's email either, since it holds that login),
+  and the boot's refusal of two Apps under one bot login. Before, something answering in GitHub's
+  place that echoed an installation token as the bot login had it printed in each.
+time: 2026-11-23T08:09:16Z
+custom:
+    Issue: pr4368

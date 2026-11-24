@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"encoding/json"
-	"io"
 	"net/http"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // TB is the part of testing.TB a Pods calls, so a command drives a running broker with the same
@@ -255,7 +255,7 @@ func (b Pods) send(method, path string, auth map[string]string, body any) (int, 
 		b.T.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
+	answer, err := answertest.Read(response)
 	if err != nil {
 		b.T.Fatalf("read the answer to %s %s: %v", method, path, err)
 	}

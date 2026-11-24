@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // natsContainer is the hub pods' NATS server container, as the nats chart names it.
@@ -487,7 +489,13 @@ func (k *kubectlSource) forwardTo(ctx context.Context, pod string, port int) (*f
 // monitorClient is the HTTP client of the monitoring port, through the forward.
 var monitorClient = &http.Client{Timeout: 10 * time.Second}
 
-// Monitor answers a GET of path on the pod's monitoring port through its port-forward.
+// monitorAnswerLimit is the most of a monitoring answer Monitor reads: a /varz or a /routez of a
+// hub's few routes is tens of kilobytes.
+const monitorAnswerLimit = 32 << 20
+
+// Monitor answers a GET of path on the pod's monitoring port through its port-forward. The answer
+// is read through redact.ReadAnswer and handed back as data (StreamTo), and a refusal is named by
+// its status code and standard phrase (redact.StatusLine), never by the phrase the server wrote.
 func (k *kubectlSource) Monitor(ctx context.Context, pod, path string) ([]byte, error) {
 	f, err := k.forwardTo(ctx, pod, k.MonitorPort)
 	if err != nil {
@@ -502,14 +510,18 @@ func (k *kubectlSource) Monitor(ctx context.Context, pod, path string) ([]byte, 
 		return nil, fmt.Errorf("GET %s of %s: %w", path, pod, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	answer, err := redact.ReadAnswer(resp, monitorAnswerLimit)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s of %s: %w", path, pod, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s of %s: %s", path, pod, resp.Status)
+		return nil, fmt.Errorf("GET %s of %s: %s", path, pod, redact.StatusLine(resp.StatusCode))
 	}
-	return body, nil
+	var body bytes.Buffer
+	if _, err := answer.StreamTo(&body); err != nil {
+		return nil, fmt.Errorf("GET %s of %s: %w", path, pod, err)
+	}
+	return body.Bytes(), nil
 }
 
 // Log is the pod's nats container log, as `kubectl logs --timestamps` returns it: the running

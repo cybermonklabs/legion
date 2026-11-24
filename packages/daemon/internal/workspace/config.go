@@ -847,6 +847,8 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 	// own error: no clone this code makes borrows objects from the feed (clone.go makes a plain
 	// local clone), so the connectivity scan that once diagnosed a clone whose borrowed history had
 	// gone had no case left and was deleted with the disk that carried such a clone (INFRA-80).
+	// Its error leaves the process and nothing decides on its stderr, so the error prints the
+	// stderr as the credential shows it (remote.shown).
 	fetch := []string{"git", "fetch"}
 	for _, branch := range source.branches {
 		fetch = append(fetch, "--branch", exactName(branch))
@@ -856,7 +858,7 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 		return err
 	}
 	result, runErr := runCommand(ctx, run, argv, source.env, cloneDir)
-	result.Stderr = source.scrub(result.Stderr)
+	result.Stderr = source.shown(result.Stderr)
 	_, err = checkedResult(argv, result, runErr)
 	return err
 }

@@ -73,9 +73,9 @@ func (c *Client) Repositories(ctx context.Context, project string) ([]string, er
 		return nil, fmt.Errorf("projectrepos: read %s's repositories: %w", project, err)
 	}
 	if answer.Status != http.StatusOK {
-		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", answer.Status, dispatchread.RefusalCode(answer.Body), project)
+		return nil, fmt.Errorf("projectrepos: dispatch answered %d with the code %q about %s", answer.Status, dispatchread.Clip(dispatchread.RefusalCode(answer.Body).String()), project)
 	}
-	return readAnswer(answer.Body, project)
+	return readAnswer(answer, project)
 }
 
 // readAnswer is the list a 200's body carries about project, or an error saying why the body is
@@ -83,12 +83,18 @@ func (c *Client) Repositories(ctx context.Context, project string) ([]string, er
 // object holding the key "project", the project asked, and the key "repositories", a list of
 // "owner/name" strings sorted byte-wise, each once; each key in its own case and once, and no
 // other key. encoding/json alone would read a key in any case and the last of a key written twice,
-// so the object is read key by key.
-func readAnswer(body []byte, project string) ([]string, error) {
+// so the object is read key by key, from the answer's bytes (StreamTo); a key or a value the error
+// names is Dispatch's words, named as the rule reads them (redact.Answer.Said).
+func readAnswer(answer dispatchread.Answer, project string) ([]string, error) {
 	refused := func(why string) error {
 		return fmt.Errorf("projectrepos: dispatch's answer about %s %s", project, why)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	quoted := func(text string) string { return dispatchread.Clip(answer.Body.Said(text).String()) }
+	var body bytes.Buffer
+	if _, err := answer.Body.StreamTo(&body); err != nil {
+		return nil, refused("could not be read")
+	}
+	decoder := json.NewDecoder(&body)
 	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
 		return nil, refused("is no JSON object")
 	}
@@ -116,7 +122,7 @@ func readAnswer(body []byte, project string) ([]string, error) {
 			}
 			repositories = &list
 		default:
-			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", dispatchread.Clip(key)))
+			return nil, refused(fmt.Sprintf("holds the key %q, which is neither project nor repositories or is written twice", quoted(key)))
 		}
 	}
 	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
@@ -129,17 +135,17 @@ func readAnswer(body []byte, project string) ([]string, error) {
 	case answered == nil:
 		return nil, refused("names no project")
 	case *answered != project:
-		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", dispatchread.Clip(*answered), project)
+		return nil, fmt.Errorf("projectrepos: dispatch answered about %q, asked about %s", quoted(*answered), project)
 	case repositories == nil:
 		return nil, refused("carries no list of repositories")
 	}
 	list := *repositories
 	for index, repository := range list {
 		if !ownerName(repository) {
-			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", dispatchread.Clip(repository)))
+			return nil, refused(fmt.Sprintf("lists %q, which is no owner/name", quoted(repository)))
 		}
 		if index > 0 && list[index-1] >= repository {
-			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", dispatchread.Clip(repository), dispatchread.Clip(list[index-1])))
+			return nil, refused(fmt.Sprintf("lists %q after %q: the list is sorted byte-wise and names each repository once", quoted(repository), quoted(list[index-1])))
 		}
 	}
 	return list, nil

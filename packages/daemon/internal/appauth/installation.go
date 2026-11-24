@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // Installations answers whether a GitHub App is installed on a repository. The daemon records an
@@ -94,11 +96,11 @@ func (m *Manager) AppLogin(ctx context.Context, role AppRole) (string, error) {
 // InstalledOn reads GET /repos/{owner}/{repo}/installation under role's App JWT: GitHub answers
 // the installation that covers the repository, 2xx, or 404 when the App has none there. An owner's
 // installation may cover only some of its repositories, so the read is per repository. A redirect
-// is followed, as the Manager's client follows it (net/http keeps the App JWT on a redirect within
-// one host), so a name GitHub moved is answered for the repository where it is now. Any other
-// answer is an error naming the repository and the App, a TransientError when it is GitHub's
-// trouble. In token mode it reads the owner's installation's repositories instead
-// (installedFromCommand).
+// on GitHub's own host is followed, as the Manager's client follows one (redirects.SameOrigin), so
+// a name GitHub moved is answered for the repository where it is now; one naming another host is
+// not followed. Any other answer is an error naming the repository and the App, a TransientError
+// when it is GitHub's trouble. In token mode it reads the owner's installation's repositories
+// instead (installedFromCommand).
 func (m *Manager) InstalledOn(ctx context.Context, role AppRole, repo ghrepo.Repository) (bool, error) {
 	return m.installedOn(ctx, role, repo, false)
 }
@@ -140,7 +142,7 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return false, &TransientError{Err: fmt.Errorf("read whether the %s App is installed on %s: %w", role, repo, err)}
+		return false, &TransientError{Err: fmt.Errorf("read whether the %s App is installed on %s: %w", role, repo, redact.Unanswered(err, request, ""))}
 	}
 	body := refusalBody(response)
 	switch {
@@ -148,7 +150,7 @@ func (m *Manager) installedOn(ctx context.Context, role AppRole, repo ghrepo.Rep
 		return true, nil
 	case response.StatusCode == http.StatusNotFound:
 		return false, nil
-	case own && response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest:
+	case own && redirects.Status(response.StatusCode):
 		return false, nil
 	default:
 		return false, m.transient(response, body, fmt.Errorf("read whether the %s App is installed on %s failed (%d)", role, repo, response.StatusCode))

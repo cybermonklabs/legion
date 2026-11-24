@@ -54,6 +54,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -1067,7 +1068,9 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
 	}
 	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
-		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
+		// The App's git name is the bot login an App read of GitHub answered, so it prints only as
+		// a login GitHub allows; its email holds that login too, so it does not print at all.
+		return fmt.Errorf("adopt %s's working copy for %s: %w", loc.Claim, githubrest.ShownLogin(id.Name), err)
 	}
 	return nil
 }

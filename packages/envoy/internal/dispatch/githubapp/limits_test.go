@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -534,7 +535,7 @@ func TestALimitNotedAt200NeverCarriesTheQuerysData(t *testing.T) {
 	}}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			limited, _ := GraphQLRateLimit(row.status, row.header, []byte(row.body))
+			limited, _ := GraphQLRateLimit(row.status, row.header, answertest.Of(row.status, row.body))
 			body, wording := row.wording, ""
 			if row.status/100 == 2 {
 				body, wording = "", row.wording
@@ -629,7 +630,7 @@ func TestA200LimitALoopNotesWrappedBeforeTheClientNeverCarriesTheQuerysData(t *t
 	}}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			limited, _ := GraphQLRateLimit(http.StatusOK, row.header, []byte(row.body))
+			limited, _ := GraphQLRateLimit(http.StatusOK, row.header, answertest.Of(http.StatusOK, row.body))
 			if limited == nil {
 				t.Fatalf("GraphQLRateLimit read no limit in %s", row.body)
 			}

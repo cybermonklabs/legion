@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/sjawhar/envoy/oauth2call"
+
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
@@ -16,19 +18,15 @@ import (
 // an issue.closed) is passed over and counts for nothing, so a person's comment between a
 // session's label and a person's later unrelated edit leaves the session the setter, and a label
 // removed and set again names whoever set it last. It is "" when no event added the label. An
-// event that does not decode as a Dispatch event, or whose issue payload does not decode, is an
-// error naming its position, since a log the daemon cannot read names no setter it can act on.
+// event whose issue payload does not decode is an error naming its position in fixed text
+// (oauth2call.DecodeError), since a log the daemon cannot read names no setter it can act on.
 //
 // The daemon reads the log for this because an unrecorded issue has no earlier state in the
 // daemon: the event that reaches it says the label is there, not who put it there (DispatchIssue.
 // LabelSetter).
-func LabelSetter(events []json.RawMessage) (string, error) {
+func LabelSetter(events []dispatch.Event) (string, error) {
 	setter, labelled := "", false
-	for i, raw := range events {
-		var event dispatchEvent
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return "", fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(events), err)
-		}
+	for i, event := range events {
 		if event.Type != "issue.created" && event.Type != "issue.updated" {
 			continue
 		}
@@ -37,7 +35,7 @@ func LabelSetter(events []json.RawMessage) (string, error) {
 		}
 		if len(event.Payload) > 0 {
 			if err := json.Unmarshal(event.Payload, &issue); err != nil {
-				return "", fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)
+				return "", fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), oauth2call.DecodeError(err, event.Payload, &issue))
 			}
 		}
 		now := dispatch.CarriesLegionLabel(issue.Labels)

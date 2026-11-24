@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // TestASendRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy is check c-send-repeat-stored-copy
@@ -292,9 +292,10 @@ func TestTheStoredCopyIsReadOnlyAtTheSequenceTheVerdictNamed(t *testing.T) {
 }
 
 // An answer's expects_reply is the answered envelope's, in the request's spelling where the two
-// agree: the request's own bytes for the envelope built from them, the old word "none" among
-// them, nothing where both say nothing, and the copy's own value in the one new vocabulary where a
-// repeat asked for another reply than the stored copy carries.
+// agree: the request's own word for the envelope built from it, the old word "none" among them,
+// nothing (the zero value, which every answer leaves out) where both say nothing, and the copy's
+// own value in the one new vocabulary where a repeat asked for another reply than the stored copy
+// carries.
 func TestAnAnswersExpectsReplyIsTheAnsweredEnvelopesInTheRequestsSpelling(t *testing.T) {
 	for _, row := range []struct {
 		name      string
@@ -311,11 +312,19 @@ func TestAnAnswersExpectsReplyIsTheAnsweredEnvelopesInTheRequestsSpelling(t *tes
 		{"nothing asked, no reply carried", "", contracts.ExpectsReplyNone, "false"},
 		{"required asked, nothing carried", `"required"`, contracts.ExpectsReplyUnset, ""},
 	} {
-		var requested json.RawMessage
-		if row.requested != "" {
-			requested = json.RawMessage(row.requested)
+		requested, err := listenerwire.ParseExpectsAsSpoken(json.RawMessage(row.requested))
+		if err != nil {
+			t.Fatalf("%s: the request's expects_reply %q does not parse: %v", row.name, row.requested, err)
 		}
-		if got := expectsReplyAnswer(requested, row.answered); !bytes.Equal(got, []byte(row.want)) {
+		got := ""
+		if answer := expectsReplyAnswer(requested, row.answered); answer != (listenerwire.ExpectsAsSpoken{}) {
+			written, err := json.Marshal(answer)
+			if err != nil {
+				t.Fatalf("%s: write the answer's expects_reply %+v: %v", row.name, answer, err)
+			}
+			got = string(written)
+		}
+		if got != row.want {
 			t.Errorf("%s: expects_reply %q, want %q", row.name, got, row.want)
 		}
 	}

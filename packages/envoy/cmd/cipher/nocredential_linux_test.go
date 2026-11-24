@@ -207,8 +207,10 @@ func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"LAUNCHER_INVALID","error":"the launcher credential is not valid"}`))
 	}))
 	t.Cleanup(broker.Close)
+	// The proof is a credential the call carries, so the refusal prints with each run of it
+	// redacted (redact.Carried): like a real proof, it shares no word with the broker's words.
 	signs, _ := fakeHelperByOp(t, map[string]helper.Response{
-		"sign-launcher": {OK: true, Proof: "a.launcher.proof", CredentialID: "credential-1", MachineIdentity: true},
+		"sign-launcher": {OK: true, Proof: "a.9f3c27e1.b", CredentialID: "credential-1", MachineIdentity: true},
 	})
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, t.TempDir(),
 		[]string{"AGENT_SECRETS_HELPER_SOCK=" + signs, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir()}, "machine", "list")

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdGrantList implements "grant list": every live grant of a session the operator runs, given
@@ -80,10 +81,13 @@ var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECID
 
 // grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
 // such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
-// print (cipheraddr.Address.Words): as it came on one line, Go-quoted where a control character in
-// it, a tab among them, would start a line of its own or split the cell, and not at all beside an
-// address that carries a credential; the grant id, as every id the broker answers prints
-// (idWords), still whole there where it is a UUID the address does not hold.
+// print (cipheraddr.Address.Words): as the rule reads it on one line, with the credentials the
+// list's request carried redacted (each field is held as redact.RemoteText with the answer's
+// record), Go-quoted where a control character in it, a tab among them, would start a line of its
+// own or split the cell, and not at all beside an address that carries a credential; the grant
+// id, as every id the broker answers prints (idWordsOf), still whole there where it is a UUID the
+// address does not hold. A cell of several fields - the secrets, the session - is each field's
+// reading joined, read by the rule again as one cell.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
@@ -91,23 +95,35 @@ var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECID
 // the owner's own approval of a request that owner never saw. An automatic grant nobody decided
 // prints "-" under both.
 func grantRow(base cipheraddr.Address, g OperatorGrant) []string {
-	session := g.Enrollment.Kind + "/" + g.Enrollment.RuntimeID
+	session := g.Enrollment.Kind.String() + "/" + g.Enrollment.RuntimeID.String()
 	if g.Enrollment.Slot != nil {
-		session += "/" + *g.Enrollment.Slot
+		session += "/" + g.Enrollment.Slot.String()
+	}
+	names := make([]string, len(g.Names))
+	for i, name := range g.Names {
+		names[i] = name.String()
 	}
 	cells := []string{
-		g.GrantID, strings.Join(g.Names, ","), g.Granted, orDashPtr(g.Approver), orDashPtr(g.DecidedBy),
-		session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt),
+		"", strings.Join(names, ","), g.Granted.String(), orDashSaid(g.Approver), orDashSaid(g.DecidedBy),
+		session, orDash(g.Enrollment.Operator.String()), grantExpiry(g.ExpiresAt),
 	}
 	for i, cell := range cells {
 		cells[i] = base.Words(cell)
 	}
-	cells[0] = idWords(base, g.GrantID)
+	cells[0] = idWordsOf(base, g.GrantID)
 	return cells
 }
 
-// orDashPtr is what s points at, or "-" where it points at nothing: a cell the broker's answer
-// leaves null.
+// orDashSaid is the rule's reading of what field points at (RemoteText.String), or "-" where it
+// points at nothing or at no text: a cell the broker's answer leaves null.
+func orDashSaid(field *redact.RemoteText) string {
+	if field == nil {
+		return "-"
+	}
+	return orDash(field.String())
+}
+
+// orDashPtr is what s points at, or "-" where it points at nothing or at no text.
 func orDashPtr(s *string) string {
 	if s == nil {
 		return "-"
@@ -180,7 +196,7 @@ func grantRevokeInSession(form, grantID string, stdout, stderr io.Writer) int {
 	case err == nil:
 		fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(c.baseURL))
 		return 0
-	case errors.As(err, &broker) && broker.Code == "NOT_YOURS":
+	case errors.As(err, &broker) && broker.hasCode("NOT_YOURS"):
 		fmt.Fprintf(stderr, "%s: grant %s was given to another broker identity (enrollment) than the one this process signs as; its holder ends it, or its operator from their own shell (agent-secrets grant revoke %s), or its approver on Dispatch's Live grants page\n", prefix, grantID, grantID)
 		return 1
 	default:

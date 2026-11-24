@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The dashboard streams a Dispatch build serves. A build from #2449 on gives a tab one live socket
@@ -37,7 +39,7 @@ func probeDashboard(ctx context.Context, dispatch string) (string, string, error
 	}
 	liveAnswer := dialErr.Error()
 	if resp != nil {
-		liveAnswer = resp.Status
+		liveAnswer = redact.StatusLine(resp.StatusCode)
 		_ = resp.Body.Close()
 	}
 
@@ -55,7 +57,7 @@ func probeDashboard(ctx context.Context, dispatch string) (string, string, error
 		sseAnswer = sseErr.Error()
 	}
 	if sseErr == nil {
-		sseAnswer = sseResp.Status
+		sseAnswer = redact.StatusLine(sseResp.StatusCode)
 		streams := sseResp.StatusCode == http.StatusOK &&
 			strings.HasPrefix(sseResp.Header.Get("Content-Type"), "text/event-stream")
 		_ = sseResp.Body.Close()

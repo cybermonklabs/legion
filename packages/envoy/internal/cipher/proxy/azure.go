@@ -31,6 +31,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -47,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The two bounds on what the broker reads of an exchange: a token request's form, which carries
@@ -399,35 +401,40 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 }
 
 // exchangeAt makes one exchange: the broker's own POST to the token endpoint, on the transport
-// every upstream call of this proxy goes out on, and the endpoint's status and whole answer. The
-// endpoint was sent the real federated token, and the transport's error can quote what it sent
-// back or list the names its certificate holds, so an error is answered as upstreamReason writes
-// it, as an upstream failure's is: the refusal line and the answer the command is given repeat
-// it.
-func (s *Server) exchangeAt(ctx context.Context, endpoint string, form url.Values) (int, []byte, error) {
+// every upstream call of this proxy goes out on, and the endpoint's status and whole answer, read
+// through redact.ReadAnswer (a body past maxTokenAnswer is cut there, and decodes as no JSON
+// object). The endpoint was sent the real federated token, and the transport's error can quote
+// what it sent back or list the names its certificate holds, so an error is answered as
+// upstreamReason writes it, as an upstream failure's is: the refusal line and the answer the
+// command is given repeat it.
+func (s *Server) exchangeAt(ctx context.Context, endpoint string, form url.Values) (int, redact.Answer, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, nil, errors.New(upstreamReason(err))
+		return 0, redact.Answer{}, errors.New(upstreamReason(err))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	answer, err := s.upstream.RoundTrip(request)
 	if err != nil {
-		return 0, nil, errors.New(upstreamReason(err))
+		return 0, redact.Answer{}, errors.New(upstreamReason(err))
 	}
 	defer answer.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(answer.Body, maxTokenAnswer))
-	if err != nil {
-		return answer.StatusCode, nil, errors.New(upstreamReason(err))
+	body, err := redact.ReadAnswer(answer, maxTokenAnswer)
+	if err != nil && !errors.Is(err, redact.ErrAnswerTooLarge) {
+		return answer.StatusCode, redact.Answer{}, errors.New(upstreamReason(err))
 	}
 	return answer.StatusCode, body, nil
 }
 
 // azureAnswerOf takes the endpoint's answer apart once, keeping every field's own bytes, so the
 // command is answered the shape Microsoft wrote and not one rebuilt from the fields this code
-// happens to know.
-func azureAnswerOf(answer []byte) (map[string]json.RawMessage, error) {
+// happens to know. The answer is data (Answer.StreamTo) and never prints: every field but the
+// tokens is forwarded to the command as it came (answerWithPlaceholder), and the access token is
+// the credential this pod holds. Neither error quotes the answer.
+func azureAnswerOf(answer redact.Answer) (map[string]json.RawMessage, error) {
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body) // a bytes.Buffer's Write never fails
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(answer, &fields); err != nil {
+	if err := json.Unmarshal(body.Bytes(), &fields); err != nil {
 		return nil, errors.New("is no JSON object")
 	}
 	var token string

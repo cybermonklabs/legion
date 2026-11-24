@@ -77,7 +77,8 @@ type SignIn struct {
 // issuer did not serve prints as the status of the last request (redact.Answered, through
 // redact.Masked, so the error still unwraps to go-oidc's), a 2xx answer read whole that does not
 // read as this issuer's document as fixed text, and a request that failed as its class. A
-// redirect whose target fails is that failure.
+// redirect whose target fails is that failure. go-oidc hands back only the text of its error, so
+// the call is read under a CallScope (redact.OAuth2), as every call of go-oidc and x/oauth2 is.
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -85,7 +86,8 @@ func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 		return d.config, nil
 	}
 	answered := &oauthrefusal.Recorder{}
-	provider, err := gooidc.NewProvider(oauthrefusal.Record(d.context(ctx), answered), d.Issuer)
+	s := redact.Scope[*gooidc.Provider](oauthrefusal.Record(d.context(ctx), answered))
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), d.Issuer)))
 	readErr := answered.ReadErr()
 	switch {
 	case err != nil && readErr != nil:
@@ -113,12 +115,28 @@ func (d *DeviceFlow) issuer() string {
 	return "the sign-in issuer (" + SignInIssuerVar + " names " + redact.URL(d.Issuer) + ")"
 }
 
-// context is ctx carrying the HTTP client x/oauth2 and go-oidc send their requests with.
+// context is ctx carrying the HTTP client x/oauth2 and go-oidc send their requests with: a
+// RefusalClient over d.client, as every client handed to those libraries is (redact.OAuth2).
 func (d *DeviceFlow) context(ctx context.Context) context.Context {
-	if d.HTTP == nil {
-		return ctx
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(d.client(ctx)))
+}
+
+// client is the client a DeviceFlow's calls go through (clientOf, with HTTP).
+func (d *DeviceFlow) client(ctx context.Context) *http.Client {
+	return clientOf(ctx, d.HTTP)
+}
+
+// clientOf is the client a call of a library over ctx goes through: explicit, else the one ctx
+// carries (oauth2.HTTPClient), else http.DefaultClient, as x/oauth2 itself resolves a context's
+// client.
+func clientOf(ctx context.Context, explicit *http.Client) *http.Client {
+	if explicit != nil {
+		return explicit
 	}
-	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
+	if client, _ := ctx.Value(oauth2.HTTPClient).(*http.Client); client != nil {
+		return client
+	}
+	return http.DefaultClient
 }
 
 // Start asks the issuer for a device code and a user code: what the person types in, and where.
@@ -127,7 +145,7 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 	if err != nil {
 		return nil, err
 	}
-	answer, err := config.DeviceAuth(d.context(ctx))
+	answer, err := redact.OAuth2(config.DeviceAuth(d.context(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.issuer(), redact.Class(err))
 	}
@@ -144,7 +162,7 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 	if err != nil {
 		return nil, err
 	}
-	token, err := config.DeviceAccessToken(d.context(ctx), authorization)
+	token, err := redact.OAuth2(config.DeviceAccessToken(d.context(ctx), authorization))
 	if err != nil {
 		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
@@ -172,7 +190,7 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	if err != nil {
 		return nil, err
 	}
-	token, err := config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
+	token, err := redact.OAuth2(config.TokenSource(d.context(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token())
 	if err != nil {
 		if oauthrefusal.EndsGrant(err) {
 			return nil, WithHint(fmt.Errorf("%s: %w", d.issuer(), ErrSignInEnded), FailureSignInRefused)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -62,7 +63,7 @@ func Start(t testing.TB, bucket string) string {
 	}
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("create bucket %s: %s", bucket, response.Status)
+		t.Fatalf("create bucket %s: %s", bucket, redact.StatusLine(response.StatusCode))
 	}
 	filestest.PointSDKAt(t, endpoint)
 	return endpoint

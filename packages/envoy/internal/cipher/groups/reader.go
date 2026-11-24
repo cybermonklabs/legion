@@ -9,7 +9,6 @@ package groups
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
@@ -22,6 +21,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -270,7 +270,7 @@ func (r *Reader) read(ctx context.Context, name string) {
 // list reads every page of name's members.list, derived members included, and answers the
 // people among them by their record.CanonicalLogin form. A failed page fails the whole read.
 func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, error) {
-	token, err := r.Source.Token()
+	token, err := redact.OAuth2(r.Source.Token())
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +285,7 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 			return nil, err
 		}
 		token.SetAuthHeader(request)
-		payload, err := call(client, request, "the Directory")
+		answer, err := call(client, request, "the Directory")
 		if err != nil {
 			return nil, err
 		}
@@ -296,7 +296,7 @@ func (r *Reader) list(ctx context.Context, name string) (map[string]struct{}, er
 			} `json:"members"`
 			NextPageToken string `json:"nextPageToken"`
 		}
-		if err := json.Unmarshal(payload, &page); err != nil {
+		if err := answer.Decode(&page); err != nil {
 			return nil, errDirectoryAnswer
 		}
 		for _, m := range page.Members {

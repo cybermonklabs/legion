@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -156,20 +157,22 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 // confirm the ask in time can take it on the next attempt, a holder that does not advertise the
 // delivery mode can be replaced by another session on the role, and a forward the listener's own
 // NATS grant denies goes through once an operator changes that grant. No published line is
-// written for any of them.
+// written for any of them. Each failure holds the holder's words in a box, which makes it no
+// value errors.Is can compare, so the row's error is held to the publisher's own error, which
+// wraps it.
 func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	t.Parallel()
 	publisher := &outboxPublisher{}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
 	row := askRow(t, 77, claim.RoleImplementer)
 	for _, cause := range []error{
-		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_i"},
-		notify.ErrRefusedByHolder{Holder: "ses_i"},
-		notify.ErrPublishDenied{Message: "envoy: the message bus denied the publish"},
+		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses_i")},
+		notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses_i")},
+		notify.ErrPublishDenied{Message: oauth2calltest.Said("envoy: the message bus denied the publish")},
 	} {
 		publisher.err = fmt.Errorf("publish to the implementer's topic: %w", cause)
 		err := runner.execute(context.Background(), row)
-		if err == nil || !errors.Is(err, cause) {
+		if err == nil || !errors.Is(err, publisher.err) {
 			t.Fatalf("the ask answered %v = %v, want the answer as a failure, retried", cause, err)
 		}
 		t.Logf("%T: %v", cause, err)

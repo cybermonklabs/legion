@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1641,7 +1642,9 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 
 // An operator reading plain `legion state` during a Dispatch outage is told how many status writes
 // wait and why the oldest has not landed: the count, the oldest's issue, its attempts, its next
-// attempt and its last error, on one line. With none waiting the line says so.
+// attempt and its last error, on one line. With none waiting the line says so. A write's payload is
+// the workflow's own document, which no line prints: the state is read whatever JSON value each
+// payload holds, and `legion state --json` prints every payload as the daemon served it.
 func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{}`
@@ -1658,6 +1661,16 @@ func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 			name:    "oldest not yet attempted",
 			pending: `[{"issue":"LEGION-209","payload":{"status":"retro"},"attempts":0,"nextAt":"2026-09-23T00:00:30Z"}]`,
 			want:    "pending Dispatch status writes: 1; the oldest, for LEGION-209, has not run yet, next at 2026-09-23T00:00:30Z\n",
+		},
+		{
+			name: "payloads of every JSON kind",
+			pending: `[{"issue":"LEGION-208","payload":"needs_review","attempts":1,"nextAt":"2026-09-23T00:01:04Z","lastError":"Dispatch unavailable"},` +
+				`{"issue":"LEGION-208","payload":["testing",{"reason":{"by":"daemon","at":"2026-09-23"}}],"attempts":0,"nextAt":"2026-09-23T00:01:05Z"},` +
+				`{"issue":"LEGION-209","payload":7,"attempts":0,"nextAt":"2026-09-23T00:01:06Z"},` +
+				`{"issue":"LEGION-210","payload":true,"attempts":0,"nextAt":"2026-09-23T00:01:07Z"},` +
+				`{"issue":"LEGION-211","payload":null,"attempts":0,"nextAt":"2026-09-23T00:01:08Z"},` +
+				`{"issue":"LEGION-212","attempts":0,"nextAt":"2026-09-23T00:01:09Z"}]`,
+			want: "pending Dispatch status writes: 6; the oldest, for LEGION-208, has failed 1 attempts, next at 2026-09-23T00:01:04Z: Dispatch unavailable\n",
 		},
 		{name: "none", pending: `[]`, want: "pending Dispatch status writes: none\n"},
 	} {
@@ -1679,7 +1692,59 @@ func TestPlainStateSummarizesThePendingStatusWrites(t *testing.T) {
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
 			}
+			out.Reset()
+			errb.Reset()
+			if code := run(context.Background(), []string{"legion", "state", "--json"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state --json = %d, stderr %q", code, errb.String())
+			}
+			if out.String() != served {
+				t.Fatalf("legion state --json printed %q, want the state as served, every payload in it", out.String())
+			}
 		})
+	}
+}
+
+// `legion state` reads the daemon's state into servedState, which holds every member of api.State
+// — the type the daemon writes the state from — under the same name, of the same type and in the
+// same order, but each pending status write's payload (pendingStatusWrite). A member api.State
+// gained and servedState lacked would be one whose value the command no longer refuses where it
+// does not decode.
+func TestServedStateIsTheStateButEachPayload(t *testing.T) {
+	// members is each exported field of a struct type, by name, type and tag, as keep leaves it;
+	// keep may change a field's type, and drops it by answering false.
+	members := func(of reflect.Type, keep func(f *reflect.StructField) bool) []string {
+		var held []string
+		for i := range of.NumField() {
+			f := of.Field(i)
+			if f.IsExported() && (keep == nil || keep(&f)) {
+				held = append(held, fmt.Sprintf("%s %s `%s`", f.Name, f.Type, f.Tag))
+			}
+		}
+		return held
+	}
+	for _, tc := range []struct {
+		read, wire reflect.Type
+		keep       func(f *reflect.StructField) bool
+	}{
+		{
+			read: reflect.TypeFor[servedState](), wire: reflect.TypeFor[api.State](),
+			keep: func(f *reflect.StructField) bool {
+				if f.Name == "PendingStatusWrites" {
+					f.Type = reflect.TypeFor[[]pendingStatusWrite]()
+				}
+				return true
+			},
+		},
+		{
+			read: reflect.TypeFor[pendingStatusWrite](), wire: reflect.TypeFor[api.PendingStatusWrite](),
+			keep: func(f *reflect.StructField) bool { return f.Name != "Payload" },
+		},
+	} {
+		got, want := members(tc.read, nil), members(tc.wire, tc.keep)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s holds\n\t%s\nwant the members of %s it reads:\n\t%s",
+				tc.read, strings.Join(got, "\n\t"), tc.wire, strings.Join(want, "\n\t"))
+		}
 	}
 }
 

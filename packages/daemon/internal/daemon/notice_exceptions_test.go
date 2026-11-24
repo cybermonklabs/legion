@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -401,7 +402,7 @@ func TestANoticeIsQueuedAgainAtMostThreeTimes(t *testing.T) {
 // reason and the holder it forwarded to.
 func confirmedAnswer(reason, holder string) error {
 	return fmt.Errorf(`publish notice: listener returned 504 Gateway Timeout: {"reason":%q,"holder":%q}: %w`, reason, holder,
-		notify.ErrNotDelivered{Reason: reason, Holder: holder})
+		notify.ErrNotDelivered{Reason: reason, Holder: oauth2calltest.Said(holder)})
 }
 
 // noticeRowID is the id of the one outbox row queued so far.
@@ -575,7 +576,7 @@ func TestANoticeTheHolderRefusesFinishesUndelivered(t *testing.T) {
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
 	var logged bytes.Buffer
-	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice: listener returned 403 Forbidden: {"reason":"capability","holder":"ses_live"}: %w`, notify.ErrRefusedByHolder{Holder: "ses_live"})}
+	publisher := &outboxPublisher{err: fmt.Errorf(`publish notice: listener returned 403 Forbidden: {"reason":"capability","holder":"ses_live"}: %w`, notify.ErrRefusedByHolder{Holder: oauth2calltest.Said("ses_live")})}
 	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
 
@@ -1116,7 +1117,7 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 		{"a later copy, another session, before the role is taken", claimOn(supervise.StateRegistered), 1, "ses_old", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := copyDueAtOnce(tc.held, tc.resends, tc.recipient); got != tc.want {
+			if got := copyDueAtOnce(tc.held, tc.resends, reportedSession(tc.recipient)); got != tc.want {
 				t.Fatalf("copyDueAtOnce(%s on %q, %d copies, report from %q) = %t, want %t", tc.held.State, tc.held.Session, tc.resends, tc.recipient, got, tc.want)
 			}
 		})

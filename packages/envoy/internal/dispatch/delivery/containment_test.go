@@ -1,12 +1,14 @@
 package delivery
 
 import (
+	"net/http"
 	"os"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ordertest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 func TestProductionApplies(t *testing.T) {
@@ -51,7 +53,7 @@ func TestProductionAppliesSetsApartOnlyARunWithNoProductionJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the recorded job list: %v", err)
 	}
-	fetched, _, err := DecodeJobsPage(data)
+	fetched, _, err := DecodeJobsPage(answertest.Of(http.StatusOK, string(data)))
 	if err != nil {
 		t.Fatalf("decode the recorded job list: %v", err)
 	}

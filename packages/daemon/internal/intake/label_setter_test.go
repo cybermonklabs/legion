@@ -1,18 +1,43 @@
 package intake
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
-// logEvent is one event of an issue's Dispatch event log as dispatch.Client.EventsAfter serves it,
-// which is the shape the durable stream carries: type typ at seq, written by an actor of kind,
-// with payload as its payload.
+// logEvent is one event of an issue's Dispatch event log as its events route serves it, which is
+// the shape the durable stream carries: type typ at seq, written by an actor of kind, with payload
+// as its payload.
 func logEvent(seq int, typ, kind string, payload string) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{"id":%d,"issue_key":"LEGION-755","seq":%d,"type":%q,"actor":{"kind":%q,"id":"%s-1"},"notify":true,"created_at":"2026-10-14T17:00:%02dZ","payload":%s}`,
 		seq, seq, typ, kind, kind, seq, payload))
+}
+
+// servedLog is log as dispatch.Client.EventsAfter hands it to its caller: a stand-in for Dispatch
+// answers the read with log as one page, which the daemon's own client reads.
+func servedLog(t *testing.T, log ...json.RawMessage) []dispatch.Event {
+	t.Helper()
+	page := make([]string, len(log))
+	for i, raw := range log {
+		page[i] = string(raw)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, "["+strings.Join(page, ",")+"]")
+	}))
+	defer server.Close()
+	events, err := dispatch.New(server.URL, "dispatch-token").EventsAfter(context.Background(), "LEGION-755", 0)
+	if err != nil {
+		t.Fatalf("read the served log: %v", err)
+	}
+	return events
 }
 
 // issueLogEvent is an issue.created or issue.updated event whose issue carries labels.
@@ -119,7 +144,7 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 		{name: "an empty log", events: nil, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := LabelSetter(tc.events)
+			got, err := LabelSetter(servedLog(t, tc.events...))
 			if err != nil {
 				t.Fatalf("LabelSetter: %v", err)
 			}
@@ -130,9 +155,10 @@ func TestLabelSetterIsTheActorOfTheEventThatAddedTheLabel(t *testing.T) {
 	}
 }
 
-// A log the daemon cannot read names no setter it can act on: an event that does not decode is
-// an error naming its position, so the consumer delivers the fact again rather than treating the
-// label as nobody's.
+// A log the daemon cannot read names no setter it can act on: an issue event whose payload does
+// not decode is an error naming its position, so the consumer delivers the fact again rather than
+// treating the label as nobody's. An event that does not decode at all is refused by the read
+// itself (dispatch.Client.EventsAfter).
 func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -140,18 +166,18 @@ func TestLabelSetterRefusesAnEventItCannotDecode(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "an event that is not JSON",
-			events: []json.RawMessage{issueLogEvent(1, "issue.created", "user"), json.RawMessage(`{not json`)},
-			want:   "decode Dispatch event 2 of 2",
-		},
-		{
 			name:   "an issue event whose payload is not an issue",
 			events: []json.RawMessage{logEvent(1, "issue.created", "user", `"a string"`)},
 			want:   "decode Dispatch issue payload of event 1 of 1",
 		},
+		{
+			name:   "a later issue event whose labels are not a list",
+			events: []json.RawMessage{issueLogEvent(1, "issue.created", "user"), logEvent(2, "issue.updated", "user", `{"labels":"legion"}`)},
+			want:   "decode Dispatch issue payload of event 2 of 2",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LabelSetter(tc.events)
+			_, err := LabelSetter(servedLog(t, tc.events...))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("LabelSetter error = %v, want one containing %q", err, tc.want)
 			}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -50,12 +52,12 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			h.store.setHold(name, holder)
 		}
 		asked := 0
-		h.deps.RoleHolder = func(_ context.Context, role string) (string, string, error) {
+		h.deps.RoleHolder = func(_ context.Context, role string) (oauth2call.RemoteText, string, error) {
 			asked++
 			if role != string(h.token) {
 				t.Errorf("the forget looked up role %s, want the claim's own, %s", role, h.token)
 			}
-			return a.holder, a.state, a.err
+			return oauth2calltest.Said(a.holder), a.state, a.err
 		}
 		h.restart()
 		return h, &asked

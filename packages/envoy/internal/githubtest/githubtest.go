@@ -8,10 +8,29 @@
 package githubtest
 
 import (
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// InstallationToken is a stand-in for an installation token GitHub mints, in GitHub's shape:
+// "ghs_" and 36 letters and digits, the same for the same seed, so a fake that mints a token and a
+// test that names it again name one token. A stand-in of words, such as "installation-token",
+// holds runs of GitHub's own words, which the rule cuts from any answer that repeats them, as the
+// credential the request carried (redact.Tokens): "for installation ID 7" in GitHub's rate-limit
+// message reads "for [redacted] ID 7" beside it. A token GitHub mints holds no such run.
+func InstallationToken(seed string) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	first := sha256.Sum256([]byte("installation token " + seed))
+	second := sha256.Sum256(first[:])
+	digest := append(first[:], second[:]...)
+	token := []byte("ghs_")
+	for _, b := range digest[:36] {
+		token = append(token, alphabet[int(b)%len(alphabet)])
+	}
+	return string(token)
+}
 
 // Spec is what a fake GitHub server is made of beyond its own handler.
 type Spec struct {

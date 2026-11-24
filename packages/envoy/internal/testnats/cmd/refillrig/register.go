@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -53,10 +53,10 @@ func runRegister(args []string) error {
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {
-					answer, _ := io.ReadAll(resp.Body)
+					answer, _ := redact.ReadAnswer(resp, 64<<10)
 					_ = resp.Body.Close()
 					if resp.StatusCode != http.StatusOK {
-						err = fmt.Errorf("subscribe %s: %d %s", sessionID(j.set.name, j.index), resp.StatusCode, bytes.TrimSpace(answer))
+						err = fmt.Errorf("subscribe %s: %d %s", sessionID(j.set.name, j.index), resp.StatusCode, answer.Words())
 					}
 				}
 				if err != nil {

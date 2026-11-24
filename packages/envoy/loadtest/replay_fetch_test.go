@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -360,7 +361,15 @@ func TestStateCountsWrittenDocs(t *testing.T) {
 
 // TestFetchCreatedSpecs fetches version 1 of each window-created issue's spec into created-docs/:
 // by the event's primary_artifact_id, else by the issue's listing, and records the readable ones.
+// Its ids are in Dispatch's shape, as replay-fetch requires (eventInShape, listingInShape), and each
+// file is named after its id.
 func TestFetchCreatedSpecs(t *testing.T) {
+	const (
+		art1  = "a1000000-0000-4000-8000-000000000001"
+		spec2 = "52000000-0000-4000-8000-000000000002"
+		doc9  = "d9000000-0000-4000-8000-000000000009"
+		spec3 = "53000000-0000-4000-8000-000000000003"
+	)
 	raw := func(evs ...replayEvent) []byte {
 		var out []json.RawMessage
 		for _, ev := range evs {
@@ -377,16 +386,16 @@ func TestFetchCreatedSpecs(t *testing.T) {
 	}
 	routes := map[string][]byte{
 		"/api/v1/issues":              []byte(`[{"key":"PRJ-1"},{"key":"PRJ-2"},{"key":"PRJ-3"}]`),
-		"/api/v1/issues/PRJ-1/events": raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", nil))),
-		"/api/v1/issues/PRJ-2/events": raw(mkEvent(t, 2, "PRJ-2", "issue.created", mins(5), sess("s0"), issueSnap("PRJ-2", "t", "open", map[string]any{"primary_artifact_id": "spec-2"})),
-			mkEvent(t, 3, "PRJ-2", "artifact.created", mins(6), sess("s0"), map[string]any{"artifact": map[string]any{"id": "doc-9", "kind": "doc"}}),
-			mkEvent(t, 4, "PRJ-2", "artifact.created", mins(7), sess("s0"), map[string]any{"artifact": map[string]any{"id": "spec-2", "kind": "doc"}})),
-		"/api/v1/issues/PRJ-3/events":         raw(mkEvent(t, 5, "PRJ-3", "issue.created", mins(8), sess("s0"), issueSnap("PRJ-3", "t", "open", map[string]any{"primary_artifact_id": nil}))),
-		"/api/v1/issues/PRJ-1/artifacts":      listing("art-1"),
-		"/api/v1/issues/PRJ-3/artifacts":      listing("spec-3"),
-		"/api/v1/artifacts/art-1/versions/1":  version("state spec\n"),
-		"/api/v1/artifacts/spec-2/versions/1": version("created spec two\n"),
-		"/api/v1/artifacts/doc-9/versions/1":  version("created doc nine\n"),
+		"/api/v1/issues/PRJ-1/events": raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", map[string]any{"primary_artifact_id": art1}))),
+		"/api/v1/issues/PRJ-2/events": raw(mkEvent(t, 2, "PRJ-2", "issue.created", mins(5), sess("s0"), issueSnap("PRJ-2", "t", "open", map[string]any{"primary_artifact_id": spec2})),
+			mkEvent(t, 3, "PRJ-2", "artifact.created", mins(6), sess("s0"), map[string]any{"artifact": map[string]any{"id": doc9, "kind": "doc"}}),
+			mkEvent(t, 4, "PRJ-2", "artifact.created", mins(7), sess("s0"), map[string]any{"artifact": map[string]any{"id": spec2, "kind": "doc"}})),
+		"/api/v1/issues/PRJ-3/events":                raw(mkEvent(t, 5, "PRJ-3", "issue.created", mins(8), sess("s0"), issueSnap("PRJ-3", "t", "open", map[string]any{"primary_artifact_id": nil}))),
+		"/api/v1/issues/PRJ-1/artifacts":             listing(art1),
+		"/api/v1/issues/PRJ-3/artifacts":             listing(spec3),
+		"/api/v1/artifacts/" + art1 + "/versions/1":  version("state spec\n"),
+		"/api/v1/artifacts/" + spec2 + "/versions/1": version("created spec two\n"),
+		"/api/v1/artifacts/" + doc9 + "/versions/1":  version("created doc nine\n"),
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := routes[r.URL.Path]
@@ -410,10 +419,10 @@ func TestFetchCreatedSpecs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"PRJ-2": "spec-2"}; !reflect.DeepEqual(b.Meta.CreatedSpecs, want) {
+	if want := map[string]string{"PRJ-2": spec2}; !reflect.DeepEqual(b.Meta.CreatedSpecs, want) {
 		t.Fatalf("created specs %v, want %v", b.Meta.CreatedSpecs, want)
 	}
-	for rel, want := range map[string]string{"created-docs/spec-2.md": "created spec two\n", "created-docs/doc-9.md": "created doc nine\n"} {
+	for rel, want := range map[string]string{"created-docs/" + spec2 + ".md": "created spec two\n", "created-docs/" + doc9 + ".md": "created doc nine\n"} {
 		got, err := b.readFile(rel)
 		if err != nil || string(got) != want {
 			t.Fatalf("%s = %q, %v", rel, got, err)
@@ -422,10 +431,50 @@ func TestFetchCreatedSpecs(t *testing.T) {
 			t.Fatalf("bundle.meta.json does not list %s", rel)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(out, bundleCreatedDir, "spec-3.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(out, bundleCreatedDir, spec3+".md")); !os.IsNotExist(err) {
 		t.Fatalf("unreadable spec written: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(out, bundleRawDir, "versions", "spec-3", "1.unreadable")); err != nil {
+	if _, err := os.Stat(filepath.Join(out, bundleRawDir, "versions", spec3, "1.unreadable")); err != nil {
 		t.Fatalf("unreadable spec not cached as such: %v", err)
+	}
+}
+
+// TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes: Dispatch's artifact listing, or a
+// stand-in's in its place, can echo the fetch's bearer into a time the listing holds, and a
+// decoder's error quotes such a time whole; replay-fetch's error names the listing as not the
+// shape it reads and holds none of the bearer.
+func TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
+	const token = "loadtest-token-RDX-2f6c9b"
+	raw := func(evs ...replayEvent) []byte {
+		var out []json.RawMessage
+		for _, ev := range evs {
+			out = append(out, ev.Raw)
+		}
+		b, _ := json.Marshal(out)
+		return b
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/issues":
+			_, _ = w.Write([]byte(`[{"key":"PRJ-1"}]`))
+		case "/api/v1/issues/PRJ-1/events":
+			_, _ = w.Write(raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", map[string]any{"primary_artifact_id": nil}))))
+		case "/api/v1/issues/PRJ-1/artifacts":
+			echo := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			b, _ := json.Marshal([]map[string]any{{"id": "art-1", "name": "spec", "kind": "doc", "created_at": echo}})
+			_, _ = w.Write(b)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	out := t.TempDir()
+	f := &replayFetcher{api: newAPI(srv.URL, token, 2), raw: filepath.Join(out, bundleRawDir), conc: 2, lg: log.New(io.Discard, "", 0)}
+	_, err := f.run(context.Background(), "PRJ", tAt, tUntil, out, nil)
+	if err == nil || !strings.Contains(err.Error(), "PRJ-1 artifacts") {
+		t.Fatalf("replay-fetch over a listing that does not decode = %v, want an error naming PRJ-1's artifacts", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("the error holds the bearer the fetch carried:\n%s", err)
 	}
 }

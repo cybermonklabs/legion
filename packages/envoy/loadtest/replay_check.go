@@ -270,7 +270,7 @@ func checkSizesAndAnchors(ctx context.Context, conn *pgx.Conn, b *replayBundle, 
 				case got == -want:
 					r.SignFlipped++
 				default:
-					r.SizeMismatches = append(r.SizeMismatches, sizeMismatch{p.Key, a.Name, n, want, got})
+					r.SizeMismatches = append(r.SizeMismatches, sizeMismatch{p.Key, a.ID, n, want, got})
 				}
 			}
 		}
@@ -323,6 +323,10 @@ func checkSizesAndAnchors(ctx context.Context, conn *pgx.Conn, b *replayBundle, 
 	return r, nil
 }
 
+// seedDifference is one difference replay-check-seed prints and writes. Artifact is the document's
+// id, which the bundle keeps only in Dispatch's shape (eventInShape, listingInShape), and never its
+// name: a name is Dispatch's words, which have no shape, and the bundle outlives the record of the
+// answer that named it. So is sizeMismatch's.
 type seedDifference struct {
 	Issue, Artifact, What, Expected, Found string
 }
@@ -424,7 +428,7 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 			r.Documents++
 			local, ok := ids[[2]string{idArtifact, a.ID}]
 			if !ok {
-				diff(p.Key, a.Name, "mapping", "a local document", "none")
+				diff(p.Key, a.ID, "mapping", "a local document", "none")
 				continue
 			}
 			var maxV int
@@ -436,14 +440,14 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 				return r, err
 			}
 			if maxV != a.Version {
-				diff(p.Key, a.Name, "version", fmt.Sprint(a.Version), fmt.Sprint(maxV))
+				diff(p.Key, a.ID, "version", fmt.Sprint(a.Version), fmt.Sprint(maxV))
 			}
 			open, err := openAnchored(ctx, conn, local)
 			if err != nil {
 				return r, err
 			}
 			if open != anchored[a.ID] {
-				diff(p.Key, a.Name, "open-anchored", fmt.Sprint(anchored[a.ID]), fmt.Sprint(open))
+				diff(p.Key, a.ID, "open-anchored", fmt.Sprint(anchored[a.ID]), fmt.Sprint(open))
 			}
 			raw, err := b.readFile(a.TextPath)
 			if err != nil {
@@ -456,7 +460,7 @@ func checkSeed(ctx context.Context, conn *pgx.Conn, b *replayBundle, plans []see
 				r.AskBlockDocs++
 			}
 			if want != got {
-				diff(p.Key, a.Name, "text", textDigest(want), textDigest(got))
+				diff(p.Key, a.ID, "text", textDigest(want), textDigest(got))
 			} else if stepped {
 				r.AskBlockDocsEqual++
 			}

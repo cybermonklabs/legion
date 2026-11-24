@@ -46,14 +46,23 @@ func (f Finding) String() string {
 // check could hold to the wire package, so it is a finding of its own.
 const Untyped = "UNTYPED"
 
-// jsonCalls are the JSON calls whose value argument Check judges, each with that argument's index.
+// jsonCalls are the JSON calls whose value argument Check judges, each with that argument's index:
+// encoding/json's, and the decode of redact.Answer, which is how every client of this repository
+// reads an answer's body (the answer census of cmd/redact-gate holds them to it). A module outside
+// envoy's reads it as oauth2call.Answer, an alias whose Decode is the same method.
 var jsonCalls = map[string]int{
 	"encoding/json.Marshal":           0,
 	"encoding/json.MarshalIndent":     0,
 	"encoding/json.Unmarshal":         1,
 	"(*encoding/json.Decoder).Decode": 0,
 	"(*encoding/json.Encoder).Encode": 0,
+	answerDecode:                      0,
 }
+
+// answerDecode is redact.Answer's Decode, whose receiver is the answer's body: a function that
+// calls it on one of its own parameters decodes an answer it was handed, as one that hands its
+// parameter to json.Unmarshal's data does.
+const answerDecode = "(github.com/sjawhar/envoy/internal/redact.Answer).Decode"
 
 // requestBuilders are the calls that make a function a party call by building a request.
 var requestBuilders = map[string]bool{
@@ -70,13 +79,14 @@ var requestBuilders = map[string]bool{
 // such as "(*github.com/sjawhar/envoy/cmd/cipher.client).do"), or any function whose results
 // include a *net/http.Response; one that takes a *net/http.Request or *net/http.Response; and a
 // body reader that a party call calls: a function that hands one of its own parameters, or a
-// value made from one, to json.Unmarshal's data or json.NewDecoder, such as a helper that decodes
-// the answer bytes it was handed. In a party call, each value given to encoding/json's Marshal,
-// MarshalIndent, Unmarshal, (*Decoder).Decode or (*Encoder).Encode is judged, but a Marshal or
-// MarshalIndent whose result is used only converted to a string that goes into a field of a wire
-// type's value is not: that string is taken as a payload carried inside a body, whatever is done
-// with that field afterwards. A marshal used any other way, sent as the request body itself or put
-// into a map or a struct of the client's own, is judged.
+// value made from one, to json.Unmarshal's data or json.NewDecoder, or calls the Decode of a
+// redact.Answer it was handed, such as a helper that decodes the answer it was handed. In a party
+// call, each value given to encoding/json's Marshal, MarshalIndent, Unmarshal, (*Decoder).Decode
+// or (*Encoder).Encode, or to redact.Answer's Decode, is judged, but a Marshal or MarshalIndent
+// whose result is used only converted to a string that goes into a field of a wire type's value
+// is not: that string is taken as a payload carried inside a body, whatever is done with that
+// field afterwards. A marshal used any other way, sent as the request body itself or put into a
+// map or a struct of the client's own, is judged.
 //
 // A transport helper is a function of pkgs that hands one of its own parameters of type any to one
 // of those JSON calls, directly or through another transport helper. The argument a caller gives
@@ -210,7 +220,8 @@ type function struct {
 	name string
 	// party is whether it sends a request to the other party or reads its answer.
 	party bool
-	// bodyReader is whether it decodes bytes or a reader one of its own parameters carries.
+	// bodyReader is whether it decodes bytes, a reader or a redact.Answer one of its own
+	// parameters carries.
 	bodyReader bool
 	// parents maps each node of the body to the node holding it.
 	parents map[ast.Node]ast.Node
@@ -381,6 +392,9 @@ func (a *analysis) read(f *function) {
 			}
 		}
 		if (name == "encoding/json.Unmarshal" || name == "encoding/json.NewDecoder") && len(expr.Args) > 0 && mentions(info, expr.Args[0], all) {
+			f.bodyReader = true
+		}
+		if receiver, ok := ast.Unparen(expr.Fun).(*ast.SelectorExpr); ok && name == answerDecode && mentions(info, receiver.X, all) {
 			f.bodyReader = true
 		}
 		if a.functions[name] != nil {

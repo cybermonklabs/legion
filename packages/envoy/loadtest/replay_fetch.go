@@ -164,7 +164,8 @@ type issueLog struct {
 }
 
 // fetchLog pages an issue's events from the cache or Dispatch, stopping at a short page or at a
-// page ending more than replayPageSlack past until.
+// page ending more than replayPageSlack past until. It refuses a page holding an event that names an
+// id or a key out of Dispatch's shape (eventInShape), so no bundle keeps one.
 func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, until time.Time) (issueLog, error) {
 	lg := issueLog{Key: key, Number: number}
 	after := 0
@@ -179,10 +180,16 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 		if err := json.Unmarshal(body, &page); err != nil {
 			return lg, fmt.Errorf("%s events after %d: %w", key, after, err)
 		}
-		for _, raw := range page {
+		for i, raw := range page {
 			ev, err := parseReplayEvent(raw)
 			if err != nil {
-				return lg, fmt.Errorf("%s events after %d: %w", key, after, err)
+				// The decoder's error can quote the value it could not read (time.Time's does): the
+				// words of Dispatch, or of whatever answers in its place, which can echo the bearer.
+				// The error names the event's place in the page, and none of it.
+				return lg, fmt.Errorf("%s events after %d: event %d of the page is not an event replay-fetch reads", key, after, i+1)
+			}
+			if !eventInShape(ev) {
+				return lg, fmt.Errorf("%s events after %d: event %d of the page names an id or a key that is not in Dispatch's shape", key, after, i+1)
 			}
 			lg.Events = append(lg.Events, ev)
 		}
@@ -228,7 +235,8 @@ func versionAt(versions []listedVersion, at time.Time) (listedVersion, bool) {
 }
 
 // docText reads a document version's markdown: ok is false when Dispatch will not serve it (any
-// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable.
+// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable. id is a
+// listing's or an event's, so in Dispatch's shape (listingInShape, eventInShape).
 func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, bool, error) {
 	dir := filepath.Join(f.raw, "versions", id)
 	okPath := filepath.Join(dir, strconv.Itoa(n)+".json")
@@ -339,8 +347,11 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 			if err != nil {
 				return err
 			}
-			if err := json.Unmarshal(body, &listingsByIdx[i]); err != nil {
-				return fmt.Errorf("%s artifacts: %w", k, err)
+			if json.Unmarshal(body, &listingsByIdx[i]) != nil {
+				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			}
+			if !listingInShape(listingsByIdx[i]) {
+				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
 			}
 			return nil
 		})
@@ -390,7 +401,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 				if !ok {
 					continue
 				}
-				rel := bundleDocsDir + "/" + a.ID + ".md"
+				rel := bundleDocRel(a.ID)
 				if err := os.WriteFile(filepath.Join(out, filepath.FromSlash(rel)), text, 0o644); err != nil {
 					return err
 				}
@@ -431,7 +442,7 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 				return err
 			}
 			fetchedOK[i] = true
-			return os.WriteFile(filepath.Join(out, bundleCreatedDir, id+".md"), text, 0o644)
+			return os.WriteFile(filepath.Join(out, filepath.FromSlash(bundleCreatedRel(id))), text, 0o644)
 		})
 	}
 	if err := g.Wait(); err != nil {
@@ -524,11 +535,13 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 	return counts, writeFileAtomic(filepath.Join(out, bundleMetaFile), append(metaJSON, '\n'))
 }
 
-// issueNumber is the integer after the dash of a project's issue key.
+// issueNumber is the integer after the dash of a project's issue key. A key that is not one of the
+// project's issue keys (isIssueKey) is refused, so the bundle keeps none, and named only in an issue
+// key's shape (shownKey): it is Dispatch's listing's.
 func issueNumber(project, key string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimPrefix(key, project+"-"))
-	if err != nil || !strings.HasPrefix(key, project+"-") || n < 1 {
-		return 0, fmt.Errorf("issue key %q is not %s-<number>", key, project)
+	if err != nil || !isIssueKey(key) || !strings.HasPrefix(key, project+"-") || n < 1 {
+		return 0, fmt.Errorf("issue key %s is not %s-<number>", shownKey(key), project)
 	}
 	return n, nil
 }

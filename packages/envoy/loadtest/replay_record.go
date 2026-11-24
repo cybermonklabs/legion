@@ -544,7 +544,7 @@ func readEndStateBlocks(ctx context.Context, a *api, docs []replayEndDoc, local 
 			return fmt.Errorf("artifact %s blocks: status %d %s: %v", d.ArtifactID, res.status, res.errorCode(), res.err)
 		}
 		var served []servedBlock
-		if err := json.Unmarshal(res.body, &served); err != nil {
+		if err := res.answer.Decode(&served); err != nil {
 			return fmt.Errorf("artifact %s blocks: %w", d.ArtifactID, err)
 		}
 		ix := endStateBlockIndexes(served)

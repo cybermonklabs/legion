@@ -8,6 +8,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IAPIssuer is the issuer of the assertion Identity-Aware Proxy signs for each request it lets
@@ -103,7 +105,8 @@ func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 		IssuedAt  *float64 `json:"iat"`
 		NotBefore *float64 `json:"nbf"`
 	}
-	if err := token.Claims(&times); err != nil {
+	s := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(s.Read(struct{}{}, token.Claims(&times))); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	exp, err := numericDate("exp", times.Expiry)

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The daemon's create of an issue's branch no longer prints the repository's default branch as
+  GitHub's answer named it when the read of that base fails. Its refusal, and the read's own name in
+  GitHub's answer and in a read that got no answer, print the base only where it is a name git takes
+  for a branch and holds no GitHub token form, and `(a branch name the daemon does not print)` in
+  its place otherwise (`githubrest.ShownBranch`). Before, something answering in GitHub's place
+  that echoed the read's installation token as the default branch had it printed when the daemon
+  later created a branch from it.
+time: 2026-11-23T07:26:35Z
+custom:
+    Issue: pr4368

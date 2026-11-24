@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A failed read of a review author's permission no longer prints the author as GitHub's list of
+  reviews named it. The read's path holds the author as it came, and a token in GitHub's shape
+  passes the path's escaping as it is, so GitHub's answer to any status the read returns (a 5xx, a
+  401, a rate limit) and net/http's error for a read that got no answer printed it, in the error
+  the review's delivery returns and in the per-issue read's line. The daemon's GitHub client now
+  takes the name each call's failure prints: the permission read passes its route with the author
+  as a message may print it, and the base rules' reads their route with the base branch as the
+  rule reads it. A later page's read is named by its number after that name. A base rules read
+  that got no answer now says why in Go's own words, `Get "/rules/branches/<base>": <cause>`.
+time: 2026-11-23T05:22:53Z
+custom:
+    Issue: pr4368

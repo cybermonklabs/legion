@@ -69,11 +69,11 @@ const (
 // no account, both are the pod's own credentials. The real connector and the real
 // impersonation library run against fakes of the pod's credentials, of the IAM Service Account
 // Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which Admin
-// API call. connectorOptions gives the impersonation library a client over the test's own IAM
-// Credentials transport, which the library uses as it is, so the credential that the
-// generateAccessToken call itself carries is not under test: the fake pod credentials sign only
-// the calls of the row with no account. The instance has no private address, so each dial ends
-// with the connector's refusal, which shows that the private-IP option still applies. Every
+// API call. The impersonation's IAM Credentials client is connectorOptions' own
+// (impersonationClient), signed with the fake pod credentials as Application Default Credentials
+// sign it, or with the federated token where a writer token is given, over the test's own IAM
+// Credentials transport (googleEndpoints.iam). The instance has no private address, so each dial
+// ends with the connector's refusal, which shows that the private-IP option still applies. Every
 // request stays on loopback or in an in-process transport. The test sets an environment variable,
 // so it is not parallel.
 func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {

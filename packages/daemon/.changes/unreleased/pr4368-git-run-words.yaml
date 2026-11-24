@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A git run under the workspace's provisioning token prints no run of that token in any form
+  git, or something answering in GitHub's place, writes it back: the token whole or less a byte,
+  percent-encoded whole or in part, and the Basic credential git sends with it
+  (`base64("x-access-token:" + token)`), in the clone's, the shared clone's fetch's and Fetch's
+  errors and in Fetch's retry log lines. Those errors and lines are then read by the fail-closed
+  rule, which prints a stderr holding a URL it cannot read as clean as `(not printed: the answer's
+  words hold a URL the rule cannot read as clean)`; it reads the text after the rule that takes a
+  redirect Location's query and user information away. A git stderr of more than one line in
+  those errors now prints on one line, Go-quoted, so no line it holds can pass as a log line of
+  its own. The refusal of a bad entry of the repository cache's tar, the failure to write one and
+  `git fsck`'s stderr print no run of the cache's token, and neither do Fetch's log lines that
+  name a ref the cache's tar gave.
+time: 2026-11-23T21:16:52Z
+custom:
+    Issue: pr4368

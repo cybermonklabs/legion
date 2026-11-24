@@ -675,7 +675,9 @@ production's 3,187, the distinct author-list share is in [0.03, 0.12], and the a
 row are within 25% of 231. It prints `PASS` or `FAIL` and exits 1 on a failure.
 
 `refs-fetch` writes one TSV row per seeded issue, in key order: key, status, ETag, body sha256 and
-bytes. Two builds' answers compare row by row.
+bytes. Two builds' answers compare row by row. The ETag is recorded as Dispatch writes it (64
+lowercase hex digits in double quotes), and any other value as `sha256:` and the hex SHA-256 of
+it, since what answers in Dispatch's place can echo the read's bearer there.
 
 ## The spec loop's seed
 
@@ -1385,6 +1387,13 @@ state at 22:55:00Z and its writes up to 23:34:00Z:
 | `created-docs/<id>.md` | Version 1 of each document the window creates, the created issues' specs among them (`created_specs` maps each created issue to its spec). |
 | `roster.json` | The session ids the state and the window name. |
 | `bundle.meta.json` | The project, the instant, the window's end, `fetched_at`, `counts` and every other file's sha256. |
+
+Every id and key the bundle keeps is in Dispatch's shape: a lowercase UUID for a document, a
+comment or an ask, and for an issue its project's key, a hyphen and its number. `replay-fetch`
+refuses an issue listing, an event or an artifact listing that names one in any other shape, where
+it decodes it, since what answers in Dispatch's place can echo the fetch's bearer there; so the
+seed, the plan and the checks name these ids and keys as they are. A file named after a document id
+or an issue key, in the bundle or in `raw/`, has that id or key as its name.
 
 The 2026-10-26 bundle (`replay-2026-10-26.json`'s `bundle.counts`) holds 1,047 issues, 1,760
 documents (81 MB of markdown), 28 files, 18,899 open comments (10,350 of them anchored), 68 open or

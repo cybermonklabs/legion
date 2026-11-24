@@ -259,7 +259,7 @@ func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 				t.Fatalf("creates = %v, want one of %v", g.creates, want)
 			}
 			for _, authorization := range g.authorized {
-				if authorization != "Bearer installation-token" {
+				if authorization != "Bearer "+installationToken {
 					t.Fatalf("a request authorized as %q, want the installation token", authorization)
 				}
 			}
@@ -285,9 +285,14 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 	}
 }
 
+// installationToken is the installation token widgets calls with, in GitHub's shape
+// (githubtest.InstallationToken), so it shares no run with GitHub's messages, which an answer
+// prints with the token it carried redacted.
+var installationToken = githubtest.InstallationToken("acme/widgets")
+
 // widgets is acme/widgets's REST API under api, called with the installation token.
 func widgets(api string) githubrest.Client {
-	return githubrest.Client{Token: "installation-token", API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
+	return githubrest.Client{Token: installationToken, API: githubrest.RepositoryAPI(api, ghrepo.MustParse("acme/widgets"))}
 }
 
 func errorText(err error) string {

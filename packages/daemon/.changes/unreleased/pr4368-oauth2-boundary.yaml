@@ -1,0 +1,49 @@
+kind: Fixed
+body: |-
+  The launcher's line for a failed token exchange no longer prints a credential the security
+  token service's answer quotes. The exchange's error quoted the service's answer body as it
+  came, and the line logged it whole; the launcher now calls golang.org/x/oauth2 through
+  `oauth2call.Call`, whose error prints only the rule for remote text's reading of those words,
+  with each URL's user information and each query value removed. The token sources the launcher
+  and the session proxy hand to x/oauth2 and to the Cloud SQL connector go through
+  `oauth2call.TokenSource`, so a refusal those libraries print holds the same reading. The
+  launcher's exchange and the session proxy's IAM impersonation send through
+  `oauth2call.RefusalClient`, so a refusal that echoes the subject token or the pod's bearer prints
+  neither. The daemon's clients name an answer's status by its code and the standard phrase
+  (`oauth2call.StatusLine`), never the reason phrase the answering party wrote: the turn reports,
+  Dispatch's client, the Envoy listener calls and the repository cache's reads. The repository a
+  cache's answer names, the reason, holder state and holder the controller probe logs of a role
+  lookup, and GitHub's rate-limit headers in the daemon's limit lines each print as the rule
+  reads them (`oauth2call.Header`, and `listenerwire.RoleRefusalAs` and `RoleHolderAs` read with
+  their words as `oauth2call.RemoteText`), a rate-limit header that is a number as that number.
+  What a refusal is - GitHub's rate limit, its plan refusal, a ref it already
+  has, a code or sentence of Dispatch's, the secrets broker's, the Envoy listener's or the
+  daemon's own - is decided on the answer as it came and never on the rule's reading of it, which
+  prints a whole body whose one URL sits beside a JSON quote, as GitHub's documentation URL does,
+  as not readable: the rate-limit classifier, `ghbranch`, the cipher and Dispatch clients, the
+  listener calls and `legion controller start` each read the answer through `Answer.Decode` or
+  `oauth2call.Holds`, Dispatch's `Error` holds its code and its sentence as they came (`Code`,
+  `Said`) and the broker's refusal its code, so a write that quotes a code - a message naming
+  `ISSUE_NOT_FOUND`, a pod token holding a run of `POD_TOKEN_EXPIRED` - leaves the refusal the one
+  its sender made. A role lookup's holder and a role publish's refusal words (its holder, event
+  id and the listener's error) are held as they came (`oauth2call.RemoteText`): the supervisor's
+  forget compares the holder with the claim's session as it came and prints the holder's state as
+  one of the listener's words or as the rule reads it, and the outbox's re-hold compares a 504's
+  holder with the architect's session as it came, so a notice that names that session no longer
+  spends its copies at once. The line of a conflicting head's base rules names the required
+  status checks GitHub answers as the rule reads them, while R0 decides on them as they came.
+  `legion claims retry --failed` asks for no failed claim the daemon lists by a token without a
+  claim token's shape, and says it was not retried, so no line about a retry's path names such a
+  token. A read of GitHub's pages names nothing of the next page GitHub's Link header names: a
+  next page on another origin is refused naming the origin the token is sent to, and a later
+  page's failure names the page by its number under the read's path. The read of a conflicting
+  head's base rules names the base branch GitHub answers, on its line and in why the rules could
+  not be read, as the rule reads it, and reads the rules of that branch as it came. A Dispatch
+  artifact's approval time that does not parse is refused naming the field and none of its
+  value. `legion`'s diagnostics print a parser's or decoder's error of the daemon's answer
+  without the value it quotes, name the daemon's and GitHub's words in a line only in a shape that
+  holds no credential, and decide the controller credential's refusal on its code as it came. The
+  engine's line for a merge-state read dropped for another head names that head only as a commit.
+time: 2026-11-18T10:48:14Z
+custom:
+    Issue: pr4368

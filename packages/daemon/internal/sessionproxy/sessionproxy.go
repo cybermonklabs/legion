@@ -32,10 +32,12 @@ import (
 
 	"cloud.google.com/go/cloudsqlconn"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"golang.org/x/oauth2/google/externalaccount"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -50,8 +52,8 @@ const (
 )
 
 // Dialer is the upstream the proxy dials for each accepted connection: the Cloud SQL connector in
-// a pod, a fake over a local listener in a test. Close releases the dialer's own background work,
-// the connector's refreshed certificate cache above all.
+// a pod, a fake over a local listener in a test. Close releases what the dialer holds, the
+// connector's certificate cache above all.
 type Dialer interface {
 	Dial(ctx context.Context, instance string) (net.Conn, error)
 	Close() error
@@ -88,11 +90,15 @@ type Config struct {
 	// it dials the instance's private IP with automatic IAM database authentication, and signs in
 	// as the signer's account, or as the pod itself when the signer names no account.
 	NewDialer func(ctx context.Context, signer Signer) (Dialer, error)
-	// ProofTimeout bounds Start's proof dial, the one upstream connection that proves the
-	// credential path before Start returns. It must be positive: an instance that never answers,
-	// an unreachable address or a peer that stalls its handshake, would otherwise hold Start for as
-	// long as its caller's context lives. The per-connection dials after Start are not bounded by it.
-	ProofTimeout time.Duration
+	// DialTimeout bounds every upstream dial: Start's proof dial, the one upstream connection that
+	// proves the credential path before Start returns, and the dial serve makes for each accepted
+	// connection after it. It must be positive: an instance that never answers, an unreachable
+	// address or a peer that stalls its handshake, would otherwise hold Start for as long as its
+	// caller's context lives, and hold a connection's dial, and the connector's certificate cache
+	// with it, for as long as the proxy serves. A later dial does no more than the proof dial did
+	// (a refresh of the certificate and its tokens, then the connect and the handshake), so the
+	// bound the proof needs holds every dial.
+	DialTimeout time.Duration
 	// Drain is how long Close lets established connections finish on their own before it closes
 	// them. Zero closes them at once; a negative Drain is refused. Close is bounded by it so long as
 	// every per-connection dial honours cancellation, as the Cloud SQL connector's does: a client
@@ -152,6 +158,8 @@ type Proxy struct {
 	inFlight sync.WaitGroup
 	// drain is Config.Drain: how long Close waits for established connections before closing them.
 	drain time.Duration
+	// dialTimeout is Config.DialTimeout: the bound of each connection's dial (serve).
+	dialTimeout time.Duration
 
 	// connsMu guards closing and conns. closing is set once Close has begun, after which a pair
 	// serve would register is closed at once instead; conns maps every client the proxy is copying
@@ -174,7 +182,7 @@ type Proxy struct {
 // against a proxy that cannot reach the database.
 //
 // ctx bounds the start alone: a start whose ctx ends before the proof dial succeeds fails and
-// leaves nothing bound. The proof dial is bounded besides by cfg.ProofTimeout, so a start against
+// leaves nothing bound. The proof dial is bounded besides by cfg.DialTimeout, so a start against
 // an instance that never answers fails within that bound however long ctx lives, with an error
 // naming the instance and the bound that wraps the dial's own (context.DeadlineExceeded). Once
 // Start returns, ctx no longer matters: the proxy serves until Close, so its owner can keep it
@@ -206,8 +214,8 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	case cfg.WriterTokenFile != "" && !filepath.IsAbs(cfg.WriterTokenFile):
 		return nil, fmt.Errorf("sessionproxy: WriterTokenFile %q is not an absolute path", cfg.WriterTokenFile)
 	}
-	if cfg.ProofTimeout <= 0 {
-		return nil, fmt.Errorf("sessionproxy: ProofTimeout %s is not positive", cfg.ProofTimeout)
+	if cfg.DialTimeout <= 0 {
+		return nil, fmt.Errorf("sessionproxy: DialTimeout %s is not positive", cfg.DialTimeout)
 	}
 	if cfg.Drain < 0 {
 		return nil, fmt.Errorf("sessionproxy: Drain %s is negative", cfg.Drain)
@@ -235,7 +243,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		_ = listener.Close()
 		return nil, fmt.Errorf("sessionproxy: build the dialer for %s: %w", cfg.Instance, err)
 	}
-	proofCtx, cancelProof := context.WithTimeout(ctx, cfg.ProofTimeout)
+	proofCtx, cancelProof := context.WithTimeout(ctx, cfg.DialTimeout)
 	proof, err := dialer.Dial(proofCtx, cfg.Instance)
 	// proofCtx's own error is read before cancelProof, which would set it either way.
 	timedOut := errors.Is(proofCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
@@ -245,7 +253,7 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		_ = listener.Close()
 		_ = dialer.Close()
 		if timedOut {
-			return nil, fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.ProofTimeout, err)
+			return nil, fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.DialTimeout, err)
 		}
 		return nil, fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)
 	}
@@ -260,14 +268,15 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 
 	p := &Proxy{
-		instance: cfg.Instance,
-		listener: listener,
-		dialer:   dialer,
-		admit:    cfg.Admit,
-		cancel:   cancel,
-		drain:    cfg.Drain,
-		conns:    make(map[net.Conn]net.Conn),
-		log:      cfg.Log,
+		instance:    cfg.Instance,
+		listener:    listener,
+		dialer:      dialer,
+		admit:       cfg.Admit,
+		cancel:      cancel,
+		drain:       cfg.Drain,
+		dialTimeout: cfg.DialTimeout,
+		conns:       make(map[net.Conn]net.Conn),
+		log:         cfg.Log,
 	}
 	// The start line names the identity and the credential that signs it in, and never a token.
 	switch {
@@ -383,20 +392,36 @@ func (p *Proxy) accept(ctx context.Context) {
 
 // serve gives one accepted connection an upstream of its own and copies between them. With an
 // Admit, the connection's peer is checked first (admitted), so a refused connection costs no dial.
-// The dial is per connection on purpose: the connector mints the connection's credential as it
-// dials, from a certificate cache it keeps refreshed, so every connection carries a freshly minted
-// one. serve already runs on a goroutine of its own, so only the other copy direction takes one.
-// The pair is tracked from the dial's success until both copies end, so Close can close it once
-// the drain is over; a pair dialed once Close has begun is closed at once and never copied for.
+// The dial is per connection on purpose: the connector hands each connection a TLS session of its
+// own under the instance's ephemeral certificate, which carries the login token. The connector
+// refreshes that certificate inside a dial (lazy refresh, connectorOptions says why): the first
+// dial, and the first one within four minutes of the certificate's expiry, mints a new one under
+// its own context while it holds the connector's cache, so the dials queued behind it wait for
+// that refresh; a refresh that fails fails the dial that ran it, with no fallback to the
+// certificate it replaces, and the next dial tries again. Every other dial reuses the certificate.
+// Each dial is bounded by DialTimeout, so a refresh that gets no answer ends with its dial, and a
+// dial queued behind it ends by its own bound. serve already runs on a goroutine of its own, so
+// only the other copy direction takes one. The pair is tracked from the dial's success until both
+// copies end, so Close can close it once the drain is over; a pair dialed once Close has begun is
+// closed at once and never copied for.
 func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	if p.admit != nil && !p.admitted(client) {
 		return
 	}
-	upstream, err := p.dialer.Dial(ctx, p.instance)
+	dialCtx, cancelDial := context.WithTimeout(ctx, p.dialTimeout)
+	upstream, err := p.dialer.Dial(dialCtx, p.instance)
+	// dialCtx's own error is read before cancelDial, which would set it either way. The upstream
+	// a dial hands back outlives its context: the dial's context bounds the dial alone.
+	timedOut := errors.Is(dialCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancelDial()
 	if err != nil {
 		// Nothing is written back: a client that reads a Postgres error here would believe the
 		// database answered it.
 		_ = client.Close()
+		if timedOut {
+			p.logf("sessionproxy: could not dial %s for a connection: no answer within %s: %v", p.instance, p.dialTimeout, err)
+			return
+		}
 		p.logf("sessionproxy: could not dial %s for a connection: %v", p.instance, err)
 		return
 	}
@@ -468,16 +493,22 @@ func (p *Proxy) logf(format string, args ...any) {
 }
 
 // connectorDialer adapts the Cloud SQL connector, whose Dial takes variadic dial options, to
-// Dialer.
+// Dialer. Each Dial has its own scope: the connector hands back Admin API errors as text only, so
+// the boundary reads them with the records of the exact requests that Dial sent.
 type connectorDialer struct {
 	dialer *cloudsqlconn.Dialer
 }
 
 func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, error) {
-	return c.dialer.Dial(ctx, instance)
+	s := oauth2call.Scope[net.Conn](ctx)
+	return oauth2call.Call(s.Read(c.dialer.Dial(s.Context(), instance)))
 }
 
-func (c connectorDialer) Close() error { return c.dialer.Close() }
+func (c connectorDialer) Close() error {
+	s := oauth2call.Scope[struct{}](context.Background())
+	_, err := oauth2call.Call(struct{}{}, s.Err(c.dialer.Close()))
+	return err
+}
 
 // newConnectorDialer builds the dialer a pod uses, with connectorOptions and Google's own
 // endpoints. It signs in as the signer's account, or as the pod itself when the signer names none.
@@ -486,7 +517,8 @@ func newConnectorDialer(ctx context.Context, signer Signer) (Dialer, error) {
 	if err != nil {
 		return nil, err
 	}
-	dialer, err := cloudsqlconn.NewDialer(ctx, opts...)
+	s := oauth2call.Scope[*cloudsqlconn.Dialer](ctx)
+	dialer, err := oauth2call.Call(s.Read(cloudsqlconn.NewDialer(s.Context(), opts...)))
 	if err != nil {
 		return nil, err
 	}
@@ -508,25 +540,37 @@ const (
 // or a retry holds carries a token that runs out on the way.
 const writerTokenEarlyRefresh = 5 * time.Minute
 
-// writerCallTimeout bounds one request of the writer path: an exchange at the security token
-// service, and a generateAccessToken call with the federated token. Each token source holds its
-// lock through such a request, so one that never answered would hold every later connection's
-// credential with it, for as long as the proxy serves. The metadata endpoint bounds its exchange
-// the same way (internal/launcher's exchangeTimeout).
-const writerCallTimeout = 30 * time.Second
+// googleCallTimeout bounds one request the proxy sends to Google: an exchange at the security
+// token service, a generateAccessToken call at IAM Credentials, a token read of the pod's own
+// credentials over x/oauth2, and a Cloud SQL Admin API call. A token source holds its lock through
+// such a request and reads no dial's context: the library builds each source from the serving
+// context (connectorOptions), so a dial's bound cannot end its request. One that never answered
+// would hold the source, and every later dial's refresh behind it, for as long as the proxy
+// serves, each of those dials failing at its own bound. An Admin API call runs under its dial's
+// context (lazy refresh), and the client's bound holds it as well. The metadata endpoint bounds
+// its exchange the same way (internal/launcher's exchangeTimeout); the metadata server a pod's own
+// credentials read is bounded by its own client (cloud.google.com/go/compute/metadata's five
+// seconds).
+const googleCallTimeout = 30 * time.Second
 
-// googleEndpoints is where connectorOptions reaches Google's token services. The zero value is
-// what a pod uses: the IAM Service Account Credentials API over http.DefaultTransport, and the
-// security token service at STSTokenURL. Only this package's tests set a field, to reach fakes.
+// googleEndpoints is where connectorOptions reaches Google's token services, and how long one
+// request to Google may take. The zero value is what a pod uses: the IAM Service Account
+// Credentials API over http.DefaultTransport, the security token service at STSTokenURL, and
+// googleCallTimeout. Only this package's tests set a field, to reach fakes.
 type googleEndpoints struct {
-	// iam carries every IAM Credentials API request. With a writer token it is the base transport
-	// under the federated token. With an account alone it is the whole client, which then signs
-	// nothing. Nil is http.DefaultTransport under the federated token, and the client that the
-	// library builds from the pod's own credentials for an account alone.
+	// iam carries every IAM Credentials API request, beneath the credential that signs it: the
+	// federated token with a writer token, and the pod's own credentials (Application Default
+	// Credentials) with an account alone (impersonationClient). Nil is http.DefaultTransport.
 	iam http.RoundTripper
 	// stsURL is the token URL of the writer token's exchange. "" is STSTokenURL.
 	stsURL string
+	// callTimeout bounds one request to Google (googleCallTimeout says which). 0 is
+	// googleCallTimeout.
+	callTimeout time.Duration
 }
+
+// timeout is the bound of one request to Google: callTimeout, or googleCallTimeout where it is 0.
+func (e googleEndpoints) timeout() time.Duration { return cmp.Or(e.callTimeout, googleCallTimeout) }
 
 // connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
@@ -536,74 +580,136 @@ type googleEndpoints struct {
 // Monitoring each minute as the identity that signs the Admin API calls, which then needs
 // roles/monitoring.metricWriter, and Close waits up to three seconds of the stop grace to flush.
 //
-// With no account, the connector signs in as the pod itself, with the pod's own credentials. With
-// an account, a credential impersonates that account through the IAM Service Account Credentials
-// API. One impersonated source signs the Admin API calls, and the other gives the login token, so
-// the proxy signs in as the account. Both sources go to the connector through
-// cloudsqlconn.WithIAMAuthNTokenSources, so the connector itself reads no Application Default
-// Credentials.
+// With no account, the connector signs in as the pod itself, with two scoped instances of the
+// pod's credentials. With an account, a credential impersonates that account through the IAM
+// Service Account Credentials API (impersonationClient). One impersonated source signs the Admin
+// API calls, and the other gives the login token, so the proxy signs in as the account. Both
+// sources go to the connector through cloudsqlconn.WithIAMAuthNTokenSources, so the connector
+// itself reads no Application Default Credentials. The Admin API client is always a
+// RefusalClient.
 //
-// Without a writer token, the pod's own credentials impersonate the account: the library finds
-// them and builds its client from them. With a writer token, one federated source exchanges the
-// token file's contents at the security token service for a federated token, and the IAM
-// Credentials client that both sources use puts that token on each generateAccessToken call. The
-// pod's own credentials then sign nothing. The library calls its constant IAM Credentials
-// endpoint and ignores option.WithEndpoint, so the client is the only way to give each call the
-// federated token. The federated source reads the file again at each exchange.
+// The connector refreshes in the dial (cloudsqlconn.WithLazyRefresh), never in the background,
+// because a refusal it hands back is googleapi's text alone: connectorDialer.Dial reads it under a
+// scope of its own, whose record holds every request that dial sent, and the bearer of a refusal
+// that echoes it is redacted by that record. A background refresh sends its Admin API calls under a
+// context of the connector's own, which carries no scope, so the dial that hands back its error
+// would print that error's words with no request's credential redacted
+// (TestAnAdminAPIRefusalPrintsNoBearerItEchoes fails without this option). The cost, which serve
+// describes, is that a refresh runs in a dial and holds the connector's cache while it does; so
+// every dial is bounded (Config.DialTimeout), and every request to Google is bounded by
+// endpoints.timeout() (googleCallTimeout): the Admin API client's, the IAM Credentials client's,
+// the security token service's and the pod's own credentials' token reads.
 //
-// ctx is the proxy's serving context, which only Close ends. The library builds each source's
-// client and finds the pod's credentials with it, and the federated source makes each exchange
-// with it, so a credential that fetches its own token with that context keeps doing so for as
-// long as the proxy serves; never Start's own context, which ends once the proof dial is over.
-// Each source refreshes its one-hour token by itself when the connector next asks for one.
-func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints) ([]cloudsqlconn.Option, error) {
-	opts := make([]cloudsqlconn.Option, 0, 4)
-	opts = append(opts,
+// ctx is the proxy's serving context, which only Close ends. The library builds each source from
+// the IAM Credentials client given it, and the federated source makes each exchange with it, so a
+// credential that fetches its own token with that context keeps doing so for as long as the proxy
+// serves; never Start's own context, which ends once the proof dial is over. Each source refreshes
+// its one-hour token by itself when the connector next asks for one. endpoints is where Google's
+// token services are and how long one request to Google may take: production passes the zero
+// value, and a test its fakes.
+func connectorOptions(ctx context.Context, signer Signer, endpoints googleEndpoints) ([]cloudsqlconn.Option, error) {
+	opts := []cloudsqlconn.Option{
 		cloudsqlconn.WithIAMAuthN(),
 		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
 		cloudsqlconn.WithBuiltInMetrics(false),
-	)
+		cloudsqlconn.WithLazyRefresh(),
+	}
 	account := signer.Account
+	var api, login oauth2.TokenSource
+	var err error
 	if account == "" {
-		return opts, nil
-	}
-	var iam []option.ClientOption
-	switch {
-	case signer.WriterAudience != "":
-		// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the
-		// metadata endpoint's does, so the bound reaches it there.
-		exchange := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: writerCallTimeout})
-		federated, err := externalaccount.NewTokenSource(exchange, externalaccount.Config{
-			Audience:         signer.WriterAudience,
-			SubjectTokenType: JWTTokenType,
-			TokenURL:         cmp.Or(google.stsURL, STSTokenURL),
-			Scopes:           []string{cloudPlatformScope},
-			CredentialSource: &externalaccount.CredentialSource{File: signer.WriterTokenFile},
-		})
+		api, err = podTokenSource(ctx, endpoints.timeout(), sqlAdminScope, cloudPlatformScope)
 		if err != nil {
-			return nil, fmt.Errorf("exchange the writer token to impersonate %s: %w", account, err)
+			return nil, err
 		}
-		// oauth2.Transport sends over http.DefaultTransport when Base is nil, which is a pod's case.
-		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Timeout: writerCallTimeout, Transport: &oauth2.Transport{
-			Source: oauth2.ReuseTokenSourceWithExpiry(nil, federated, writerTokenEarlyRefresh),
-			Base:   google.iam,
-		}})}
-	case google.iam != nil:
-		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Transport: google.iam})}
+		login, err = podTokenSource(ctx, endpoints.timeout(), sqlLoginScope)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		iam, err := impersonationClient(ctx, signer, endpoints)
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s: %w", account, err)
+		}
+		adminScope := oauth2call.Scope[oauth2.TokenSource](ctx)
+		api, err = oauth2call.Call(adminScope.Read(impersonate.CredentialsTokenSource(adminScope.Context(), impersonate.CredentialsConfig{
+			TargetPrincipal: account,
+			Scopes:          []string{sqlAdminScope, cloudPlatformScope},
+		}, option.WithHTTPClient(adminScope.Client(iam)))))
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
+		}
+		loginScope := oauth2call.Scope[oauth2.TokenSource](ctx)
+		login, err = oauth2call.Call(loginScope.Read(impersonate.CredentialsTokenSource(loginScope.Context(), impersonate.CredentialsConfig{
+			TargetPrincipal: account,
+			Scopes:          []string{sqlLoginScope},
+		}, option.WithHTTPClient(loginScope.Client(iam)))))
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
+		}
 	}
-	api, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
-		TargetPrincipal: account,
-		Scopes:          []string{sqlAdminScope, cloudPlatformScope},
-	}, iam...)
+	admin := oauth2.NewClient(context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: endpoints.timeout()})), oauth2call.TokenSource(api))
+	return append(opts,
+		cloudsqlconn.WithHTTPClient(oauth2call.RefusalClient(admin)),
+		cloudsqlconn.WithIAMAuthNTokenSources(oauth2call.TokenSource(api), oauth2call.TokenSource(login)),
+	), nil
+}
+
+// podTokenSource is Application Default Credentials for scopes. FindDefaultCredentials is a
+// text-only library call, so it runs under a scope; the returned source is bound to that scope and
+// each Token reads the refusal it caused with the record of that Token's requests. A token read
+// over x/oauth2 (a credential file's token endpoint) takes the context's client, which timeout
+// bounds (googleCallTimeout); a read of the metadata server takes that library's own client.
+func podTokenSource(ctx context.Context, timeout time.Duration, scopes ...string) (oauth2.TokenSource, error) {
+	s := oauth2call.Scope[*google.Credentials](context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: timeout})))
+	credentials, err := oauth2call.Call(s.Read(google.FindDefaultCredentials(s.Context(), scopes...)))
 	if err != nil {
-		return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
+		return nil, err
 	}
-	login, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
-		TargetPrincipal: account,
-		Scopes:          []string{sqlLoginScope},
-	}, iam...)
+	return credentials.TokenSource, nil
+}
+
+// impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken
+// with. Without a writer token it is signed with the pod's own credentials (Application Default
+// Credentials, cloud-platform). With a writer token, one federated source exchanges the token
+// file's contents at the security token service for a federated token, which signs each call,
+// and the pod's own credentials sign nothing; the federated source reads the file again at each
+// exchange. Each request, on either path, is bounded by endpoints.timeout() (googleCallTimeout).
+// The library calls its constant IAM Credentials endpoint and ignores option.WithEndpoint, so the
+// client is the only way to give each call its credential. Its requests go out through a
+// RefusalClient beneath the credential's transport, so each refused request's bearer is recorded
+// in the source's scope and the boundary reads impersonate's text with it redacted. endpoints.iam
+// is the transport beneath (nil is http.DefaultTransport), and endpoints.stsURL the exchange's
+// token URL ("" is STSTokenURL).
+func impersonationClient(ctx context.Context, signer Signer, endpoints googleEndpoints) (*http.Client, error) {
+	if signer.WriterAudience == "" {
+		source, err := podTokenSource(ctx, endpoints.timeout(), cloudPlatformScope)
+		if err != nil {
+			return nil, fmt.Errorf("read the pod's own credentials: %w", err)
+		}
+		// oauth2.NewClient takes the context client's Timeout, so the bound holds each call.
+		return oauth2call.RefusalClient(oauth2.NewClient(
+			context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam})),
+			oauth2call.TokenSource(source),
+		)), nil
+	}
+	s := oauth2call.Scope[oauth2.TokenSource](ctx)
+	// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the metadata
+	// endpoint's does, so the bound and the record reach it there.
+	exchange := context.WithValue(s.Context(), oauth2.HTTPClient, s.Client(&http.Client{Timeout: endpoints.timeout()}))
+	federated, err := oauth2call.Call(s.Read(externalaccount.NewTokenSource(exchange, externalaccount.Config{
+		Audience:         signer.WriterAudience,
+		SubjectTokenType: JWTTokenType,
+		TokenURL:         cmp.Or(endpoints.stsURL, STSTokenURL),
+		Scopes:           []string{cloudPlatformScope},
+		CredentialSource: &externalaccount.CredentialSource{File: signer.WriterTokenFile},
+	})))
 	if err != nil {
-		return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
+		return nil, fmt.Errorf("exchange the writer token: %w", err)
 	}
-	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(api, login)), nil
+	// oauth2.Transport sends over http.DefaultTransport when Base is nil, which is a pod's case.
+	return oauth2call.RefusalClient(&http.Client{Timeout: endpoints.timeout(), Transport: &oauth2.Transport{
+		Source: oauth2call.TokenSource(oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(federated), writerTokenEarlyRefresh)),
+		Base:   oauth2call.RefusalClient(&http.Client{Transport: endpoints.iam}).Transport,
+	}}), nil
 }

@@ -42,7 +42,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,7 +49,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -325,15 +326,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-// tokenPattern matches the GitHub token forms (installation, OAuth, user-to-server, refresh,
-// personal, fine-grained personal), which a command's stderr may carry and no log or error may.
-var tokenPattern = regexp.MustCompile(`(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`)
-
 // redactingLines writes each whole line of a command's stderr to out, and to keep for the failure's
-// message, with every GitHub token in it replaced, so `agent-secrets`' line naming a pending request
-// reaches the daemon's log as it is written while a token never does; flush writes a last line with
-// no newline. Past limit bytes in all it marks the stream overflowed, calls overflow, which ends the
-// command, and relays nothing more.
+// message, with every GitHub token form in it replaced (githubrest.RedactTokens), so
+// `agent-secrets`' line naming a pending request reaches the daemon's log as it is written while a
+// token never does; flush writes a last line with no newline. Past limit bytes in all it marks the
+// stream overflowed, calls overflow, which ends the command, and relays nothing more.
 type redactingLines struct {
 	out        io.Writer
 	keep       *bytes.Buffer
@@ -367,7 +364,7 @@ func (r *redactingLines) Write(p []byte) (int, error) {
 }
 
 func (r *redactingLines) emit(line []byte) {
-	clean := tokenPattern.ReplaceAll(line, []byte("[redacted]"))
+	clean := githubrest.RedactTokens(line)
 	_, _ = r.out.Write(clean)
 	r.keep.Write(clean)
 }
@@ -379,17 +376,12 @@ func (r *redactingLines) flush() {
 	r.pending = nil
 }
 
-// loginPattern is a GitHub account login, ghrepo's ownerName: what a release may name an
-// installation by, and the only owner text a refusal of a release quotes. It is a letter or digit
-// and then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
-// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an
-// account's installation like any other: a rule here narrower than ghrepo's refused the whole
-// release, so no owner of it was minted for. The 39 characters are GitHub's own bound, which no
-// login exceeds.
-var loginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
-
 // parseRelease reads a token_command's stdout as the broker's release. Every refusal names the
-// field and the account and never quotes the output, which holds tokens.
+// field and the account and never quotes the output, which holds tokens. A release names each
+// installation by its account's login (ghrepo.IsLogin), and that is the only owner text a refusal
+// of a release quotes. A managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the
+// broker releases such an account's installation like any other: a rule narrower than ghrepo's
+// refused the whole release, so no owner of it was minted for.
 func parseRelease(output []byte, field string, now time.Time) (map[string]releasedInstallation, error) {
 	var release struct {
 		Installations map[string]struct {
@@ -406,12 +398,12 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 	installations := make(map[string]releasedInstallation, len(release.Installations))
 	for owner, entry := range release.Installations {
 		// Every refusal after this one quotes the key, and a token's text is what no error may
-		// carry, so a key holding a token form tokenPattern names is refused here, unquoted. A
-		// real token is 40 characters or more and already fails loginPattern's 39; this closes
-		// the shorter text spelled as one, which the underscore a login holds would otherwise let
-		// through. A login that merely opens like a token (`ghs_acme`) holds no token form and is
-		// read.
-		if !loginPattern.MatchString(owner) || tokenPattern.MatchString(owner) {
+		// carry, so a key holding a GitHub token form (githubrest.HoldsToken) is refused here,
+		// unquoted. A real token is 40 characters or more and already fails a login's 39; this
+		// closes the shorter text spelled as one, which the underscore a login holds would
+		// otherwise let through. A login that merely opens like a token (`ghs_acme`) holds no
+		// token form and is read.
+		if !ghrepo.IsLogin(owner) || githubrest.HoldsToken(owner) {
 			return nil, fmt.Errorf("%s released an installation whose account is not a GitHub login", field)
 		}
 		if _, err := installationID(entry.InstallationID); err != nil {
@@ -432,6 +424,15 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 // brokerNoInstallation is the secrets broker's refusal of a release for an account the App has no
 // installation on (packages/envoy/internal/cipher/secrets/githubapp.go, GitHubApp.Mint), which
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
+//
+// It and brokerNarrowingRefused are read in text the CLI already printed through the rule, with
+// the release request's credentials redacted, which is right where the text left the CLI's
+// process; the daemon holds no answer of the broker's to decide on as it came. Deciding on the
+// printed phrase is sound because each is fixed, public words of the broker's own, and the only
+// credential the rule redacts there is the request's own Proof, a base64url JWS the session's
+// helper signs for that request: it holds a run of eight characters of a phrase only by chance,
+// and a refusal whose phrase the rule cut reads as a plain failure, never as another verdict
+// (TestEachBrokerPhraseTheDaemonDecidesOnSurvivesTheCLIsRule).
 const brokerNoInstallation = "has no installation on"
 
 // brokerNarrowingRefused is the secrets broker's refusal of a profile it cannot serve for the
@@ -561,7 +562,9 @@ func (m *Manager) forgetLoginRelease(role AppRole) {
 
 // tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:
 // verifyTokenApp checks the token is appID's App's and names its bot login, run for every token,
-// and GET /users/<login> gives the bot user's id for its noreply email, read once per App.
+// and GET /users/<login> gives the bot user's id for its noreply email, read once per App. The
+// login and the identity's name are GitHub's words, decided on as they came and printed only as
+// logins GitHub allows (githubrest.ShownLogin), as verifyTokenApp says.
 func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token string) (GitIdentity, error) {
 	login, err := m.verifyTokenApp(ctx, role, appID, token)
 	if err != nil {
@@ -574,7 +577,8 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 		return GitIdentity{}, err
 	}
 	if identity.Name != login {
-		return GitIdentity{}, fmt.Errorf("the %s App's %s released a token that acts as %s, where the App acted as %s", role, tokenCommandField(role), login, identity.Name)
+		return GitIdentity{}, fmt.Errorf("the %s App's %s released a token that acts as %s, where the App acted as %s",
+			role, tokenCommandField(role), githubrest.ShownLogin(login), githubrest.ShownLogin(identity.Name))
 	}
 	return identity, nil
 }
@@ -582,6 +586,11 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 // verifyTokenApp returns the bot login token acts as, refusing a token that is not the App appID's:
 // GraphQL's viewer names the bot login, `<slug>[bot]`, and GET /apps/<slug> must answer appID, so a
 // command that releases another App's token is refused rather than acted as.
+//
+// The viewer's login is GitHub's words, or those of whatever answers in its place, which can echo
+// the token the read carried, the broker's release. It is decided on as it came, and the errors
+// here, checkAppID's and botIdentity's name it only as a login GitHub allows
+// (githubrest.ShownLogin), and its slug only as that login's.
 func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token string) (string, error) {
 	login, err := m.viewerLogin(ctx, role, token)
 	if err != nil {
@@ -589,7 +598,7 @@ func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token
 	}
 	slug, ok := strings.CutSuffix(login, "[bot]")
 	if !ok || slug == "" {
-		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), login)
+		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), githubrest.ShownLogin(login))
 	}
 	if err := m.checkAppID(ctx, role, slug, appID, token); err != nil {
 		return "", err
@@ -608,7 +617,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
+		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
@@ -630,9 +639,15 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 	return answer.Data.Viewer.Login, nil
 }
 
-// checkAppID reads GET /apps/<slug> and refuses an App whose id is not appID.
+// checkAppID reads GET /apps/<slug> and refuses an App whose id is not appID. The slug and the id
+// GitHub answers are GitHub's words (verifyTokenApp): each is decided on as it came, the read asks
+// for the slug as it came, and what this prints of them is the slug as ShownLogin prints its bot
+// login, without "[bot]", and the id where it is a number (shownAppID). A failure names the read
+// by that slug: in GitHub's answer (transientAs) and in the error of a read that got no answer
+// (redact.Unanswered).
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
-	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, slug, slug)
+	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
+	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)
 	if err != nil {
 		return err
@@ -640,10 +655,10 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 	tokenHeaders(request, token)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
+		return &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, "/apps/"+shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transientAs(response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -660,9 +675,19 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return fmt.Errorf("read %s: GitHub answered no App id", what)
 	}
 	if id != appID {
-		return fmt.Errorf("the %s App's %s released a token of App %s (%s), not of the configured app_id %s", role, tokenCommandField(role), id, slug, appID)
+		return fmt.Errorf("the %s App's %s released a token of App %s (%s), not of the configured app_id %s", role, tokenCommandField(role), shownAppID(id), shown, appID)
 	}
 	return nil
+}
+
+// shownAppID is id, an App's id GitHub answered, as a message may print it: id where it is a
+// decimal number, as GitHub numbers every App, and a fixed phrase otherwise, since
+// installationID reads any text GitHub writes as a string id.
+func shownAppID(id string) string {
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		return "(an id that is not a number)"
+	}
+	return id
 }
 
 // installedFromCommand is InstalledOn in token mode: the App is installed on repo when the release
@@ -718,7 +743,7 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 		tokenHeaders(request, lease.Token)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, err)}
+			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
 			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))

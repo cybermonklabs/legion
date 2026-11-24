@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ErrRunNotFound is a 404 from GitHub listing a specific run's jobs: the run or its repository no
@@ -185,7 +185,7 @@ func fetchWorkflowRunsPage(ctx context.Context, client *githubapp.Client, owner,
 		return nil, 0, fmt.Errorf("page %d (%s): %w", page, pageAttemptsNote(), err)
 	}
 	var payload workflowRunsPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return nil, 0, fmt.Errorf("decode page %d: %w", page, err)
 	}
 	runs := make([]FetchedRun, len(payload.WorkflowRuns))
@@ -215,7 +215,7 @@ func FetchWorkflowRun(ctx context.Context, client *githubapp.Client, owner, repo
 		return FetchedRun{}, fmt.Errorf("fetch %s/%s run %d: %w", owner, repo, runID, err)
 	}
 	var item workflowRunItem
-	if err := json.Unmarshal(body, &item); err != nil {
+	if err := body.Decode(&item); err != nil {
 		return FetchedRun{}, fmt.Errorf("decode %s/%s run %d: %w", owner, repo, runID, err)
 	}
 	return fetchedRunFromItem(item), nil
@@ -278,11 +278,11 @@ func ListWorkflowRunJobs(ctx context.Context, client *githubapp.Client, owner, r
 	return jobs, nil
 }
 
-// DecodeJobsPage decodes one page of GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs: its
-// jobs, and how many jobs the run has in all.
-func DecodeJobsPage(body []byte) ([]FetchedJob, int, error) {
+// DecodeJobsPage decodes one page of GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs, as
+// GitHub answered it (redact.Answer): its jobs, and how many jobs the run has in all.
+func DecodeJobsPage(body redact.Answer) ([]FetchedJob, int, error) {
 	var payload jobsPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return nil, 0, err
 	}
 	jobs := make([]FetchedJob, len(payload.Jobs))

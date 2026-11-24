@@ -1,7 +1,6 @@
 package ciphertest
 
 import (
-	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // The broker's own OpenID Connect client at a test's provider (BROKER_SIGNIN_CLIENT_ID and the
@@ -177,7 +177,7 @@ func (b *Browser) send(t *testing.T, req *http.Request, cookies []*http.Cookie) 
 		t.Fatalf("%s %s: %v", req.Method, req.URL, err)
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
+	body, err := answertest.Read(res)
 	if err != nil {
 		t.Fatalf("read %s %s: %v", req.Method, req.URL, err)
 	}

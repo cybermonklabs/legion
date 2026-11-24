@@ -2,6 +2,7 @@
 package appauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -19,8 +20,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -97,31 +101,51 @@ type AnswerError struct {
 func (e *AnswerError) Error() string { return e.Err.Error() }
 func (e *AnswerError) Unwrap() error { return e.Err }
 
-// answered is err, the failure of a call GitHub answered with response, whose body is body,
-// carrying that answer (AnswerError), its path the request's under the Manager's base URL
+// answered is err, the failure of a call GitHub answered with response, read as read, carrying
+// that answer (AnswerError), its path the request's under the Manager's base URL
 // (githubrest.PathUnder).
-func (m *Manager) answered(response *http.Response, body []byte, err error) *AnswerError {
-	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
-	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
+func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err error) *AnswerError {
+	return m.answeredAs(response, read, "", err)
 }
 
-// transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
-// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
-func (m *Manager) transient(response *http.Response, body []byte, err error) error {
-	refused := m.answered(response, body, err)
+// answeredAs is answered naming the call shown in place of its path, for a call whose path holds
+// GitHub's words, which a message prints only in their shape; "" names it by its path, as
+// answered does.
+func (m *Manager) answeredAs(response *http.Response, read oauth2call.Answer, shown string, err error) *AnswerError {
+	path := shown
+	if path == "" {
+		path = githubrest.PathUnder(m.baseURL, response.Request.URL)
+	}
+	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, read)}
+}
+
+// transient marks a response, read as read, as GitHub's trouble rather than an answer: a 5xx, or
+// a rate limit (the answer's RateLimited, which githubrest decides from the status, the rate-limit
+// headers and, for a secondary limit GitHub names in the body alone, the body as it came). Either
+// way err carries GitHub's answer (answered).
+func (m *Manager) transient(response *http.Response, read oauth2call.Answer, err error) error {
+	return m.transientAs(response, read, "", err)
+}
+
+// transientAs is transient naming the call shown, as answeredAs does.
+func (m *Manager) transientAs(response *http.Response, read oauth2call.Answer, shown string, err error) error {
+	refused := m.answeredAs(response, read, shown, err)
 	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
 	return refused
 }
 
-// refusalBody is the body GitHub sent with a refusal, read whole, and the response closed. One
-// that cannot be read is empty: the status and the headers still say what the answer is.
-func refusalBody(response *http.Response) []byte {
-	body, _ := io.ReadAll(response.Body)
+// refusalBody is the body GitHub sent with a refusal, read through oauth2call.ReadAnswer up to
+// responseBound, and the response closed: what the answer is, is decided on it as it came
+// (githubrest.AnswerOf, RateLimitSignals), and it prints only as the rule reads it (Words), with
+// every credential the request carried redacted (the App's JWT, an installation token), since
+// whatever answers in GitHub's place can echo the request there. One that cannot be read is
+// empty: the status and the headers still say what the answer is.
+func refusalBody(response *http.Response) oauth2call.Answer {
+	answer, _ := oauth2call.ReadAnswer(response, responseBound)
 	response.Body.Close()
-	return body
+	return answer
 }
 
 // responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which
@@ -146,21 +170,24 @@ const responseBound = 1 << 20
 // into the daemon's memory.
 const exchangeAnswerBound = 16 << 20
 
-// readBody reads a successful response's body whole, up to limit: a read that fails is a
-// transport failure, and transient, where what the body then fails to parse as is GitHub's
-// answer. A body past limit is no answer GitHub makes, and is refused naming the bound rather
-// than parsed, so a body that never ends cannot take the daemon's memory with it; the refusal
-// names the bound and never what the body held, which for a token exchange is the token.
+// readBody reads a successful response's body whole, up to limit, through oauth2call.ReadAnswer:
+// a read that fails is a transport failure, and transient, where what the body then fails to parse
+// as is GitHub's answer. A body past limit is no answer GitHub makes, and is refused naming the
+// bound rather than parsed, so a body that never ends cannot take the daemon's memory with it; the
+// refusal names the bound and never what the body held, which for a token exchange is the token.
+// The body is the data the call asked for, which the caller decodes and prints none of.
 func readBody(response *http.Response, what string, limit int64) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	answer, err := oauth2call.ReadAnswer(response, limit)
 	response.Body.Close()
+	if errors.Is(err, oauth2call.ErrAnswerTooLarge) {
+		return nil, fmt.Errorf("%s: the response is longer than the %d bytes an answer holds", what, limit)
+	}
 	if err != nil {
 		return nil, &TransientError{Err: fmt.Errorf("%s: read the response: %w", what, err)}
 	}
-	if int64(len(body)) > limit {
-		return nil, fmt.Errorf("%s: the response is longer than the %d bytes an answer holds", what, limit)
-	}
-	return body, nil
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body)
+	return body.Bytes(), nil
 }
 
 // Tokens mints a GitHub installation token for an App on one owner account. Every token reaches
@@ -307,8 +334,11 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	noRedirect := *client
-	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// The Manager's reads follow a redirect only on the origin they were sent to: GitHub's move of
+	// a repository answers a 301 on its own host (InstalledOn), and a Location naming any other
+	// host is the answering party's own words, refused by its status (redirects.SameOrigin).
+	client = redirects.SameOrigin(client)
+	noRedirect := redirects.Refused(client)
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -328,7 +358,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		apps:                 apps,
 		baseURL:              baseURL,
 		client:               client,
-		noRedirect:           &noRedirect,
+		noRedirect:           noRedirect,
 		now:                  now,
 		stderr:               stderr,
 		log:                  log,
@@ -851,7 +881,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 		m.appHeaders(request, jwt)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
+			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
@@ -945,7 +975,14 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 
 // botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
 // id, read from GET /users/<login> under installationToken.
+//
+// login is GitHub's words - its viewer's login in token mode, its App's slug in key mode - or
+// those of whatever answers in its place, which can echo the token the read carried. The read asks
+// for login as it came, path-escaped, which keeps a token's letters, so its failure names the read
+// by the login as a message may print it (githubrest.ShownLogin): in GitHub's answer
+// (transientAs) and in the error of a read that got no answer (redact.Unanswered).
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
+	shown := "/users/" + githubrest.ShownLogin(login)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
 	if err != nil {
 		return GitIdentity{}, err
@@ -955,10 +992,10 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 	request.Header.Set("User-Agent", "legion-daemon")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
+		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", redact.Unanswered(err, request, shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return GitIdentity{}, m.transientAs(response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
@@ -990,7 +1027,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 	m.appHeaders(request, jwt)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", err)}
+		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))

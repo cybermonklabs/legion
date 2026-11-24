@@ -382,7 +382,9 @@ type replayPlanCounts struct {
 	WritesByKind        map[string]int `json:"writes_by_kind"`
 	ReadsByKind         map[string]int `json:"reads_by_kind"`
 	RequestsByRoute     map[string]int `json:"requests_by_route"`
-	// NotSent counts the kept, in-window events no request stands for, by reason.
+	// NotSent counts the kept, in-window events no request stands for, by reason. A reason that
+	// names an event's type names it only where the package names it (shownEventType): the plan's
+	// counts are printed and written, and a type is the words of whatever answered for Dispatch.
 	NotSent map[string]int `json:"not_sent"`
 	// DroppedTransactions and OutsideWindow count the window's transactions sampling dropped and those
 	// outside [from, to).
@@ -576,7 +578,7 @@ func planReplay(b *replayBundle, o replayOptions) (*replayPlan, error) {
 		}
 		for _, ev := range g.evs {
 			if !slices.ContainsFunc(sendable, func(s replayEvent) bool { return s.ID == ev.ID }) {
-				pl.p.Counts.NotSent["derived:"+ev.Type]++
+				pl.p.Counts.NotSent["derived:"+shownEventType(ev.Type)]++
 			}
 		}
 		if len(sendable) == 0 {
@@ -585,7 +587,7 @@ func planReplay(b *replayBundle, o replayOptions) (*replayPlan, error) {
 		pl.p.Counts.TransactionsPlanned++
 		for _, ev := range sendable {
 			if ev.IssueKey == nil {
-				pl.p.Counts.NotSent["no_issue:"+ev.Type]++
+				pl.p.Counts.NotSent["no_issue:"+shownEventType(ev.Type)]++
 				continue
 			}
 			// The reads before a write are planned before it, so they never pick the comment or
@@ -1030,7 +1032,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		var spec string
 		var size int
 		if id, ok := pl.b.Meta.CreatedSpecs[key]; ok {
-			raw, err := pl.b.readFile(bundleCreatedDir + "/" + id + ".md")
+			raw, err := pl.b.readFile(bundleCreatedRel(id))
 			if err != nil {
 				return nil, "", fmt.Errorf("bundle created spec %s: %w", key, err)
 			}
@@ -1094,7 +1096,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		}
 		act.Kind = rkDocCreate
 		text := ""
-		if raw, err := pl.b.readFile(bundleCreatedDir + "/" + a.ID + ".md"); err == nil {
+		if raw, err := pl.b.readFile(bundleCreatedRel(a.ID)); err == nil {
 			text = string(raw)
 		} else if errors.Is(err, os.ErrNotExist) {
 			text = replaySynthDoc(size, replayHash(pl.o.rngSeed, "created", a.ID))
@@ -1200,7 +1202,7 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		cp, ca := actorFor(claimer)
 		act.Stages = [][]*replayReq{{{Method: "POST", Path: "/api/v1/issues/{key}/claim", Params: keyParams(key), Person: cp, Body: withActor(map[string]any{}, ca)}}}
 	default:
-		return nil, "unhandled:" + ev.Type, nil
+		return nil, "unhandled:" + shownEventType(ev.Type), nil
 	}
 	return act, "", nil
 }

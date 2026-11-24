@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -517,13 +518,8 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 	}
 	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx
 	// answered for the broker - by the broker, or by anyone who can answer for it - must not
-	// hand that proof to a host this deployment never named. The refusal is written here as
-	// internal/modeltoken writes it, since envoy's redirects package is internal to that
-	// module; its comment is where the whole reason is.
-	broker := &http.Client{
-		Timeout:       30 * time.Second,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	// hand that proof to a host this deployment never named (redirects.Refused says why).
+	broker := redirects.Refused(&http.Client{Timeout: 30 * time.Second})
 	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client

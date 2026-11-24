@@ -318,21 +318,13 @@ func TestATransportErrorAfterALongURLStillNamesItsCause(t *testing.T) {
 	}
 }
 
-// A value of an answer Go cannot decode is GitHub's text, which the decode's error quotes. The
-// client cuts each field of the time.ParseError that holds such text alone (ShownErr), each with
-// its own size, so the error never holds the long text whole. The error is still a
-// *time.ParseError, and it still names the reason. Package time quotes each value in the error's
-// text and writes each byte past ASCII as \xNN, so the `…` of the cut shows as \xe2\x80\xa6
-// there. Each row is an expires_at in the 201 GitHub answers an installation token mint with:
-//
-//   - 100,000 bytes that are no time. The parse error quotes the value twice, as Value and as
-//     ValueElem, and names the layout. The error is no longer than the client's words and the
-//     longest text ShownBody makes.
-//   - A valid time and 100,000 bytes after it. time.Parse reads the time and fails on the text
-//     after it, with a reason that quotes that text (Message, `: extra text: "<text>"`), and
-//     ValueElem is that text. The client cuts the reason as it cuts the value (review of
-//     cybermonklabs/legion#4373 at a9c02f7a). The error quotes the value once, and it is no
-//     longer than the client's words and shownErrMost.
+// A value of an answer Go cannot decode is GitHub's text. The answer decodes through
+// redact.Answer.Decode, whose error names the member that did not decode and the type that holds
+// it, and quotes none of the value, so the error never holds the long text, whole or cut, and is
+// no longer than the client's words and the bound. It reaches none of the decoder's own errors
+// (a *time.ParseError here), whose text quotes the value. Each row is an expires_at in the 201
+// GitHub answers an installation token mint with: 100,000 bytes that are no time, and a valid
+// time with 100,000 bytes after it.
 func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
 	const prefix = "decode installation token: "
 	long := strings.Repeat("v", 100_000)
@@ -340,42 +332,12 @@ func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		// expiresAt is the expires_at the mint answers, and long is the text of it that the error
-		// must never hold whole.
+		// must never hold, in any part.
 		expiresAt, long string
-		// most is the longest the error may be after the client's words, and mostName names it.
-		most     int
-		mostName string
-		// value, valueElem and message are the parse error's fields as the client must cut them.
-		value, valueElem, message string
-		// quoted is how many times the error holds expiresAt as ShownBody shows it, in time's
-		// quotes.
-		quoted int
-		// start is the start of long in the error, and words are other texts the error must hold.
-		start string
-		words []string
-	}{{
-		name:      "a value of 100,000 bytes that is no time",
-		expiresAt: long,
-		long:      long,
-		most:      shownMost,
-		mostName:  "the longest text ShownBody makes",
-		value:     ShownBody(long),
-		valueElem: ShownBody(long),
-		quoted:    2,
-		start:     long[:256],
-		words:     []string{` as "2006-01-02T15:04:05Z07:00"`, "cannot parse"},
-	}, {
-		name:      "a valid time and 100,000 bytes after it",
-		expiresAt: "2026-11-20T00:00:00Z" + extra,
-		long:      extra,
-		most:      shownErrMost,
-		mostName:  "shownErrMost",
-		value:     ShownBody("2026-11-20T00:00:00Z" + extra),
-		valueElem: ShownBody(extra),
-		message:   ShownBody(`: extra text: "` + extra + `"`),
-		quoted:    1,
-		start:     `": extra text: "` + extra[:256],
-	}} {
+	}{
+		{name: "a value of 100,000 bytes that is no time", expiresAt: long, long: long},
+		{name: "a valid time and 100,000 bytes after it", expiresAt: "2026-11-20T00:00:00Z" + extra, long: extra},
+	} {
 		t.Run(strings.ReplaceAll(row.name, " ", "_"), func(t *testing.T) {
 			client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/app/installations/7/access_tokens" {
@@ -390,37 +352,20 @@ func TestADecodeErrorOfALongValueIsCutToTheBound(t *testing.T) {
 				t.Fatal("a token mint whose answer does not decode answered no error")
 			}
 			text := err.Error()
+			const want = prefix + `the answer's "expires_at" does not decode where the value holds a time.Time`
 			switch {
-			case strings.Contains(text, row.long):
-				t.Fatalf("the error (%d bytes) holds the %d-byte text whole; want it cut to a bound", len(text), len(row.long))
-			case len(text) > len(prefix)+row.most:
-				t.Fatalf("the error is %d bytes; want at most %d, the client's words and %s", len(text), len(prefix)+row.most, row.mostName)
-			case !strings.HasPrefix(text, prefix):
-				t.Fatalf("the error is %.120q…; want it to start %q", text, prefix)
-			case !strings.Contains(text, row.start):
-				t.Fatalf("the error is %.200q…; want it to hold %.40q…, the start of the long text", text, row.start)
+			case strings.Contains(text, row.long[:8]):
+				t.Fatalf("the error (%d bytes) holds the value's text; want none of it", len(text))
+			case strings.Contains(text, "2026-11-20"):
+				t.Fatalf("the error %.120q… holds the value's time; want none of the value", text)
+			case len(text) > len(prefix)+shownErrMost:
+				t.Fatalf("the error is %d bytes; want at most %d, the client's words and shownErrMost", len(text), len(prefix)+shownErrMost)
+			case text != want:
+				t.Errorf("the error is %.200q; want %q, the member and its type and no value", text, want)
 			}
 			var decode *time.ParseError
-			if !errors.As(err, &decode) {
-				t.Fatalf("the error %.120q… reaches no *time.ParseError", text)
-			}
-			if decode.Value != row.value || decode.ValueElem != row.valueElem || decode.Message != row.message {
-				t.Errorf("the decode error's Value is %.60q… (%d bytes), its ValueElem %.60q… (%d bytes) and its Message %.60q… (%d bytes); want %.60q… (%d bytes), %.60q… (%d bytes) and %.60q… (%d bytes), each as ShownBody shows it, with its own size",
-					decode.Value, len(decode.Value), decode.ValueElem, len(decode.ValueElem), decode.Message, len(decode.Message),
-					row.value, len(row.value), row.valueElem, len(row.valueElem), row.message, len(row.message))
-			}
-			if want := prefix + decode.Error(); text != want {
-				t.Errorf("the error is %.120q… (%d bytes); want the client's words and the decode error, %.120q… (%d bytes)", text, len(text), want, len(want))
-			}
-			// quoted is expiresAt as ShownBody shows it, in the quotes of package time.
-			quoted := `"` + strings.ReplaceAll(ShownBody(row.expiresAt), "…", `\xe2\x80\xa6`) + `"`
-			if n := strings.Count(text, quoted); n != row.quoted {
-				t.Errorf("the error holds the value as ShownBody shows it (%q, in time's quotes) %d times; want %d", quoted[len(quoted)-40:], n, row.quoted)
-			}
-			for _, word := range row.words {
-				if !strings.Contains(text, word) {
-					t.Errorf("the error %.120q… does not hold %q; want it to name the layout and the reason", text, word)
-				}
+			if errors.As(err, &decode) {
+				t.Errorf("the error %.120q… reaches a *time.ParseError, whose text quotes the value", text)
 			}
 		})
 	}
@@ -494,12 +439,12 @@ func TestShownErrIsNeverLongerThanShownErrMost(t *testing.T) {
 	}
 }
 
-// A number past the range of its Go type is GitHub's text, which the decode's error copies: the
-// Value of a json.UnmarshalTypeError is `number <literal>`. The client cuts the literal alone
-// (ShownErr), so the error holds it as ShownBody shows it, with the literal's size, and never
-// whole. The error is still a *json.UnmarshalTypeError, and it still names the field and its type.
-// The number here is an id of 1,000 digits in the 200 GitHub answers an installation lookup with
-// (installationPayload's ID is an int64).
+// A number past the range of its Go type is GitHub's text. The answer decodes through
+// redact.Answer.Decode, whose error names the member, the JSON kind it held and the Go type that
+// holds it, and none of the literal, so the error never holds the literal, whole or cut, and it
+// reaches no *json.UnmarshalTypeError, whose Value copies it. The number here is an id of 1,000
+// digits in the 200 GitHub answers an installation lookup with (installationPayload's ID is an
+// int64).
 func TestATypeErrorOfALongNumberIsCutToTheBound(t *testing.T) {
 	literal := strings.Repeat("9", 1000)
 	client := branchServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -514,27 +459,15 @@ func TestATypeErrorOfALongNumberIsCutToTheBound(t *testing.T) {
 		t.Fatal("an installation lookup whose answer does not decode answered no error")
 	}
 	text := err.Error()
-	const prefix = "decode installation: "
-	cut := ShownBody(literal)
+	const want = `decode installation: the answer's "id" is a JSON number where a githubapp.installationPayload holds a int64`
 	var decode *json.UnmarshalTypeError
 	switch {
-	case strings.Contains(text, literal):
-		t.Fatalf("the error (%d bytes) holds the %d-byte literal whole; want it as ShownBody shows it", len(text), len(literal))
-	case !errors.As(err, &decode):
-		t.Fatalf("the error %.120q… reaches no *json.UnmarshalTypeError", text)
-	case decode.Value != "number "+cut:
-		t.Errorf("the type error's Value is %.60q… (%d bytes); want `number ` and the literal as ShownBody shows it, %d bytes ending %q",
-			decode.Value, len(decode.Value), len(cut), cut[strings.LastIndex(cut, "…"):])
-	case decode.Field != "id":
-		t.Errorf("the type error's Field is %q; want id", decode.Field)
-	case text != prefix+decode.Error():
-		t.Errorf("the error is %.120q… (%d bytes); want the client's words and the type error, %.120q…", text, len(text), prefix+decode.Error())
-	}
-	if want := "number " + cut + " into Go struct field "; !strings.Contains(text, want) {
-		t.Errorf("the error %.120q… does not hold the literal as ShownBody shows it, with the literal's size, ending %q", text, want[len(want)-60:])
-	}
-	if end := "installationPayload.id of type int64"; !strings.HasSuffix(text, end) {
-		t.Errorf("the error ends %q; want it to name the field and its type, %q", text[max(0, len(text)-60):], end)
+	case strings.Contains(text, literal[:8]):
+		t.Fatalf("the error (%d bytes) holds the literal; want none of it", len(text))
+	case errors.As(err, &decode):
+		t.Fatalf("the error %.120q… reaches a *json.UnmarshalTypeError, whose Value copies the literal", text)
+	case text != want:
+		t.Errorf("the error is %.160q; want %q, the field, its JSON kind and its Go type", text, want)
 	}
 }
 
@@ -568,7 +501,7 @@ func TestABlobErrorShowsTheTreesShaAndPathToABound(t *testing.T) {
 		size:   1,
 		status: http.StatusOK,
 		answer: `{"content":"","encoding":"utf-8"}`,
-		want:   "blob b1 (" + ShownBody("docs/"+long+".md") + `) has encoding "utf-8", want base64`,
+		want:   "blob b1 (" + ShownBody("docs/"+long+".md") + ") is in an encoding that is not base64",
 	}, {
 		name: "a listed size past the notes bound for a path past the bound",
 		sha:  "b1",

@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // HTTPServer connects to a pre-existing MCP server over HTTP/SSE transport.
@@ -73,8 +76,10 @@ func (s *HTTPServer) Start() error {
 	}
 	s.sseResp = resp
 
-	// 2. Read the first SSE event (type "endpoint") to get the message POST URL.
-	scanner := bufio.NewScanner(resp.Body)
+	// 2. Read the first SSE event (type "endpoint") to get the message POST URL. The event stream
+	// is data the session reads for its whole life (redact.StreamAnswer), bounded by that life
+	// and not by its size.
+	scanner := bufio.NewScanner(redact.StreamAnswer(resp, math.MaxInt64))
 	messageURL, err := readEndpointEvent(scanner)
 	if err != nil {
 		resp.Body.Close()
@@ -82,16 +87,20 @@ func (s *HTTPServer) Start() error {
 	}
 	s.messageURL = messageURL
 
-	// 3. Create session with HTTP POST send function.
+	// 3. Create session with HTTP POST send function. The endpoint is the server's words: an error
+	// names it as the rule reads it (redact.Field), with no user information and no query value.
+	// net/http's error for a POST that failed quotes the endpoint again, so it prints through
+	// redact.Cause: the failure alone beside an endpoint the allow-list passes, and its class beside
+	// any other.
 	s.session = newSession(s.cfg.Name, func(data []byte) error {
 		postResp, postErr := http.Post(s.messageURL, "application/json", bytes.NewReader(data))
 		if postErr != nil {
-			return fmt.Errorf("POST to %s: %w", s.messageURL, postErr)
+			return fmt.Errorf("POST to %s: %w", redact.Field(s.messageURL), redact.Cause(postErr, s.messageURL))
 		}
 		defer postResp.Body.Close()
 		if postResp.StatusCode >= 400 {
-			body, _ := io.ReadAll(postResp.Body)
-			return fmt.Errorf("POST to %s: status %d: %s", s.messageURL, postResp.StatusCode, body)
+			refused, _ := redact.ReadAnswer(postResp, 64<<10)
+			return fmt.Errorf("POST to %s: status %d: %s", redact.Field(s.messageURL), postResp.StatusCode, refused.Words())
 		}
 		return nil
 	}, s.onNotify, s.stopCh)

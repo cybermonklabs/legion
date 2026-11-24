@@ -76,8 +76,10 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 		}
 		// The reads below go on against the record as it stands when a comparison GitHub keeps
 		// failing stops this one following the head: the next read of the issue follows it.
+		// GitHub's head is its words, or those of whatever answers in its place, so the line names
+		// it only as a commit's sha (githubrest.ShownSHA).
 		w.log.Warn("follow the head GitHub shows for an issue's pull request; this read judges it at the recorded head",
-			"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", pull.Head.SHA, "error", err)
+			"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", githubrest.ShownSHA(pull.Head.SHA), "error", err)
 	}
 	// The reads after the head start their bound only now: following a head waits on the fact lock,
 	// which the GitHub consumer's backlog can hold for a while.
@@ -127,7 +129,7 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 	// arrived: a listed review names the head it read in its own Legion footer
 	// (intake.PullRequestReview), so no clock of this read is weighed against a review's.
 	w.log.Warn("workflow: GitHub holds an open pull request for an issue the daemon records none for; applying the opened its webhook would",
-		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", pull.Head.SHA, "updated_at", pull.UpdatedAt)
+		"repo", repo, "pullRequest", pull.Number, "issue", key, "head", githubrest.ShownSHA(pull.Head.SHA), "updated_at", pull.UpdatedAt)
 	fact := intake.PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: pr != nil && pr.Number == pull.Number}
 	eventID := fmt.Sprintf("opened-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, repo, pull.Number, time.Now().UnixNano())

@@ -30,6 +30,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,6 +39,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // loadOptions is what the flags say, the proxy URL and the header read out of the files
@@ -174,7 +177,9 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 }
 
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
-// CONNECT left behind.
+// CONNECT left behind. The answer is read with the CONNECT it answers (http.ReadResponse's req),
+// its Proxy-Authorization among it, so a print of a refusal's words redacts the credential the
+// CONNECT carried (redact.Carried), as ask's answer does its bearer.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
 	// the flag the URL came from instead.
@@ -188,10 +193,16 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 	}
 	target := o.host + ":443"
 	request := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n"
+	sent, err := http.NewRequest(http.MethodConnect, "https://"+target, nil)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
 	if u.User != nil {
 		password, _ := u.User.Password()
 		credential := base64.StdEncoding.EncodeToString([]byte(u.User.Username() + ":" + password))
 		request += "Proxy-Authorization: Basic " + credential + "\r\n"
+		sent.Header.Set("Proxy-Authorization", "Basic "+credential)
 	}
 	request += "\r\n"
 	_ = conn.SetDeadline(time.Now().Add(timeout))
@@ -199,15 +210,15 @@ func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
 		conn.Close()
 		return nil, err
 	}
-	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	answer, err := http.ReadResponse(bufio.NewReader(conn), sent)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
 	if answer.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(answer.Body, 300))
+		refused, _ := redact.ReadAnswer(answer, 300)
 		conn.Close()
-		return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("the CONNECT answered %d %s", answer.StatusCode, refused.Words())
 	}
 	return conn, nil
 }
@@ -227,18 +238,25 @@ func (o *loadOptions) speak(timeout time.Duration) (net.Conn, *bufio.Reader, err
 	return conn, bufio.NewReader(conn), nil
 }
 
-// ask writes one HTTP/1.1 request on an open connection and reads its answer.
+// ask writes one HTTP/1.1 request on an open connection and reads its answer, which carries the
+// request it answers (http.ReadResponse's req), its bearer among it, so a print of the answer's
+// words redacts what the request carried (redact.Carried).
 func (o *loadOptions) ask(conn net.Conn, reader *bufio.Reader, method, path string, body []byte, extra string) (*http.Response, error) {
 	request := method + " " + path + " HTTP/1.1\r\nHost: " + o.host + "\r\n"
+	sent, err := http.NewRequest(method, "https://"+o.host+path, nil)
+	if err != nil {
+		return nil, err
+	}
 	if o.header != "" {
 		request += "Authorization: Bearer " + o.header + "\r\n"
+		sent.Header.Set("Authorization", "Bearer "+o.header)
 	}
 	request += extra
 	request += fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
 	if _, err := conn.Write(append([]byte(request), body...)); err != nil {
 		return nil, err
 	}
-	return http.ReadResponse(reader, nil)
+	return http.ReadResponse(reader, sent)
 }
 
 // one call: a connection of its own, a request on it and the whole answer read.
@@ -254,7 +272,7 @@ func (o *loadOptions) call(timeout time.Duration) error {
 		return err
 	}
 	defer answer.Body.Close()
-	if _, err := io.Copy(io.Discard, answer.Body); err != nil {
+	if _, err := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64)); err != nil {
 		return err
 	}
 	if answer.StatusCode != http.StatusOK {
@@ -384,7 +402,7 @@ func (o *loadOptions) upload(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": err.Error(), "seconds": time.Since(at).Seconds()})
 		return
 	}
-	read, _ := io.Copy(io.Discard, answer.Body)
+	read, _ := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64))
 	o.say(stdout, map[string]any{"status": answer.StatusCode, "sent": len(body), "answer_bytes": read,
 		"seconds": time.Since(at).Seconds()})
 }
@@ -404,14 +422,14 @@ func (o *loadOptions) gapMode(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": "the first event: " + err.Error()})
 		return
 	}
-	_, _ = io.Copy(io.Discard, first.Body)
+	_, _ = io.Copy(io.Discard, redact.StreamAnswer(first, math.MaxInt64))
 	time.Sleep(time.Duration(o.gap) * time.Second)
 	second, err := o.ask(conn, reader, "GET", "/second-event", nil, "")
 	if err != nil {
 		o.say(stdout, map[string]any{"first": first.StatusCode, "second_error": err.Error(), "gap": o.gap})
 		return
 	}
-	_, _ = io.Copy(io.Discard, second.Body)
+	_, _ = io.Copy(io.Discard, redact.StreamAnswer(second, math.MaxInt64))
 	o.say(stdout, map[string]any{"first": first.StatusCode, "second": second.StatusCode, "gap": o.gap})
 }
 
@@ -431,18 +449,20 @@ func (o *loadOptions) upgrade(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": err.Error()})
 		return
 	}
-	result := map[string]any{"status": answer.StatusCode, "upgrade": answer.Header.Get("Upgrade")}
+	// The Upgrade header and the frame that comes back are the service's words, or a stand-in's,
+	// so each prints as the rule reads it, with what the request carried redacted first.
+	result := map[string]any{"status": answer.StatusCode, "upgrade": redact.Header(answer, "Upgrade")}
 	if answer.StatusCode == http.StatusSwitchingProtocols {
 		if _, err := conn.Write([]byte("a frame from the command\n")); err != nil {
 			result["frames"] = "the command could not write: " + err.Error()
 		} else if line, err := reader.ReadString('\n'); err != nil {
 			result["frames"] = "no frame came back: " + err.Error()
 		} else {
-			result["frames"] = strings.TrimSpace(line)
+			result["frames"] = redact.Field(redact.Tokens(strings.TrimSpace(line), -1, redact.Carried(answer)...))
 		}
 	} else {
-		body, _ := io.ReadAll(io.LimitReader(answer.Body, 200))
-		result["body"] = strings.TrimSpace(string(body))
+		refused, _ := redact.ReadAnswer(answer, 200)
+		result["body"] = refused.Words().String()
 	}
 	o.say(stdout, result)
 }

@@ -35,7 +35,8 @@ type State struct {
 	Admission *Admission `json:"admission,omitempty"`
 	// Settings is the settings the daemon reports, which hold no secret, each value kept as the
 	// bytes the daemon sent: the board carries them and Dispatch models none of them, so a key
-	// added to legion.yaml is recorded the day a daemon sends it.
+	// added to legion.yaml is recorded the day a daemon sends it. Like each issue's wait, they are
+	// read from the answer as data (keptState), never through its Decode.
 	Settings map[string]json.RawMessage `json:"settings,omitempty"`
 }
 
@@ -65,19 +66,27 @@ type BlockedIssue struct {
 	BlockedBy []string `json:"blockedBy,omitempty"`
 }
 
-// Issue is one issue of the daemon's record, in the fields Dispatch observes.
+// Issue is one issue of the daemon's record, in the fields Dispatch observes: the members a read
+// decodes (answeredIssue), and the wait.
 type Issue struct {
+	answeredIssue
+	// WaitingOn is what a root in awaiting_person waits on from a person, kept as the bytes the
+	// daemon sent: Dispatch records the wait, it does not model it, so a field added to it is
+	// recorded rather than dropped. Like the settings, it is read from the answer as data
+	// (keptState), never through its Decode.
+	WaitingOn json.RawMessage `json:"waitingOn,omitempty"`
+}
+
+// answeredIssue is an issue's members but its wait: those a read decodes from the daemon's answer
+// (answeredState).
+type answeredIssue struct {
 	Key   string `json:"key"`
 	Phase string `json:"phase"`
 	// Tree is the issue's tree root (dispatch://INFRA-980), absent from every daemon before it: a
 	// pointer so "the daemon sent no tree field" and "the daemon named a root" stay apart.
 	Tree *string `json:"tree,omitempty"`
 	// Slot is the admission slot the issue holds, absent while it holds none.
-	Slot *Slot `json:"slot,omitempty"`
-	// WaitingOn is what a root in awaiting_person waits on from a person, kept as the bytes the
-	// daemon sent: Dispatch records the wait, it does not model it, so a field added to it is
-	// recorded rather than dropped.
-	WaitingOn json.RawMessage   `json:"waitingOn,omitempty"`
+	Slot      *Slot             `json:"slot,omitempty"`
 	Architect *Claim            `json:"architect,omitempty"`
 	Workers   map[string]Worker `json:"workers,omitempty"`
 }

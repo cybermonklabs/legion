@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -51,9 +53,12 @@ type Source struct {
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
-	// Client makes the read; nil is http.DefaultClient. Its redirect policy is Go's own, which
-	// follows GitHub's redirect to the tarball's host and drops the Authorization header on the
-	// way to another host.
+	// Client makes the read; nil is http.DefaultClient. Unlike the daemon's other clients
+	// (redirects.Refused), it follows redirects, Go's own policy: GitHub answers the tarball
+	// route with a redirect to its download host, whose URL carries the download's own token, and
+	// Go drops the Authorization header on the way to that other host. A read that got no answer
+	// names its failure through redact.Unanswered, which prints none of net/http's own words for
+	// it, nor any part of a redirect's target on another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -156,7 +161,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err))
+		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), redact.Unanswered(err, nil, "")))
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -167,24 +172,35 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return Served{}, s.readFailure(ctx, tag, bound, err)
+		return Served{}, s.readFailure(ctx, tag, bound, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
 			s.Forget()
 		}
-		// A read its bound cut, or that ended on an error, can stop inside a URL before its "@",
-		// which redact.Read drops rather than quote.
-		read, cut, _ := redact.ReadBounded(response.Body, refusalBodyBytes)
-		body := redact.Read(string(read), cut)
+		// GitHub's message, or a stand-in's words, print as the rule reads them, with the token the
+		// read carried redacted (oauth2call.Answer.Decode into oauth2call.GitHubRefusal, Words): the
+		// message alone where the answer is GitHub's JSON refusal, whose documentation URL in compact
+		// JSON the rule cannot read as clean, and the answer's words otherwise. A read its bound cut,
+		// or that ended on an error, can stop inside a URL before its "@", which redact.Read drops
+		// rather than quote.
+		refused, readErr := oauth2call.ReadAnswer(response, refusalBodyBytes)
+		var github oauth2call.GitHubRefusal
+		said := refused.Words()
+		if refused.Decode(&github) == nil && !github.Message.IsEmpty() {
+			said = github.Message
+		}
+		body := redact.Read(said.String(), readErr != nil)
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", s.Repository, tag, response.StatusCode)
 		if strings.TrimSpace(body) != "" {
 			what += ": " + firstLine(body)
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}
-	body, manifest, err := PackTarballManifest(response.Body)
+	// The tarball is data the daemon unpacks and serves, streamed through oauth2call.StreamAnswer;
+	// PackTarballManifest bounds what it unpacks.
+	body, manifest, err := PackTarballManifest(oauth2call.StreamAnswer(response, math.MaxInt64))
 	if err != nil {
 		if ctx.Err() != nil {
 			return Served{}, s.readFailure(ctx, tag, bound, err)

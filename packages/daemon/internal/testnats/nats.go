@@ -24,7 +24,6 @@ package testnats
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,6 +41,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // Image is the NATS server image the daemon's NATS tests use: ghcr.io/cybermonklabs/legion/ci, the
@@ -380,7 +381,7 @@ func connectionsAt(monitor string) ([]Connection, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, response.Status)
+		return nil, fmt.Errorf("GET %s/connz answered %s", monitor, oauth2call.StatusLine(response.StatusCode))
 	}
 	var connz struct {
 		Connections []struct {
@@ -388,7 +389,11 @@ func connectionsAt(monitor string) ([]Connection, error) {
 			Name string `json:"name"`
 		} `json:"connections"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&connz); err != nil {
+	answer, err := oauth2call.ReadAnswer(response, 16<<20)
+	if err != nil {
+		return nil, fmt.Errorf("read %s/connz: %w", monitor, err)
+	}
+	if err := answer.Decode(&connz); err != nil {
 		return nil, fmt.Errorf("decode %s/connz: %w", monitor, err)
 	}
 	connections := make([]Connection, 0, len(connz.Connections))

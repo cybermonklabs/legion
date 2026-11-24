@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -235,7 +235,7 @@ func (d *tickDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, 
 	}
 	issue, served := d.issues[key]
 	if !served {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such issue"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("NOT_FOUND"), Message: "no such issue"}
 	}
 	return issue, nil
 }
@@ -288,7 +288,7 @@ func (d *tickDispatch) ReleaseClaim(context.Context, string) error { return nil 
 func (d *tickDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *tickDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *tickDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, error) {

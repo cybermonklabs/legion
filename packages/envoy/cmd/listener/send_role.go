@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -46,8 +45,9 @@ func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, rec
 // the 409 a stopped target gives, with nothing kept, since a message kept for the role would reach
 // another session at a later time. A claim read that failed is its 503, or the unreadable claim's
 // answer. sender is who the request speaks for, which decides how much of the kept copy the 202
-// may carry (keepRoleSend).
-func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target string) bool {
+// may carry (keepRoleSend), and expectsReply the request's own, as validateMessageBody read it,
+// which the 202 writes back for the copy it answers (expectsReplyAnswer).
+func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target string, expectsReply listenerwire.ExpectsAsSpoken) bool {
 	if item.Role == "" {
 		return false
 	}
@@ -63,7 +63,7 @@ func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps,
 		record.refuse(w, http.StatusConflict, outcomeSessionStopped,
 			fmt.Sprintf("the session no longer holds role %s, and a send that asks for a running session keeps nothing", item.Role))
 	default:
-		keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
+		keepRoleSend(w, d, record, charge, item, sender, target, holder, expectsReply)
 	}
 	return true
 }
@@ -106,7 +106,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // message once (bus.KeptMsgID); a keep whose publish went unacknowledged may have stored the copy,
 // so its 503 says so (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender
 // as a stored one.
-func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply json.RawMessage) {
+func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply listenerwire.ExpectsAsSpoken) {
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
 	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)

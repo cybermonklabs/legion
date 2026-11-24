@@ -648,7 +648,7 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 			"%s records session %s, which it does not hold (%v), and the Envoy listener did not say which session holds its role, so clearing the session could let the role's messages reach another claim's process; try again once the listener answers: %w",
 			m.claim.Token, session, err, lookupErr)}}
 	}
-	if holder != session {
+	if !holder.Equal(session) {
 		return nil
 	}
 	// The claim to suspend is the one holding the session id the listener names: a refusal of

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The daemon's line for a review author's permission read that GitHub refuses the review App's
+  installation (403) names the App's bot only as a login GitHub allows, and `(a login GitHub does
+  not allow)` otherwise (`githubrest.ShownLogin`). The bot's login is GitHub's answer to an App
+  read; before, something answering in GitHub's place that echoed an installation token as that
+  login had it printed in the line.
+time: 2026-11-23T07:26:35Z
+custom:
+    Issue: pr4368

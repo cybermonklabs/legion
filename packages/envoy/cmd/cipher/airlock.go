@@ -192,11 +192,12 @@ const airlockBuildLifetime = time.Hour
 //
 // An error here names the path it failed on, as checkAirlockRoot's do: every such path is the
 // root (airlockRootParts: XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory)
-// with names this CLI made below it and the grant's id, which this CLI prints wherever it names
-// the grant, and none of those is a setting a person points at a secret's file. The files a
-// person's own settings name are another matter: WGETRC's can hold http_password, so no error
-// names the file WGETRC or a bundle variable names or quotes what it holds - readTrustFile and
-// wgetrcFor skip a file they cannot read, and print nothing of it.
+// with names this CLI made below it and the grant's id, which the exec form hands it only as
+// RemoteText.SendBack answers it - the id as it came, where the rule prints it so - and none of
+// those is a setting a person points at a secret's file. The files a person's own settings name
+// are another matter: WGETRC's can hold http_password, so no error names the file WGETRC or a
+// bundle variable names or quotes what it holds - readTrustFile and wgetrcFor skip a file they
+// cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
 	// a "." or a ".." would make this run tidy or write somewhere else entirely. A grant id that
@@ -469,8 +470,10 @@ var airlockBundleVars = []string{
 //
 // It refuses a grant that holds two names with AWS slots: one environment has one
 // AWS_ACCESS_KEY_ID, so one of the two pairs would silently win. Nobody has that configuration
-// today, and a refusal is the answer a person can act on where a silent choice is not.
-func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) (map[string]string, error) {
+// today, and a refusal is the answer a person can act on where a silent choice is not. The
+// refusal names each of the two as this run asked for it (asked), and a name it did not ask for
+// not at all: a key of the broker's answer, which no record holds (releasedName).
+func airlockVars(environ []string, release *AirlockRelease, files airlockFiles, asked []string) (map[string]string, error) {
 	vars := make(map[string]string, len(release.Names)+len(airlockBundleVars)+6)
 	awsFrom := ""
 	for _, name := range slices.Sorted(maps.Keys(release.Names)) {
@@ -482,7 +485,7 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 			continue
 		}
 		if awsFrom != "" {
-			return nil, fmt.Errorf("the grant releases an AWS key pair through the airlock for both %s and %s, and one environment holds one AWS_ACCESS_KEY_ID; ask for them in separate calls", awsFrom, name)
+			return nil, fmt.Errorf("the grant releases an AWS key pair through the airlock for both %s and %s, and one environment holds one AWS_ACCESS_KEY_ID; ask for them in separate calls", releasedName(awsFrom, asked), releasedName(name, asked))
 		}
 		awsFrom = name
 		vars["AWS_ACCESS_KEY_ID"] = id

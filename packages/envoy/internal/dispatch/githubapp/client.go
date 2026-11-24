@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
@@ -472,10 +473,10 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
+		return Installation{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
 	var payload installationPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return Installation{}, fmt.Errorf("decode installation: %w", ShownErr(err))
 	}
 	return Installation{ID: payload.ID, AppSlug: payload.AppSlug, Permissions: payload.Permissions}, nil
@@ -528,7 +529,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
 			var payload []installationPayload
-			if err := json.Unmarshal(body, &payload); err != nil {
+			if err := body.Decode(&payload); err != nil {
 				return nil, fmt.Errorf("decode installations (page %d): %w", page, ShownErr(err))
 			}
 			if len(payload) == 0 {
@@ -643,7 +644,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 				FullName string `json:"full_name"`
 			} `json:"repositories"`
 		}
-		if err := json.Unmarshal(body, &payload); err != nil {
+		if err := body.Decode(&payload); err != nil {
 			return nil, fmt.Errorf("decode installation repositories (page %d): %w", page, ShownErr(err))
 		}
 		if len(payload.Repositories) == 0 {
@@ -663,14 +664,16 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 }
 
 // Read performs GET path (an API path with its query, under the API origin) with an
-// installation token, returning GitHub's complete answer when it fits within the response limit.
-func (c *Client) Read(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
+// installation token, returning GitHub's complete answer when it fits within the response limit,
+// as a redact.Answer: the data decodes through it, and its words print with every credential the
+// request carried redacted.
+func (c *Client) Read(ctx context.Context, token, path string) (redact.Answer, int, http.Header, error) {
 	return c.ReadWithin(ctx, token, path, responseLimit)
 }
 
 // ReadWithin is Read with the caller's own body limit, for a caller that keeps only part of a
 // large answer; a body past limit is a *ResponseTooLargeError.
-func (c *Client) ReadWithin(ctx context.Context, token, path string, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) ReadWithin(ctx context.Context, token, path string, limit int64) (redact.Answer, int, http.Header, error) {
 	return c.ReadConditionalWithin(ctx, token, path, "", limit)
 }
 
@@ -678,9 +681,9 @@ func (c *Client) ReadWithin(ctx context.Context, token, path string, limit int64
 // answer: it sends If-None-Match, so GitHub answers 304 Not Modified when nothing changed, which
 // costs none of the rate limit. A 304 is a status the caller reads, with an empty body, never an
 // error. An empty etag sends no If-None-Match header, which is an unconditional read.
-func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag string, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag string, limit int64) (redact.Answer, int, http.Header, error) {
 	if c == nil {
-		return nil, 0, nil, ErrNoAppKey
+		return redact.Answer{}, 0, nil, ErrNoAppKey
 	}
 	return c.request(ctx, c.TokenScope(token), http.MethodGet, c.base+path, "Bearer "+token, mediaTypeJSON, etag, nil, limit)
 }
@@ -718,13 +721,13 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // answer's body as the first result beside the error, and reads the data there if at all.
 // A client without Limits reads the answer as request reads a REST call's, and notes the limit
 // RateLimit reads, which is only ever a 403 or a 429: GitHub's refusal, which carries no data.
-func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
+func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) (redact.Answer, int, http.Header, error) {
 	if c == nil {
-		return nil, 0, nil, ErrNoAppKey
+		return redact.Answer{}, 0, nil, ErrNoAppKey
 	}
 	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("encode GraphQL request: %w", err)
+		return redact.Answer{}, 0, nil, fmt.Errorf("encode GraphQL request: %w", err)
 	}
 	if c.limits != nil {
 		wait, recorded, err := c.limits.Wait(ctx, GraphQLScope)
@@ -734,7 +737,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 		case wait > 0:
 			held := &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
 			noteFailure(ctx, held)
-			return nil, 0, nil, held
+			return redact.Answer{}, 0, nil, held
 		}
 	}
 	installation := c.TokenScope(token)
@@ -831,14 +834,14 @@ func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, 
 		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body))
+		return cachedToken{}, fmt.Errorf("POST %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
 	var payload struct {
 		Token       string        `json:"token"`
 		ExpiresAt   time.Time     `json:"expires_at"`
 		Permissions auth.AppPerms `json:"permissions"`
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return cachedToken{}, fmt.Errorf("decode installation token: %w", ShownErr(err))
 	}
 	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
@@ -880,7 +883,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
+		return Source{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -897,11 +900,11 @@ func (c *Client) TokenScope(token string) string {
 	return ""
 }
 
-func (c *Client) do(ctx context.Context, scope, method, target, authorization string) ([]byte, int, http.Header, error) {
+func (c *Client) do(ctx context.Context, scope, method, target, authorization string) (redact.Answer, int, http.Header, error) {
 	return c.doLimited(ctx, scope, method, target, authorization, responseLimit)
 }
 
-func (c *Client) doLimited(ctx context.Context, scope, method, target, authorization string, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) doLimited(ctx context.Context, scope, method, target, authorization string, limit int64) (redact.Answer, int, http.Header, error) {
 	return c.request(ctx, scope, method, target, authorization, mediaTypeJSON, "", nil, limit)
 }
 
@@ -917,7 +920,7 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // no process sends GitHub anything under that scope before the wait ends. Every REST call of this
 // package goes through here. GraphQL calls send itself and reads, notes and records the limit in
 // its answer itself, which is another detection and another scope (recordGraphQLLimit).
-func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
 	if err != nil {
 		return responseBody, status, header, err
@@ -958,7 +961,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // Each error send words itself names target as ShownBody shows it. A target holds names Dispatch
 // keeps and text GitHub gave (a blob's sha from a tree answer, a next page link), so none of them
 // passes the bound in send's errors.
-func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
+func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) (redact.Answer, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
@@ -967,14 +970,14 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		case wait > 0:
 			held := &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
 			noteFailure(ctx, held)
-			return nil, 0, nil, held
+			return redact.Answer{}, 0, nil, held
 		}
 	}
 	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(bounded, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target), ShownErr(err))
+		return redact.Answer{}, 0, nil, fmt.Errorf("build %s %s: %w", method, ShownBody(target), ShownErr(err))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -989,26 +992,31 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	if err != nil {
 		err = fmt.Errorf("%s %s: %w", method, ShownBody(target), ShownErr(err))
 		noteFailure(ctx, err)
-		return nil, 0, nil, err
+		return redact.Answer{}, 0, nil, err
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	// Whatever answers in GitHub's place can echo the request it was sent - the App's JWT, an
+	// installation token - in any word of its answer, which a caller prints (NewStatusError,
+	// RateLimitError, StatusText): the answer is read through redact.ReadAnswer, whose words print
+	// with every credential its request carried redacted. A 2xx body is the data the call asked
+	// for, which its caller decodes (redact.Answer.Decode).
+	responseBody, err := redact.ReadAnswer(response, limit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		err := fmt.Errorf("%s %s: %w", method, ShownBody(target), &ResponseTooLargeError{Limit: limit})
+		noteFailure(ctx, err)
+		return redact.Answer{}, 0, nil, err
+	}
 	if err != nil {
 		err = fmt.Errorf("read %s %s response: %w", method, ShownBody(target), ShownErr(err))
 		noteFailure(ctx, err)
-		return nil, 0, nil, err
-	}
-	if int64(len(responseBody)) > limit {
-		err := fmt.Errorf("%s %s: %w", method, ShownBody(target), &ResponseTooLargeError{Limit: limit})
-		noteFailure(ctx, err)
-		return nil, 0, nil, err
+		return redact.Answer{}, 0, nil, err
 	}
 	// A 5xx and a 401 say GitHub could not answer or did not take the App's credentials. Every
 	// other status, a limit aside, is left to the caller, because the same answer is data at one
 	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
 	// workflow path to the next), and only the caller can tell the two apart.
 	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
-		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
+		noteFailure(ctx, &failedAnswer{method: method, target: target, status: status, detail: responseBody.Words().String()})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
 }
@@ -1033,24 +1041,24 @@ func noteFailure(ctx context.Context, err error) {
 // Authorization header.
 //
 // Its text carries a body only as StatusText and RateLimitError word one, never at a 2xx status:
-// for a 5xx or a 401 detail, the body send read, kept as the bytes it read, and for a limit its
-// Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body. So no
-// failedAnswer has a text that carries a 2xx answer's data.
+// for a 5xx or a 401 detail, the body send read as the rule prints it (redact.Answer.Words), and
+// for a limit its Body, or at a 2xx GitHub's wording of the limit (answeredLimit) and never Body.
+// So no failedAnswer has a text that carries a 2xx answer's data.
 //
 // It is not the only note of a limit. A limit github_rate_limits already holds is noted as its own
 // held *RateLimitError (send, GraphQL), and a loop that a limit stops notes words of its own: the
 // CI reconcile's stop.ended, and the redelivery sweep's "a GitHub rate limit stopped the webhook
 // redelivery sweep" (Sweeper.sweepAndReport).
-type failedAnswer[Detail string | []byte] struct {
+type failedAnswer struct {
 	method, target string
 	status         int
-	detail         Detail
+	detail         string
 	// limit is the limit GitHub answered, nil for a 5xx or a 401, and never a held one, which is
 	// noted as it is.
 	limit *RateLimitError
 }
 
-func (f *failedAnswer[Detail]) Error() string {
+func (f *failedAnswer) Error() string {
 	if f.limit != nil {
 		return f.method + " " + ShownBody(f.target) + ": " + f.limit.Error()
 	}
@@ -1062,8 +1070,8 @@ func (f *failedAnswer[Detail]) Error() string {
 // wording of the limit and nothing of the answer's data (RateLimitError). It notes no held limit,
 // which is noted as its own error (send, GraphQL), and none of the limits a loop words itself
 // (failedAnswer).
-func limitNoted(method, target string, limited *RateLimitError) *failedAnswer[string] {
-	return &failedAnswer[string]{method: method, target: target, limit: limited}
+func limitNoted(method, target string, limited *RateLimitError) *failedAnswer {
+	return &failedAnswer{method: method, target: target, limit: limited}
 }
 
 // Ref resolves branch to its commit SHA under an installation token
@@ -1092,11 +1100,13 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
-	sha := strings.TrimSpace(string(body))
+	// The SHA is GitHub's one line, sent back to GitHub in the next read: it leaves the answer
+	// only where the rule prints it as it came (RemoteText.SendBack).
+	sha, _ := body.Words().SendBack()
 	if !commitSHA.MatchString(sha) {
-		return "", fmt.Errorf("commit for %s/%s@%s: GitHub answered no commit SHA (%d bytes)", owner, repo, branch, len(body))
+		return "", fmt.Errorf("commit for %s/%s@%s: GitHub answered no commit SHA", owner, repo, branch)
 	}
 	return sha, nil
 }
@@ -1126,7 +1136,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
+		return "", fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1134,7 +1144,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := json.Unmarshal(body, &ref); err != nil {
+	if err := body.Decode(&ref); err != nil {
 		return "", fmt.Errorf("decode branch %s of %s/%s: %w", branch, owner, repo, ShownErr(err))
 	}
 	if ref.Ref != "refs/heads/"+branch || !commitSHA.MatchString(ref.Object.SHA) {
@@ -1187,7 +1197,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body))
+		return Dir{}, fmt.Errorf("GET %s: %s", ShownBody(target), StatusText(status, body.Words().String()))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1200,7 +1210,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 			Size int64  `json:"size"`
 		} `json:"tree"`
 	}
-	if err := json.Unmarshal(body, &tree); err != nil {
+	if err := body.Decode(&tree); err != nil {
 		return Dir{}, fmt.Errorf("decode tree %s:%s: %w", sha, dir, ShownErr(err))
 	}
 	if tree.Truncated {
@@ -1260,17 +1270,19 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target), ShownBody(path), StatusText(status, body))
+		return nil, fmt.Errorf("GET %s (%s): %s", ShownBody(target), ShownBody(path), StatusText(status, body.Words().String()))
 	}
 	var payload struct {
 		Content  string `json:"content"`
 		Encoding string `json:"encoding"`
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode blob %s (%s): %w", ShownBody(sha), ShownBody(path), ShownErr(err))
 	}
+	// The encoding is GitHub's word, or a stand-in's: a blob in any but base64 is named as one,
+	// and its encoding is printed nowhere.
 	if payload.Encoding != "base64" {
-		return nil, fmt.Errorf("blob %s (%s) has encoding %q, want base64", ShownBody(sha), ShownBody(path), ShownBody(payload.Encoding))
+		return nil, fmt.Errorf("blob %s (%s) is in an encoding that is not base64", ShownBody(sha), ShownBody(path))
 	}
 	content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(payload.Content, "\n", ""))
 	if err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // pollRequest is one request the conditional reads sent, as the stand-in GitHub saw it: sent
@@ -100,8 +101,8 @@ func TestReadConditionalWithinSendsTheETagAndReadsA304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("conditional read with the ETag: %v", err)
 	}
-	if status != http.StatusNotModified || len(body) != 0 {
-		t.Fatalf("conditional read with the ETag: status=%d body=%q, want 304 and no body", status, body)
+	if status != http.StatusNotModified || answertest.Text(body) != "" {
+		t.Fatalf("conditional read with the ETag: status=%d body=%q, want 304 and no body", status, answertest.Text(body))
 	}
 	if got := header.Get("ETag"); got != `"v1"` {
 		t.Fatalf("the 304's ETag = %q, want %q", got, `"v1"`)
@@ -111,8 +112,8 @@ func TestReadConditionalWithinSendsTheETagAndReadsA304(t *testing.T) {
 	}
 
 	body, status, _, err = client.ReadConditionalWithin(ctx, "installation-token", "/repos/acme/web", "", pollResponseLimit)
-	if err != nil || status != http.StatusOK || string(body) != `{"full_name":"acme/web"}` {
-		t.Fatalf("unconditional read: status=%d body=%q err=%v, want GitHub's whole 200", status, body, err)
+	if err != nil || status != http.StatusOK || answertest.Text(body) != `{"full_name":"acme/web"}` {
+		t.Fatalf("unconditional read: status=%d body=%q err=%v, want GitHub's whole 200", status, answertest.Text(body), err)
 	}
 	if sent := fake.last(t); sent.sent {
 		t.Fatalf("an empty ETag sent If-None-Match: %q", sent.ifNoneMatch)

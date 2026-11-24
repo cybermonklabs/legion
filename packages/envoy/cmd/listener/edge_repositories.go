@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -31,6 +30,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const (
@@ -112,13 +113,14 @@ type edgeRepositories struct {
 }
 
 // newEdgeRepositories is the reader of the broker at brokerURL, asking as account, for the
-// projects the edge serves.
+// projects the edge serves. Its client follows no redirect (redirects.Refused): every read carries
+// the listener's own bearer, and a Location is the answering party's words.
 func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects []string, withheld *metrics.Counter, logger *logging.Logger) *edgeRepositories {
 	return &edgeRepositories{
 		brokerURL: strings.TrimSuffix(brokerURL, "/"),
 		account:   account,
 		projects:  projects,
-		client:    &http.Client{Timeout: edgeRepositoryReadTimeout},
+		client:    redirects.Refused(&http.Client{Timeout: edgeRepositoryReadTimeout}),
 		now:       time.Now,
 		withheld:  withheld,
 		logger:    logger,
@@ -137,6 +139,10 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
 // one. Every other outcome is errRepositoriesUnknown, naming what went wrong, for the log alone:
 // what a client is told is the listener's own sentence (edgeTopicHold.answerRepositoryOutage).
+// The answer is the broker's words, or those of whatever answers in its place, which can echo the
+// listener's own bearer back: it is read through redact.ReadAnswer, decided on as it came, and
+// named in the error only as the rule reads it, with the bearer the read carried redacted
+// (redact.Answer's Words and Said).
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
 	bearer, err := e.account.Read()
 	if err != nil {
@@ -151,41 +157,48 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	response, err := e.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: ask the broker: %w", errRepositoriesUnknown, err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// which it reads before any redirect policy), so it prints as the broker's address allows
+		// (redact.Cause): a transport failure's own text, or its class.
+		return nil, fmt.Errorf("%w: ask the broker: %w", errRepositoriesUnknown, redact.Cause(err, e.brokerURL))
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, edgeRepositoryBodyLimit+1))
-	if err != nil {
+	answer, err := redact.ReadAnswer(response, edgeRepositoryBodyLimit)
+	tooLarge := errors.Is(err, redact.ErrAnswerTooLarge)
+	if err != nil && !tooLarge {
 		return nil, fmt.Errorf("%w: read the broker's answer: %w", errRepositoriesUnknown, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(body))
+		return nil, fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(answer.Words()))
 	}
-	if len(body) > edgeRepositoryBodyLimit {
+	if tooLarge {
 		return nil, fmt.Errorf("%w: the broker's answer is longer than %d bytes", errRepositoriesUnknown, edgeRepositoryBodyLimit)
 	}
-	var answer struct {
+	var body struct {
 		Project      string    `json:"project"`
 		Repositories *[]string `json:"repositories"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := answer.Decode(&body); err != nil {
 		return nil, fmt.Errorf("%w: decode the broker's answer: %w", errRepositoriesUnknown, err)
 	}
-	if answer.Project != project || answer.Repositories == nil {
-		return nil, fmt.Errorf("%w: the broker answered for project %q with repositories %v, not a list for %s", errRepositoriesUnknown, answer.Project, answer.Repositories, project)
+	switch {
+	case body.Project != project:
+		return nil, fmt.Errorf("%w: the broker answered for project %q, not for %s", errRepositoriesUnknown, excerpt(answer.Said(body.Project)), project)
+	case body.Repositories == nil:
+		return nil, fmt.Errorf("%w: the broker's answer for %s carries no list of repositories", errRepositoriesUnknown, project)
 	}
-	for _, repository := range *answer.Repositories {
+	for _, repository := range *body.Repositories {
 		if owner, name, ok := strings.Cut(repository, "/"); !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-			return nil, fmt.Errorf("%w: the broker's answer names %q, which is no owner/name", errRepositoriesUnknown, repository)
+			return nil, fmt.Errorf("%w: the broker's answer names %q, which is no owner/name", errRepositoriesUnknown, excerpt(answer.Said(repository)))
 		}
 	}
 	e.mu.Lock()
-	e.answers[project] = repositoryAnswer{repositories: *answer.Repositories, readAt: e.now()}
+	e.answers[project] = repositoryAnswer{repositories: *body.Repositories, readAt: e.now()}
 	e.mu.Unlock()
 	// A good read ends the project's run of failed refresh reads, whoever made it: a
 	// registration's read keeps an answer as a refresh's does (noteRefresh).
 	e.noteRefresh(project, nil)
-	return *answer.Repositories, nil
+	return *body.Repositories, nil
 }
 
 // readFresh reads the answer of each of projects now, for a registration: the union of their
@@ -272,9 +285,10 @@ func (e *edgeRepositories) readEach(ctx context.Context, projects []string) ([][
 	return answers, errs
 }
 
-// excerpt is body as a log line quotes it: trimmed, and cut at edgeRepositoryErrorExcerpt bytes.
-func excerpt(body []byte) string {
-	text := strings.TrimSpace(string(body))
+// excerpt is words, the broker's, as a log line quotes them: as the rule reads them, and cut at
+// edgeRepositoryErrorExcerpt bytes.
+func excerpt(words redact.RemoteText) string {
+	text := words.String()
 	if len(text) > edgeRepositoryErrorExcerpt {
 		return text[:edgeRepositoryErrorExcerpt] + "…"
 	}

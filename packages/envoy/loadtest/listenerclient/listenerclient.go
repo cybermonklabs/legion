@@ -10,10 +10,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -26,17 +27,21 @@ type Client struct {
 }
 
 // Refusal is an answer outside 2xx: the URL of the route that refused, the status and what the
-// listener said. Its Error names all three, the body cut to its first 300 bytes, so a log line that
-// carries only a session id still says which listener and route refused.
+// listener said, as the rule prints it with every credential the request carried redacted
+// (redact.Answer.Words). Its Error names all three, the words cut to their first 300 bytes, so a
+// log line that carries only a session id still says which listener and route refused.
 type Refusal struct {
 	URL    string
 	Status int
-	Body   []byte
+	Said   string
 }
 
 func (r *Refusal) Error() string {
-	return fmt.Sprintf("%s: %d %s", r.URL, r.Status, truncate(r.Body))
+	return fmt.Sprintf("%s: %d %s", r.URL, r.Status, truncate(r.Said))
 }
+
+// answerLimit bounds one answer of the listener this client reads.
+const answerLimit = 1 << 20
 
 // Subscribe sends a session's registration, or its heartbeat, which is the same body again
 // (POST /v1/interests/subscribe). The answer is nil when a 2xx answer does not decode: the caller
@@ -47,7 +52,7 @@ func (c *Client) Subscribe(ctx context.Context, registration listenerwire.Subscr
 		return nil, err
 	}
 	var answer listenerwire.SubscribeResponse
-	if json.Unmarshal(body, &answer) != nil {
+	if body.Decode(&answer) != nil {
 		return nil, nil
 	}
 	return &answer, nil
@@ -68,8 +73,8 @@ func (c *Client) Unsubscribe(ctx context.Context, release listenerwire.Unsubscri
 		return nil, err
 	}
 	var answer listenerwire.UnsubscribeResponse
-	if json.Unmarshal(body, &answer) != nil {
-		return nil, fmt.Errorf("unreadable answer: %s", truncate(body))
+	if err := body.Decode(&answer); err != nil {
+		return nil, fmt.Errorf("unreadable answer: %w", err)
 	}
 	return answer.Removed, nil
 }
@@ -78,45 +83,48 @@ func (c *Client) Unsubscribe(ctx context.Context, release listenerwire.Unsubscri
 // refusals name.
 const SessionsRoute = "/v1/sessions"
 
-// Sessions reads GET /v1/sessions and answers its status and up to 1 MiB of its body, decoding
+// Sessions reads GET /v1/sessions and answers its status and up to 1 MiB of its answer, decoding
 // nothing: the stack check asks only whether the listener answers its token and refuses another.
-func (c *Client) Sessions(ctx context.Context) (int, []byte, error) {
+func (c *Client) Sessions(ctx context.Context) (int, redact.Answer, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.URL+SessionsRoute, nil)
 	if err != nil {
-		return 0, nil, err
+		return 0, redact.Answer{}, err
 	}
 	request.Header.Set("Accept", "application/json")
 	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, redact.Answer{}, err
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	body, err := redact.ReadAnswer(response, answerLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		err = nil
+	}
 	return response.StatusCode, body, err
 }
 
-// post sends body as JSON to path and answers what the listener said; an answer outside 2xx is a
-// Refusal. Every caller hands it a listenerwire body.
-func (c *Client) post(ctx context.Context, path string, body any) ([]byte, error) {
+// post sends body as JSON to path and answers what the listener said, read through
+// redact.ReadAnswer; an answer outside 2xx is a Refusal. Every caller hands it a listenerwire body.
+func (c *Client) post(ctx context.Context, path string, body any) (redact.Answer, error) {
 	data, err := json.Marshal(body)
 	if err != nil {
-		return nil, err
+		return redact.Answer{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+path, bytes.NewReader(data))
 	if err != nil {
-		return nil, err
+		return redact.Answer{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	c.authorize(request)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return nil, err
+		return redact.Answer{}, err
 	}
 	defer response.Body.Close()
-	answer, _ := io.ReadAll(response.Body)
+	answer, _ := redact.ReadAnswer(response, answerLimit)
 	if response.StatusCode/100 != 2 {
-		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Body: answer}
+		return answer, &Refusal{URL: c.URL + path, Status: response.StatusCode, Said: answer.Words().String()}
 	}
 	return answer, nil
 }
@@ -129,11 +137,11 @@ func (c *Client) authorize(request *http.Request) {
 	}
 }
 
-// truncate is b cut to its first 300 bytes, marked as cut, as the harness's log lines cut an
+// truncate is s cut to its first 300 bytes, marked as cut, as the harness's log lines cut an
 // answer.
-func truncate(b []byte) string {
-	if len(b) > 300 {
-		return string(b[:300]) + "…"
+func truncate(s string) string {
+	if len(s) > 300 {
+		return s[:300] + "…"
 	}
-	return string(b)
+	return s
 }

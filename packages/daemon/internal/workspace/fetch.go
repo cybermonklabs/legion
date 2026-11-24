@@ -7,12 +7,12 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -24,7 +24,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
@@ -194,8 +197,14 @@ type FetchReport struct {
 // fetchBackoff's waits, once per wait, its failure logged and whatever a failed clone left removed
 // first, and no retry starts past the bound. A transfer still failing after the last wait, and
 // every other failure, is the answer at once. Each attempt's stderr has every token the fetch has
-// read replaced by *** as soon as the attempt returns, so nothing Fetch logs or returns carries
-// one, wherever git echoed it.
+// read taken out as soon as the attempt returns - whole, and every run of oauth2call.TokenPiece
+// characters of it or of the Basic credential git sent it in, as git wrote the text and
+// percent-decoded (scrubTokens) - and then goes through the URL rule, and what Fetch logs or
+// returns of it goes through the fail-closed rule too (transferWithRetries), so nothing Fetch
+// logs or returns carries one, wherever git echoed it, nor a query value or user information of
+// any URL git names, a redirect's Location among them. What the repository cache streamed - a tar
+// entry's name, a ref fsck names, a ref or a HEAD a line logs - is the cache's words, or a
+// stand-in's at its address, and prints with each run of the cache's token redacted.
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
 // a read of the provisioning token that failed, a cache named without its token, the wait for the
@@ -228,6 +237,14 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 	}
 	if request.CacheURL != "" && request.CacheToken == "" {
 		return FetchReport{}, OutsideVolume(errors.New("workspace fetch: a repository cache needs its token"))
+	}
+	if request.CacheToken != "" {
+		// A line Fetch logs can name what the cache streamed, a ref it held or the branch its HEAD
+		// named (pruneToGitHub, followHead), which is the cache's words, or a stand-in's at its
+		// address, and can echo the bearer the /tar request carried: each run of that token is
+		// redacted from every line (oauth2call.Tokens).
+		log := request.Log
+		request.Log = func(line string) { log(oauth2call.Tokens(line, -1, request.CacheToken)) }
 	}
 	credential, err := github.open(request.Repo, "", "")
 	if err != nil {
@@ -559,8 +576,13 @@ func objectsSize(gitDir string) (int64, error) {
 
 // cacheClient reaches the repository cache directly, at the address it is given, the cache's
 // Service: no proxy the container's environment names stands between an issue pod and a pod of its
-// own namespace.
-var cacheClient = &http.Client{Transport: &http.Transport{Proxy: nil, ForceAttemptHTTP2: false}}
+// own namespace. It follows no redirect (redirects.Refused): the cache answers none, and a
+// Location is the answering party's own words, which a followed redirect makes the URL of the
+// answer and of net/http's error, user information and query included. A redirect is the answer
+// itself, which askCache refuses by its status.
+var cacheClient = redirects.Refused(&http.Client{
+	Transport: &http.Transport{Proxy: nil, ForceAttemptHTTP2: false},
+})
 
 // CachePoll is how long Fetch waits between two asks of a repository cache that is not ready.
 const CachePoll = 10 * time.Second
@@ -599,9 +621,9 @@ const FetchBudget = CacheWaitTimeout + FetchTimeout + FetchTimeout
 // waitForCache asks the repository cache's GET <cache>/healthz every CachePoll until it answers
 // 200 ready, logging what it answered whenever that changes and at least once a minute, and fails
 // with the last answer once a further ask would start past CacheWaitTimeout. Each ask is bounded
-// by cacheAsk, and by what remains of the wait, so the wait ends within it. An answer that names
-// another repository (askCache) fails it at once: no wait makes that right. The asks carry no
-// credential (cacheNotReady).
+// by cacheAsk, and by what remains of the wait, so the wait ends within it. An answer askCache
+// refuses, a redirect or one that names another repository, fails it at once: no wait makes that
+// right. The asks carry no credential (cacheNotReady).
 func waitForCache(ctx context.Context, request FetchRequest) error {
 	deadline := request.Clock.Now().Add(CacheWaitTimeout)
 	var logged string
@@ -648,12 +670,16 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	}
 	cache := strings.TrimSuffix(request.CacheURL, "/")
 	if response.StatusCode != http.StatusOK {
-		return fmt.Sprintf("GET %s/healthz answered %s", cache, response.Status), nil
+		return fmt.Sprintf("GET %s/healthz answered %s", cache, oauth2call.StatusLine(response.StatusCode)), nil
 	}
 	var health struct {
 		Ready bool `json:"ready"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<16)).Decode(&health); err != nil {
+	answer, err := oauth2call.ReadAnswer(response, 1<<16)
+	if err == nil {
+		err = answer.Decode(&health)
+	}
+	if err != nil {
 		return fmt.Sprintf("GET %s/healthz answered a body that is not the cache's health: %v", cache, err), nil
 	}
 	if !health.Ready {
@@ -664,9 +690,9 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 
 // askCache is GET <cache><path>, with the cache's bearer token when withToken is set. It answers
 // (nil, the transport's failure) when the cache could not be reached, which is worth another ask.
-// An answer that refuses the token (401) to a request that carried it, or whose
-// CacheRepositoryHeader is not the request's repository, comes back with the refusal as its error:
-// the caller closes the body and takes nothing it carries.
+// An answer that refuses the token (401) to a request that carried it, a redirect (3xx), or one
+// whose CacheRepositoryHeader is not the request's repository, comes back with the refusal as its
+// error: the caller closes the body and takes nothing it carries.
 func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
 	cache := strings.TrimSuffix(request.CacheURL, "/")
 	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, cache+path, nil)
@@ -678,14 +704,22 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		return nil, err
+		return nil, redact.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
-		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, response.Status)
+		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
 	}
-	if named := strings.TrimSpace(response.Header.Get(CacheRepositoryHeader)); !strings.EqualFold(named, request.Repo.String()) {
-		shown := named
-		if shown == "" {
+	// cacheClient follows no redirect, so a 3xx is the answer itself: refused by its status, and
+	// its Location, the answering party's own words, is neither asked nor printed. The cache
+	// answers no redirect, whatever repository the answer names.
+	if redirects.Status(response.StatusCode) {
+		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s, a redirect, which this pod never follows", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
+	}
+	// The repository the answer names is its own words, so it is compared as it came and printed
+	// as the rule reads it (oauth2call.Header).
+	if named := oauth2call.Header(response, CacheRepositoryHeader); !named.EqualFold(request.Repo.String()) {
+		shown := named.String()
+		if named.IsEmpty() {
 			shown = `""`
 		}
 		return response, fmt.Errorf("the repository cache %s is the repository cache of %s, not of %s", request.CacheURL, shown, request.Repo)
@@ -723,10 +757,14 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return 0, OutsideVolume(stream.stalledBy(err))
 	}
+	// The URL this pod asked, never the answer's own (response.Request.URL), which a redirect
+	// would have named.
 	if response.StatusCode != http.StatusOK {
-		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status))
+		return 0, OutsideVolume(fmt.Errorf("GET %s/tar answered %s", strings.TrimSuffix(request.CacheURL, "/"), oauth2call.StatusLine(response.StatusCode)))
 	}
-	stream.reader = response.Body
+	// The tar is data unpacked as it arrives (oauth2call.StreamAnswer), as long as the
+	// repository needs; FeedEntry bounds what it writes.
+	stream.reader = oauth2call.StreamAnswer(response, math.MaxInt64)
 	archive := tar.NewReader(stream)
 	for {
 		header, err := archive.Next()
@@ -736,7 +774,7 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return 0, fmt.Errorf("read the repository cache's tar: %w", err)
 		}
-		if err := unpackEntry(staging, header, archive); err != nil {
+		if err := unpackEntry(staging, response, header, archive); err != nil {
 			return 0, err
 		}
 	}
@@ -808,7 +846,13 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
+	// fsck names the refs it reads, and a ref's name is the cache's words, or a stand-in's at its
+	// address, which can echo the bearer the /tar request carried: the stderr its failure prints
+	// has each run of that token redacted (oauth2call.Tokens).
+	fsck := slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"})
+	result, err := runCommandTimeout(ctx, run, fsck, isolatedGitConfig, staging, left)
+	result.Stderr = oauth2call.Tokens(result.Stderr, -1, request.CacheToken)
+	if _, err := checkedResult(fsck, result, err); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -915,35 +959,55 @@ func remaining(request FetchRequest, deadline time.Time, what string) (time.Dura
 }
 
 // unpackEntry writes one entry of the repository cache's tar into staging, refusing one a feed does
-// not take.
-func unpackEntry(staging string, header *tar.Header, body io.Reader) error {
+// not take. The entry's name is the cache's words, or a stand-in's at the cache's address, which
+// can echo the bearer the /tar request carried: it is decided on as it came, and printed only as
+// the rule reads it, with the credentials the requests that led to response carried redacted
+// (oauth2call.StreamedWords), and a write of it that failed names it so (entryFailure).
+func unpackEntry(staging string, response *http.Response, header *tar.Header, body io.Reader) error {
 	name := strings.TrimSuffix(header.Name, "/")
 	if !filepath.IsLocal(filepath.FromSlash(name)) || path.Clean(name) != name {
-		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the feed", name)
+		return fmt.Errorf("the repository cache's tar holds %q, which is not a path inside the feed", oauth2call.StreamedWords(response, name))
 	}
 	dir := header.Typeflag == tar.TypeDir
 	if !dir && header.Typeflag != tar.TypeReg {
-		return fmt.Errorf("the repository cache's tar holds %q, which is neither a regular file nor a directory", name)
+		return fmt.Errorf("the repository cache's tar holds %q, which is neither a regular file nor a directory", oauth2call.StreamedWords(response, name))
 	}
 	if !FeedEntry(name, dir) {
-		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", name)
+		return fmt.Errorf("the repository cache's tar holds %q, which is not one of a repository's refs or packs", oauth2call.StreamedWords(response, name))
 	}
 	target := filepath.Join(staging, filepath.FromSlash(name))
 	if dir {
-		return os.MkdirAll(target, 0o755)
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return entryFailure(response, "write", name, err)
+		}
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
+		return entryFailure(response, "write", name, err)
 	}
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		return err
+		return entryFailure(response, "write", name, err)
 	}
 	if _, err := io.Copy(file, body); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("read %s from the repository cache's tar: %w", name, err)
+		return entryFailure(response, "read", name, err)
 	}
-	return file.Close()
+	if err := file.Close(); err != nil {
+		return entryFailure(response, "write", name, err)
+	}
+	return nil
+}
+
+// entryFailure is err, a read or a write (what) of the tar's entry name that failed, as an error
+// that names the entry as unpackEntry prints it (oauth2call.StreamedWords), and of a failure on a
+// path the operation and the system's reason alone: the path holds the name as it came. It unwraps
+// to that reason, so a full volume still reads as one.
+func entryFailure(response *http.Response, what, name string, err error) error {
+	if onPath := (*fs.PathError)(nil); errors.As(err, &onPath) {
+		err = fmt.Errorf("%s: %w", onPath.Op, onPath.Err)
+	}
+	return fmt.Errorf("%s %s from the repository cache's tar: %w", what, oauth2call.StreamedWords(response, name), err)
 }
 
 // countingReader counts what it reads and holds the repository cache's answer to the low-speed
@@ -1129,7 +1193,12 @@ func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.
 // transferWithRetries runs transfer under the one-shot credential held until it succeeds, retrying
 // a transient failure as Fetch says, each attempt bounded by what remains before deadline and run
 // on the provisioning token as it stands when the attempt starts (renew). It answers the attempt
-// that succeeded.
+// that succeeded. Each attempt's stderr is scrubbed of every token held (fetchCredential.scrub),
+// and the classifiers decide on that, git's phrases as git wrote them; what leaves the process of
+// it, the error this answers and the line a retry logs, is read once more by the fail-closed rule
+// (oauth2call.Field), which prints a stderr it cannot read as clean as WordsNotReadable, and on one
+// line. It reads the text after the URL rule, as remote.shown does and for its reason: a redirect
+// refusal read before it would print as WordsNotReadable.
 func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
 	if _, err := remaining(request, deadline, "the "+transfer.verb+" from GitHub"); err != nil {
@@ -1141,7 +1210,9 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		}
 		result, runErr := runCommandTimeout(ctx, run, transfer.argv, held.env, transfer.dir, deadline.Sub(now))
 		result.Stderr = held.scrub(result.Stderr)
-		_, failed := checkedResult(transfer.argv, result, runErr)
+		shown := result
+		shown.Stderr = oauth2call.Field(strings.TrimSpace(result.Stderr))
+		_, failed := checkedResult(transfer.argv, shown, runErr)
 		if failed == nil {
 			return result, nil
 		}
@@ -1159,7 +1230,7 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 			return Result{}, fmt.Errorf("%w\n%s attempt %d failed, and a retry in %s would start past the fetch's %s bound", failed, transfer.verb, attempt, wait, request.bound())
 		}
 		request.Log(fmt.Sprintf("%s attempt %d failed; retrying in %s: %s", transfer.verb, attempt, wait,
-			strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | ")))
+			oauth2call.Field(strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | "))))
 		if transfer.destination != "" {
 			if err := rolefile.RemoveTree(transfer.destination); err != nil {
 				return Result{}, fmt.Errorf("remove what %s attempt %d left at %s: %w", transfer.verb, attempt, transfer.destination, err)
@@ -1203,12 +1274,12 @@ func (c *fetchCredential) renew() error {
 	return nil
 }
 
-// scrub is text with every token the credential has held replaced by ***.
+// scrub is text with every token the credential has held taken out (scrubTokens), and then through
+// the URL rule (redact.URLCredentials), as remote.scrub gives it: a redirect's Location that git
+// names keeps no query value or user information. The classifiers read what it answers;
+// transferWithRetries reads it once more, by the fail-closed rule, where it leaves the process.
 func (c *fetchCredential) scrub(text string) string {
-	for _, token := range c.held {
-		text = strings.ReplaceAll(text, token, "***")
-	}
-	return text
+	return redact.URLCredentials(scrubTokens(text, c.held...))
 }
 
 // Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.

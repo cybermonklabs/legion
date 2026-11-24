@@ -397,7 +397,11 @@ func capturedIssueEvent(t *testing.T, seq int64, parent string, blockedBy, label
 		}
 		event = edited
 	}
-	fact, _, err := intake.DecodeDispatchEvent(testProject, testProject+"-3", []byte(event))
+	decoded, err := dispatch.DecodeEvent([]byte(event))
+	if err != nil {
+		t.Fatalf("decode the captured event: %v", err)
+	}
+	fact, _, err := intake.DecodeDispatchEvent(testProject, testProject+"-3", decoded)
 	if err != nil || fact == nil {
 		t.Fatalf("decode the captured event = %#v, %v; want an issue fact", fact, err)
 	}

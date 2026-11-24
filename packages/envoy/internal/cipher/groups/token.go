@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -50,12 +50,13 @@ type TokenOptions struct {
 // NewTokenSource answers the token the group read sends the Directory: the reader account's access
 // token, minted through generateAccessToken with the one scope Scope, called with the pod's own
 // credential. With no Account it answers ErrNoDirectoryAccount and mints nothing. A token is
-// handed out again until it is about to end (oauth2.ReuseTokenSource). No error quotes a token.
+// handed out again until it is about to end (oauth2.ReuseTokenSource). No error quotes a token:
+// each crosses the boundary (redact.TokenSource), so it prints as the rule reads it.
 func NewTokenSource(o TokenOptions) oauth2.TokenSource {
 	if o.HTTP == nil {
 		o.HTTP = &http.Client{Timeout: tokenCallTimeout}
 	}
-	return oauth2.ReuseTokenSource(nil, directoryToken{o})
+	return redact.TokenSource(oauth2.ReuseTokenSource(nil, redact.TokenSource(directoryToken{o})))
 }
 
 // directoryToken mints one directory token per Token call; NewTokenSource reuses it.
@@ -66,7 +67,7 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 		return nil, ErrNoDirectoryAccount
 	}
 	// A token source's error can quote the credential it read, so only its class is reported.
-	own, err := d.o.Default.Token()
+	own, err := redact.OAuth2(d.o.Default.Token())
 	if err != nil {
 		return nil, errors.New("the pod's own Google credentials gave no token")
 	}
@@ -81,12 +82,12 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := call(d.o.HTTP, request, "the token mint for "+d.o.Account)
+	answer, err := call(d.o.HTTP, request, "the token mint for "+d.o.Account)
 	if err != nil {
 		return nil, err
 	}
 	var minted secrets.GenerateAccessTokenAnswer
-	if json.Unmarshal(payload, &minted) != nil || minted.AccessToken == "" {
+	if answer.Decode(&minted) != nil || minted.AccessToken == "" {
 		return nil, fmt.Errorf("the token mint for %s answered no access token", d.o.Account)
 	}
 	// A token with no end would be handed out forever, past the hour Google gives it.
@@ -120,34 +121,35 @@ func (e *googleRefusal) Error() string {
 // a body that is not Google's could put anything there.
 var googleWord = regexp.MustCompile(`^[A-Za-z0-9_.]{1,64}$`)
 
-// call sends request and answers its body when the status is 200, and a *googleRefusal naming
-// who answered otherwise. It follows no redirect (redirects.Refused): the request carries a token,
-// which no 3xx may take anywhere. A call that fails is named by its class alone
-// (secrets.TransportFailure), since Go's client can quote a malformed status line. An answer past
-// answerLimit is refused rather than read in part.
-func call(client *http.Client, request *http.Request, who string) ([]byte, error) {
+// call sends request and answers Google's answer when the status is 200 (redact.Answer, read with
+// the record of the request, for the caller to decode), and a *googleRefusal naming who answered
+// otherwise. It follows no redirect (redirects.Refused): the request carries a token, which no 3xx
+// may take anywhere. A call that fails is named by its class alone (secrets.TransportFailure),
+// since Go's client can quote a malformed status line. An answer past answerLimit is refused
+// rather than read in part.
+func call(client *http.Client, request *http.Request, who string) (redact.Answer, error) {
 	response, err := redirects.Refused(client).Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
+		return redact.Answer{}, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
 	}
 	defer response.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, answerLimit+1))
-	if err != nil {
-		return nil, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
+	answer, err := redact.ReadAnswer(response, answerLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return redact.Answer{}, fmt.Errorf("%s answered more than %d bytes", who, answerLimit)
 	}
-	if len(payload) > answerLimit {
-		return nil, fmt.Errorf("%s answered more than %d bytes", who, answerLimit)
+	if err != nil {
+		return redact.Answer{}, fmt.Errorf("%s %s", who, secrets.TransportFailure(request.Context(), err))
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, refusalOf(who, response.StatusCode, payload)
+		return redact.Answer{}, refusalOf(who, response.StatusCode, answer)
 	}
-	return payload, nil
+	return answer, nil
 }
 
-// refusalOf reads Google's status and reason from an error body: the reason of its ErrorInfo
+// refusalOf reads Google's status and reason from an error answer: the reason of its ErrorInfo
 // detail, which IAM names IAM_PERMISSION_DENIED in, and else the first of its errors, as the
-// Directory API names them.
-func refusalOf(who string, code int, body []byte) *googleRefusal {
+// Directory API names them. Each is read as it came and kept only in Google's word form.
+func refusalOf(who string, code int, body redact.Answer) *googleRefusal {
 	refusal := &googleRefusal{who: who, code: code}
 	var answer struct {
 		Error struct {
@@ -161,7 +163,7 @@ func refusalOf(who string, code int, body []byte) *googleRefusal {
 			} `json:"errors"`
 		} `json:"error"`
 	}
-	if json.Unmarshal(body, &answer) != nil {
+	if body.Decode(&answer) != nil {
 		return refusal
 	}
 	if googleWord.MatchString(answer.Error.Status) {

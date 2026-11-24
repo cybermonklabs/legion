@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // registrationBroker is POST /v1/oauth/exchange/pod-sessions as the broker serves it: it records
@@ -253,7 +255,7 @@ func TestARegistrarNotListedRefusalIsRetried(t *testing.T) {
 		{"ACCOUNT_NOT_LISTED", true},
 		{"UNKNOWN", true},
 	} {
-		if got := (&APIError{Status: http.StatusForbidden, Code: tc.code}).Permanent(); got != tc.permanent {
+		if got := (&APIError{Status: http.StatusForbidden, Code: tc.code, said: oauth2calltest.Said(tc.code)}).Permanent(); got != tc.permanent {
 			t.Errorf("403 %s: Permanent() = %t, want %t", tc.code, got, tc.permanent)
 		}
 	}

@@ -151,10 +151,11 @@ export const DEFAULT_DRAIN_LIMIT_MS = 5000;
  * bound would end every drain at the exit. */
 export const MAX_DRAIN_LIMIT_MS = 2 ** 31 - 1;
 let drainLimitMs = DEFAULT_DRAIN_LIMIT_MS;
-/** The GitHub token forms, which a command's stderr may carry and no log or error may. */
+/** The GitHub token forms, which a command's stderr may carry and no log or error may (the
+ * daemon's internal/githubrest, HoldsToken and RedactTokens). */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
-/** A GitHub account login: what a release may name an installation by (internal/appauth,
- * loginPattern, which is ghrepo's ownerName). A letter or digit and then up to 38 letters,
+/** A GitHub account login: what a release may name an installation by (the daemon's
+ * internal/ghrepo, IsLogin, its ownerName). A letter or digit and then up to 38 letters,
  * digits, hyphens and underscores: an underscore is admitted because a managed user's login ends
  * in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an account's installation
  * like any other, which a narrower rule refused along with the whole release. */

@@ -23,7 +23,7 @@ import (
 // The directory holds:
 //
 //	state.json                replayState: the project's issues at `at`, with artifacts, comments and asks
-//	docs/<artifact id>.md     each document's markdown at its version at `at` (replayArtifact.TextPath)
+//	docs/<id>.md              each document's markdown at its version at `at` (replayArtifact.TextPath)
 //	window.jsonl              the window's events, one compact JSON event per line, as Dispatch served them
 //	created-docs/<id>.md      version 1 of each document an artifact.created window event made, and
 //	                          of each spec an issue.created window event made (replayMeta.CreatedSpecs)
@@ -31,7 +31,10 @@ import (
 //	bundle.meta.json          replayMeta: counts and the sha256 of every other file
 //
 // raw/ beside them is replay-fetch's cache of production responses, never part of the bundle.
-// A bundle carries production text; it never goes in the repository.
+// A bundle carries production text; it never goes in the repository. A file named after a document
+// id or an issue key, in the bundle or in raw/, is named after it as it is: replay-fetch keeps only
+// ids and keys in Dispatch's shape (a lowercase UUID, an issue key; eventInShape, listingInShape,
+// issueNumber), which hold no path separator, no ".." and no more than a few dozen bytes.
 const (
 	bundleStateFile  = "state.json"
 	bundleWindowFile = "window.jsonl"
@@ -41,6 +44,12 @@ const (
 	bundleCreatedDir = "created-docs"
 	bundleRawDir     = "raw"
 )
+
+// bundleDocRel is the slash path of document id's file under docs/ (a replayArtifact.TextPath).
+func bundleDocRel(id string) string { return bundleDocsDir + "/" + id + ".md" }
+
+// bundleCreatedRel is the slash path of created document id's file under created-docs/.
+func bundleCreatedRel(id string) string { return bundleCreatedDir + "/" + id + ".md" }
 
 // replayState is state.json.
 type replayState struct {
@@ -293,7 +302,8 @@ type replayCounts struct {
 	// AsksResolvedBlocks counts the resolved typed ask blocks the state keeps.
 	AsksResolvedBlocks int `json:"asks_resolved_blocks"`
 	WindowEvents       int `json:"window_events"`
-	// WindowByType counts window events per event type.
+	// WindowByType counts window events per event type: a type this package names under its name,
+	// any other under notAReplayEventType (shownEventType), since replay-fetch prints the counts.
 	WindowByType          map[string]int `json:"window_by_type"`
 	CreatedDocs           int            `json:"created_docs"`
 	CreatedDocsUnreadable int            `json:"created_docs_unreadable"`
@@ -356,11 +366,15 @@ const (
 	evPrefixUserState = "user_state."
 )
 
-// decodePayload decodes one event's payload, naming the event and its type in the error.
+// decodePayload decodes one event's payload, naming the event and its type in the error: the type
+// only where it is one this package names (shownEventType), and none of the payload, since a
+// decoder's error can quote the value it could not read (time.Time's does). An event replay-fetch
+// reads is Dispatch's words, or the words of whatever answers in its place, which can echo the
+// bearer.
 func decodePayload[T any](ev replayEvent) (T, error) {
 	var v T
 	if err := json.Unmarshal(ev.Payload, &v); err != nil {
-		return v, fmt.Errorf("event %d (%s): %w", ev.ID, ev.Type, err)
+		return v, fmt.Errorf("event %d (%s): its payload is not the shape this reads for its type", ev.ID, shownEventType(ev.Type))
 	}
 	return v, nil
 }

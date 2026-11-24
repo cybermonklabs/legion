@@ -26,8 +26,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // TestAPodTokenFileIsNamedByItsFlagNeverItsPath: a token pasted where --pod-token-file wants the
@@ -223,12 +221,13 @@ func TestPodTokenClaimsThatCannotBeReadSayFixedText(t *testing.T) {
 	})
 }
 
-// TestAPodBrokerAnswerItCannotReadPrintsThroughWords: a token login or an enrolment the broker
-// answers 2xx with a body the client cannot decode is refused with the decoder's error as
-// cipheraddr.Address.Words lets it print: whole beside a clean AGENT_SECRETS_URL, and
-// WordsNotPrinted beside one that carries a credential, where whoever answers can repeat that
-// credential in any text of its answer. The credential itself is never printed or recorded.
-func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
+// TestAPodBrokerAnswerItCannotReadQuotesNoneOfIt: a token login or an enrolment the broker
+// answers 2xx with a body the client cannot decode is refused with an error that names the member
+// that did not decode and quotes no value of the answer (redact.Answer.Decode), beside a clean
+// AGENT_SECRETS_URL and beside one that carries a credential alike: whoever answers can repeat
+// that credential, or the pod token the request carried, in any value. The credential itself is
+// never printed or recorded.
+func TestAPodBrokerAnswerItCannotReadQuotesNoneOfIt(t *testing.T) {
 	const credential = "tokuser9f3:hunter2pw-broker-2c6d"
 	for _, route := range []string{"/v1/launcher-credentials/token", "/v1/enrollments"} {
 		for _, clean := range []bool{false, true} {
@@ -271,22 +270,16 @@ func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
 					}
 					texts[enrollmentErrorFile] = string(recorded)
 				}
+				member := `"credential_id"`
+				if route == "/v1/enrollments" {
+					member = `"enrollment_id"`
+				}
 				for what, text := range texts {
-					// No decoder error of these answers can quote the address: both answers are
-					// decoded into string fields alone, and encoding/json's error for them names
-					// the JSON kind and the struct field (UnmarshalTypeError) or one character
-					// (SyntaxError). So this check guards how the rest of the line names the broker
-					// (podRefusal, refusalText), and the Words checks below guard the decoder's words.
 					if strings.Contains(text, "hunter2pw-broker-2c6d") || strings.Contains(text, "tokuser9f3") {
 						t.Errorf("%s %q holds the address's credential", what, text)
 					}
-					decoded := strings.Contains(text, "cannot unmarshal")
-					withheld := strings.Contains(text, cipheraddr.WordsNotPrinted)
-					if clean && (!decoded || withheld) {
-						t.Errorf("%s %q: beside a clean address want the decoder's words, not %q", what, text, cipheraddr.WordsNotPrinted)
-					}
-					if !clean && (decoded || !withheld) {
-						t.Errorf("%s %q: beside an address that is not clean want %q in place of the decoder's words", what, text, cipheraddr.WordsNotPrinted)
+					if !strings.Contains(text, member) || strings.Contains(text, "cannot unmarshal") {
+						t.Errorf("%s %q: want the member %s named and none of the decoder's own words", what, text, member)
 					}
 				}
 			})

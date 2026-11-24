@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
+
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -124,20 +126,20 @@ func (d *issueLogDispatch) SetStatusAt(_ context.Context, read dispatch.Issue, s
 		write()
 	}
 	if read.LastSeq != d.last().seq {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CHANGED", Message: "issue changed"}
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: oauth2calltest.Said("ISSUE_CHANGED"), Message: "issue changed"}
 	}
 	d.append(dispatch.Actor{Kind: "session", ID: dispatch.DaemonSession(ownerMoveChild)}, status)
 	return d.GetIssue(context.Background(), ownerMoveChild)
 }
 
-func (d *issueLogDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]json.RawMessage, error) {
-	var events []json.RawMessage
+func (d *issueLogDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]dispatch.Event, error) {
+	var log []json.RawMessage
 	for _, entry := range d.log {
 		if entry.seq > after {
-			events = append(events, d.raw(entry))
+			log = append(log, d.raw(entry))
 		}
 	}
-	return events, nil
+	return servedEvents(log)
 }
 
 // ownerMoveRig is the tree the test runs, the daemon's two handlers that a Dispatch event goes
@@ -221,7 +223,11 @@ func (r *ownerMoveRig) catchUp() {
 		if entry.seq <= r.applied {
 			continue
 		}
-		fact, _, err := intake.DecodeDispatchEvent("LEGION", ownerMoveChild, r.dispatch.raw(entry))
+		event, err := dispatch.DecodeEvent(r.dispatch.raw(entry))
+		if err != nil {
+			r.t.Fatalf("decode event %d: %v", entry.seq, err)
+		}
+		fact, _, err := intake.DecodeDispatchEvent("LEGION", ownerMoveChild, event)
 		if err != nil {
 			r.t.Fatalf("decode event %d: %v", entry.seq, err)
 		}

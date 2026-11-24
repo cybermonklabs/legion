@@ -55,7 +55,9 @@ import (
 //
 // GitHub's head is compared with the record's as the store would keep it (storetext.Text), since
 // the record holds what the store kept of the head the synchronize named: compared as GitHub sent
-// it, a head the store had to change would read as a move at every read.
+// it, a head the store had to change would read as a move at every read. It is GitHub's words, or
+// those of whatever answers in its place, so every line and error here names it only as a commit's
+// sha (githubrest.ShownSHA).
 func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest) (record.PullRequest, error) {
 	head := storetext.Text(pull.Head.SHA)
 	if pull.State != "open" || head == "" || head == pr.HeadSHA {
@@ -74,16 +76,16 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 		return pr, err
 	}
 	w.log.Warn("workflow: GitHub shows a pull request at a head the daemon has not recorded; applying the synchronize its webhook would",
-		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", head, "updated_at", pull.UpdatedAt, "pushes", len(pushes))
+		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", githubrest.ShownSHA(head), "updated_at", pull.UpdatedAt, "pushes", len(pushes))
 	for _, push := range pushes {
 		if _, err := intake.ApplyFact(ctx, w.pool, "github", push.eventID, push.fact, w.handlers...); err != nil {
-			return pr, fmt.Errorf("apply the push to %s: %w", push.fact.After, err)
+			return pr, fmt.Errorf("apply the push to %s: %w", githubrest.ShownSHA(push.fact.After), err)
 		}
 	}
 	eventID := fmt.Sprintf("head-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, time.Now().UnixNano())
 	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: head, Body: pull.Body, UpdatedAt: pull.UpdatedAt}
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
-		return pr, fmt.Errorf("apply the synchronize to %s: %w", head, err)
+		return pr, fmt.Errorf("apply the synchronize to %s: %w", githubrest.ShownSHA(head), err)
 	}
 	return w.openRecord(ctx, pr)
 }
@@ -158,11 +160,12 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // next read of the pull request applies it again; an outbox row fails its attempt and is retried.
 func (w *workflowRuntime) applyMergeability(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
-	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
+	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base.Name, HeadSHA: pull.Head.SHA,
 		Mergeable: mergeable, MergeState: state, ReadAt: readAt}
 	if mergeable == record.MergeabilityConflicting {
-		if base == "" {
-			base = pr.Base
+		if base.Name == "" {
+			// The record's base, which the daemon's record holds, has none of GitHub's words.
+			base = githubText{Name: pr.Base}
 		}
 		rules := w.readBaseRules(ctx, github, pr, base)
 		fact.Rules = &rules
@@ -205,7 +208,7 @@ func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Clie
 		return pushes, err
 	}
 	w.log.Warn("workflow: the read cannot rebuild from GitHub's activity the pushes that moved a pull request's head; it applies none of them, and the synchronize",
-		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "branch", pr.Branch, "recorded", pr.HeadSHA, "head", head, "reason", unfollowed)
+		"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "branch", pr.Branch, "recorded", pr.HeadSHA, "head", githubrest.ShownSHA(head), "reason", unfollowed)
 	return nil, nil
 }
 
@@ -274,25 +277,31 @@ func endsRead(ctx context.Context, err error) bool {
 // webhook carries the same two commits: a push, a force push, and the push that created the branch.
 var pushActivity = map[string]bool{"push": true, "force_push": true, "branch_creation": true}
 
+// activityTypes is every activity_type GitHub documents for an entry of a branch's activity
+// (githubrest.Activity).
+var activityTypes = []string{"push", "force_push", "branch_creation", "branch_deletion", "pr_merge", "merge_queue_merge"}
+
 // followActivity is the entries of activity, GitHub's activity of a branch newest first, that took
 // the branch from from to to, oldest first: from the newest entry that left the branch at to, each
 // older entry in turn, each of which left the branch at the commit the newer one replaced, until one
 // replaced from. Every entry on the way must be a push (pushActivity). unfollowed says why the page
 // holds no such chain: no entry left the branch at to, the entries break off, one is no push, or the
-// page ends before from.
+// page ends before from. The commits an entry names and its type are GitHub's words, or those of
+// whatever answers in its place, so unfollowed names each only in GitHub's shape for it
+// (githubrest.ShownSHA, githubrest.ShownWord); from is the record's head.
 func followActivity(activity []githubrest.Activity, from, to string) ([]githubrest.Activity, string) {
 	start := slices.IndexFunc(activity, func(entry githubrest.Activity) bool { return entry.After == to })
 	if start < 0 {
-		return nil, fmt.Sprintf("none of the %d newest entries of the branch's activity left it at %s", len(activity), to)
+		return nil, fmt.Sprintf("none of the %d newest entries of the branch's activity left it at %s", len(activity), githubrest.ShownSHA(to))
 	}
 	var chain []githubrest.Activity
 	at := to
 	for _, entry := range activity[start:] {
 		switch {
 		case entry.After != at:
-			return nil, fmt.Sprintf("the branch's activity before it reached %s left it at %s", at, entry.After)
+			return nil, fmt.Sprintf("the branch's activity before it reached %s left it at %s", githubrest.ShownSHA(at), githubrest.ShownSHA(entry.After))
 		case !pushActivity[entry.Type]:
-			return nil, fmt.Sprintf("the branch's activity reached %s by a %s, not a push", at, entry.Type)
+			return nil, fmt.Sprintf("the branch's activity reached %s by a %s, not a push", githubrest.ShownSHA(at), githubrest.ShownWord(entry.Type, activityTypes...))
 		}
 		chain = append(chain, entry)
 		if entry.Before == from {
@@ -301,14 +310,16 @@ func followActivity(activity []githubrest.Activity, from, to string) ([]githubre
 		}
 		at = entry.Before
 	}
-	return nil, fmt.Sprintf("the %d newest entries of the branch's activity do not lead back from %s to the recorded head %s", len(activity), to, from)
+	return nil, fmt.Sprintf("the %d newest entries of the branch's activity do not lead back from %s to the recorded head %s", len(activity), githubrest.ShownSHA(to), from)
 }
 
 // pushReadEventID is the event id of a push from before to after on pr's branch that a read of
 // GitHub rebuilt (readEventID): it names the two commits and nothing of the read that rebuilt
-// them, so the same push rebuilt by a later read is one fact.
+// them, so the same push rebuilt by a later read is one fact. Each commit is GitHub's words, or
+// those of whatever answers in its place, and the id prints in a log line where its apply fails, so
+// each is named as a commit's sha or by a digest of what GitHub wrote (githubrest.SHAKey).
 func (w *workflowRuntime) pushReadEventID(pr record.PullRequest, before, after string) string {
-	return readEventID("push-read", w.dispatchProject, pr.Repo, pr.Number, before+"..."+after)
+	return readEventID("push-read", w.dispatchProject, pr.Repo, pr.Number, githubrest.SHAKey(before)+"..."+githubrest.SHAKey(after))
 }
 
 // heardSpelling is repo, the GitHub spelling a record keeps (record.Issue.GitHubRepo), as GitHub
@@ -350,7 +361,7 @@ func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch st
 	}
 	var pulls []githubPullRequest
 	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}
-	if err := github.Get(ctx, "/pulls?"+query.Encode(), &pulls); err != nil {
+	if err := github.Get(ctx, "/pulls?"+query.Encode(), "", &pulls); err != nil {
 		return githubPullRequest{}, false, err
 	}
 	for _, pull := range pulls {

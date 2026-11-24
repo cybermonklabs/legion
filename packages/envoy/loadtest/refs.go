@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -288,10 +289,12 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 				}
 				res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+t.issue+"/artifacts", who{}, body, refTargetKey(t.n, v+1))
 				if res.err != nil || res.status != http.StatusCreated {
-					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, trunc(res.body), res.err)
+					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, res.text(), res.err)
 				}
-				if artifactID = idOf(res.body); artifactID == "" {
-					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, trunc(res.body))
+				// The id is Dispatch's word, which the next version's read sends back and its
+				// refusal names: it is kept only in Dispatch's shape (isDispatchID).
+				if artifactID = idOf(res.body); !isDispatchID(artifactID) {
+					return fmt.Errorf("write %s version %d on %s: no artifact id in Dispatch's shape in %s", name, v+1, t.issue, res.text())
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
@@ -313,13 +316,13 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 func refDocumentToken(ctx context.Context, a *api, artifactID string) (string, error) {
 	res := a.callRetry(ctx, "GET", "/api/v1/artifacts/"+artifactID+"/text", who{}, nil)
 	if res.err != nil || res.status != http.StatusOK {
-		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, trunc(res.body), res.err)
+		return "", fmt.Errorf("read %s before its next version: %d %s %v, want 200", artifactID, res.status, res.text(), res.err)
 	}
 	var doc struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(res.body, &doc); err != nil || doc.Token == "" {
-		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, trunc(res.body), err)
+	if err := res.answer.Decode(&doc); err != nil || doc.Token == "" {
+		return "", fmt.Errorf("read %s before its next version: no document token in %s (%v)", artifactID, res.text(), err)
 	}
 	return doc.Token, nil
 }
@@ -347,7 +350,7 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 			body := map[string]any{"name": refSourceName, "content": b.String(), "actor": refWriter(0)}
 			res := a.callRetryKeyed(gctx, "POST", "/api/v1/issues/"+key+"/artifacts", who{}, body, refSourceKey(key))
 			if res.err != nil || res.status != http.StatusCreated {
-				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, trunc(res.body), res.err)
+				return fmt.Errorf("write %s on %s: %d %s %v, want 201", refSourceName, key, res.status, res.text(), res.err)
 			}
 			return nil
 		})
@@ -360,7 +363,8 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 }
 
 // refsAnswer is what the shape check reads of a references answer: the author list of every
-// version row of every member.
+// version row of every member, as data (the answer's bytes, callResult.body), since the check
+// compares and measures each list's compact JSON and prints none of it.
 type refsAnswer struct {
 	Members []struct {
 		Artifact struct {
@@ -401,11 +405,11 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 		}
 		res := a.callRetry(ctx, "GET", "/api/v1/issues/"+is.Key+"/references", who{}, nil)
 		if !res.ok() {
-			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, trunc(res.body), res.err)
+			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		var answer refsAnswer
 		if err := json.Unmarshal(res.body, &answer); err != nil {
-			return fmt.Errorf("references of %s: %w", is.Key, err)
+			return fmt.Errorf("references of %s: %w", is.Key, redact.DecodeError(err, res.body, &answer))
 		}
 		seen := map[string]bool{}
 		r, ab := 0, 0
@@ -456,7 +460,7 @@ func runRefsFetch(args []string) error {
 	fs := flag.NewFlagSet("refs-fetch", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	out := fs.String("out", "", "output TSV: key, status, ETag, body sha256, bytes")
+	out := fs.String("out", "", "output TSV: key, status, ETag (its sha256: where it is not Dispatch's shape), body sha256, bytes")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
@@ -476,7 +480,9 @@ func runRefsFetch(args []string) error {
 
 // refsFetch records the references answer of every seeded issue, in key order, so two builds'
 // answers compare byte for byte. It records every status, and counts the answers that have
-// members among the 200s alone: another status carries no answer to count.
+// members among the 200s alone: another status carries no answer to count. An answer's ETag is
+// Dispatch's word, or the word of whatever answers in its place, which can echo the read's
+// bearer: the TSV records it only in Dispatch's shape (shownETag).
 func refsFetch(ctx context.Context, a *api, sf seedFile, out string) error {
 	keys := make([]string, 0, len(sf.Issues))
 	for _, is := range sf.Issues {
@@ -491,7 +497,7 @@ func refsFetch(ctx context.Context, a *api, sf seedFile, out string) error {
 			return fmt.Errorf("references of %s: %w", key, res.err)
 		}
 		sum := sha256.Sum256(res.body)
-		fmt.Fprintf(&tsv, "%s\t%d\t%s\t%s\t%d\n", key, res.status, res.etag, hex.EncodeToString(sum[:]), len(res.body))
+		fmt.Fprintf(&tsv, "%s\t%d\t%s\t%s\t%d\n", key, res.status, shownETag(res.etag), hex.EncodeToString(sum[:]), len(res.body))
 		total += len(res.body)
 		switch {
 		case res.status != http.StatusOK:

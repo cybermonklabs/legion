@@ -14,8 +14,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -127,9 +129,9 @@ func (c *operatorCall) send(ctx context.Context, op operator, method, path strin
 	return c.printAnswer(op, path, answer, print)
 }
 
-// request makes one request of the daemon and answers its 2xx status and body. A request that got
-// no answer, or an answer outside 2xx — the daemon's refusal, with its status and sentence — is
-// reported and answers false.
+// request makes one request of the daemon and answers its 2xx status and body, the data the
+// daemon served (Answer.StreamTo). A request that got no answer, or an answer outside 2xx — the
+// daemon's refusal, with its status and sentence (refusal) — is reported and answers false.
 //
 // It runs under the command's --wait, which bounds the whole call rather than this one request
 // (bound). What it asks for may wait on the runtime — a suspend or stop waits out the worker's
@@ -139,7 +141,7 @@ func (c *operatorCall) send(ctx context.Context, op operator, method, path strin
 func (c *operatorCall) request(ctx context.Context, op operator, method, path string, body any) (int, []byte, bool) {
 	bounded, cancel := c.bound(ctx)
 	defer cancel()
-	status, answer, err := op.do(bounded, method, path, body)
+	answer, err := op.do(bounded, method, path, body)
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
@@ -149,11 +151,13 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
 		return 0, nil, false
 	}
-	if status/100 != 2 {
-		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(status, answer))
+	if answer.Status()/100 != 2 {
+		fmt.Fprintf(c.stderr, "%s: %s\n", c.name(), refusal(answer))
 		return 0, nil, false
 	}
-	return status, answer, true
+	var served bytes.Buffer
+	_, _ = answer.StreamTo(&served)
+	return answer.Status(), served.Bytes(), true
 }
 
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
@@ -172,21 +176,30 @@ type operator struct {
 	bearer string
 }
 
+// daemonClient is the client every request of the CLI to a daemon's API is made on (do, get):
+// http.DefaultClient's, following no redirect (redirects.Refused). An operator request carries the
+// operator bearer, which a followed redirect would hand the host the Location names, and the
+// daemon answers none: a 3xx is its answer, refused by its status.
+var daemonClient = redirects.Refused(http.DefaultClient)
+
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
-// Authorization when op carries one. It answers the status and the body the daemon served; only a
-// request that got no answer is an error.
-func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
+// Authorization when op carries one. It answers the daemon's answer, read through
+// oauth2call.ReadAnswer with the record of the request, so a refusal prints with the bearer and any
+// credential the request carried redacted (Answer.Words, refusal), and a caller decodes what it
+// decides on as it came (Answer.Decode). Only a request that got no answer is an error, naming its
+// failure through redact.Unanswered and the URL it asked through the URL rule.
+func (op operator) do(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return 0, nil, fmt.Errorf("encode the request: %w", err)
+			return oauth2call.Answer{}, fmt.Errorf("encode the request: %w", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
 	if err != nil {
-		return 0, nil, err
+		return oauth2call.Answer{}, redact.Unanswered(err, nil, "")
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -194,16 +207,16 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := daemonClient.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return oauth2call.Answer{}, redact.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
+	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
+		return oauth2call.Answer{}, fmt.Errorf("read the answer to %s %s: %w", method, redact.URLCredentials(request.URL.String()), err)
 	}
-	return response.StatusCode, answer, nil
+	return answer, nil
 }
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —
@@ -235,15 +248,20 @@ func daemonURL() string {
 
 // refusal is an answer outside 2xx as the operator reads it: the status, and the sentence the
 // daemon's `{"error"}` body carries — or the body itself when it carries none, so nothing the
-// daemon said is lost.
-func refusal(status int, body []byte) string {
-	refused := legionclaim.Refusal{Status: status}
-	if err := json.Unmarshal(body, &refused); err != nil || refused.Message == "" {
-		refused.Message = strings.TrimSpace(string(body))
+// daemon said is lost. Whether the body carries a sentence is decided on the body as it came
+// (Answer.Decode), since the rule's reading of a whole body is not readable where its sentence
+// names a URL beside the JSON quote that ends it; the sentence and the body each print as the rule
+// reads them.
+func refusal(answer oauth2call.Answer) string {
+	status := answer.Status()
+	message := strings.TrimSpace(answer.Words().String())
+	var refused oauth2call.CodedRefusal
+	if answer.Decode(&refused) == nil && !refused.Error.IsEmpty() {
+		message = refused.Error.String()
 	}
-	answered := fmt.Sprintf("the daemon answered %d %s", refused.Status, http.StatusText(refused.Status))
-	if refused.Message == "" {
+	answered := fmt.Sprintf("the daemon answered %d %s", status, http.StatusText(status))
+	if message == "" {
 		return answered
 	}
-	return answered + ": " + refused.Message
+	return answered + ": " + message
 }

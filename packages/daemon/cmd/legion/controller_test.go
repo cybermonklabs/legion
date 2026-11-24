@@ -1176,7 +1176,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
 		{`{"secret":"s"}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
 		{`{"secret":"s","designGateSteps":null}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
-		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["decisions","sometimes"]}`, `answered a design gate step (designGateSteps[1]) that is not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1251,7 +1251,7 @@ func TestControllerStartDaemonURLOverridesTheFile(t *testing.T) {
 // without operator_token_file. Nothing is written and nothing launched.
 func TestControllerStartRefusedByTheDaemonWritesNothing(t *testing.T) {
 	d := newControllerDaemon(t)
-	c := newControllerStart(t, d, controllerOptions{tokenContents: "not-the-operator-token\n"})
+	c := newControllerStart(t, d, controllerOptions{tokenContents: "wrong-9f3c27e1b04d\n"})
 	code, _, errb := c.run()
 	want := d.url + "/legion/v1/controller/secret: the daemon answered 403 Forbidden: Invalid operator token — the operator token does not match the daemon's operator_token_file\n"
 	if code != 1 || !strings.HasSuffix(errb, want) {
@@ -2031,10 +2031,10 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 		return err == nil
 	})
 	// Mint a second capability, which supersedes the one this controller holds.
-	status, _, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
+	answer, err := (operator{base: d.url, bearer: controllerOperatorToken}).do(context.Background(), http.MethodPost,
 		"/legion/v1/controller/secret", api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion})
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("mint a second capability: status %d, err %v", status, err)
+	if err != nil || answer.Status() != http.StatusOK {
+		t.Fatalf("mint a second capability: status %d, err %v", answer.Status(), err)
 	}
 	logFile := filepath.Join(c.defaultDir, "github-credential.log")
 	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, logFile+" to hold \"github credential refresh stopped\"", func() bool {

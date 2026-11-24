@@ -1431,7 +1431,7 @@ func (m *manager) startSession(ctx context.Context, command shimwire.LauncherSta
 	generation := command.Generation
 	config := sessionproxy.Config{
 		Instance: database.Instance, ImpersonateServiceAccount: database.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
-		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
+		DialTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
 	}
 	if database.WriterAudience != "" {
 		if err := requireTraceScope(); err != nil {
@@ -1461,12 +1461,14 @@ func (m *manager) startSession(ctx context.Context, command shimwire.LauncherSta
 	return proxy, local.ClientURL(), nil
 }
 
-// proofTimeout bounds a generation's proof dial (sessionproxy.Config.ProofTimeout) at half the stop
+// proofTimeout bounds a generation's proof dial (sessionproxy.Config.DialTimeout) at half the stop
 // grace, which Run has made positive. The daemon's wait on a start ends at the launcher's connection
 // deadline plus its termination grace (runtime/sandbox's relaunch), and that grace is the
 // --stop-grace it hands the launcher (runtime/sandbox's manifest), so the daemon waits at least
 // StopGrace past the launcher's connection, however late it connected. Half of it bounds the
-// proof; the other half is left for the rest of the start and its answer.
+// proof; the other half is left for the rest of the start and its answer. The same bound holds
+// each of the generation's later dials, one per connection: a later dial does no more than the
+// proof dial did.
 func (m *manager) proofTimeout() time.Duration { return m.cfg.StopGrace / 2 }
 
 // sessionDrain is how long a generation's proxy lets connections still open at its Close finish

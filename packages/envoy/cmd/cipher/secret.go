@@ -793,7 +793,7 @@ func proofFailed(err error) bool {
 		return false
 	}
 	return refused.Status == http.StatusUnauthorized ||
-		refused.Status == http.StatusServiceUnavailable && refused.Code == "DATABASE_UNAVAILABLE"
+		refused.Status == http.StatusServiceUnavailable && refused.hasCode("DATABASE_UNAVAILABLE")
 }
 
 // whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
@@ -1005,14 +1005,14 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 	if !ok {
 		return 1
 	}
-	if !r.Told || r.Type == secretType {
+	if !r.Told || r.Type.Equal(secretType) {
 		return 0
 	}
 	retag, releases := secretType, ""
 	if retag == "" {
 		retag = tagNone
 	}
-	if r.Type == "" {
+	if r.Type.IsEmpty() {
 		releases = ", so every grant of it releases what it stores as it is"
 	}
 	fmt.Fprintf(stderr, "agent-secrets %s: the value of %s in %s stands, but %s serves %s as %s, not %s%s. Run `%s` to write the type again and ask it to reread %s, until that exits 0\n",
@@ -1032,7 +1032,10 @@ func rereadValue(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 // the broker's view was not checked, why, and the command that checks it (sayUnchecked).
 // Otherwise r is the broker's own answer to a session's reread, whose type the caller holds to
 // secretType. It is for a write known to have landed: a write whose outcome is open is reread by
-// rereadOpen, which claims nothing of it.
+// rereadOpen, which claims nothing of it. The reason and the type are the broker's text, each
+// held with the record of the signed reread (Reread), so a line prints it as the broker's address
+// lets its answer print (cipheraddr.Address.WordsOf), with the reread's proof redacted, and a
+// decision reads it as it came.
 func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType string, wantServed bool, restorable *time.Time) (Reread, bool) {
 	r, unsigned, err := s.askReread(s.ctx, name)
 	ok := true
@@ -1045,7 +1048,7 @@ func reread(s *secretSession, stdout, stderr io.Writer, form, name, secretType s
 		switch {
 		case !r.Told:
 		case wantServed && !r.Served:
-			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.settings.words(r.Reason))
+			fmt.Fprintf(stderr, "agent-secrets %s: %s refuses %s after the write to %s (reason=%s)\n", form, s.src.brokerAt(), name, s.storeName(), s.broker.baseURL.WordsOf(r.Reason))
 			ok = false
 		case !wantServed && r.Served:
 			fmt.Fprintf(stderr, "agent-secrets %s: %s still serves %s after its delete in %s\n", form, s.src.brokerAt(), name, s.storeName())
@@ -1111,19 +1114,21 @@ func sayUnchecked(s *secretSession, stderr io.Writer, form, name, secretType str
 
 // printReread prints the broker's answer to a reread of name: taken and nothing more (a call with
 // no proof, r.Told false), served (with its type), deleted (after a delete, which deleted is;
-// restorable is when it stops being restorable), or refused with its reason.
+// restorable is when it stops being restorable), or refused with its reason. The type and the
+// reason are the broker's text (Reread), so each prints as the broker's address lets its answer
+// print (cipheraddr.Address.WordsOf) and each decision reads it as it came.
 func printReread(s *secretSession, stdout io.Writer, name string, r Reread, deleted bool, restorable *time.Time) {
 	switch {
 	case !r.Told:
 		fmt.Fprintf(stdout, "broker: rereading %s from %s\n", name, s.storeName())
-	case r.Served && r.Type != "":
-		fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.settings.words(r.Type))
+	case r.Served && !r.Type.IsEmpty():
+		fmt.Fprintf(stdout, "broker: serving %s from %s (type %s)\n", name, s.storeName(), s.broker.baseURL.WordsOf(r.Type))
 	case r.Served:
 		fmt.Fprintf(stdout, "broker: serving %s from %s\n", name, s.storeName())
-	case deleted && r.Reason == policy.ReasonAbsent:
+	case deleted && r.Reason.Equal(policy.ReasonAbsent):
 		fmt.Fprintf(stdout, "broker: %s is deleted in %s (restorable until %s)\n", name, s.storeName(), formatTime(restorable))
 	default:
-		fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.settings.words(r.Reason))
+		fmt.Fprintf(stdout, "broker: refusing %s from %s (reason=%s)\n", name, s.storeName(), s.broker.baseURL.WordsOf(r.Reason))
 	}
 }
 

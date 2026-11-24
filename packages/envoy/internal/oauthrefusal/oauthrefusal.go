@@ -12,9 +12,12 @@
 // TypeScript broker client by the same rule in its own language
 // (packages/cipher-client/src/person-identity.ts, grantRefused). The broker's minters read
 // GitHub's and Google's statuses by Refuses and Outage too (internal/cipher/secrets,
-// mintStatusError and classify), beside their own rate-limit reading. It imports only the
-// standard library and golang.org/x/oauth2, so a command that links no OpenID Connect verifier can
-// use it.
+// mintStatusError and classify), beside their own rate-limit reading. A code is read as the closed
+// set redact.RefusalCode answers, from the code as it came, never from an answer's ErrorCode: the
+// boundary (redact.OAuth2) hands on an answer that unwraps to an *oauth2.RetrieveError holding only
+// the rule's reading of its words, or no word at all where no record covers it. It imports only
+// the standard library, golang.org/x/oauth2 and internal/redact, so a command that links no OpenID
+// Connect verifier can use it.
 package oauthrefusal
 
 import (
@@ -22,6 +25,8 @@ import (
 	"net/http"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Outage reports whether status is a server that could not answer the request now: any 5xx, a 408
@@ -40,15 +45,17 @@ func Refuses(status int) bool {
 	return status >= 400 && status < 500 && !Outage(status)
 }
 
-// Refusal is the OAuth error code a refusal names, an answer whose status Refuses, and empty for
-// every other failure: an answer of any other status, whatever error its body names, and no answer
-// at all. A refusal that names no error has an empty Refusal.
-func Refusal(err error) string {
+// Refusal is the OAuth error code a refusal names, an answer whose status Refuses, read as the
+// closed set redact.RefusalCode answers, and redact.OAuthNone for every other failure: an answer
+// of any other status, whatever error its body names, and no answer at all. A refusal that names
+// no error is redact.OAuthNone too, and one that names a code the set does not is
+// redact.OAuthOther.
+func Refusal(err error) redact.OAuthCode {
 	var retrieve *oauth2.RetrieveError
 	if !errors.As(err, &retrieve) || retrieve.Response == nil || !Refuses(retrieve.Response.StatusCode) {
-		return ""
+		return redact.OAuthNone
 	}
-	return retrieve.ErrorCode
+	return redact.RefusalCode(err)
 }
 
 // EndsGrant reports whether err is a token endpoint's answer 400 or 401 naming invalid_grant: the
@@ -60,7 +67,7 @@ func Refusal(err error) string {
 // Dispatch's refresh has pinned as no end of a sign-in since it was written, among them.
 func EndsGrant(err error) bool {
 	var retrieve *oauth2.RetrieveError
-	if !errors.As(err, &retrieve) || retrieve.Response == nil || retrieve.ErrorCode != "invalid_grant" {
+	if !errors.As(err, &retrieve) || retrieve.Response == nil || redact.RefusalCode(err) != redact.InvalidGrant {
 		return false
 	}
 	status := retrieve.Response.StatusCode

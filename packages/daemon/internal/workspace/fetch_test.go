@@ -1445,7 +1445,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 	if strings.Contains(err.Error(), testInstallationToken) {
 		t.Errorf("Fetch's error carries the provisioning token: %v", err)
 	}
-	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/'") {
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://github.com/acme/widgets/'") {
 		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
 	}
 }
@@ -1729,16 +1729,17 @@ func tarOf(t *testing.T, entries ...[2]string) []byte {
 // testCacheToken is the bearer the fake cache takes and fetchRequest's cache requests present.
 const testCacheToken = "cache-token-of-acme-widgets"
 
-// fakeCache stands in for the repository cache's server: GET /tar must carry the bearer
-// testCacheToken, or it is answered 401; GET /healthz answers any request, 503 for its first
-// notReady polls and then 200 ready, recording the Authorization each carried. An answered request
-// names the cache's repository, acme/widgets unless repo or tarRepo says otherwise, in
-// CacheRepositoryHeader. It counts each.
+// fakeCache stands in for the repository cache's server: GET /tar must carry the bearer token,
+// testCacheToken unless token says otherwise, or it is answered 401; GET /healthz answers any
+// request, 503 for its first notReady polls and then 200 ready, recording the Authorization each
+// carried. An answered request names the cache's repository, acme/widgets unless repo or tarRepo
+// says otherwise, in CacheRepositoryHeader. It counts each.
 type fakeCache struct {
 	body     []byte
 	notReady int
 	repo     string
 	tarRepo  string
+	token    string
 
 	mu                sync.Mutex
 	healthAsked       int
@@ -1765,7 +1766,7 @@ func (c *fakeCache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"ready":true,"repo":"` + repo + `","bytes":1}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/tar":
 		c.tarAsked++
-		if r.Header.Get("Authorization") != "Bearer "+testCacheToken {
+		if r.Header.Get("Authorization") != "Bearer "+cmp.Or(c.token, testCacheToken) {
 			http.Error(w, "the repository cache's token is required", http.StatusUnauthorized)
 			return
 		}

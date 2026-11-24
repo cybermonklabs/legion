@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -199,12 +200,12 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 		return err
 	}
 	defer func() { _ = answer.Body.Close() }()
-	read, err := io.ReadAll(io.LimitReader(answer.Body, 1<<20))
+	read, err := redact.ReadAnswer(answer, 1<<20)
 	if err != nil {
 		return err
 	}
 	if answer.StatusCode != http.StatusOK && answer.StatusCode != http.StatusCreated {
-		return fmt.Errorf("%s %s answered %d: %s", method, url, answer.StatusCode, read)
+		return fmt.Errorf("%s %s answered %d: %s", method, url, answer.StatusCode, read.Words())
 	}
-	return json.Unmarshal(read, out)
+	return read.Decode(out)
 }

@@ -16,6 +16,8 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	storage "google.golang.org/api/storage/v1"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // GCS is a Store over one Google Cloud Storage bucket, through the JSON API. It needs exactly two
@@ -121,8 +123,10 @@ func (s *GCS) Get(ctx context.Context, sha string) (*Object, error) {
 		cancel()
 		return nil, fmt.Errorf("get file %s: %d bytes, limit %d", sha, size, MaxObjectSize)
 	}
+	// The object is data the caller reads at its own pace and never prints, streamed through
+	// redact.StreamAnswer up to the size GCS named (VerifyingReader refuses a body of another size).
 	return &Object{
-		Body: NewVerifyingReader(&cancelOnClose{ReadCloser: response.Body, cancel: cancel}, sha, size),
+		Body: NewVerifyingReader(&cancelOnClose{ReadCloser: redact.StreamAnswer(response, size), cancel: cancel}, sha, size),
 		Size: size,
 	}, nil
 }

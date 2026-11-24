@@ -238,25 +238,30 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 // 403 whose body is not that JSON — a proxy's gateway timeout, a reason this daemon does not
 // know — stays an ordinary failure.
 func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
+	// The words each refusal is wanted to hold as they came: the holder and event id of an
+	// ErrNotDelivered, the holder of an ErrRefusedByHolder, the message of an ErrPublishDenied.
+	type undelivered struct{ reason, holder, eventID string }
+	held := func(s string) *string { return &s }
+	const deniedWords = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_a": nats: permissions violation: Permissions Violation for Publish to "notifications.agent.ses_a"`
 	for _, tc := range []struct {
 		name         string
 		status       int
 		body         string
-		notDelivered *ErrNotDelivered
-		refused      *ErrRefusedByHolder
-		denied       *ErrPublishDenied
+		notDelivered *undelivered
+		refused      *string
+		denied       *string
 	}{
 		{"the holder sent no receipt", http.StatusGatewayTimeout,
 			`{"error":"role legion-demo-architect: event evt-1 was not confirmed by its holder within 4s (receipt_timeout)","reason":"receipt_timeout","event_id":"evt-1","dedupe_key":"legion-outbox:9","holder":"ses_a","attempts":2}`,
-			&ErrNotDelivered{Reason: ReasonReceiptTimeout, Holder: "ses_a", EventID: "evt-1"}, nil, nil},
+			&undelivered{ReasonReceiptTimeout, "ses_a", "evt-1"}, nil, nil},
 		{"the forward never reached the server", http.StatusGatewayTimeout,
 			`{"error":"role legion-demo-architect: event evt-2 was not confirmed by its holder within 4s (delivery_failed)","reason":"delivery_failed","event_id":"evt-2","dedupe_key":"legion-outbox:9","holder":"","attempts":0}`,
-			&ErrNotDelivered{Reason: ReasonDeliveryFailed, EventID: "evt-2"}, nil, nil},
+			&undelivered{ReasonDeliveryFailed, "", "evt-2"}, nil, nil},
 		{"the holder does not advertise the delivery mode", http.StatusForbidden,
-			`{"error":"session ses_a (architect) does not advertise prompt","reason":"capability","holder":"ses_a"}`, nil, &ErrRefusedByHolder{Holder: "ses_a"}, nil},
+			`{"error":"session ses_a (architect) does not advertise prompt","reason":"capability","holder":"ses_a"}`, nil, held("ses_a"), nil},
 		{"the listener's own grant denied the forward", http.StatusForbidden,
 			`{"error":"envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to \"notifications.agent.ses_a\": nats: permissions violation: Permissions Violation for Publish to \"notifications.agent.ses_a\""}`,
-			nil, nil, &ErrPublishDenied{Message: `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_a": nats: permissions violation: Permissions Violation for Publish to "notifications.agent.ses_a"`}},
+			nil, nil, held(deniedWords)},
 		{"a gateway timeout that is not JSON", http.StatusGatewayTimeout, `upstream request timeout`, nil, nil, nil},
 		{"a gateway timeout with no reason", http.StatusGatewayTimeout, `{"error":"gateway timeout"}`, nil, nil, nil},
 		{"a gateway timeout with another reason", http.StatusGatewayTimeout, `{"error":"not confirmed","reason":"not_confirmed"}`, nil, nil, nil},
@@ -276,16 +281,17 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 				t.Fatalf("publish error = %v, want the listener's answer %s", err, tc.body)
 			}
 			var notDelivered ErrNotDelivered
-			if got := errors.As(err, &notDelivered); got != (tc.notDelivered != nil) || got && notDelivered != *tc.notDelivered {
+			if got := errors.As(err, &notDelivered); got != (tc.notDelivered != nil) || got && (notDelivered.Reason != tc.notDelivered.reason ||
+				!notDelivered.Holder.Equal(tc.notDelivered.holder) || !notDelivered.EventID.Equal(tc.notDelivered.eventID)) {
 				t.Fatalf("errors.As(%v, ErrNotDelivered) = %t with %+v, want %+v", err, got, notDelivered, tc.notDelivered)
 			}
 			var refused ErrRefusedByHolder
-			if got := errors.As(err, &refused); got != (tc.refused != nil) || got && refused != *tc.refused {
-				t.Fatalf("errors.As(%v, ErrRefusedByHolder) = %t with %+v, want %+v", err, got, refused, tc.refused)
+			if got := errors.As(err, &refused); got != (tc.refused != nil) || got && !refused.Holder.Equal(*tc.refused) {
+				t.Fatalf("errors.As(%v, ErrRefusedByHolder) = %t with %+v, want %v", err, got, refused, tc.refused)
 			}
 			var denied ErrPublishDenied
-			if got := errors.As(err, &denied); got != (tc.denied != nil) || got && denied != *tc.denied {
-				t.Fatalf("errors.As(%v, ErrPublishDenied) = %t with %+v, want %+v", err, got, denied, tc.denied)
+			if got := errors.As(err, &denied); got != (tc.denied != nil) || got && !denied.Message.Equal(*tc.denied) {
+				t.Fatalf("errors.As(%v, ErrPublishDenied) = %t with %+v, want %v", err, got, denied, tc.denied)
 			}
 			if errors.Is(err, ErrNoHolder) {
 				t.Fatalf("errors.Is(%v, ErrNoHolder) = true, want a holder that exists", err)

@@ -120,8 +120,8 @@ func cleaned(v reflect.Value, depth int) reflect.Value {
 		out := reflect.New(t).Elem()
 		out.Set(v)
 		for i := range v.NumField() {
-			if field := v.Field(i); t.Field(i).IsExported() && holdsChange(field, depth+1) {
-				out.Field(i).Set(cleaned(field, depth+1))
+			if t.Field(i).IsExported() && holdsChange(v.Field(i), depth+1) {
+				out.Field(i).Set(cleaned(v.Field(i), depth+1))
 			}
 		}
 		return out

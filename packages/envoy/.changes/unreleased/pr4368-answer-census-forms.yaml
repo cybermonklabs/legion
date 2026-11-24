@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The redaction check's answer census reads a response by its struct, not only by its name: a
+  `Body` or `Status` read through a type defined over `net/http.Response`, in any package, or
+  through a defined pointer type to one, fails as a read of `net/http.Response`'s does. A response
+  printed whole now also fails when it is inside another value where fmt or encoding/json reaches
+  it (by value in a field, an element or a map's key or value, or behind a pointer in an exported
+  field or a map's value), and wherever Go makes that value an interface value: a call's argument,
+  a conversion, a variable's value, an assignment, a composite literal's element, a return, a send,
+  a map key and a range's assignment, and a generic function's argument whose parameter holds a
+  type parameter. `errors.As`'s target and a value of an external error type, which the
+  whole-value census judges, are listed and pass. The check's statement of what it does not
+  establish names a response behind an unexported pointer, printed by a printer that follows it,
+  and a response a library function takes by its own type and prints.
+time: 2026-11-23T04:26:05Z
+custom:
+    Issue: pr4368

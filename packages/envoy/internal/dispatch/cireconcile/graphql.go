@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"hash/maphash"
 	"net/http"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -165,11 +168,11 @@ type queryHead struct {
 	// whose commit no status was posted to.
 	statuses []object
 	// statusesRefused is the errors entries GitHub answered against the head commit's status
-	// field or a field under it, and nil where it answered none. Any entry costs the head its
-	// statuses alone: the head is answered whole by its check suites as any other head, the
-	// entries are named at WARN, and a head read over REST for its checks reads no statuses
-	// (walk.visitHead), since GitHub has just refused them.
-	statusesRefused []graphQLError
+	// field or a field under it, as one line of a log (errorText), and empty where it answered
+	// none. Any entry costs the head its statuses alone: the head is answered whole by its check
+	// suites as any other head, the entries are named at WARN, and a head read over REST for its
+	// checks reads no statuses (walk.visitHead), since GitHub has just refused them.
+	statusesRefused string
 	// overflow is why the query could not answer this head whole, and empty for a head it
 	// answered whole. A head with a reason here is read over REST instead and the objects above
 	// are not recorded: the head has more check suites than one query asks for, one of its
@@ -208,12 +211,72 @@ type graphQLAnswer struct {
 }
 
 // graphQLError is one entry of GitHub's errors array. Path names the field the entry is about,
-// which is how a refusal of one head's Checks, or of its statuses alone, is told from a refusal
-// of the whole query (refusedPulls).
+// segment by segment (pathSegment), which is how a refusal of one head's Checks, or of its
+// statuses alone, is told from a refusal of the whole query (refusedPulls). Type and Message are
+// GitHub's words, or a stand-in's, held as redact.RemoteText, so errorText prints them only as the
+// rule reads them, with the credentials the query carried redacted.
 type graphQLError struct {
-	Type    string `json:"type"`
-	Path    []any  `json:"path"`
-	Message string `json:"message"`
+	Type    redact.RemoteText `json:"type"`
+	Path    []pathSegment     `json:"path"`
+	Message redact.RemoteText `json:"message"`
+}
+
+// pathSegment is one segment of an errors entry's path: the name of a field, which GitHub writes
+// as a JSON string, or the index of a list item, which it writes as a JSON number. A number is
+// held as a float64, as encoding/json reads a JSON number into an interface value, and pullIndex
+// takes an index from it as an int. Any other JSON value is a segment of neither kind, which
+// names no field and no index. A path is read and never printed (errorText names an entry by its
+// type and message alone), so a field's name is held as plain text.
+type pathSegment struct {
+	kind  segmentKind
+	field string
+	index float64
+}
+
+// segmentKind is which of the two kinds of segment a pathSegment is, or neither.
+type segmentKind uint8
+
+const (
+	segmentOther segmentKind = iota
+	segmentField
+	segmentIndex
+)
+
+// UnmarshalJSON decodes one JSON value of a path into the segment it is: a string into a field's
+// name, a number into an index, and any other value into a segment of neither kind. An array or
+// an object is decoded through, segment by segment, and kept as nothing, so a number anywhere in
+// a path that no float64 holds fails the decode, with a type error that names the kind of value
+// and not the value.
+func (s *pathSegment) UnmarshalJSON(data []byte) error {
+	*s = pathSegment{}
+	switch data[0] {
+	case '"':
+		var field string
+		if err := json.Unmarshal(data, &field); err != nil {
+			return err
+		}
+		*s = pathSegment{kind: segmentField, field: field}
+		return nil
+	case '[':
+		var items []pathSegment
+		return json.Unmarshal(data, &items)
+	case '{':
+		var members map[string]pathSegment
+		return json.Unmarshal(data, &members)
+	case 'n', 't', 'f':
+		return nil
+	}
+	index, err := strconv.ParseFloat(string(data), 64)
+	if err != nil {
+		return &json.UnmarshalTypeError{Value: "number", Type: reflect.TypeFor[float64]()}
+	}
+	*s = pathSegment{kind: segmentIndex, index: index}
+	return nil
+}
+
+// isField reports whether s is the field called name.
+func (s pathSegment) isField(name string) bool {
+	return s.kind == segmentField && s.field == name
 }
 
 type graphQLPull struct {
@@ -303,10 +366,10 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 		return queryPage{}, err
 	}
 	if status != http.StatusOK {
-		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body))
+		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body.Words().String()))
 	}
 	var answer graphQLAnswer
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := body.Decode(&answer); err != nil {
 		return queryPage{}, fmt.Errorf("decode the GraphQL answer for %s/%s: %w", repository.owner, repository.repo, err)
 	}
 	c.points += answer.Data.RateLimit.Cost
@@ -358,7 +421,10 @@ func headCommit(pull *graphQLPull) *graphQLCommit {
 // over it. A refused pull request with no head commit never reaches here: the query cannot
 // answer that head at all, so its whole page is read over REST.
 func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) queryHead {
-	head := queryHead{number: pull.Number, statusesRefused: statusesRefused}
+	head := queryHead{number: pull.Number}
+	if len(statusesRefused) > 0 {
+		head.statusesRefused = errorText(statusesRefused)
+	}
 	commit := headCommit(pull)
 	if commit == nil {
 		return head
@@ -635,45 +701,47 @@ func refusedPulls(errors []graphQLError) (refused map[int]struct{}, statuses map
 // pullIndex is the pull request node one error path is about -- the number that follows
 // "pullRequests","nodes" in it -- and the rest of the path after that number, which is the field
 // of the node the entry is about.
-func pullIndex(path []any) (int, []any, bool) {
+func pullIndex(path []pathSegment) (int, []pathSegment, bool) {
 	for i := 0; i+2 < len(path); i++ {
-		if text, ok := path[i].(string); !ok || text != "pullRequests" {
+		if !path[i].isField("pullRequests") || !path[i+1].isField("nodes") {
 			continue
 		}
-		if text, ok := path[i+1].(string); !ok || text != "nodes" {
-			continue
-		}
-		// A JSON number decodes into any as a float64, and an index is a whole small one.
-		index, ok := path[i+2].(float64)
-		if !ok || index < 0 {
+		// An index is a whole small number, held as the float64 a JSON number decodes as.
+		node := path[i+2]
+		if node.kind != segmentIndex || node.index < 0 {
 			return 0, nil, false
 		}
-		return int(index), path[i+3:], true
+		return int(node.index), path[i+3:], true
 	}
 	return 0, nil, false
 }
 
 // statusField is the path of the head commit's status field under a pull request node, as an
-// error path names it after the node's index: the commit of `commits(last: 1)`'s one node, whose
-// index a JSON number decodes as, a float64.
-var statusField = []any{"commits", "nodes", float64(0), "commit", "status"}
+// error path names it after the node's index: the commit of `commits(last: 1)`'s one node, index 0.
+var statusField = []pathSegment{
+	{kind: segmentField, field: "commits"},
+	{kind: segmentField, field: "nodes"},
+	{kind: segmentIndex, index: 0},
+	{kind: segmentField, field: "commit"},
+	{kind: segmentField, field: "status"},
+}
 
 // underStatus reports whether field, an error path after its pull request node's index, is the
 // head commit's status field or a field under it.
-func underStatus(field []any) bool {
+func underStatus(field []pathSegment) bool {
 	return len(field) >= len(statusField) && slices.Equal(field[:len(statusField)], statusField)
 }
 
-// errorText is GitHub's errors array as one line of a log, each entry's type and message: the
-// pass names what GitHub refused, which is the only way an operator can tell a permission the
-// App lacks from a query GitHub gave up on.
+// errorText is GitHub's errors array as one line of a log, each entry's type and message as the
+// rule reads them: the pass names what GitHub refused, which is the only way an operator can tell
+// a permission the App lacks from a query GitHub gave up on.
 func errorText(errors []graphQLError) string {
 	if len(errors) == 0 {
 		return "the answer held no repository and no error"
 	}
 	said := make([]string, 0, len(errors))
 	for _, entry := range errors {
-		said = append(said, strings.TrimSpace(entry.Type+" "+entry.Message))
+		said = append(said, strings.TrimSpace(entry.Type.String()+" "+entry.Message.String()))
 	}
 	return strings.Join(said, "; ")
 }

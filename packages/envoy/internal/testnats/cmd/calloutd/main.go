@@ -13,11 +13,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -30,6 +28,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // readyTimeout bounds the wait for the service's subscription to reach the server, so a server
@@ -109,7 +108,11 @@ func introspector(route string) func(context.Context, string) (oauthwire.Introsp
 			return oauthwire.Introspection{}, fmt.Errorf("the introspection route answered HTTP %d", response.StatusCode)
 		}
 		var answer oauthwire.Introspection
-		if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&answer); err != nil {
+		read, err := redact.ReadAnswer(response, 64<<10)
+		if err != nil {
+			return oauthwire.Introspection{}, fmt.Errorf("read the introspection answer: %w", err)
+		}
+		if err := read.Decode(&answer); err != nil {
 			return oauthwire.Introspection{}, fmt.Errorf("read the introspection answer: %w", err)
 		}
 		return answer, nil

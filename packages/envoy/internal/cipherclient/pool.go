@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -201,11 +200,12 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 }
 
 // postGoogle posts body to endpoint through client (nil is http.DefaultClient), with bearer on
-// the Authorization header when it is not empty, and decodes the answer into out. None of its
-// errors holds a library's text or a body: a request that failed is its class (redact.Class), a
-// non-2xx answer its status and registered error code (redact.Answered) - a Google error body's
-// description and message can be anything, an echo of the token the request carried among them -
-// and a success that does not decode fixed text, since the answer holds a token.
+// the Authorization header when it is not empty, and decodes the answer into out, which it reads
+// through redact.ReadAnswer. None of its errors holds a library's text or a body: a request that
+// failed is its class (redact.Class), a non-2xx answer its status and registered error code
+// (redact.Answered) - a Google error body's description and message can be anything, an echo of
+// the token the request carried among them - and a success that does not decode fixed text, since
+// the answer holds a token.
 func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer string, body []byte, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, poolTimeout)
 	defer cancel()
@@ -225,14 +225,16 @@ func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer strin
 		return redact.Class(err)
 	}
 	defer resp.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return redact.Class(err)
 	}
 	if resp.StatusCode/100 != 2 {
-		return errors.New(redact.Answered(resp.StatusCode, answer))
+		var refused bytes.Buffer
+		_, _ = answer.StreamTo(&refused)
+		return errors.New(redact.Answered(resp.StatusCode, refused.Bytes()))
 	}
-	if json.Unmarshal(answer, out) != nil {
+	if answer.Decode(out) != nil {
 		return errors.New("the answer is not the JSON this call reads")
 	}
 	return nil

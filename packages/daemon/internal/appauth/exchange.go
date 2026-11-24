@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // accessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body: the permissions
@@ -45,8 +46,10 @@ type mintedToken struct {
 // applies the body and refuses what it cannot grant, so an answer past it means the body was
 // dropped or widened between the daemon and GitHub, leaving a lease wider than the one asked
 // for; it is refused rather than served, as the secrets broker refuses one its narrowing does
-// not hold (heldBy). The refusal names what was asked for and the permission the answer named,
-// never a value the answer carries that a request did not, which for this answer is the token.
+// not hold (heldBy). The refusal names what was asked for, and the permission the answer named
+// only from two closed sets (heldWords), the request's own permission names and the accesses
+// accessOrder ranks: whatever answers in GitHub's place can echo the request back, the App's JWT
+// and all, as a permission's name or as its access.
 //
 // An answer naming no permission at all is refused too: GitHub names every permission a token
 // holds, and the token it mints for a request whose permissions were dropped on the way holds
@@ -65,11 +68,32 @@ func (t mintedToken) narrowedTo(permissions map[string]string) error {
 	for _, permission := range slices.Sorted(maps.Keys(t.Permissions)) {
 		access := t.Permissions[permission]
 		if rank := accessOrder[access]; rank == 0 || rank > accessOrder[permissions[permission]] {
-			return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it holds %s: %s",
-				askedFor(permissions), permission, access)
+			return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it holds %s",
+				askedFor(permissions), heldWords(permissions, permission, access))
 		}
 	}
 	return nil
+}
+
+// The phrases heldWords prints in place of a permission or an access the answer wrote that is
+// not one of the closed set it may print.
+const (
+	notAskedPermission = "(a permission the request did not name)"
+	unorderedAccess    = "(an access this daemon cannot order)"
+)
+
+// heldWords is a permission and its access, as GitHub's answer named them, as a refusal may print
+// them: the permission where it is one of the request's own (permissions' keys), the access where
+// it is one accessOrder ranks, and a fixed phrase in place of either otherwise. The answer's words
+// decide the refusal as they came; only these closed sets print.
+func heldWords(permissions map[string]string, permission, access string) string {
+	if _, asked := permissions[permission]; !asked {
+		permission = notAskedPermission
+	}
+	if accessOrder[access] == 0 {
+		access = unorderedAccess
+	}
+	return permission + ": " + access
 }
 
 // askedFor is what a token request carried, for a refusal to say what GitHub turned down: its
@@ -112,23 +136,23 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return Lease{}, &TransientError{Err: fmt.Errorf("GitHub App token exchange: %w", err)}
+		return Lease{}, &TransientError{Err: fmt.Errorf("GitHub App token exchange: %w", redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
-		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
+		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, body.Words())
 		if response.StatusCode == http.StatusNotFound {
 			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, m.answered(response, body, failed))
 		}
 		refused := m.transient(response, body, failed)
 		if response.StatusCode == http.StatusUnprocessableEntity {
-			// GitHub documents its rate limits on a 429 and a 403 (githubrest.RateLimited), but
-			// the headers or the secondary-limit text of a limit on a 422 are that limit too,
-			// and no verdict on what the request asked for: the same request may pass later, so
-			// it is GitHub's trouble and never the installation's permissions. githubrest names
-			// no rate limit in it (RateLimited is false), so it is made a TransientError here,
-			// alone, which a mint's callers read as GitHub's trouble and never as a refusal of
-			// the narrowing (NarrowingRefused).
+			// GitHub documents its rate limits on a 429 and a 403 (githubrest's
+			// Answer.RateLimited), but the headers or the secondary-limit text of a limit on a
+			// 422 are that limit too, and no verdict on what the request asked for: the same
+			// request may pass later, so it is GitHub's trouble and never the installation's
+			// permissions. githubrest names no rate limit in it (its answer's RateLimited is
+			// false), so it is made a TransientError here, alone, which a mint's callers read as
+			// GitHub's trouble and never as a refusal of the narrowing (NarrowingRefused).
 			if githubrest.RateLimitSignals(response, body) {
 				return Lease{}, &TransientError{Err: refused}
 			}

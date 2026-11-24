@@ -7,9 +7,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
@@ -42,7 +44,11 @@ type Settings struct {
 // words is text of these settings - a field, or a value read out of one, or a check's words that
 // quote one - as a message may print it (cipheraddr.Address.Words): whoever answered at an address
 // that is not clean can repeat its credential in any field, so beside such an address no field
-// prints. Settings no client read (the zero answeredBy) print none of their text either.
+// prints. Settings no client read (the zero answeredBy) print none of their text either. Beside a
+// clean address the request they answer carried no credential to echo - GET /v1/settings goes
+// with no header and no body (client.Settings), and a clean address holds no user information and
+// no query - so the record redact.RemoteText would hold a field with is empty, and the rule's
+// reading of the field (redact.Field) is the whole of what may print.
 func (s Settings) words(text string) string { return s.answeredBy.Words(text) }
 
 // JudgeKey is one key in Settings.JudgeKeys.
@@ -54,13 +60,13 @@ type JudgeKey struct {
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
-	raw, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
+	answer, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
 	if err != nil {
 		return Settings{}, err
 	}
 	var settings Settings
-	if err := c.decode(raw, &settings, "decode settings"); err != nil {
-		return Settings{}, err
+	if err := answer.Decode(&settings); err != nil {
+		return Settings{}, fmt.Errorf("decode settings: %w", err)
 	}
 	settings.answeredBy = c.baseURL
 	return settings, nil
@@ -71,12 +77,18 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 // broker older than the field), and, when it does not serve it, why. Told is whether the broker
 // said so at all: a broker answers a call with no proof 202, the same for every name, and says
 // nothing of what it serves, only that it took the reread.
+//
+// Reason and Type are the broker's text, or the text of whatever answers in its place, which can
+// echo the Proof header a session's reread carried: each is held as redact.RemoteText, which
+// Answer.Decode holds with that request's record, so a form's line prints it only as the rule
+// reads it with the proof redacted, and a form tells it apart as it came (Equal, IsEmpty). Name
+// prints nowhere.
 type Reread struct {
-	Name   string `json:"name"`
-	Served bool   `json:"served"`
-	Reason string `json:"reason"`
-	Type   string `json:"type"`
-	Told   bool   `json:"-"`
+	Name   string            `json:"name"`
+	Served bool              `json:"served"`
+	Reason redact.RemoteText `json:"reason"`
+	Type   redact.RemoteText `json:"type"`
+	Told   bool              `json:"-"`
 }
 
 // RereadSecret asks the broker to read the secret name from its store now, as whoever just wrote
@@ -91,12 +103,12 @@ type Reread struct {
 func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name string) (Reread, error) {
 	path := "/v1/secrets/" + name + "/reread"
 	var status int
-	var raw []byte
+	var answer *redact.Answer
 	var err error
 	if signer != nil {
-		status, raw, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
+		status, answer, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
 	} else {
-		status, raw, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
+		status, answer, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
 	}
 	if err != nil {
 		return Reread{}, err
@@ -105,8 +117,8 @@ func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name stri
 		return Reread{Name: name}, nil
 	}
 	var reread Reread
-	if err := c.decode(raw, &reread, "decode reread"); err != nil {
-		return Reread{}, err
+	if err := answer.Decode(&reread); err != nil {
+		return Reread{}, fmt.Errorf("decode reread: %w", err)
 	}
 	reread.Told = true
 	return reread, nil

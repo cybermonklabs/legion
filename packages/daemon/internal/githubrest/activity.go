@@ -30,7 +30,7 @@ type Activity struct {
 func (c Client) BranchActivity(ctx context.Context, branch string) ([]Activity, error) {
 	var activity []Activity
 	query := url.Values{"ref": {"refs/heads/" + branch}, "per_page": {"100"}}
-	if err := c.Get(ctx, "/activity?"+query.Encode(), &activity); err != nil {
+	if err := c.Get(ctx, "/activity?"+query.Encode(), "", &activity); err != nil {
 		return nil, err
 	}
 	return activity, nil

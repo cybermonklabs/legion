@@ -39,6 +39,7 @@
 import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
+import { callLibrary, LibraryError, RemoteText, refusalFetch } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { CompactSign, calculateJwkThumbprint } from "jose";
 import {
@@ -49,7 +50,6 @@ import {
   genericGrantRequest,
   initiateDeviceAuthorization,
   None,
-  ResponseBodyError,
   type TokenEndpointResponse,
 } from "openid-client";
 import {
@@ -234,26 +234,31 @@ export async function withDeviceLoginLock<T>(
  * `fetchImpl`: with a proof of `proved`'s key on every request where it is given (the device code
  * poll and the refresh), and with none where it is not (the device authorization). Each request
  * waits {@link BROKER_REQUEST_MS} at most for its answer: one the broker never answers is one it
- * did not answer.
+ * did not answer. The library is reached only through {@link callLibrary}, and each request goes
+ * out through {@link refusalFetch}, so a refusal's words are the broker's, held with the record of
+ * what the request carried, and print only as the rule reads them.
  */
 function brokerConfiguration(
   brokerUrl: string,
   fetchImpl: typeof fetch,
   proved?: { readonly key: DpopKey; readonly nonce: DpopNonce }
 ): Configuration {
-  const config = new Configuration(
-    {
-      issuer: brokerUrl,
-      token_endpoint: brokerUrl + TOKEN_PATH,
-      device_authorization_endpoint: brokerUrl + DEVICE_AUTHORIZATION_PATH,
-    },
-    MACHINE_LOGIN_CLIENT_ID,
-    {},
-    None()
+  const config = callLibrary(
+    () =>
+      new Configuration(
+        {
+          issuer: brokerUrl,
+          token_endpoint: brokerUrl + TOKEN_PATH,
+          device_authorization_endpoint: brokerUrl + DEVICE_AUTHORIZATION_PATH,
+        },
+        MACHINE_LOGIN_CLIENT_ID,
+        {},
+        None()
+      )
   );
   // An http broker is one on this machine's loopback, as a dev stack's is (`deviceLoginBroker`).
-  if (new URL(brokerUrl).protocol === "http:") allowInsecureRequests(config);
-  config[customFetch] = (url, options) => {
+  if (new URL(brokerUrl).protocol === "http:") callLibrary(() => allowInsecureRequests(config));
+  config[customFetch] = refusalFetch((url, options) => {
     const deadline = AbortSignal.timeout(BROKER_REQUEST_MS);
     return proved === undefined
       ? fetchImpl(url, requestInit(options, deadline, options.headers))
@@ -263,8 +268,16 @@ function brokerConfiguration(
           options,
           deadline
         );
-  };
+  });
   return config;
+}
+
+/** The OAuth error code of a refusal of the broker's (a LibraryError of the library's
+ *  ResponseBodyError), as it came, and an empty field for any other failure. */
+function refusedCode(error: unknown): RemoteText {
+  return error instanceof LibraryError && error.name === "ResponseBodyError"
+    ? error.code
+    : new RemoteText("");
 }
 
 /**
@@ -377,11 +390,13 @@ export async function startDeviceLogin(options: {
   const config = brokerConfiguration(brokerUrl, options.fetch ?? fetch);
   let answered: DeviceAuthorizationResponse;
   try {
-    answered = await initiateDeviceAuthorization(config, {
-      scope: MACHINE_LOGIN_SCOPE,
-      dpop_jkt: thumbprint,
-      request,
-    });
+    answered = await callLibrary(() =>
+      initiateDeviceAuthorization(config, {
+        scope: MACHINE_LOGIN_SCOPE,
+        dpop_jkt: thumbprint,
+        request,
+      })
+    );
   } catch (error) {
     throw brokerRefusal("ask for a code for", "this machine's device login", endpoint, error);
   }
@@ -460,22 +475,24 @@ export async function finishDeviceLogin(
     await wait(interval * 1000);
     let answered: TokenEndpointResponse;
     try {
-      answered = await genericGrantRequest(config, GRANT_TYPE_DEVICE_CODE, {
-        device_code: started.deviceCode,
-      });
+      answered = await callLibrary(() =>
+        genericGrantRequest(config, GRANT_TYPE_DEVICE_CODE, {
+          device_code: started.deviceCode,
+        })
+      );
     } catch (error) {
-      const code = error instanceof ResponseBodyError ? error.error : "";
-      if (code === "access_denied") {
+      const code = refusedCode(error);
+      if (code.equals("access_denied")) {
         throw new Error(
           `this machine's device login was denied, not approved as ${started.person}; ask again with: ${DEVICE_LOGIN_COMMAND}`
         );
       }
-      if (code === "expired_token" || code === "invalid_grant") throw expired;
-      if (code === "slow_down") interval += 5;
+      if (code.equals("expired_token") || code.equals("invalid_grant")) throw expired;
+      if (code.equals("slow_down")) interval += 5;
       const status = statusOf(error);
       const pollAgain =
-        code === "authorization_pending" ||
-        code === "slow_down" ||
+        code.equals("authorization_pending") ||
+        code.equals("slow_down") ||
         status === 0 ||
         status === 429 ||
         status >= 500;
@@ -686,11 +703,13 @@ export async function refreshDeviceLogin(
   for (let sent = 0; answered === undefined; sent += 1) {
     if (!(await options.held())) throw lockLost();
     try {
-      answered = await genericGrantRequest(config, GRANT_TYPE_REFRESH, {
-        refresh_token: login.refreshToken,
-      });
+      answered = await callLibrary(() =>
+        genericGrantRequest(config, GRANT_TYPE_REFRESH, {
+          refresh_token: login.refreshToken,
+        })
+      );
     } catch (error) {
-      if (error instanceof ResponseBodyError && error.error === "invalid_grant") {
+      if (refusedCode(error).equals("invalid_grant")) {
         throw new DeviceLoginEndedError(options.describe);
       }
       if (sent === 0 && statusOf(error) === 0) continue;

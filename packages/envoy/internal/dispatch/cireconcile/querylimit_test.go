@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // GitHub answers a GraphQL query past the App's budget with HTTP 200 and an `errors` entry of
@@ -115,7 +116,7 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 				t.Fatalf("the other process's REST read inside a GraphQL limit: %v", err)
 			}
 			if status != http.StatusOK {
-				t.Fatalf("the other process's REST read answered %d: %s; want GitHub's own answer", status, body)
+				t.Fatalf("the other process's REST read answered %d: %s; want GitHub's own answer", status, answertest.Text(body))
 			}
 		})
 	}

@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -435,7 +436,7 @@ func (d *fleetHandoffs) Handoff(_ context.Context, id string) (dispatch.Handoff,
 	defer d.mu.Unlock()
 	handoff, ok := d.handoffs[id]
 	if !ok {
-		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: "HANDOFF_NOT_FOUND"}
+		return dispatch.Handoff{}, &dispatch.Error{Status: http.StatusNotFound, Code: oauth2calltest.Said("HANDOFF_NOT_FOUND")}
 	}
 	return handoff, nil
 }
@@ -478,7 +479,7 @@ func (d *fleetHandoffs) PutDesignGates(context.Context, string, []dispatch.Desig
 func (d *fleetHandoffs) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *fleetHandoffs) Approval(context.Context, string) (dispatch.Approval, error) {

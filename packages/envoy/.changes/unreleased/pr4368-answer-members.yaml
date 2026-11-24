@@ -1,0 +1,26 @@
+kind: Fixed
+body: |-
+  A member of another party's answer that a client decodes into a plain string no longer prints
+  as it came. Dispatch's Envoy listener client keeps a session id the listener answers only where
+  the rule prints it as it came, and refuses the lookup in a fixed phrase otherwise, and holds a
+  session's title as the rule reads it. The secrets broker's helper takes a session's enrollment
+  id only as the rule prints it, and enrols again otherwise. `agent-secrets` prints the broker's
+  settings (its AWS account, a GCP secret's name and the `gcloud` commands built from them) as the
+  broker's address lets them print. `projectaccess` prints an unknown member kind as the rule
+  reads it. `dev-proxy-stands` reads a CONNECT refusal with the request that carried
+  `Proxy-Authorization`, so the refusal prints none of it, and the MCP bridge names a server's
+  endpoint, and net/http's error that quotes it, as the rule reads them. The load test keeps and
+  names Dispatch's keys, ids, ETags and event types only in Dispatch's own shapes, replaces a
+  parser's error that quotes an answer's value with a fixed phrase, and prints the proxy's and the
+  profiler's answers in its notes by their counts only. `loadgen replay-fetch` refuses an issue
+  listing, an event or an artifact listing that names an issue, a document, a comment or an ask in
+  any other shape, where it decodes it, so a replay bundle keeps no such id or key, the seed, the
+  plan and the checks that read the bundle print none, and no file is named after one.
+  The redaction check's censuses read every build CI makes: each GOOS/GOARCH it builds and each
+  tag list its vet passes, and a production file no such build compiles by its syntax; the answer
+  census also fails on a reader or maker used as a function value, a decode outside
+  `Answer.Decode` into a value that holds the box, `net/http.ReadResponse` given no request, and a
+  response printed whole.
+time: 2026-11-21T22:29:06Z
+custom:
+    Issue: pr4368

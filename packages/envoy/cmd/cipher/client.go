@@ -27,9 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -86,80 +86,130 @@ func newClient(baseURL cipheraddr.Address) *client {
 func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
-// status it came with. AnswerID is the id the broker's own record of the answer names: the body's
-// answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes carries, so
-// a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
-// names it. A broker from before the id sends neither, and neither does an answer net/http writes
-// before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
+// status it came with. The answer id is the id the broker's own record of the answer names: the
+// body's answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes
+// carries, so a refusal whose body is not the envelope (the broker's 404 for a path it does not
+// serve) still names it. A broker from before the id sends neither, and neither does an answer
+// net/http writes before any of the broker's code runs, such as its 400 for a malformed request,
+// 431 and 417.
 //
-// Code is the answer's code as it came, which the refusals this client tells apart compare, and
-// said its words as they came, which they read (says): nothing prints said, a *string, as
-// cipheraddr.Address's address is, so fmt prints the pointer, never the text, where it prints this
-// struct field by field (%#v). Message and AnswerID are the words and the answer id as a message
-// may print them (cipheraddr.Address.Words): beside an address that is not clean, whoever answers
-// can repeat the credential the address carries in any text it answers, so there Message is
-// cipheraddr.WordsNotPrinted, withheld is set where doStatus builds the refusal, and the refusal
-// prints as its status and Message alone, with neither its code nor its answer id, as the token
-// client prints such an answer (internal/cipherclient). The one line that names a code whatever
-// the address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this
-// client matched it against.
+// code, said and answerID are the answer's code, words and answer id, held as redact.RemoteText,
+// which the refusals this client tells apart compare (hasCode, says) and which prints only the
+// rule's reading of them, under every verb, in JSON and in a log field. Error, Format, LogValue
+// and answered print them only as the address lets them print: beside an address that is not
+// clean, whoever answers can repeat the credential the address carries in any text it answers, so
+// withheld is set where doStatus builds the refusal, and the refusal prints as its status and
+// cipheraddr.WordsNotPrinted alone, with neither its code nor its answer id, as the token client
+// prints such an answer (internal/cipherclient). The one line that names a code whatever the
+// address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this client
+// matched it against (terminalCode).
 type apiError struct {
 	Status   int
-	Code     string
-	Message  string
-	AnswerID string
-	said     *string
+	code     redact.RemoteText
+	said     redact.RemoteText
+	answerID redact.RemoteText
 	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision doStatus made, read by Error and podRefusal.
+	// its text prints: the decision doStatus made, read by Error and answered.
 	withheld bool
 }
 
-// Error is the broker's message and code, and the answer id to quote when it named one; where
-// the answer's text is withheld, the status and Message alone. The code is the broker's, so it
-// prints on one line as Message does (redact.OneLine): as it came, or Go-quoted where a control
-// character in it would start a line of its own.
+// newAPIError is a refusal with status and the answer's code, words and answer id; withheld is
+// whether it came from an address that is not clean.
+func newAPIError(status int, code, words, answerID redact.RemoteText, withheld bool) *apiError {
+	return &apiError{Status: status, code: code, said: words, answerID: answerID, withheld: withheld}
+}
+
+// words is field as the refusal prints it: cipheraddr.WordsNotPrinted where the answer's text is
+// withheld, and otherwise as the field prints itself (redact.Field).
+func (e *apiError) words(field redact.RemoteText) string {
+	if e.withheld {
+		return cipheraddr.WordsNotPrinted
+	}
+	return field.String()
+}
+
+// Error is the broker's words and code, and the answer id to quote when it named one; where the
+// answer's text is withheld, the status and cipheraddr.WordsNotPrinted alone. Each of the three is
+// the broker's, so each prints as the rule for remote text reads it, on one line.
 func (e *apiError) Error() string {
 	if e.withheld {
-		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	}
 	var text string
-	if e.Code == "" {
-		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+	if e.code.IsEmpty() {
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	} else {
-		text = fmt.Sprintf("%s (%s)", e.Message, redact.OneLine(e.Code))
+		text = fmt.Sprintf("%s (%s)", e.words(e.said), e.words(e.code))
 	}
-	if e.AnswerID != "" {
-		text += " (answer " + e.AnswerID + ")"
+	if !e.answerID.IsEmpty() {
+		text += " (answer " + e.words(e.answerID) + ")"
 	}
 	return text
 }
 
+// answered is the refusal as the lines that name its status first print it: the status, the code
+// (UNKNOWN where the broker named none) and the words, or the status and
+// cipheraddr.WordsNotPrinted where the answer's text is withheld.
+func (e *apiError) answered() string {
+	if e.withheld {
+		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
+	}
+	code := "UNKNOWN"
+	if !e.code.IsEmpty() {
+		code = e.words(e.code)
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", e.Status, code, e.words(e.said))
+}
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this refusal's fields.
+func (e *apiError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
+}
+
+// LogValue is Error, so a structured log field names the refusal only as a message may.
+func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
+
+// hasCode reports whether the broker answered code, compared as it came. It answers no text.
+func (e *apiError) hasCode(code string) bool { return e.code.Equal(code) }
+
 // says reports whether the broker's error text holds phrase. A refusal this client made itself
 // (a redirect) holds no broker text, and says nothing.
-func (e *apiError) says(phrase string) bool {
-	return e.said != nil && strings.Contains(*e.said, phrase)
-}
+func (e *apiError) says(phrase string) bool { return e.said.Contains(phrase) }
 
 // enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
 // enrollment it no longer holds: the lease lapsed, or it was revoked. Only the renew route
 // answers ENROLLMENT_NOT_LIVE; every other session route says PROOF_INVALID with "not live" in
 // its message, which no recoverable proof failure (iat skew, key, URL) says.
 func (e *apiError) enrollmentEnded() bool {
-	return e.Code == enrollmentEndedCode ||
-		(e.Code == terminalRenewal.LegacyCode && e.says(terminalRenewal.LegacyMessage))
+	return e.hasCode(enrollmentEndedCode) ||
+		(e.hasCode(terminalRenewal.LegacyCode) && e.says(terminalRenewal.LegacyMessage))
+}
+
+// terminalCode is the code of terminalRenewal's this refusal matched - one of its Codes, or the
+// legacy code of an ended enrollment - and "" for any other refusal: a code this client wrote, so
+// a line names it whatever the address.
+func (e *apiError) terminalCode() string {
+	for _, code := range terminalRenewal.Codes {
+		if e.hasCode(code) {
+			return code
+		}
+	}
+	if e.enrollmentEnded() {
+		return terminalRenewal.LegacyCode
+	}
+	return ""
 }
 
 // Permanent reports whether this refusal is one of terminalRenewal's: a code it lists, or the
 // ended enrollment its legacy code spells (enrollmentEnded).
-func (e *apiError) Permanent() bool {
-	return slices.Contains(terminalRenewal.Codes, e.Code) || e.enrollmentEnded()
-}
+func (e *apiError) Permanent() bool { return e.terminalCode() != "" }
 
-// do sends the request and, on a 2xx response, returns its raw body; any other status decodes
-// the broker's error envelope into an *apiError.
-func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) ([]byte, error) {
-	_, data, err := c.doStatus(ctx, method, url, body, headers)
-	return data, err
+// do sends the request and, on a 2xx response, returns its answer (*redact.Answer); any other
+// status decodes the broker's error envelope into an *apiError.
+func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) (*redact.Answer, error) {
+	_, answer, err := c.doStatus(ctx, method, url, body, headers)
+	return answer, err
 }
 
 // doStatus is do, also answering the 2xx status itself, which tells apart the two answers a
@@ -170,7 +220,7 @@ func (c *client) do(ctx context.Context, method, url string, body []byte, header
 // client sends is one it builds itself (GetRequest's wait), and the redactor prints no URL that
 // holds a query, so a read that asked the broker to hold it would otherwise name neither its
 // call nor its cause.
-func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, []byte, error) {
+func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
 	named, query, _ := strings.Cut(url, "?")
 	var reader io.Reader
 	if body != nil {
@@ -198,7 +248,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		return 0, nil, unreachable(c.baseURL, method, named, withoutQuery(err, query))
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	answer, err := redact.ReadAnswer(resp, 16<<20)
 	if err != nil {
 		return 0, nil, &cutOffError{base: c.baseURL, method: method, url: named, cause: c.baseURL.Error(err)}
 	}
@@ -208,38 +258,35 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		// of a redirect it answers a GET with (`<a href="…">Found</a>`), and that target,
 		// with whatever query it carries, is what refusing the redirect keeps out of this
 		// process. The status alone says what happened.
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Message: "a redirect, which this client does not follow"}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, said: redirectRefused}
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code     string `json:"code"`
-			Error    string `json:"error"`
-			AnswerID string `json:"answer_id"`
+			Code     redact.RemoteText `json:"code"`
+			Error    redact.RemoteText `json:"error"`
+			AnswerID redact.RemoteText `json:"answer_id"`
 		}
-		_ = json.Unmarshal(data, &envelope)
-		if envelope.Error == "" {
-			// A body that was not the envelope is the message as it came, a line ending and
-			// all (the mux's "404 page not found\n"): it is cut at its trailing line endings
-			// before Words, which would otherwise quote it for them, so the id goes after it
-			// on the same line.
-			envelope.Error = strings.TrimRight(string(data), "\r\n")
+		_ = answer.Decode(&envelope)
+		code, said, answerID := envelope.Code, envelope.Error, envelope.AnswerID
+		if said.IsEmpty() {
+			// A body that was not the envelope is the message as it came (the mux's "404 page
+			// not found\n"), cut at its surrounding whitespace before it prints, which would
+			// otherwise quote it for its line ending, so the id goes after it on the same line.
+			said = answer.Words()
 		}
-		if envelope.AnswerID == "" {
-			envelope.AnswerID = resp.Header.Get(answerIDHeader)
+		if answerID.IsEmpty() {
+			answerID = redact.NewRemoteText(resp.Header.Get(answerIDHeader)).WithoutTokens(redact.Carried(resp)...)
 		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
-		return resp.StatusCode, nil, &apiError{
-			Status:   resp.StatusCode,
-			Code:     envelope.Code,
-			Message:  c.baseURL.Words(envelope.Error),
-			AnswerID: c.baseURL.Words(envelope.AnswerID),
-			said:     &envelope.Error,
-			withheld: !c.baseURL.Clean(),
-		}
+		return resp.StatusCode, nil, newAPIError(resp.StatusCode, code, said, answerID, !c.baseURL.Clean())
 	}
-	return resp.StatusCode, data, nil
+	return resp.StatusCode, &answer, nil
 }
+
+// redirectRefused is what a refusal of a redirect this client does not follow says: its own
+// words, which the rule for remote text prints as they are.
+var redirectRefused = redact.NewRemoteText("a redirect, which this client does not follow")
 
 // answerIDHeader is the header every answer the broker itself writes names its answer id in
 // (answer.Header in internal/cipher/answer, which this client does not link); net/http's own
@@ -264,9 +311,9 @@ func enrollmentNotLive(err error) bool {
 // doProof signs the request with signer.Sign against exactly this method and URL less any query
 // path carries, the shape proof.Verifier.Verify compares htm/htu against (the broker rebuilds the
 // htu from BROKER_PUBLIC_URL and the request's path, never its query).
-func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) ([]byte, error) {
-	_, data, err := c.doProofStatus(ctx, signer, method, path, body)
-	return data, err
+func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) (*redact.Answer, error) {
+	_, answer, err := c.doProofStatus(ctx, signer, method, path, body)
+	return answer, err
 }
 
 // doProofStatus is doProof, also answering the 2xx status (doStatus).
@@ -277,7 +324,7 @@ func (c *client) doProof(ctx context.Context, signer proofSigner, method, path s
 // with the dead id still in its record, and only signing in again would cure it — making a
 // second box key and a second sign-in on the person's list. One retry, because a second refusal
 // is the broker saying no to the enrollment this call just made, which no further retry changes.
-func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
+func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
 	return c.doProofBuilt(ctx, signer, method, path, func(bool) ([]byte, error) { return body, nil })
 }
 
@@ -285,18 +332,18 @@ func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, 
 // makes: build(false) for the first call, and build(true) again for the retry after the session
 // registered again, since a machine registers again under a key of its own (machineReregister)
 // and the broker takes only what the enrollment's own key signed.
-func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, []byte, error) {
+func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, *redact.Answer, error) {
 	body, err := build(false)
 	if err != nil {
 		return 0, nil, err
 	}
-	status, data, err := c.proofCall(ctx, signer, method, path, body)
+	status, answer, err := c.proofCall(ctx, signer, method, path, body)
 	again, ok := signer.(reenroller)
 	if !ok || !enrollmentNotLive(err) {
-		return status, data, err
+		return status, answer, err
 	}
 	if reErr := again.Reenroll(ctx); reErr != nil {
-		return status, data, fmt.Errorf("%w; registering this session again: %v", err, reErr)
+		return status, answer, fmt.Errorf("%w; registering this session again: %v", err, reErr)
 	}
 	if body, err = build(true); err != nil {
 		return 0, nil, err
@@ -307,7 +354,7 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 // proofCall is one signed call, which is all `renew` may make: its whole contract is to report
 // the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
 // register another.
-func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
+func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
 	url := c.route(path)
 	signedPath, _, _ := strings.Cut(path, "?")
 	token, err := signer.Sign(method, c.route(signedPath))
@@ -341,17 +388,25 @@ type SecretDecision struct {
 // "GCLOUD_DEMO: requester-not-listed" — which every line this CLI prints about a refusal carries,
 // so a session reads that asking again will not help; nil when the broker recorded none, and from
 // a broker from before the field.
+//
+// Each member a line prints - the ids, the state, the approver, the page and the detail - is the
+// broker's text, or the text of whatever answers in its place, which can echo the request it was
+// sent: its Proof header, the signed request object. Each is held as redact.RemoteText, which
+// Answer.Decode holds with that request's record, so it prints only as the rule reads it with
+// those credentials redacted, is told apart as it came (Equal), and an id goes back to the broker
+// only as RemoteText.SendBack answers it. Secrets and RecordID print nowhere, and stay as they
+// came.
 type RequestResult struct {
-	RequestID       string           `json:"request_id"`
-	State           string           `json:"state"`
-	Secrets         []SecretDecision `json:"secrets"`
-	GrantID         *string          `json:"grant_id"`
-	RecordID        *string          `json:"record_id"`
-	Approver        *string          `json:"approver"`
-	LifetimeSeconds *int             `json:"lifetime_seconds"`
-	Coalesced       bool             `json:"coalesced,omitempty"`
-	Detail          *string          `json:"detail"`
-	ApproveURL      string           `json:"approve_url"`
+	RequestID       redact.RemoteText  `json:"request_id"`
+	State           redact.RemoteText  `json:"state"`
+	Secrets         []SecretDecision   `json:"secrets"`
+	GrantID         *redact.RemoteText `json:"grant_id"`
+	RecordID        *string            `json:"record_id"`
+	Approver        *redact.RemoteText `json:"approver"`
+	LifetimeSeconds *int               `json:"lifetime_seconds"`
+	Coalesced       bool               `json:"coalesced,omitempty"`
+	Detail          *redact.RemoteText `json:"detail"`
+	ApproveURL      redact.RemoteText  `json:"approve_url"`
 	// JudgeDeciding is true while the model judge holds the request: no person is asked unless
 	// the judge cannot decide it, and the answer then carries ApproveURL. Such a request carries
 	// no page while it is held.
@@ -372,10 +427,10 @@ type createRequestBody struct {
 // for none), and lifetimeSeconds, the grant's lifetime (nil for until the session ends)
 // (Signer.SignRequestObject, audience == the broker's own base URL), then calls POST /v1/requests
 // with that object nested in the body and the outer call still authenticated with a session Proof
-// header. It returns both the decoded result and the exact raw response bytes, for --json's
-// "print the response body verbatim" requirement. When the session registers again on the way
-// (doProofBuilt), the object is signed again, by the key the session now holds.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, locations []string) (RequestResult, []byte, error) {
+// header. It returns both the decoded result and the exact raw response's answer, for --json's
+// "print the response body verbatim" requirement (writeVerbatim). When the session registers
+// again on the way (doProofBuilt), the object is signed again, by the key the session now holds.
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, locations []string) (RequestResult, *redact.Answer, error) {
 	sign := func() (string, error) {
 		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds, locations)
 		if err != nil {
@@ -404,48 +459,40 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 }
 
 // postRequest is one POST /v1/requests with the body build makes (doProofBuilt), answering the
-// decoded result and the exact bytes the broker sent.
-func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, []byte, error) {
-	_, raw, err := c.doProofBuilt(ctx, signer, http.MethodPost, "/v1/requests", build)
+// decoded result and the broker's answer as it came.
+func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, *redact.Answer, error) {
+	_, answer, err := c.doProofBuilt(ctx, signer, http.MethodPost, "/v1/requests", build)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
 	var result RequestResult
-	if err := c.decode(raw, &result, "decode create request response"); err != nil {
-		return RequestResult{}, nil, err
+	if err := answer.Decode(&result); err != nil {
+		return RequestResult{}, nil, fmt.Errorf("decode create request response: %w", err)
 	}
-	return result, raw, nil
+	return result, answer, nil
 }
 
-// decode reads raw, a broker answer, into v, and refuses one it cannot read with call and the
-// decoder's words as the address lets the answer's own words print (cipheraddr.Address.Words):
-// encoding/json's error can quote the answer (a time field's value whole, through time.Parse),
-// and whoever answers at an address that is not clean can repeat its credential in any text of
-// its answer. Every answer decoder of this client reads through it, enroll --pod's among them.
-func (c *client) decode(raw []byte, v any, call string) error {
-	if err := json.Unmarshal(raw, v); err != nil {
-		return fmt.Errorf("%s: %s", call, c.baseURL.Words(err.Error()))
-	}
-	return nil
-}
-
+// requestDecision is who decided a request and when. By is the broker's text, held as
+// RequestResult's members are.
 type requestDecision struct {
-	By string    `json:"by"`
-	At time.Time `json:"at"`
+	By redact.RemoteText `json:"by"`
+	At time.Time         `json:"at"`
 }
 
 // RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
-// and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
+// and so is Detail: the broker's own sentence about the refusal, nil when it recorded none. Each
+// member a line prints is held as RequestResult's are, with the record of the read's request;
+// RecordID prints nowhere.
 type RequestStatus struct {
-	State         string           `json:"state"`
-	GrantID       *string          `json:"grant_id"`
-	RecordID      *string          `json:"record_id"`
-	Approver      *string          `json:"approver"`
-	DecidedAt     *time.Time       `json:"decided_at"`
-	Decision      *requestDecision `json:"decision"`
-	Detail        *string          `json:"detail"`
-	ApproveURL    string           `json:"approve_url"`
-	JudgeDeciding bool             `json:"judge_deciding"`
+	State         redact.RemoteText  `json:"state"`
+	GrantID       *redact.RemoteText `json:"grant_id"`
+	RecordID      *string            `json:"record_id"`
+	Approver      *redact.RemoteText `json:"approver"`
+	DecidedAt     *time.Time         `json:"decided_at"`
+	Decision      *requestDecision   `json:"decision"`
+	Detail        *redact.RemoteText `json:"detail"`
+	ApproveURL    redact.RemoteText  `json:"approve_url"`
+	JudgeDeciding bool               `json:"judge_deciding"`
 }
 
 // refusedBeforeCall is a refusal this client made before it sent anything, so refusalText adds
@@ -471,7 +518,7 @@ func pathID(kind, id string) error {
 // caller keeps it from 1 to record.MaxRequestWaitSeconds, which the broker refuses past. 0 sends
 // no wait, and the broker answers at once. A broker from before the parameter ignores it and
 // answers at once either way.
-func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, []byte, error) {
+func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, *redact.Answer, error) {
 	if err := pathID("a request id", id); err != nil {
 		return RequestStatus{}, nil, err
 	}
@@ -479,15 +526,15 @@ func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitS
 	if waitSeconds > 0 {
 		path += "?wait=" + strconv.Itoa(waitSeconds)
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
+	answer, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
 		return RequestStatus{}, nil, withoutTypedID(err, "/v1/requests/(the request id, not printed)")
 	}
 	var status RequestStatus
-	if err := c.decode(raw, &status, "decode request status"); err != nil {
-		return RequestStatus{}, nil, err
+	if err := answer.Decode(&status); err != nil {
+		return RequestStatus{}, nil, fmt.Errorf("decode request status: %w", err)
 	}
-	return status, raw, nil
+	return status, answer, nil
 }
 
 func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) error {
@@ -502,18 +549,26 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // GrantValues is POST /v1/grants/{id}/values's exact response shape. Locations is the grant's
 // target as its request signed it, the locations record.TargetLocations made, nil for a grant with
-// no target and from a broker from before the target. GitHubLeftOut names, for each GitHub profile
-// and each account of its release, every entry of the profile's permissions the installation on
-// that account does not hold, which its token leaves out: "<permission>" or
-// "<permission>:<level>"; nil when nothing was left out. Airlock is how to reach the values this
-// release did not hand over, nil when every granted name was handed over — which is every
-// release of a broker with no rules file.
+// no target and from a broker from before the target; the exec form compares it as it came and
+// prints none of it. GitHubLeftOut names, for each GitHub profile and each account of its release,
+// every entry of the profile's permissions the installation on that account does not hold, which
+// its token leaves out: "<permission>" or "<permission>:<level>"; nil when nothing was left out.
+// Each entry is held as redact.RemoteText with the release request's record (Answer.Decode).
+// Airlock is how to reach the values this release did not hand over, nil when every granted name
+// was handed over — which is every release of a broker with no rules file. The keys of Values, of
+// Airlock.Names and of GitHubLeftOut are the broker's text too, and encoding/json decodes a key
+// into no redact.RemoteText: a line names a name or a profile only where this run asked for it
+// (releasedName), and an account only as LeftOutAccounts holds it.
 type GrantValues struct {
-	Values        map[string]string              `json:"values"`
-	ExpiresAt     *time.Time                     `json:"expires_at"`
-	Locations     []string                       `json:"locations"`
-	GitHubLeftOut map[string]map[string][]string `json:"github_left_out"`
-	Airlock       *AirlockRelease                `json:"airlock"`
+	Values        map[string]string                         `json:"values"`
+	ExpiresAt     *time.Time                                `json:"expires_at"`
+	Locations     []string                                  `json:"locations"`
+	GitHubLeftOut map[string]map[string][]redact.RemoteText `json:"github_left_out"`
+	Airlock       *AirlockRelease                           `json:"airlock"`
+	// LeftOutAccounts is each account GitHubLeftOut names, by its key as it came, held with the
+	// release request's record (redact.Answer.Said), which the decode gives no key. GrantValues
+	// fills it from the answer; no member of the answer does.
+	LeftOutAccounts map[string]redact.RemoteText `json:"-"`
 }
 
 // AirlockRelease is POST /v1/grants/{id}/values's airlock object: how a session reaches the
@@ -572,23 +627,33 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	raw, err := c.release(ctx, signer, grantID, call)
+	answer, err := c.release(ctx, signer, grantID, call)
 	if call.says() && callRefused(err) {
-		raw, err = c.release(ctx, signer, grantID, releaseCall{})
+		answer, err = c.release(ctx, signer, grantID, releaseCall{})
 	}
 	if err != nil {
 		return GrantValues{}, err
 	}
 	var values GrantValues
-	if err := c.decode(raw, &values, "decode grant values"); err != nil {
-		return GrantValues{}, err
+	if err := answer.Decode(&values); err != nil {
+		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
+	}
+	// An account is a key of github_left_out, which the decode holds in no box: each is held here
+	// as the answer said it, with its request's record, for the line that names it (reportLeftOut).
+	for _, accounts := range values.GitHubLeftOut {
+		for account := range accounts {
+			if values.LeftOutAccounts == nil {
+				values.LeftOutAccounts = make(map[string]redact.RemoteText)
+			}
+			values.LeftOutAccounts[account] = answer.Said(account)
+		}
 	}
 	return values, nil
 }
 
 // release is one POST /v1/grants/{id}/values, its body holding what call says, and no body when
 // it says nothing.
-func (c *client) release(ctx context.Context, signer Signer, grantID string, call releaseCall) ([]byte, error) {
+func (c *client) release(ctx context.Context, signer Signer, grantID string, call releaseCall) (*redact.Answer, error) {
 	var body []byte
 	if call.says() {
 		encoded, err := json.Marshal(call)
@@ -606,7 +671,7 @@ func (c *client) release(ctx context.Context, signer Signer, grantID string, cal
 // not declare, before anything is released.
 func callRefused(err error) bool {
 	var refusal *apiError
-	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.hasCode("INVALID_NARROWING") &&
 		(refusal.says(`unknown field "command"`) || refusal.says(`unknown field "reason"`))
 }
 
@@ -620,36 +685,38 @@ func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string)
 
 // --- GET /v1/enrollments/self, POST /v1/enrollments/{id}/renew ---
 
-// Grant mirrors requests.Grant's wire shape.
+// Grant mirrors requests.Grant's wire shape. Its ids print, and are held as RequestResult's
+// members are; Approver prints nowhere.
 type Grant struct {
-	GrantID   string     `json:"grant_id"`
-	RequestID string     `json:"request_id"`
-	Approver  *string    `json:"approver"`
-	ExpiresAt *time.Time `json:"expires_at"`
+	GrantID   redact.RemoteText `json:"grant_id"`
+	RequestID redact.RemoteText `json:"request_id"`
+	Approver  *string           `json:"approver"`
+	ExpiresAt *time.Time        `json:"expires_at"`
 }
 
-// SelfResult is GET /v1/enrollments/self's exact response shape.
+// SelfResult is GET /v1/enrollments/self's exact response shape. Each member self prints is held
+// as RequestResult's members are, with the record of the read's request.
 type SelfResult struct {
-	EnrollmentID   string    `json:"enrollment_id"`
-	Kind           string    `json:"kind"`
-	Operator       *string   `json:"operator"`
-	LeaseExpiresAt time.Time `json:"lease_expires_at"`
-	Grants         []Grant   `json:"grants"`
+	EnrollmentID   redact.RemoteText  `json:"enrollment_id"`
+	Kind           redact.RemoteText  `json:"kind"`
+	Operator       *redact.RemoteText `json:"operator"`
+	LeaseExpiresAt time.Time          `json:"lease_expires_at"`
+	Grants         []Grant            `json:"grants"`
 	// Projects are the Dispatch projects the session named when it enrolled; none from a broker
 	// from before the field.
-	Projects []string `json:"projects"`
+	Projects []redact.RemoteText `json:"projects"`
 }
 
-func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, []byte, error) {
-	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/enrollments/self", nil)
+func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, *redact.Answer, error) {
+	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/enrollments/self", nil)
 	if err != nil {
 		return SelfResult{}, nil, err
 	}
 	var self SelfResult
-	if err := c.decode(raw, &self, "decode self"); err != nil {
-		return SelfResult{}, nil, err
+	if err := answer.Decode(&self); err != nil {
+		return SelfResult{}, nil, fmt.Errorf("decode self: %w", err)
 	}
-	return self, raw, nil
+	return self, answer, nil
 }
 
 // RenewEnrollment is the one Signer-taking method that still needs enrollmentID explicitly: the
@@ -667,15 +734,15 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 			return time.Time{}, err
 		}
 	}
-	_, raw, err := c.proofCall(ctx, signer, http.MethodPost, "/v1/enrollments/"+enrollmentID+"/renew", body)
+	_, answer, err := c.proofCall(ctx, signer, http.MethodPost, "/v1/enrollments/"+enrollmentID+"/renew", body)
 	if err != nil {
 		return time.Time{}, err
 	}
 	var result struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	if err := c.decode(raw, &result, "decode renew response"); err != nil {
-		return time.Time{}, err
+	if err := answer.Decode(&result); err != nil {
+		return time.Time{}, fmt.Errorf("decode renew response: %w", err)
 	}
 	return result.LeaseExpiresAt, nil
 }
@@ -684,15 +751,16 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // GET /v1/operator/grants, POST /v1/operator/grants/{id}/revoke (launcher proof) ---
 
 // OperatorMachine mirrors one machine login in GET /v1/operator/machines, the broker's
-// launcherCredentialResp.
+// launcherCredentialResp. The members machineRow prints are held as RequestResult's members are,
+// with the record of the list's launcher-proof request; Service prints nowhere.
 type OperatorMachine struct {
-	CredentialID string    `json:"credential_id"`
-	Host         string    `json:"host"`
-	Service      *string   `json:"service"`
-	ApprovedBy   string    `json:"approved_by"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Expired      bool      `json:"expired"`
+	CredentialID redact.RemoteText `json:"credential_id"`
+	Host         redact.RemoteText `json:"host"`
+	Service      *string           `json:"service"`
+	ApprovedBy   redact.RemoteText `json:"approved_by"`
+	IssuedAt     time.Time         `json:"issued_at"`
+	ExpiresAt    time.Time         `json:"expires_at"`
+	Expired      bool              `json:"expired"`
 }
 
 // OperatorMachines is GET /v1/operator/machines's exact response shape.
@@ -703,16 +771,16 @@ type OperatorMachines struct {
 // OperatorMachines lists the calling machine login's operator's own logins, their machines' and
 // those of the pods whose account BROKER_POD_OPERATORS maps to them, as Dispatch's machine-login
 // page lists them but without any service's login, with the raw body for --json.
-func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, []byte, error) {
-	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/machines", nil)
+func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, *redact.Answer, error) {
+	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/machines", nil)
 	if err != nil {
 		return OperatorMachines{}, nil, err
 	}
 	var out OperatorMachines
-	if err := c.decode(raw, &out, "decode machine logins"); err != nil {
-		return OperatorMachines{}, nil, err
+	if err := answer.Decode(&out); err != nil {
+		return OperatorMachines{}, nil, fmt.Errorf("decode machine logins: %w", err)
 	}
-	return out, raw, nil
+	return out, answer, nil
 }
 
 // RevokeOperatorMachine ends one of the calling machine login's operator's own logins, a
@@ -726,30 +794,33 @@ func (c *client) RevokeOperatorMachine(ctx context.Context, signer proofSigner, 
 	return withoutTypedID(err, "/v1/operator/machines/(the machine id, not printed)/revoke")
 }
 
-// OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp.
+// OperatorGrantEnrollment mirrors a grant's session, the broker's recordEnrollmentResp, each
+// member held as OperatorGrant's are.
 type OperatorGrantEnrollment struct {
-	Kind      string  `json:"kind"`
-	RuntimeID string  `json:"runtime_id"`
-	Operator  string  `json:"operator"`
-	Slot      *string `json:"slot"`
+	Kind      redact.RemoteText  `json:"kind"`
+	RuntimeID redact.RemoteText  `json:"runtime_id"`
+	Operator  redact.RemoteText  `json:"operator"`
+	Slot      *redact.RemoteText `json:"slot"`
 }
 
-// OperatorGrant mirrors one grant in GET /v1/operator/grants, the broker's approverGrantResp.
+// OperatorGrant mirrors one grant in GET /v1/operator/grants, the broker's approverGrantResp. The
+// members grantRow prints are held as RequestResult's members are, with the record of the list's
+// launcher-proof request; RecordID prints nowhere.
 type OperatorGrant struct {
-	GrantID    string                  `json:"grant_id"`
-	Granted    string                  `json:"granted"`
+	GrantID    redact.RemoteText       `json:"grant_id"`
+	Granted    redact.RemoteText       `json:"granted"`
 	RecordID   *string                 `json:"record_id"`
 	Enrollment OperatorGrantEnrollment `json:"enrollment"`
-	Names      []string                `json:"names"`
-	Approver   *string                 `json:"approver"`
+	Names      []redact.RemoteText     `json:"names"`
+	Approver   *redact.RemoteText      `json:"approver"`
 	// DecidedBy is who decided the request this grant rests on: the approving person's own
 	// login, or "judge:<model id>" where the model judge approved it in that person's stead.
 	// Null for an automatic grant, which nobody decided. It differs from Approver for a judged
 	// grant alone, which records the record's own approver — the secret's owner, or anyone —
 	// and that is what makes the two worth printing side by side.
-	DecidedBy *string    `json:"decided_by"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	CreatedAt time.Time  `json:"created_at"`
+	DecidedBy *redact.RemoteText `json:"decided_by"`
+	ExpiresAt *time.Time         `json:"expires_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 // OperatorGrants is GET /v1/operator/grants's exact response shape.
@@ -759,16 +830,16 @@ type OperatorGrants struct {
 
 // OperatorGrants lists the live grants of the calling machine login's operator's sessions and those
 // the operator approved, as Dispatch's Live grants page lists them, with the raw body for --json.
-func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (OperatorGrants, []byte, error) {
-	raw, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/grants", nil)
+func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (OperatorGrants, *redact.Answer, error) {
+	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/grants", nil)
 	if err != nil {
 		return OperatorGrants{}, nil, err
 	}
 	var out OperatorGrants
-	if err := c.decode(raw, &out, "decode grants"); err != nil {
-		return OperatorGrants{}, nil, err
+	if err := answer.Decode(&out); err != nil {
+		return OperatorGrants{}, nil, fmt.Errorf("decode grants: %w", err)
 	}
-	return out, raw, nil
+	return out, answer, nil
 }
 
 // RevokeOperatorGrant ends grant id as the calling machine login's operator. An id that would

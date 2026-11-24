@@ -31,6 +31,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 // The accounts and audience the browser suite's broker is configured with
@@ -179,7 +180,7 @@ func devIssuerTokens(t *command, issuer string) func(account, podUID string) str
 			t.Fatalf("POST %s/_dev/mint: %v", issuer, err)
 		}
 		defer response.Body.Close()
-		answer, err := io.ReadAll(response.Body)
+		answer, err := answertest.Read(response)
 		if err != nil {
 			t.Fatalf("read the answer to POST %s/_dev/mint: %v", issuer, err)
 		}

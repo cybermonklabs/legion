@@ -560,7 +560,7 @@ func newDispatchGitHub(t *testing.T) *dispatchGitHub {
 				_, _ = fmt.Fprint(w, `{"id":1,"app_slug":"example","permissions":{"actions":"read","pull_requests":"read"}}`)
 			case path == "POST /app/installations/1/access_tokens":
 				w.WriteHeader(http.StatusCreated)
-				_, _ = fmt.Fprintf(w, `{"token":"example-installation-token","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+				_, _ = fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, githubtest.InstallationToken(t.Name()), time.Now().Add(time.Hour).Format(time.RFC3339))
 			case path == "GET /installation/repositories":
 				_, _ = fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
 			case path == "POST /graphql":

@@ -263,7 +263,7 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 					provisioningRefusal(w)
 					return
 				}
-				mintedToken(w, "own-installation-token", permissions)
+				mintedToken(w, githubtest.InstallationToken(t.Name()), permissions)
 			}},
 		provisioningInstallation{id: flakyInstallation, owner: flakyOwner, granted: writeSet,
 			answer: func(w http.ResponseWriter, _ map[string]string) {

@@ -220,7 +220,8 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 		answer, held := answers[project]
 		facts.asked = projectaccess.Oldest(facts.asked, answer.AskedAt)
 		// Only a project Dispatch answered "public" is public: any other visibility, an empty one
-		// included, is no state, and the facts fail closed as when Dispatch cannot be asked.
+		// included, is no state, and the facts fail closed as when Dispatch cannot be asked. The
+		// refusal names the field and none of its value, which is Dispatch's words.
 		switch {
 		case !held || answer.Missing:
 			facts.states[project] = policy.ProjectMissing
@@ -229,7 +230,7 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 		case answer.Public():
 			facts.states[project] = policy.ProjectPublic
 		default:
-			return projectFacts{}, fmt.Errorf("%w: %w: %q for %s", ErrProjectAccessUnavailable, projectaccess.ErrUnknownVisibility, answer.Visibility, project)
+			return projectFacts{}, fmt.Errorf("%w: %w (visibility) for %s", ErrProjectAccessUnavailable, projectaccess.ErrUnknownVisibility, project)
 		}
 	}
 	for _, project := range named {

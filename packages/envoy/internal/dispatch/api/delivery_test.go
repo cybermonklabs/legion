@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 func TestGetDeliveryTimelineWithoutSettingsIs404(t *testing.T) {
@@ -724,7 +725,7 @@ func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the recorded job list: %v", err)
 	}
-	recorded, _, err := delivery.DecodeJobsPage(data)
+	recorded, _, err := delivery.DecodeJobsPage(answertest.Of(http.StatusOK, string(data)))
 	if err != nil {
 		t.Fatalf("decode the recorded job list: %v", err)
 	}

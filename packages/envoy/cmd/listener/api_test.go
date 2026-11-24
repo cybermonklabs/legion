@@ -2764,18 +2764,18 @@ func TestPublishHandlerPreservesAllOptionalMessageFields(t *testing.T) {
 	}
 }
 
-// The answer to a send or a publish is the request's own expects_reply bytes, so every sender
-// reads back the dialect it spoke: a request that wrote the old string "none" is answered
-// "none", since the plugin build old enough to write that word holds an EnvelopeSchema whose
-// expects_reply is the three-word enum and fails to parse the literal false in the answer to its
-// own send - a delivered message reported unconfirmed and sent again. The envelope the listener
-// puts on the bus is the parsed value instead, so it carries the one new vocabulary - false,
-// "optional" or "required" - whichever spelling the request used, and carries no expects_reply
-// at all for a request that said nothing about a reply.
+// The answer to a send or a publish is the request's own expects_reply as the request spelled it
+// (listenerwire.ExpectsAsSpoken), so every sender reads back the dialect it spoke: a request that
+// wrote the old string "none" is answered "none", since the plugin build old enough to write that
+// word holds an EnvelopeSchema whose expects_reply is the three-word enum and fails to parse the
+// literal false in the answer to its own send - a delivered message reported unconfirmed and sent
+// again. The envelope the listener puts on the bus is the parsed value instead, so it carries the
+// one new vocabulary - false, "optional" or "required" - whichever spelling the request used, and
+// carries no expects_reply at all for a request that said nothing about a reply.
 //
 // Each case therefore asserts both: the answer's bytes, and the field of the envelope that
 // reached the bus. Reading the bus is what proves the route still carries the sender's intent:
-// the answer alone is only the request read back.
+// the answer alone is only the request's word read back.
 func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
@@ -2835,14 +2835,15 @@ func TestTheMessageRoutesAnswerExpectsReplyInTheRequestsOwnDialect(t *testing.T)
 			wantBus:    `"optional"`,
 		},
 		{
-			// The escaped spelling of "none" is the one input that tells the two answers apart:
-			// echoing the request's own bytes writes these very bytes back, while re-marshalling
-			// the envelope would write the literal false. The bus gets the parsed value, false.
+			// The escaped spelling of "none" tells the request's word from its bytes: the answer
+			// writes the word the request spelled, "none", unescaped, which a plugin of the old
+			// enum reads as it reads "none"; a reading that matched the bytes against "none"
+			// would miss it and answer the literal false. The bus gets the parsed value, false.
 			name:       "a publish writing the escaped spelling of the old none",
 			path:       "/v1/messages/publish",
 			body:       `{"topic":"` + topic + `","message":"hello","expects_reply":"\u006eone"}`,
 			subject:    topic,
-			wantAnswer: `"\u006eone"`,
+			wantAnswer: `"none"`,
 			wantBus:    `false`,
 		},
 		{

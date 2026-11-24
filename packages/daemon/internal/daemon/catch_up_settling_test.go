@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -278,7 +279,7 @@ func TestAReceiptTimeoutOnASupersededCatchUpHandsOverWhatItNamed(t *testing.T) {
 	// reports that its architect's session never confirmed the receipt.
 	publisher := &hookPublisher{
 		answer: fmt.Errorf("publish notice: listener returned 504 Gateway Timeout: %w",
-			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-other"}),
+			notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses-other")}),
 		hook: func() error {
 			return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				stored, err := records.Issue(ctx, tx, "LEGION-1")
@@ -347,7 +348,7 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 	}
 
 	publisher := &hookPublisher{answer: fmt.Errorf("publish notice: listener returned 504 Gateway Timeout: %w",
-		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-architect"})}
+		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: oauth2calltest.Said("ses-architect")})}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,
 		supervisor: sup, project: "legion", now: func() time.Time { return now }}
 	if err := runner.notice(ctx, leased, payload); err != nil {
@@ -408,7 +409,7 @@ func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records,
 				notices: &hookPublisher{}, supervisor: sup, project: "legion", now: func() time.Time { return now }}
 			reported := reportedNotice{issue: "LEGION-1", notice: payload, row: leased.ID, architect: token}
-			if err := runner.reholdNotice(ctx, reported, notify.ReasonReceiptTimeout, "ses-architect"); err != nil {
+			if err := runner.reholdNotice(ctx, reported, notify.ReasonReceiptTimeout, reportedSession("ses-architect")); err != nil {
 				t.Fatalf("answer the late report of the spent copy: %v", err)
 			}
 

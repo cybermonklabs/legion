@@ -411,20 +411,19 @@ func TestARecordedKeyThatDoesNotParseIsFixedText(t *testing.T) {
 	}
 }
 
-// TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords: a 2xx answer whose body the helper
-// cannot decode is the broker's text, and the decoder repeats it (a time error quotes the value
-// it could not read). Beside an address that carries a credential, the broker, or whoever
-// answers for it, can repeat that credential there, so the error prints the decoder's text as
-// the address lets it (cipheraddr.Address.Words): withheld beside that address, whole beside a
-// clean one, for the enrolment and the renew alike.
-func TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords(t *testing.T) {
+// TestABrokerAnswerTheHelperCannotDecodeQuotesNoneOfIt: a 2xx answer whose body the helper cannot
+// decode is the broker's text, and the decoder repeats it (a time error quotes the value it could
+// not read). The broker, or whoever answers for it, can repeat there a credential the address
+// carries or the proof the request carried, so the error names the member that did not decode and
+// prints none of its value, beside any address (redact.Answer.Decode), for the enrolment and the
+// renew alike: a value that quotes a URL with a credential, and one that quotes nothing.
+func TestABrokerAnswerTheHelperCannotDecodeQuotesNoneOfIt(t *testing.T) {
 	var lease string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"enrollment_id": "enr-1", "lease_expires_at": lease})
 	}))
 	t.Cleanup(srv.Close)
 	credentialed := strings.Replace(srv.URL, "://", "://tokuser9f3:hunter2pw-lease-8Vt2@", 1)
-	lease = "the lease of " + credentialed
 	key, err := proof.NewKey()
 	if err != nil {
 		t.Fatal(err)
@@ -442,23 +441,17 @@ func TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords(t *testing.T) {
 		_, renewErr := b.renewIdentity(context.Background(), identity{EnrollmentID: "enr-1", Key: key})
 		return map[string]error{"the enrolment": enrollErr, "the renew": renewErr}
 	}
-
-	t.Run("an address carrying a credential", func(t *testing.T) {
-		for call, err := range calls(t, credentialed) {
-			if err == nil {
-				t.Fatalf("%s took an answer it cannot decode", call)
-			}
-			wantNamedNotPrinted(t, call+"'s error", err.Error(), []string{cipheraddr.WordsNotPrinted}, "tokuser9f3", "hunter2pw-lease-8Vt2", "the lease of")
+	for address, at := range map[string]string{"an address carrying a credential": credentialed, "a clean address": srv.URL} {
+		for value, said := range map[string]string{"a credential's URL": "the lease of " + credentialed, "no URL": "the lease of yesterday"} {
+			t.Run(address+", "+value, func(t *testing.T) {
+				lease = said
+				for call, err := range calls(t, at) {
+					if err == nil {
+						t.Fatalf("%s took an answer it cannot decode", call)
+					}
+					wantNamedNotPrinted(t, call+"'s error", err.Error(), []string{`"lease_expires_at"`}, "tokuser9f3", "hunter2pw-lease-8Vt2", "the lease of")
+				}
+			})
 		}
-	})
-	t.Run("a clean address", func(t *testing.T) {
-		for call, err := range calls(t, srv.URL) {
-			if err == nil {
-				t.Fatalf("%s took an answer it cannot decode", call)
-			}
-			if !strings.Contains(err.Error(), "parsing time") || !strings.Contains(err.Error(), "the lease of") {
-				t.Errorf("%s's error %q does not carry the decoder's words beside a clean address", call, err)
-			}
-		}
-	})
+	}
 }

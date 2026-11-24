@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -32,8 +33,12 @@ const provisioningTokenFileEnv = "LEGION_PROVISIONING_TOKEN_FILE"
 // not the whole list.
 const provisioningHelper = `#!/bin/sh
 [ "$1" = get ] || exit 0
-printf 'username=x-access-token\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")"
+printf 'username=` + provisioningUser + `\npassword=%s\n' "$(cat "$LEGION_PROVISIONING_TOKEN_FILE")"
 `
+
+// provisioningUser is the user name the one-shot credential answers git with beside the token: git
+// sends the two as one Basic credential, Authorization: Basic base64(provisioningUser:token).
+const provisioningUser = "x-access-token"
 
 // remote is how a clone or fetch reaches the repository: the environment it runs with, the
 // directory of the one-shot credential that environment names, if any, removed once it is done,
@@ -47,14 +52,16 @@ type remote struct {
 	feed     string
 }
 
-// scrub is text with the credential's token replaced by ***, so that nothing a run under the
-// credential returns carries it, wherever git echoed it. Fetch, which rewrites the token before each
-// transfer (setToken), scrubs every token it has held itself (fetchCredential.scrub).
+// scrub is text as a run under the credential hands it on: the credential's token taken out
+// wherever git echoed it, whole, cut short, percent-encoded or inside the Basic credential git
+// sent (scrubTokens), and then through the URL rule (redact.URLCredentials): git names a redirect's
+// Location as GitHub, or whatever answers in its place, wrote it, query values and user information
+// and all, and that text is not the token's. What leaves the process of it is read once more, by
+// the fail-closed rule, where the shared clone's steps make their error of it (remote.shown). Fetch,
+// which rewrites the token before each transfer (setToken), scrubs every token it has held itself
+// (fetchCredential.scrub), under the same rules.
 func (r remote) scrub(text string) string {
-	if r.token == "" {
-		return text
-	}
-	return strings.ReplaceAll(text, r.token, "***")
+	return redact.URLCredentials(scrubTokens(text, r.token))
 }
 
 // newProvisioningCredential ports workspace.ts's createProvisioningCredential, the one-shot
@@ -419,14 +426,15 @@ func (s cloneSteps) run(ctx context.Context, run Runner, argv, env []string) err
 
 // runIn runs one size-following step of the shared clone's clone in dir, under what remains of the
 // shared CloneTimeout, checked as RunChecked checks its commands; a step with nothing left fails,
-// naming the bound, without running.
+// naming the bound, without running. The step's error leaves the process and nothing decides on
+// its stderr, so the error prints the stderr as the credential shows it (remote.shown).
 func (s cloneSteps) runIn(ctx context.Context, run Runner, dir string, argv, env []string) error {
 	left := s.deadline.Sub(s.clock.Now())
 	if left <= 0 {
 		return fmt.Errorf("the shared clone's %s bound ran out before %s", CloneTimeout, strings.Join(argv, " "))
 	}
 	result, err := runCommandTimeout(ctx, run, argv, env, dir, left)
-	result.Stderr = s.credential.scrub(result.Stderr)
+	result.Stderr = s.credential.shown(result.Stderr)
 	_, err = checkedResult(argv, result, err)
 	return err
 }

@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // decidePath is the path a decision is posted to, under the endpoint's base URL.
@@ -59,29 +60,28 @@ type DecideRequest struct {
 	Bounds Bounds
 }
 
-// Decision is one answer, decoded straight from the response's answer object, so its fields are
-// the API's own properties. Type says which of them carry meaning, and is the type of the
-// question the answer answers: a noul answer uses Noul, the probability of yes; a choice answer
-// uses Choice, Confidence and Probabilities; a score answer uses Score, Confidence, Legend and
-// Probabilities; and a box answer uses Box and Confidence. Score, Box and Legend are kept as the
-// JSON the API sent, so a score that falls between levels and a box's four edges are carried
-// whole, to be read by a caller that knows the question it asked.
+// Decision is one answer, its fields the API's own properties. Type says which of them carry
+// meaning, and is the type of the question the answer answers: a noul answer uses Noul, the
+// probability of yes; a choice answer uses Choice, Confidence and Probabilities; a score answer
+// uses Score, Confidence, Legend and Probabilities; and a box answer uses Box and Confidence.
+// Legend is kept as the JSON the API sent, since its levels are the question's criteria in
+// whatever shape the caller wrote them, to be read by a caller that knows the question it asked.
 type Decision struct {
 	// Type is the answer's shape: noul, choice, score or box.
 	Type string `json:"type"`
 	// Choice is the name of the choice a choice answer selected.
 	Choice string `json:"choice,omitempty"`
 	// Score is a score answer's expected score, the probability-weighted average of the
-	// rubric's levels, as the number the API sent.
-	Score json.RawMessage `json:"score,omitempty"`
+	// rubric's levels, which can fall between two of them: from 0 to the top level's number.
+	Score float64 `json:"score,omitempty"`
 	// Noul is a noul answer's probability that the answer is yes, or the statement true,
 	// from 0 to 1.
 	Noul float64 `json:"noul,omitempty"`
-	// Box is a box answer's edges, an object of top, bottom, left and right, each a fraction
-	// of the image's height or width.
-	Box json.RawMessage `json:"box,omitempty"`
+	// Box is a box answer's edges, and nil for an answer of any other type.
+	Box *Box `json:"box,omitempty"`
 	// Legend is a score answer's rubric: the question's criteria keyed by the score level
-	// each one stands for.
+	// each one stands for, each level a string, an object or an array, as the criteria wrote
+	// it. It is the answer's data (readDecisions), which this package never prints.
 	Legend json.RawMessage `json:"legend,omitempty"`
 	// Confidence is how sure the model is of a choice, a score or a box, from 0 to 1. It is
 	// zero where the model reported none.
@@ -89,6 +89,16 @@ type Decision struct {
 	// Probabilities is how likely each alternative was: keyed by choice name for a choice
 	// answer and by score level for a score answer.
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+}
+
+// Box is where a box answer found what its question asked for: its four edges, each a fraction
+// of the image from 0 to 1, Top and Bottom of its height from its top and Left and Right of its
+// width from its left, and each the expected value of the position the model predicts for it.
+type Box struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
 }
 
 // DecideResult is the outcome of one DecideRequest, and every outcome is one: a call that ended
@@ -114,12 +124,32 @@ type systemOneRequest struct {
 	Questions map[string]Question `json:"questions"`
 }
 
-// systemOneResponse is the body of an answered decision. Usage is a pointer so that a body
-// without the usage the API always sends is read as the wrong shape rather than as a free call.
+// systemOneResponse is the body of an answered decision as Answer.Decode reads it: every member
+// but each score answer's legend, which readDecisions reads as data. Usage is a pointer so that a
+// body without the usage the API always sends is read as the wrong shape rather than as a free
+// call.
 type systemOneResponse struct {
-	Model   string              `json:"model"`
-	Answers map[string]Decision `json:"answers"`
-	Usage   *systemOneUsage     `json:"usage"`
+	Model   string                     `json:"model"`
+	Answers map[string]systemOneAnswer `json:"answers"`
+	Usage   *systemOneUsage            `json:"usage"`
+}
+
+// systemOneAnswer is one answer of the body as Answer.Decode reads it: a Decision's members but
+// its Legend.
+type systemOneAnswer struct {
+	Type          string             `json:"type"`
+	Choice        string             `json:"choice"`
+	Score         float64            `json:"score"`
+	Noul          float64            `json:"noul"`
+	Box           *Box               `json:"box"`
+	Confidence    float64            `json:"confidence"`
+	Probabilities map[string]float64 `json:"probabilities"`
+}
+
+// decision is the Decision a is, with legend, the answer's legend as readDecisions read it.
+func (a systemOneAnswer) decision(legend json.RawMessage) Decision {
+	return Decision{Type: a.Type, Choice: a.Choice, Score: a.Score, Noul: a.Noul, Box: a.Box,
+		Legend: legend, Confidence: a.Confidence, Probabilities: a.Probabilities}
 }
 
 // systemOneUsage is what the API reports one decision consumed. It counts neither cached nor
@@ -154,12 +184,15 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	client := newModelTransport(req.Model.Endpoint).client()
 
 	resp, err := client.Do(post)
-	var raw []byte
+	var answer redact.Answer
+	tooLarge := false
 	if err == nil {
-		// One byte past the cap, so a body that reaches it is told from one that fits.
-		raw, err = io.ReadAll(io.LimitReader(resp.Body, answerLimit+1))
+		answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
-		if err != nil {
+		tooLarge = errors.Is(err, redact.ErrAnswerTooLarge)
+		if tooLarge {
+			err = nil
+		} else if err != nil {
 			err = fmt.Errorf("reading the answer: %w", err)
 		}
 	}
@@ -172,22 +205,50 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case err != nil:
 		result.Fault, result.Detail = FaultProviderError, err.Error()
 	case resp.StatusCode/100 != 2:
-		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, raw)
-	case len(raw) > answerLimit:
+		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", redact.StatusLine(resp.StatusCode), answer.Words().String())
+	case tooLarge:
 		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer went past the %d MiB a decision reads", answerLimit>>20)
 	default:
-		var answer systemOneResponse
-		switch err := json.Unmarshal(raw, &answer); {
+		switch answers, usage, err := readDecisions(answer); {
 		case err != nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, raw)
-		case len(answer.Answers) == 0 || answer.Usage == nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer holds no answers or no usage: %.500q", raw)
+			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, answer.Words().String())
+		case len(answers) == 0 || usage == nil:
+			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer holds no answers or no usage: %.500q", answer.Words().String())
 		default:
-			result.Answers = answer.Answers
-			result.Usage = answer.Usage.priced(req.Model.Price)
+			result.Answers = answers
+			result.Usage = usage.priced(req.Model.Price)
 		}
 	}
 	return result, nil
+}
+
+// readDecisions is the answers and the usage of an answered decision. Every member is read through
+// Answer.Decode but each score answer's legend, whose levels are the question's criteria in
+// whatever shape the caller wrote them, which only the JSON itself holds: the legends are read as
+// the answer's data (Answer.StreamTo), and a body they do not decode from is named in fixed text
+// (redact.DecodeError) that quotes no value of it.
+func readDecisions(answer redact.Answer) (map[string]Decision, *systemOneUsage, error) {
+	var decided systemOneResponse
+	if err := answer.Decode(&decided); err != nil {
+		return nil, nil, err
+	}
+	var body bytes.Buffer
+	if _, err := answer.StreamTo(&body); err != nil {
+		return nil, nil, fmt.Errorf("reading the answer's legends: %w", err)
+	}
+	var legends struct {
+		Answers map[string]struct {
+			Legend json.RawMessage `json:"legend"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(body.Bytes(), &legends); err != nil {
+		return nil, nil, redact.DecodeError(err, body.Bytes(), &legends)
+	}
+	answers := make(map[string]Decision, len(decided.Answers))
+	for name, a := range decided.Answers {
+		answers[name] = a.decision(legends.Answers[name].Legend)
+	}
+	return answers, decided.Usage, nil
 }
 
 // validate is whether the request is one that can be made at all: it has its time bound, an

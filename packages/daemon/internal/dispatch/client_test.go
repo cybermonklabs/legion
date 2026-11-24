@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 const dispatchToken = "dispatch-test-token"
@@ -303,7 +305,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("release claim error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusConflict || dispatchErr.Code != "ISSUE_CLAIMED" {
+	if dispatchErr.Status != http.StatusConflict || !dispatchErr.Code.Equal("ISSUE_CLAIMED") {
 		t.Fatalf("Dispatch error = %#v, want 409 ISSUE_CLAIMED", dispatchErr)
 	}
 }
@@ -489,7 +491,7 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 		t.Fatalf("an answer with no artifact gave slug %q, want an error", slug)
 	}
 	_, err = client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
-	if refusal, permanent := PermanentRefusal(err); !permanent || refusal.Code != "CAP_EXCEEDED" {
+	if refusal, permanent := PermanentRefusal(err); !permanent || !refusal.Code.Equal("CAP_EXCEEDED") {
 		t.Fatalf("a refused upload = %v, want Dispatch's permanent CAP_EXCEEDED refusal", err)
 	}
 }
@@ -696,7 +698,7 @@ func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("get issue error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusConflict || dispatchErr.Code != "ISSUE_CLOSED" || dispatchErr.Message != "issue is closed" {
+	if dispatchErr.Status != http.StatusConflict || !dispatchErr.Code.Equal("ISSUE_CLOSED") || dispatchErr.Message != "issue is closed" {
 		t.Fatalf("Dispatch error = %#v, want 409 ISSUE_CLOSED", dispatchErr)
 	}
 }
@@ -712,7 +714,7 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("set status error = %T %v, want *dispatch.Error", err, err)
 	}
-	if dispatchErr.Status != http.StatusServiceUnavailable || dispatchErr.Code != "" || dispatchErr.Message != "maintenance" {
+	if dispatchErr.Status != http.StatusServiceUnavailable || !dispatchErr.Code.IsEmpty() || dispatchErr.Message != "maintenance" {
 		t.Fatalf("Dispatch error = %#v, want 503 with no code", dispatchErr)
 	}
 }
@@ -881,13 +883,14 @@ func TestCarriesLegionLabelMatchesTheLabelInAnyCaseAndNothingElse(t *testing.T) 
 // two need not be deployed in a set order. Any other unknown field or malformed body stays permanent.
 func TestAnUnknownFieldRefusalIsRiddenOutUntilDispatchKnowsTheField(t *testing.T) {
 	for _, field := range []string{"labels_add", "expected_sequence"} {
-		unknown := &Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: `invalid JSON body: json: unknown field "` + field + `"`}
+		said := `invalid JSON body: json: unknown field "` + field + `"`
+		unknown := &Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: said, Said: oauth2calltest.Said(said)}
 		if refusal, permanent := PermanentRefusal(unknown); permanent {
 			t.Fatalf("PermanentRefusal(unknown %s) = %v, permanent; want it ridden out", field, refusal)
 		}
 	}
 	for _, message := range []string{`invalid JSON body: json: unknown field "bogus"`, "invalid JSON body: unexpected EOF"} {
-		refused := &Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: message}
+		refused := &Error{Status: http.StatusBadRequest, Code: oauth2calltest.Said("INVALID_JSON"), Message: message, Said: oauth2calltest.Said(message)}
 		if _, permanent := PermanentRefusal(refused); !permanent {
 			t.Fatalf("PermanentRefusal(%q) = not permanent; want it permanent", message)
 		}
@@ -895,8 +898,8 @@ func TestAnUnknownFieldRefusalIsRiddenOutUntilDispatchKnowsTheField(t *testing.T
 }
 
 // The boot catch-up reads an issue's event log after a sequence, oldest first, page after page
-// until a short page, each event as Dispatch served it; a page that does not ascend past the last
-// sequence read is refused rather than read again.
+// until a short page, each event in the shape Dispatch serves it; a page that does not ascend past
+// the last sequence read is refused rather than read again.
 func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	var afters []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -924,11 +927,8 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	if !reflect.DeepEqual(afters, []string{"7", "207"}) || len(events) != 203 {
 		t.Fatalf("pages after %v gave %d events, want pages after 7 and 207 giving 203", afters, len(events))
 	}
-	var last struct {
-		Seq int64 `json:"seq"`
-	}
-	if err := json.Unmarshal(events[len(events)-1], &last); err != nil || last.Seq != 210 {
-		t.Fatalf("last event = %s (%v), want seq 210", events[len(events)-1], err)
+	if last := events[len(events)-1]; last.Seq != 210 || last.Type != "comment.created" || last.IssueKey != "LEGION-1" {
+		t.Fatalf("last event = %+v, want comment.created of LEGION-1 at seq 210", last)
 	}
 
 	stuck := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

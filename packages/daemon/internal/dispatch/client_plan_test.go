@@ -74,9 +74,10 @@ func TestPlanDocumentReadsTheBlocksOfThatVersion(t *testing.T) {
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 4); !errors.Is(err, ErrNoBlocks) {
 		t.Fatalf("a version answered with no blocks key = %v, want ErrNoBlocks", err)
 	}
-	// A block whose range does not index the markdown it came with is refused, not sliced.
-	if _, err := client.PlanDocument(context.Background(), "plan-1", 5); err == nil || errors.Is(err, ErrNoBlocks) || !strings.Contains(err.Error(), "block a") {
-		t.Fatalf("a block outside its markdown = %v, want an error naming block a", err)
+	// A block whose range does not index the markdown it came with is refused, not sliced, and
+	// named by its place in the answer (block a is the answer's first).
+	if _, err := client.PlanDocument(context.Background(), "plan-1", 5); err == nil || errors.Is(err, ErrNoBlocks) || !strings.Contains(err.Error(), "block 1 of the answer") {
+		t.Fatalf("a block outside its markdown = %v, want an error naming block 1 of the answer", err)
 	}
 	// An answer for another version than the one asked for is refused.
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 6); err == nil || !strings.Contains(err.Error(), "version 7") {

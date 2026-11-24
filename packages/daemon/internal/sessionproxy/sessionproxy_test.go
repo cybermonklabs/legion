@@ -24,9 +24,9 @@ import (
 // testInstance is a placeholder connection name: this repository names no real instance.
 const testInstance = "example-project:us-central1:example-instance"
 
-// testProofTimeout bounds the proof dial of a test whose upstream answers at once, so it only has
-// to be long enough never to end a dial a loaded machine is slow to complete.
-const testProofTimeout = 10 * time.Second
+// testDialTimeout bounds every dial of a test whose upstream answers at once, so it only has to be
+// long enough never to end a dial a loaded machine is slow to complete.
+const testDialTimeout = 10 * time.Second
 
 // testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
 const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
@@ -161,10 +161,10 @@ func startProxy(ctx context.Context, t *testing.T, up *upstream, dialer *fakeDia
 }
 
 // startConfigured is startProxy for a test that sets more of the Config: it fills in the test's
-// instance and proof bound, starts the proxy and takes the connection the proof dial made.
+// instance and dial bound, starts the proxy and takes the connection the proof dial made.
 func startConfigured(ctx context.Context, t *testing.T, up *upstream, cfg Config) *Proxy {
 	t.Helper()
-	cfg.Instance, cfg.ProofTimeout = testInstance, testProofTimeout
+	cfg.Instance, cfg.DialTimeout = testInstance, testDialTimeout
 	proxy, err := Start(ctx, cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -245,10 +245,10 @@ func TestStartRefusesWhenTheProofDialFails(t *testing.T) {
 	socket := socketPath(t)
 
 	_, err := Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: testProofTimeout,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: testDialTimeout,
 	})
 	if err == nil {
 		t.Fatal("Start accepted a dialer that cannot reach the instance")
@@ -340,7 +340,7 @@ func (s *stallingDialer) closeCount() int {
 
 func (s *stallingDialer) build(context.Context, Signer) (Dialer, error) { return s, nil }
 
-// A proof dial the instance never answers ends at ProofTimeout, however long the start's own
+// A proof dial the instance never answers ends at DialTimeout, however long the start's own
 // context lives: Start refuses with the instance and the bound named, the dial's deadline still
 // readable in the error, the socket path free and the dialer closed, as for a dial the instance
 // refused.
@@ -350,10 +350,10 @@ func TestStartRefusesWhenTheProofDialGetsNoAnswerWithinItsBound(t *testing.T) {
 
 	began := time.Now()
 	_, err := Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: 200 * time.Millisecond,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: 200 * time.Millisecond,
 	})
 	waited := time.Since(began)
 	if err == nil {
@@ -378,7 +378,7 @@ func TestStartRefusesWhenTheProofDialGetsNoAnswerWithinItsBound(t *testing.T) {
 	_ = listener.Close()
 }
 
-// A proof dial is never unbounded: a Start given no ProofTimeout is refused, naming the field,
+// A proof dial is never unbounded: a Start given no DialTimeout is refused, naming the field,
 // before it binds or dials anything.
 func TestStartRefusesAnUnboundedProofDial(t *testing.T) {
 	up := newUpstream(t)
@@ -390,8 +390,8 @@ func TestStartRefusesAnUnboundedProofDial(t *testing.T) {
 		Instance:  testInstance,
 		NewDialer: dialer.build,
 	})
-	if err == nil || !strings.Contains(err.Error(), "ProofTimeout") {
-		t.Fatalf("Start = %v, want a refusal naming ProofTimeout", err)
+	if err == nil || !strings.Contains(err.Error(), "DialTimeout") {
+		t.Fatalf("Start = %v, want a refusal naming DialTimeout", err)
 	}
 	if got := dialer.dials(); got != 0 {
 		t.Fatalf("a Start with no proof bound dialed the upstream %d times", got)
@@ -413,7 +413,7 @@ func TestStartRefusesAnAccountThatIsNoServiceAccountEmail(t *testing.T) {
 		Socket:                    socket,
 		Instance:                  testInstance,
 		ImpersonateServiceAccount: login,
-		ProofTimeout:              testProofTimeout,
+		DialTimeout:               testDialTimeout,
 		NewDialer: func(context.Context, Signer) (Dialer, error) {
 			built++
 			return nil, errors.New("the dialer factory was called")
@@ -473,7 +473,7 @@ func TestStartRefusesAWriterTokenNamedByHalfOrWithoutItsAccount(t *testing.T) {
 				ImpersonateServiceAccount: tc.account,
 				WriterAudience:            tc.audience,
 				WriterTokenFile:           tc.tokenFile,
-				ProofTimeout:              testProofTimeout,
+				DialTimeout:               testDialTimeout,
 				NewDialer: func(context.Context, Signer) (Dialer, error) {
 					built++
 					return nil, errors.New("the dialer factory was called")
@@ -528,11 +528,11 @@ func TestStartRefusesANegativeDrain(t *testing.T) {
 	socket := socketPath(t)
 
 	_, err := Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: testProofTimeout,
-		Drain:        -time.Second,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: testDialTimeout,
+		Drain:       -time.Second,
 	})
 	if err == nil || !strings.Contains(err.Error(), "Drain") {
 		t.Fatalf("Start = %v, want a refusal naming Drain", err)
@@ -556,10 +556,10 @@ func TestStartRefusesWhenSomethingHoldsTheSocket(t *testing.T) {
 	defer held.Close()
 
 	_, err = Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: testProofTimeout,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: testDialTimeout,
 	})
 	if err == nil {
 		t.Fatal("Start took an address another listener holds")
@@ -620,19 +620,19 @@ func TestConnectionIsClosedWhenItsUpstreamDialFails(t *testing.T) {
 }
 
 func TestEachConnectionDialsItsOwnUpstream(t *testing.T) {
-	// Every connection is dialed on its own, which is how each one carries a freshly minted
-	// credential: the Cloud SQL connector mints the login per dial, out of the certificate cache
-	// it keeps refreshed, in the ephemeral-certificate exchange. The dial count is the observable
-	// here; no token source is faked.
+	// Every connection is dialed on its own, which is how each one gets a TLS session of its own
+	// under the instance's ephemeral certificate, which carries the login: the Cloud SQL connector
+	// refreshes that certificate inside a dial (serve). The dial count is the observable here; no
+	// token source is faked.
 	up := newUpstream(t)
 	dialer := &fakeDialer{addr: up.listener.Addr().String()}
 	socket := socketPath(t)
 
 	proxy, err := Start(context.Background(), Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: testProofTimeout,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: testDialTimeout,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -1074,10 +1074,10 @@ func TestStartRefusesWhenItsContextHasEnded(t *testing.T) {
 	cancel()
 
 	_, err := Start(ctx, Config{
-		Socket:       socket,
-		Instance:     testInstance,
-		NewDialer:    dialer.build,
-		ProofTimeout: testProofTimeout,
+		Socket:      socket,
+		Instance:    testInstance,
+		NewDialer:   dialer.build,
+		DialTimeout: testDialTimeout,
 	})
 	if err == nil {
 		t.Fatal("Start served although its context had ended")

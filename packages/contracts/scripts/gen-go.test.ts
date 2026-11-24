@@ -15,6 +15,10 @@ const blockSchemaOutput = resolve(
   "../../envoy/internal/dispatch/pmdoc/schema_generated.go"
 );
 const blockSchemaTypes = resolve(import.meta.dir, "../src/block-schema.generated.ts");
+const publicNamesOutput = resolve(
+  import.meta.dir,
+  "../../envoy/internal/redact/public_names_generated.go"
+);
 // Every file the generator writes, so a copy of the whole set is checked and only the hand-edit
 // below is stale.
 const generated = [
@@ -22,6 +26,7 @@ const generated = [
   envelopeOutput,
   dispatchToolsOutput,
   blockSchemaOutput,
+  publicNamesOutput,
   blockSchemaTypes,
 ];
 const questionSchema = resolve(import.meta.dir, "../schemas/dispatch-question.schema.json");

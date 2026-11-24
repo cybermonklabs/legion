@@ -63,7 +63,7 @@ func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *tes
 
 	stdout, stderr, exit = runAgentSecrets(t, binary, rig.URL, keyDir, nil, "request", "TEST_AUTO_SECRET", "--json", "--reason", reason(record.MaxReasonProjects))
 	var granted RequestResult
-	if err := json.Unmarshal([]byte(stdout), &granted); exit != 0 || err != nil || granted.State != "granted" {
+	if err := json.Unmarshal([]byte(stdout), &granted); exit != 0 || err != nil || !granted.State.Equal("granted") {
 		t.Fatalf("request with a reason naming %d projects: exit %d, stdout %q, stderr %q; want it granted at once", record.MaxReasonProjects, exit, stdout, stderr)
 	}
 }

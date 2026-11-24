@@ -46,19 +46,32 @@ func (d *awaitingDispatch) GetIssue(context.Context, string) (dispatch.Issue, er
 func (d *awaitingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
 	return d.approval, nil
 }
-func (d *awaitingDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]json.RawMessage, error) {
+func (d *awaitingDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]dispatch.Event, error) {
 	d.afters = append(d.afters, after)
-	var events []json.RawMessage
-	for _, raw := range d.events {
-		var event struct {
-			Seq int64 `json:"seq"`
-		}
-		if err := json.Unmarshal(raw, &event); err != nil {
-			return nil, err
-		}
+	served, err := servedEvents(d.events)
+	if err != nil {
+		return nil, err
+	}
+	var events []dispatch.Event
+	for _, event := range served {
 		if event.Seq > after {
-			events = append(events, raw)
+			events = append(events, event)
 		}
+	}
+	return events, nil
+}
+
+// servedEvents is log, an event log as Dispatch's events route serves it, as EventsAfter answers
+// it: each event decoded in the shape the durable stream carries (dispatch.DecodeEvent), and a log
+// with an event that does not decode refused.
+func servedEvents(log []json.RawMessage) ([]dispatch.Event, error) {
+	events := make([]dispatch.Event, 0, len(log))
+	for i, raw := range log {
+		event, err := dispatch.DecodeEvent(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode Dispatch event %d of %d: %w", i+1, len(log), err)
+		}
+		events = append(events, event)
 	}
 	return events, nil
 }
@@ -457,7 +470,7 @@ func TestCatchUpAwaitingLeavesARootNoPersonAnswered(t *testing.T) {
 
 type unreachableEvents struct{ awaitingDispatch }
 
-func (*unreachableEvents) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (*unreachableEvents) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, &dispatch.TransientError{Err: context.DeadlineExceeded}
 }
 
@@ -485,7 +498,7 @@ type refusingEvents struct {
 	approval error
 }
 
-func (d *refusingEvents) EventsAfter(_ context.Context, key string, _ int64) ([]json.RawMessage, error) {
+func (d *refusingEvents) EventsAfter(_ context.Context, key string, _ int64) ([]dispatch.Event, error) {
 	return nil, fmt.Errorf("call Dispatch GET /api/v1/issues/%s/events: %w", key, d.refusal)
 }
 
@@ -573,7 +586,7 @@ func (d *slowFirstRoot) Approval(context.Context, string) (dispatch.Approval, er
 }
 
 // EventsAfter serves the answer only in CAPTURE-2's own log.
-func (d *slowFirstRoot) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
+func (d *slowFirstRoot) EventsAfter(ctx context.Context, key string, after int64) ([]dispatch.Event, error) {
 	if key != "CAPTURE-2" {
 		return nil, nil
 	}
@@ -1173,11 +1186,15 @@ func TestAGateSeedAnswersAGateWaitOnlyWhenTheRequestIsWithTheAgent(t *testing.T)
 }
 
 // applyLive applies events as the durable Dispatch consumer delivers them after the boot's
-// catch-up: each decoded by the live decoder and applied through the live handlers under an event
-// id of its own, never the catch-up's.
+// catch-up: each decoded by the live decoder, from the bytes the stream carries, and applied
+// through the live handlers under an event id of its own, never the catch-up's.
 func applyLive(t *testing.T, w *workflowRuntime, events ...json.RawMessage) {
 	t.Helper()
-	for i, event := range events {
+	for i, raw := range events {
+		event, err := dispatch.DecodeEvent(raw)
+		if err != nil {
+			t.Fatalf("decode live event %d: %v", i, err)
+		}
 		fact, _, err := intake.DecodeDispatchEvent(w.dispatchProject, "CAPTURE-100", event)
 		if err != nil || fact == nil {
 			t.Fatalf("decode live event %d: %v (fact %v)", i, err, fact)

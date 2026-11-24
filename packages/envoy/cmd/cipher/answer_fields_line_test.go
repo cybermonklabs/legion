@@ -107,14 +107,14 @@ func TestMachineLoginStatusPrintsTheBrokersCodeOnOneLine(t *testing.T) {
 // character, and Go-quoted where it holds one.
 func TestAPendingRequestNamesTheBrokersPageOnOneLine(t *testing.T) {
 	const page = "https://broker.example/approve/req-1"
-	approver := "ada@example.com"
-	if got, want := waitingOn(cipheraddr.New("https://broker.example"), &approver, page, false), "waiting for ada@example.com to approve it on the secrets broker: "+page; got != want {
+	approver := redact.NewRemoteText("ada@example.com")
+	if got, want := waitingOn(cipheraddr.New("https://broker.example"), &approver, redact.NewRemoteText(page), false), "waiting for ada@example.com to approve it on the secrets broker: "+page; got != want {
 		t.Errorf("waitingOn = %q, want %q", got, want)
 	}
 	for _, forged := range forgedValues {
 		brokerPage := page + "\n" + forged
-		for _, who := range []*string{&approver, nil} {
-			got := waitingOn(cipheraddr.New("https://broker.example"), who, brokerPage, false)
+		for _, who := range []*redact.RemoteText{&approver, nil} {
+			got := waitingOn(cipheraddr.New("https://broker.example"), who, redact.NewRemoteText(brokerPage), false)
 			if !strings.Contains(got, ": "+strconv.Quote(brokerPage)) {
 				t.Errorf("waitingOn(%v, %q) = %q, want it to name the page Go-quoted", who, brokerPage, got)
 			}

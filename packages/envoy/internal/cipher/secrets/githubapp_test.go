@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // testAppKey is the one App key every test in this package signs with: generating a 2048-bit key
@@ -139,7 +140,7 @@ func TestGitHubAppMintSignsJWTAndFollowsPagination(t *testing.T) {
 			posts++
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(readToken("installation-token-"+id, now.Add(time.Hour).Format(time.RFC3339)))
+			_ = json.NewEncoder(w).Encode(readToken(githubtest.InstallationToken(id), now.Add(time.Hour).Format(time.RFC3339)))
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -163,7 +164,7 @@ func TestGitHubAppMintSignsJWTAndFollowsPagination(t *testing.T) {
 	}
 	for owner, wantID := range map[string]int64{"owner-001": 1, "second-owner": 101, "third-owner": 102} {
 		installation, ok := got.Installations[owner]
-		if !ok || installation.InstallationID != wantID || installation.Token != "installation-token-"+strconv.FormatInt(wantID, 10) || !installation.ExpiresAt.Equal(now.Add(time.Hour)) {
+		if !ok || installation.InstallationID != wantID || installation.Token != githubtest.InstallationToken(strconv.FormatInt(wantID, 10)) || !installation.ExpiresAt.Equal(now.Add(time.Hour)) {
 			t.Errorf("installation %q = %+v, want id=%d minted token and expiry", owner, installation, wantID)
 		}
 	}
@@ -220,7 +221,7 @@ func TestGitHubAppMintSkipsSuspendedInstallations(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(tc.installations)
 				case r.Method == http.MethodPost && r.URL.Path == "/app/installations/1/access_tokens":
 					w.WriteHeader(http.StatusCreated)
-					_ = json.NewEncoder(w).Encode(readToken("installation-token-1", "2026-10-23T13:00:00Z"))
+					_ = json.NewEncoder(w).Encode(readToken(githubtest.InstallationToken("1"), "2026-10-23T13:00:00Z"))
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 					http.Error(w, "suspended", http.StatusForbidden)

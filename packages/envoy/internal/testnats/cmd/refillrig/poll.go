@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -109,7 +110,8 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 		o.Transport, o.End = err.Error(), time.Now().UnixNano()
 		return o
 	}
-	body, err := io.ReadAll(resp.Body)
+	// The listener's list or metrics, the data the rig samples (answertest.Read).
+	body, err := answertest.Read(resp)
 	_ = resp.Body.Close()
 	o.End = time.Now().UnixNano()
 	o.Status, o.RetryAfter = resp.StatusCode, resp.Header.Get("Retry-After")

@@ -125,6 +125,12 @@ func (s *podLauncherSigner) Sign(method, url string) (string, error) {
 // projects are the Dispatch projects the pod names, sent only when it names one, as a session's
 // enrollment sends them: the broker takes them from a person's pod, checked against its person,
 // and refuses them from any other pod (PROJECTS_NEED_A_PERSON).
+//
+// The enrollment id is the broker's text, or the text of whatever answers in its place, which can
+// echo the proof and the pod token the call carried. It is held as redact.RemoteText with that
+// request's record and answered only as RemoteText.SendBack answers it: the enrollment file keeps
+// it, every later call signs with it and stdout prints it for a script, so an id the rule does
+// not print as it came is refused, not printed, and kept nowhere.
 func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string, projects []string) (enrollmentID string, alreadyLive bool, err error) {
 	body, err := json.Marshal(struct {
 		Kind       string   `json:"kind"`
@@ -136,20 +142,24 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	if err != nil {
 		return "", false, err
 	}
-	status, raw, err := c.doProofStatus(ctx, signer, http.MethodPost, "/v1/enrollments", body)
+	status, answer, err := c.doProofStatus(ctx, signer, http.MethodPost, "/v1/enrollments", body)
 	if err != nil {
 		return "", false, err
 	}
 	var result struct {
-		EnrollmentID string `json:"enrollment_id"`
+		EnrollmentID redact.RemoteText `json:"enrollment_id"`
 	}
-	if err := c.decode(raw, &result, "decode enrollment response"); err != nil {
-		return "", false, err
+	if err := answer.Decode(&result); err != nil {
+		return "", false, fmt.Errorf("decode enrollment response: %w", err)
 	}
-	if result.EnrollmentID == "" {
+	if result.EnrollmentID.IsEmpty() {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
 	}
-	return result.EnrollmentID, status == http.StatusOK, nil
+	enrollmentID, sent := result.EnrollmentID.SendBack()
+	if !sent {
+		return "", false, errors.New("the broker's enrollment answered an enrollment_id the rule does not print as it came (not printed), which this pod keeps nowhere")
+	}
+	return enrollmentID, status == http.StatusOK, nil
 }
 
 // cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]
@@ -309,22 +319,13 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 }
 
 // podRefusal is the one stderr line a refused login or enrolment prints: what was refused, which
-// pod the token names, the HTTP status, the broker's code and message - the status and Message
-// alone where the answer's text is withheld (apiError.withheld) - and the broker it asked. It
-// never prints the token.
+// pod the token names, the HTTP status, the broker's code and words as the rule for remote text
+// reads them - the status and cipheraddr.WordsNotPrinted alone where the answer's text is
+// withheld (apiError.answered) - and the broker it asked. It never prints the token.
 func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Address, err error) string {
 	var refused *apiError
 	if errors.As(err, &refused) {
-		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
-		if !refused.withheld {
-			// The code is the broker's, so it prints on one line as Message does.
-			code := redact.OneLine(refused.Code)
-			if code == "" {
-				code = "UNKNOWN"
-			}
-			answered = fmt.Sprintf("HTTP %d %s: %s", refused.Status, code, refused.Message)
-		}
-		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, answered, brokerSource(base))
+		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, refused.answered(), brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
 }
@@ -346,7 +347,7 @@ type podProjects struct {
 // Any other answer adds nothing.
 func (p podProjects) refusal(err error) string {
 	var refused *apiError
-	if !errors.As(err, &refused) || refused.Code != "PROJECTS_NEED_A_PERSON" {
+	if !errors.As(err, &refused) || !refused.hasCode("PROJECTS_NEED_A_PERSON") {
 		return ""
 	}
 	if p.flag {
@@ -357,26 +358,33 @@ func (p podProjects) refusal(err error) string {
 
 // TokenLogin is POST /v1/launcher-credentials/token, the public route a service logs in at with
 // a token its own issuer signed: no proof, no person. It answers the launcher credential the
-// signed request object's key now holds.
+// signed request object's key now holds. The credential id is the broker's text, which whatever
+// answers in its place can make an echo of the token the call carried: it is held as
+// redact.RemoteText with that request's record, and answered only as RemoteText.SendBack answers
+// it, since the pod's enrollment call names it in its launcher proof.
 func (c *client) TokenLogin(ctx context.Context, token, request string) (string, error) {
 	body, err := json.Marshal(map[string]string{"token": token, "request": request})
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
+	answer, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
 	if err != nil {
 		return "", err
 	}
 	var result struct {
-		CredentialID string `json:"credential_id"`
+		CredentialID redact.RemoteText `json:"credential_id"`
 	}
-	if err := c.decode(raw, &result, "decode token login response"); err != nil {
-		return "", err
+	if err := answer.Decode(&result); err != nil {
+		return "", fmt.Errorf("decode token login response: %w", err)
 	}
-	if result.CredentialID == "" {
+	if result.CredentialID.IsEmpty() {
 		return "", errors.New("the broker's token login answered no credential_id")
 	}
-	return result.CredentialID, nil
+	credentialID, sent := result.CredentialID.SendBack()
+	if !sent {
+		return "", errors.New("the broker's token login answered a credential_id the rule does not print as it came (not printed), which this pod signs with nowhere")
+	}
+	return credentialID, nil
 }
 
 // enrollSessionKey is the session key in dir: the one already there, so re-running enroll on a dir

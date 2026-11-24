@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ssePath is the dashboard's server-sent-event feed, GET /api/v1/events. Dispatch served it until
@@ -72,8 +75,11 @@ func followSSE(ctx context.Context, client *http.Client, url string, header http
 		}
 		req.Header = header
 		if resp, err := client.Do(req); err == nil {
-			n, _ := readSSE(resp.Body, nonce, time.Now, onFrame)
-			_ = resp.Body.Close()
+			// The stream is data the run counts and times (redact.StreamAnswer), bounded by the
+			// step's own life and not by its size.
+			stream := redact.StreamAnswer(resp, math.MaxInt64)
+			n, _ := readSSE(stream, nonce, time.Now, onFrame)
+			_ = stream.Close()
 			onBytes(n)
 		}
 		sleepUntil(ctx, time.Now().Add(retry))

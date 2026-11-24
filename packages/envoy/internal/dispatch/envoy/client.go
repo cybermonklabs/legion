@@ -14,11 +14,13 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
@@ -100,17 +102,30 @@ var ErrRefilling = errors.New("envoy listener: the agent list is refilling")
 // listRefillingCode). A 503 under any other code, or none, is an ordinary failure.
 const listenerRefillingCode = "refilling"
 
-// RefillingError is ErrRefilling as one list read met it.
+// RefillingError is ErrRefilling as one list read met it. The listener's reason is its own words,
+// held as redact.RemoteText, which prints only the rule's reading of it, under every verb, in JSON
+// and in a log field: a URL in it prints with no user information and no query or fragment value,
+// and a reason the rule cannot read prints as redact.WordsNotReadable.
 type RefillingError struct {
-	// RetryAfter is the listener's Retry-After header as sent, empty when it sent none.
+	// RetryAfter is the listener's Retry-After header as sent, empty when it sent none. Dispatch
+	// passes it on as its own answer's header, and prints it nowhere.
 	RetryAfter string
 	route      string
-	reason     string
+	reason     redact.RemoteText
 }
 
 func (e *RefillingError) Error() string {
 	return fmt.Sprintf("%v: %s returned %d: %s", ErrRefilling, e.route, http.StatusServiceUnavailable, e.reason)
 }
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this error's fields.
+func (e *RefillingError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
+}
+
+// LogValue is Error, so a structured log field names the error only as a message may.
+func (e *RefillingError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 
 // Is makes every RefillingError match ErrRefilling.
 func (e *RefillingError) Is(target error) bool { return target == ErrRefilling }
@@ -154,8 +169,10 @@ const (
 
 // Session is Dispatch's reading of one Envoy listener session, live, unresponsive or, on
 // SessionIncludingStopped's answer alone, stopped. It is built from the listener's own answers,
-// listenerwire.SessionInfo for a registry read or the list (sessionOf) and listenerwire.RoleHolder
-// for a role lookup (Role), and keeps what Dispatch uses of them. Its JSON names are Dispatch's:
+// listenerwire.SessionInfoAs for a registry read or the list (sessionOf) and
+// listenerwire.RoleHolderAs for a role lookup (Role), each read with the session's id and its title
+// held as redact.RemoteText, and keeps what Dispatch uses of them: the id only where the rule prints
+// it as it came (keptSessionID), and the title as the rule reads it. Its JSON names are Dispatch's:
 // its route roster stores the rows (api/issue_route_status.go) and GET /api/v1/agents answers them.
 type Session struct {
 	SessionID string `json:"session_id"`
@@ -203,13 +220,19 @@ func (s *Session) normalize(sessionID string) {
 }
 
 // sessionOf is Dispatch's reading of a session the listener answered with info (normalize fills
-// in what it left out). A stopped session's answer (listenerwire.StoppedSessionInfo) carries its
-// fields under the same names, so it reads here too, with no Dir, MachineID, Host, TmuxPlace or
-// Roles.
-func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
+// in what it left out), and false for an answer whose session id is none this client keeps
+// (keptSessionID). A stopped session's answer (listenerwire.StoppedSessionInfo) carries its fields
+// under the same names, so it reads here too, with no Dir, MachineID, Host, TmuxPlace or Roles. The
+// title is the rule's reading of the listener's (redact.RemoteText.String): Dispatch shows a
+// session's title and decides nothing on it, so it keeps none of it that a print would not show.
+func sessionOf(info listenerwire.SessionInfoAs[redact.RemoteText], sessionID string) (Session, bool) {
+	id, kept := keptSessionID(info.SessionID)
+	if !kept {
+		return Session{}, false
+	}
 	session := Session{
-		SessionID:    info.SessionID,
-		Title:        info.Title,
+		SessionID:    id,
+		Title:        info.Title.String(),
 		Dir:          info.Dir,
 		MachineID:    info.MachineID,
 		Host:         info.Host,
@@ -220,7 +243,28 @@ func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
 		State:        string(info.State),
 	}
 	session.normalize(sessionID)
-	return session
+	return session, true
+}
+
+// keptSessionID is a session id the listener answered with - a session's own, or a role's holder -
+// as this client keeps it, and false for one it keeps nowhere. The empty field is the empty id,
+// which normalize and every caller read as they always have. Any other id is kept only where the
+// rule prints it as it came, each credential the read carried redacted first
+// (redact.RemoteText.SendBack), as the holder of a lapsed role refusal is (lapsedRoleHolder):
+// Dispatch compares, stores, prints and sends back to the listener the id it keeps, so none of
+// those holds more of the listener's words than a print of them shows, and an id that echoes the
+// bearer the read carried, or quotes a credential's URL, is an answer this client cannot read.
+func keptSessionID(id redact.RemoteText) (string, bool) {
+	if id.IsEmpty() {
+		return "", true
+	}
+	return id.SendBack()
+}
+
+// sessionIDNotKept is the ErrUnavailable of a read whose answer named, as its member, a session id
+// keptSessionID keeps nowhere. It names the read and the member, and nothing of the id.
+func sessionIDNotKept(read, member string) error {
+	return fmt.Errorf("%w: %s answered a %s the rule does not print as it came", ErrUnavailable, read, member)
 }
 
 // SendInput is a targeted Dispatch delivery through the listener.
@@ -435,6 +479,9 @@ func closeBody(response *http.Response) {
 // refuses the list as refilling, or ErrUnavailable. A caller tests each row's State, never its
 // membership of the list: a list without the unresponsive rows reads every stalled session as
 // ended, which is the whole of dispatch://INFRA-392.
+//
+// A row whose session id this client keeps nowhere (keptSessionID) refuses the whole list as
+// ErrUnavailable, for the same reason: leaving the row out would read that session as ended.
 func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	const route = "/v1/sessions"
 	response, err := c.get(ctx, route, includeUnresponsive)
@@ -446,8 +493,8 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 		return nil, listFailure(response, "GET "+route)
 	}
 
-	var rows []listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&rows); err != nil {
+	var rows []listenerwire.SessionInfoAs[redact.RemoteText]
+	if err := decodeAnswer(response, &rows); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	// Each row's topics are left behind: Dispatch keeps every row of this answer in its route
@@ -455,7 +502,11 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	// holds a session's subscriptions, which it reads through ListInterests instead.
 	sessions := make([]Session, len(rows))
 	for index, row := range rows {
-		sessions[index] = sessionOf(row, row.SessionID)
+		session, kept := sessionOf(row, "")
+		if !kept {
+			return nil, sessionIDNotKept("GET "+route, "session_id")
+		}
+		sessions[index] = session
 	}
 	return sessions, nil
 }
@@ -475,7 +526,7 @@ func (c *Client) ListInterests(ctx context.Context) ([]listenerwire.InterestRow,
 	}
 
 	var interests []listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interests); err != nil {
+	if err := decodeAnswer(response, &interests); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interests == nil {
@@ -511,7 +562,7 @@ func (c *Client) Interest(ctx context.Context, sessionID string) (listenerwire.I
 	}
 
 	var interest listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interest); err != nil {
+	if err := decodeAnswer(response, &interest); err != nil {
 		return listenerwire.InterestRow{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interest.Topics == nil {
@@ -533,12 +584,12 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, err)
+			return nil, fmt.Errorf("%w: build %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
 		}
 		request.Header.Set("Content-Type", "application/json")
 		return request, nil
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, err))
+		return unreachable(fmt.Errorf("%w: %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
 	if err != nil {
 		return nil, err
@@ -550,7 +601,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	}
 
 	var decoded listenerwire.UnsubscribeResponse
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+	if err := decodeAnswer(response, &decoded); err != nil {
 		return nil, fmt.Errorf("%w: decode POST /v1/interests/unsubscribe response: %v", ErrUnavailable, err)
 	}
 	if decoded.Removed == nil {
@@ -571,7 +622,8 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 // cannot be reached right now and that its claim still stands, which is not the same as the role
 // having no holder: that holder is read through the session route, which answers an unresponsive
 // record like any other, so the delivery still resolves to it and its frame is stored until it
-// answers again (lapsedRoleHolder).
+// answers again (lapsedRoleHolder). The 200's holder is the 404's word, and is kept as that one is:
+// only where the rule prints it as it came (keptSessionID); one it does not is ErrUnavailable.
 func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	route := "/v1/roles/" + url.PathEscape(role)
 	response, err := c.get(ctx, route, includeUnresponsive)
@@ -582,14 +634,18 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if response.StatusCode != http.StatusOK {
 		return c.lapsedRoleHolder(ctx, response)
 	}
-	var answer listenerwire.RoleHolder
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	var answer listenerwire.RoleHolderAs[redact.RemoteText, listenerwire.SessionState]
+	if err := decodeAnswer(response, &answer); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+	}
+	holderID, kept := keptSessionID(answer.Holder)
+	if !kept {
+		return Session{}, sessionIDNotKept("GET "+route, "holder")
 	}
 	// An older listener names no holder_state, which normalize reads as live.
 	holder := Session{
-		SessionID:    answer.Holder,
-		Title:        answer.Title,
+		SessionID:    holderID,
+		Title:        answer.Title.String(),
 		Dir:          answer.Dir,
 		MachineID:    answer.MachineID,
 		Host:         answer.Host,
@@ -600,13 +656,14 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if answer.LastSeen != nil {
 		holder.LastSeen = *answer.LastSeen
 	}
-	holder.normalize(answer.Holder)
+	holder.normalize(holderID)
 	return holder, nil
 }
 
 // lapsedRoleHolder answers a role lookup the listener refused, having read nothing of its body
-// yet. The refusal is listenerwire.RoleRefusal: a reason, and for a lapsed holder the holder's id,
-// the state its record puts it in, and claim_released false.
+// yet. The refusal is listenerwire.RoleRefusalAs, its words and its reason held as
+// redact.RemoteText and the holder's state as holderState: a reason, and for a lapsed holder the
+// holder's id, the state its record puts it in, and claim_released false.
 //
 // A holder that is only unresponsive keeps its claim, so the role still has a holder and this
 // resolves to it: the lookup route refuses because the role cannot be reached now, not because
@@ -618,12 +675,17 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 // between the two reads is the same answer, so a role is never resolved to a session the
 // listener no longer holds.
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
-	var refusal listenerwire.RoleRefusal
-	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
-		return Session{}, listenerRefusal(response, "")
+	// The holder's session id is sent back to the listener by the session read below
+	// (RemoteText.SendBack): only where the rule prints it as it came, with every credential the
+	// lookup carried redacted first (decodeAnswer), so the route that read names, and any error
+	// that names the route, holds no more of the listener's words than a print of them shows, and
+	// never the bearer an answer in the listener's place echoed as a holder.
+	var refusal listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]
+	if err := decodeAnswer(response, &refusal); err != nil {
+		return Session{}, listenerRefusal(response, redact.RemoteText{})
 	}
-	if refusal.Holder != "" && refusal.HolderState == StateUnresponsive {
-		holder, err := c.Session(ctx, refusal.Holder)
+	if id, sent := refusal.Holder.SendBack(); sent && refusal.HolderState == holderStateUnresponsive {
+		holder, err := c.Session(ctx, id)
 		if err == nil {
 			return holder, nil
 		}
@@ -632,7 +694,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		}
 	}
 	err := listenerRefusal(response, refusal.Error)
-	if roleholder.IsNoHolderReason(string(refusal.Reason)) && !errors.Is(err, ErrUnavailable) {
+	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
 		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
 	return Session{}, err
@@ -698,11 +760,15 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 		return Session{}, unavailableGetStatus(response, route)
 	}
 
-	var info listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
+	var info listenerwire.SessionInfoAs[redact.RemoteText]
+	if err := decodeAnswer(response, &info); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
-	return sessionOf(info, sessionID), nil
+	session, kept := sessionOf(info, sessionID)
+	if !kept {
+		return Session{}, sessionIDNotKept("GET "+route, "session_id")
+	}
+	return session, nil
 }
 
 // Agent returns the Legion agent registry's entry for one session (listenerwire.LegionAgentAnswer,
@@ -726,7 +792,7 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 		return listenerwire.LegionAgentAnswer{}, unavailableGetStatus(response, route)
 	}
 	var agent listenerwire.LegionAgentAnswer
-	if err := json.NewDecoder(response.Body).Decode(&agent); err != nil {
+	if err := decodeAnswer(response, &agent); err != nil {
 		return listenerwire.LegionAgentAnswer{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return agent, nil
@@ -756,7 +822,7 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 		return nil, unavailableGetStatus(response, route)
 	}
 	var body listenerwire.LegionAgentList
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+	if err := decodeAnswer(response, &body); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if body.Entries == nil {
@@ -768,32 +834,19 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // get makes one authorized GET of route+query, the one shape every read of the listener takes.
 // route names the read in each error this returns, without query's selector, so the same read
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
-// both: no listener answered it (unreachable).
+// both: no listener answered it (unreachable). Every error names the call by its route alone and
+// the transport's failure through redact.Cause, so none prints a credential the configured
+// listener URL carries; a call with a query prints the failure's class alone.
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
 	return c.do("GET "+route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
+			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL))
 		}
 		return request, nil
 	}, func(err error) error {
-		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, err))
+		return unreachable(fmt.Errorf("%w: GET %s: %v", ErrUnavailable, route, redact.Cause(err, c.baseURL)))
 	})
-}
-
-// unavailableGetStatus is ErrUnavailable for a GET of route the listener answered with a status
-// the caller does not take, carrying the listener's own reason when its body names one, and
-// ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
-// The two list reads answer their refusals through listFailure instead, which tells a refilling
-// listener from an unavailable one.
-func unavailableGetStatus(response *http.Response, route string) error {
-	var failure listenerwire.APIError
-	if err := json.NewDecoder(response.Body).Decode(&failure); err == nil && failure.Error != "" {
-		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error))
-	}
-	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
 // sendSource is the source every send Dispatch makes through the listener names itself by.
@@ -878,7 +931,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),
 		)
 		if err != nil {
-			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
+			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, redact.Cause(err, c.baseURL))
 		}
 		request.Header.Set("Content-Type", "application/json")
 		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
@@ -887,7 +940,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		// session is, with the envelope it built for this request, whose id names no stored copy.
 		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
-	}, func(err error) error { return sendTransportError(err, written.Load()) })
+	}, func(err error) error { return sendTransportError(redact.Cause(err, c.baseURL), written.Load()) })
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -902,7 +955,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		return SendResult{}, listenerResponseError(response)
 	}
 	var answer listenerwire.SendResponse
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := decodeAnswer(response, &answer); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
 	return SendResult{
@@ -914,10 +967,11 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 // keptSend reads the send route's 202, a send for a role the listener kept for the role's next
 // holder (listenerwire.KeptSendResponse), as the envelope the role's kept lane holds, whose walk
 // hands it to the session that holds the role, live. A 202 naming no kept copy is no answer a
-// send gets, and is ErrUnavailable.
+// send gets, and is ErrUnavailable. The answer is read through decodeAnswer, as every answer of
+// this client is.
 func keptSend(response *http.Response) (SendResult, error) {
 	var answer listenerwire.KeptSendResponse
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := decodeAnswer(response, &answer); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
 	if !answer.Kept {
@@ -932,8 +986,8 @@ func keptSend(response *http.Response) (SendResult, error) {
 // and a same-mode retry is therefore safe. A connect that timed out wrote nothing, and reports
 // the same "Client.Timeout exceeded while awaiting headers" text as a listener that went quiet,
 // so the text cannot tell them apart; requestWritten can. The cause is wrapped, not formatted,
-// so a caller can ask the same question again. Either way no listener answered, so both are
-// ErrUnreachable.
+// so a caller can ask the same question again: its caller passes it through redact.Cause, which
+// unwraps to the failure. Either way no listener answered, so both are ErrUnreachable.
 func sendTransportError(err error, requestWritten bool) error {
 	var timeout net.Error
 	timedOut := errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout())
@@ -941,65 +995,4 @@ func sendTransportError(err error, requestWritten bool) error {
 		return unreachable(fmt.Errorf("%w: %w: POST /v1/messages/send: %w", ErrUnavailable, ErrReceiptTimeout, err))
 	}
 	return unreachable(fmt.Errorf("%w: POST /v1/messages/send: %w", ErrUnavailable, err))
-}
-
-// listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/starting_gate.go
-// startingGate), and a gateway in front of one that is gone answers 502 or 504, so either is "ask
-// again" rather than the listener's verdict on the request. Any other status with a JSON reason is
-// that reason alone, which a delivery records and a person reads verbatim ("no live session <id>",
-// "message is required", "unauthorized"). The reason is kept on the unavailable error too, for the
-// same reader. Any other status without one is ErrUnavailable alone: the listener answered, and
-// asking again repeats it.
-func listenerResponseError(response *http.Response) error {
-	var body listenerwire.APIError
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-		return listenerRefusal(response, "")
-	}
-	if response.StatusCode == http.StatusServiceUnavailable && body.Code == listenerwire.CodeMaybeStored {
-		return unreachable(fmt.Errorf("%w: %w: listener returned %d: %s", ErrUnavailable, ErrStoreUnconfirmed, response.StatusCode, body.Error))
-	}
-	return listenerRefusal(response, body.Error)
-}
-
-// ErrStoreUnconfirmed reports a send the listener answered 503 with the code that says the
-// message may be stored (listenerwire.CodeMaybeStored): it published the envelope and the message
-// bus never acknowledged the publish, so the session may already hold it, as after
-// ErrReceiptTimeout. It is a failure of its own rather than ErrReceiptTimeout because the listener
-// did answer; it is ErrUnavailable and ErrUnreachable too, as every 503 is.
-var ErrStoreUnconfirmed = errors.New("envoy listener could not confirm the send was stored")
-
-// listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
-// its body named one, and its status when the body named nothing a caller could act on. A 502,
-// 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
-// it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request.
-func listenerRefusal(response *http.Response, reason string) error {
-	code := response.StatusCode
-	if reason != "" {
-		if gatewayStatus(code) {
-			return unreachable(fmt.Errorf("%w: listener returned %d: %s", ErrUnavailable, code, reason))
-		}
-		return errors.New(reason)
-	}
-	return unavailableStatus(code, fmt.Errorf("%w: listener returned %d", ErrUnavailable, code))
-}
-
-// listFailure classifies a list read's non-200 answer from its body: the listener's refilling 503
-// is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
-// body names one, and ErrUnreachable too when the status is a 502, 503 or 504, which comes from
-// in front of the listener or from its starting gate rather than from a verdict on the read.
-func listFailure(response *http.Response, route string) error {
-	var body listenerwire.APIError
-	decoded := json.NewDecoder(response.Body).Decode(&body) == nil
-	if decoded && response.StatusCode == http.StatusServiceUnavailable && body.Code == listenerRefillingCode {
-		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error}
-	}
-	if !decoded || body.Error == "" {
-		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: %s returned %d", ErrUnavailable, route, response.StatusCode))
-	}
-	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error))
 }

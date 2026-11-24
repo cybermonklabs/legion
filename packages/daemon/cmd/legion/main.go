@@ -24,6 +24,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -577,22 +578,25 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 1
 	}
 	address := op.base
-	body, err := get(ctx, address+"/legion/v1/state")
+	answer, err := get(ctx, address+"/legion/v1/state")
 	if err != nil {
 		fmt.Fprintf(stderr, "legion state: %v\n", err)
 		return 1
 	}
 
 	if asJSON {
-		if _, err := stdout.Write(body); err != nil {
+		if _, err := answer.StreamTo(stdout); err != nil {
 			fmt.Fprintf(stderr, "legion state: %v\n", err)
 			return 1
 		}
 		return 0
 	}
 
-	var state api.State
-	if err := json.Unmarshal(body, &state); err != nil {
+	// The state decodes through the answer (Answer.Decode, into servedState), whose error names
+	// the member that did not decode and never its value, which encoding/json's errors and
+	// time.Time's quote.
+	var state servedState
+	if err := answer.Decode(&state); err != nil {
 		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", address, err)
 		return 1
 	}
@@ -653,6 +657,44 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		fmt.Fprintf(stdout, "issue %s:\n%s\n", key, record)
 	}
 	return 0
+}
+
+// servedState is the daemon's state (api.State) as `legion state` reads it: every member of it,
+// under the same name and of the same type, but each pending Dispatch status write's payload
+// (pendingStatusWrite). api.State holds that payload as a json.RawMessage, which would carry the
+// answer's text out of it as plain text, so the answer is decoded into this instead. A body that
+// does not decode into api.State does not decode into this either
+// (TestServedStateIsTheStateButEachPayload).
+type servedState struct {
+	Daemon               api.DaemonInfo             `json:"daemon"`
+	Contract             *api.ContractView          `json:"contract,omitempty"`
+	Admission            api.Admission              `json:"admission"`
+	Issues               map[string]api.Issue       `json:"issues"`
+	PendingStatusWrites  []pendingStatusWrite       `json:"pendingStatusWrites"`
+	HeldOutboxRows       []api.HeldOutboxRow        `json:"heldOutboxRows"`
+	StrandedClaims       []api.StrandedClaim        `json:"strandedClaims"`
+	WakesWaiting         []api.WakeWaiting          `json:"wakesWaiting"`
+	ClaimsToRefresh      int                        `json:"claimsToRefresh"`
+	Paused               *api.PausedView            `json:"paused,omitempty"`
+	LastPause            *api.PauseView             `json:"lastPause,omitempty"`
+	ControllerLocator    *api.ControllerLocator     `json:"controllerLocator,omitempty"`
+	AgentSecretsLogin    *api.AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	Capabilities         []api.CapabilityState      `json:"capabilities"`
+	Repositories         api.RepositoriesView       `json:"repositories"`
+	Settings             api.Settings               `json:"settings"`
+	Consumers            []api.ConsumerLagView      `json:"consumers"`
+	LowestPluginContract *int                       `json:"lowestPluginContract,omitempty"`
+}
+
+// pendingStatusWrite is a pending Dispatch status write (api.PendingStatusWrite) as `legion state`
+// reads it: every member but its payload, the workflow's own effect, which the wire carries whole
+// and no line of the command prints. The decode skips the payload, whatever JSON value it holds,
+// and `legion state --json` prints it as the daemon served it.
+type pendingStatusWrite struct {
+	Issue     string    `json:"issue"`
+	Attempts  int       `json:"attempts"`
+	NextAt    time.Time `json:"nextAt"`
+	LastError string    `json:"lastError,omitempty"`
 }
 
 // blockedSummary is the one line an operator reads for the issues Legion waits on a Dispatch
@@ -945,7 +987,7 @@ func awaitingSummary(issues map[string]api.Issue) string {
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has
 // not finished: how many wait, and why the oldest — the one its issue's later writes wait behind —
 // has not landed.
-func pendingSummary(pending []api.PendingStatusWrite) string {
+func pendingSummary(pending []pendingStatusWrite) string {
 	if len(pending) == 0 {
 		return "pending Dispatch status writes: none"
 	}
@@ -1402,12 +1444,12 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	}
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	status, answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
-	if err != nil || status/100 != 2 {
+	answer, err := op.do(timed, http.MethodGet, claimsRoute, nil)
+	if err != nil || answer.Status()/100 != 2 {
 		return nil
 	}
 	var list api.OperatorClaims
-	if json.Unmarshal(answer, &list) != nil {
+	if answer.Decode(&list) != nil {
 		return nil
 	}
 	return api.SuspendersOfOperatorClaims(list.Claims)
@@ -1688,39 +1730,44 @@ func findLegion(team string) (registry.Entry, bool, error) {
 }
 
 // get reads one route of a daemon's API, under the one budget every CLI read of it takes
-// (requestTimeout). A read the budget ends says so in the words a reader needs — the route, how
-// long it took and the budget it passed — rather than in the transport's own
+// (requestTimeout), and answers a 200's answer, which a caller streams as data (Answer.StreamTo)
+// or decodes (Answer.Decode). A read the budget ends says so in the words a reader needs — the
+// route, how long it took and the budget it passed — rather than in the transport's own
 // `context deadline exceeded`, which names none of the three and leaves the reader to guess
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
-// cancellation is not that case and keeps the error it has.
-func get(ctx context.Context, url string) ([]byte, error) {
+// cancellation is not that case and keeps the error it has. The read follows no redirect
+// (daemonClient), so a 3xx is the daemon's answer, refused by its status; a read that got no
+// answer names its failure through redact.Unanswered; and every error names url through the URL
+// rule.
+func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	began := time.Now()
+	shown := redact.URLCredentials(url)
 	refuse := func(err error) error {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
-				url, time.Since(began).Round(time.Millisecond), requestTimeout)
+				shown, time.Since(began).Round(time.Millisecond), requestTimeout)
 		}
-		return fmt.Errorf("read %s: %w", url, err)
+		return fmt.Errorf("read %s: %w", shown, err)
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(redact.Unanswered(err, nil, ""))
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := daemonClient.Do(request)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return nil, refuse(err)
+		return oauth2call.Answer{}, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
+		return oauth2call.Answer{}, fmt.Errorf("%s answered %d: %s", shown, response.StatusCode, answer.Words())
 	}
-	return body, nil
+	return answer, nil
 }
 
 // processEnvironment is this process's environment by name, the last entry for a name winning as

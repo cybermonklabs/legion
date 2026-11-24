@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // maxRequestsInFlight caps the request generator: above 600 req/s times the 30 s client
@@ -459,8 +460,9 @@ type session struct {
 type reqRec struct {
 	route  string
 	status int
-	// code is the error code of a non-2xx answer's body ({"code": ...}); "" for none.
-	code string
+	// code is the error code of a non-2xx answer's body ({"code": ...}), empty for none. It is
+	// Dispatch's word, so the report prints it as it prints itself (redact.RemoteText).
+	code redact.RemoteText
 	// tolerated says the action expected this non-2xx answer (the CLI's own 404 on an absent
 	// optional resource): it is no failure.
 	tolerated bool
@@ -1590,7 +1592,7 @@ func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) re
 			if rs.Codes == nil {
 				rs.Codes = map[string]int{}
 			}
-			rs.Codes[strings.TrimSpace(strconv.Itoa(r.status)+" "+r.code)]++
+			rs.Codes[strings.TrimSpace(strconv.Itoa(r.status)+" "+r.code.String())]++
 		}
 		out.Routes[r.route] = rs
 	}

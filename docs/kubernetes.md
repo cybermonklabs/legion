@@ -1422,6 +1422,7 @@ That dial is bounded at half the launcher's `--stop-grace` (5 s at the default `
 — is refused, as `no answer within <bound>`, while the daemon still waits for the start's answer:
 the daemon waits on a start until the launcher's connection deadline plus that same grace, so at least the whole grace remains however late the launcher connected (`proofTimeout`, `launcher.go`).
 The launcher reads one command at a time, so the bound also keeps it free to read the stop the daemon sends after a start it gave up on.
+Every later dial, the one the proxy makes for each connection it accepts, has the same bound (`sessionproxy.Config.DialTimeout`): a dial that gets no answer within it closes its connection, with nothing written back, and logs `sessionproxy: could not dial <instance> for a connection: no answer within <bound>: <error>`.
 
 The connection belongs to the generation, not to the pod.
 The proxy keeps serving through the child's stop grace however the stop arrives
@@ -1447,12 +1448,17 @@ In a pod that drain costs nothing, since every process that could hold a connect
 it bounds the case where the launcher is not PID 1, where signals reach only the child's process group and a holder outside it could otherwise keep the stop, the next generation and the launcher's exit waiting.
 
 That URL carries a login and no password, because the credential is the pod's own cloud identity or, with `impersonate_service_account`, the service account that identity impersonates:
-the Cloud SQL Go connector puts it in the instance's ephemeral-certificate exchange (automatic IAM database authentication, `cloudsqlconn.WithIAMAuthN`), never in the Postgres startup packet, and mints one as it dials, per connection, from a certificate cache it keeps refreshed (`newConnectorDialer` and `serve`, `internal/sessionproxy`).
+the Cloud SQL Go connector puts it in the instance's ephemeral-certificate exchange (automatic IAM database authentication, `cloudsqlconn.WithIAMAuthN`), never in the Postgres startup packet.
 That is why the proxy reads no Postgres protocol at all:
 it accepts a connection, dials the instance over its private IP, and copies bytes both ways
 — which is what Google's own `cloud-sql-proxy` does over the same connector.
 Google runs that connector as a container beside the application;
 a Legion pod admits no further container, since `runtime.kubernetes.pod` takes only env, volumes, mounts and a service account, so the same library runs inside the pod's own first process, the launcher itself.
+
+The connector keeps one ephemeral certificate for the instance and refreshes it inside a dial (`cloudsqlconn.WithLazyRefresh`): the first dial, and the first one within four minutes of the certificate's expiry, mints a new one, and every other dial reuses it (`connectorOptions` and `serve`, `internal/sessionproxy`).
+A dial that refreshes holds the connector's cache while it does, so the dials behind it wait for it, and a refresh that fails fails the dial that ran it, with no fallback to the certificate it replaces; the next dial tries again.
+The refresh runs in the dial so that a refusal of the Cloud SQL Admin API, which the connector hands back as text alone, is read with the record of the requests that dial sent, and a bearer the refusal echoes prints redacted; a refresh in the background has no such record.
+That is why each dial is bounded (above) and each request the proxy sends to Google has a bound of 30 seconds (`googleCallTimeout`): an Admin API call, a `generateAccessToken` call, an exchange at the Security Token Service, and a token read of the pod's own credentials over a credential file (the metadata server's own client bounds its reads at five seconds).
 
 With `impersonate_service_account`, the connector also takes two token sources, and each of them impersonates that service account with the pod's own credentials (`cloudsqlconn.WithIAMAuthNTokenSources`, `connectorOptions`, `internal/sessionproxy`).
 The source for the Cloud SQL Admin API has the `sqlservice.admin` and `cloud-platform` scopes.
@@ -1464,7 +1470,7 @@ With `writer_audience`, both sources impersonate the account with a federated to
 One federated source exchanges the writer token at Google's Security Token Service, `https://sts.googleapis.com/v1/token` (`STSTokenURL`, `internal/sessionproxy/sessionproxy.go`), where the pod-local metadata endpoint exchanges too.
 The exchange names the member's value as its audience, a JWT as its subject token type and the `cloud-platform` scope.
 The proxy gives both sources one IAM Service Account Credentials client, which puts the federated token on each `generateAccessToken` call.
-The federated token is exchanged again five minutes before it expires (`writerTokenEarlyRefresh`), and each exchange and each `generateAccessToken` call has a bound of 30 seconds (`writerCallTimeout`).
+The federated token is exchanged again five minutes before it expires (`writerTokenEarlyRefresh`), and each exchange and each `generateAccessToken` call has the bound of 30 seconds every request to Google has (`googleCallTimeout`).
 So the proxy reads no credential of the pod: it looks up no Application Default Credentials and asks no metadata server.
 Its start line says which credential signs in: `sessionproxy: serving <instance> on <socket> as <account> with the launcher's writer token`.
 
@@ -5195,7 +5201,7 @@ architect, planner, implementer, tester, reviewer, merger):
    — so each such launch spends 130 minutes, not 40, before its fetch fails), unpacks its copy of the repository, checks each pack and its index against the checksums git wrote into them and that every object the refs reach is there, then fetches from GitHub the default branch GitHub names, the issue's recorded default while GitHub has it, and the Legion issue branches:
    its log's last line is `workspace-init fetch: <n> bytes from the repository cache <url> in <d>, its history
    verified in <d>; <m> bytes from GitHub for the delta (<k> refs)`.
-   A cache that is never ready, refuses the pod's token, names another repository, or streams history that does not verify fails the fetch, naming why, and nothing is cloned from GitHub instead, so the cache's own first clone is the one full download of the repository ([The repository cache](#the-repository-cache)).
+   A cache that is never ready, refuses the pod's token, answers a redirect, names another repository, or streams history that does not verify fails the fetch, naming why, and nothing is cloned from GitHub instead, so the cache's own first clone is the one full download of the repository ([The repository cache](#the-repository-cache)).
 
    - A fresh feed is filled beside its final path and renamed into place only once the stream, its verification and the delta have all succeeded, so the disk holds a whole and current feed or none.
      A retry of the fetch in the same pod that does find a feed there fetches the delta into it alone (`the feed holds <owner>/<repo> already: …`), after removing every git lock file a fetch killed mid-update left in the feed and every partial pack (`objects/pack/tmp_*`) a transfer killed mid-pack left there, each logged with its age, and after deleting every branch outside the delta that GitHub no longer lists or has moved, each logged with its reason, as a fresh feed's fetch does too (below, [The repository cache](#the-repository-cache)).
@@ -5764,6 +5770,7 @@ A first clone that fails is not recorded: that cache never turns Ready, and `leg
 
 An issue pod's `workspace-fetch` fills a fresh feed from its repository's cache alone ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 It asks the cache's health with no credential, takes nothing from a cache whose answer names another repository, so a cache pod replaced and its address reused by another repository's cache can put nothing into the feed, and presents the cache's token with its request for the tar alone.
+It follows no redirect: a redirect, of the health or of the tar, fails the fetch, named by its status, and the address it names is neither asked nor printed.
 It holds every pack and index it received to the checksums git wrote into them
 — each file's own trailing hash over its bytes, and the pack hash the index records, which must be that pack's
 — and checks every object the refs reach is there (`git fsck --connectivity-only`) before the feed is used, and a damaged or incomplete history fails the fetch.
@@ -5804,6 +5811,7 @@ launches wait the same way, and the cache shows `refused` with `its Service …
 cannot be checked: the Service store may be stale: …`.
 The daemon reads each Ready cache's `/healthz` every minute at its pod's address, as the store holds it, with no credential, so a daemon outside the cluster that reaches pod addresses but resolves no cluster name reads it too;
 an answer from a pod that took the address once the cache's pod was gone names another repository, and is that read's failure.
+The read follows no redirect: a redirect is that read's failure too, named by its status, and the address it names is neither asked nor printed.
 A NetworkPolicy that isolates the namespace's pods must admit both, or every fresh feed waits on a cache it cannot reach and `legion state` shows the read's failure.
 
 `legion state --json | jq .repositories` shows them:

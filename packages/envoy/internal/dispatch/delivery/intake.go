@@ -758,7 +758,7 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		var commits []commitMessagePayload
-		if err := json.Unmarshal(body, &commits); err != nil {
+		if err := body.Decode(&commits); err != nil {
 			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
 		}
 		for _, c := range commits {

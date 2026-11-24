@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
 // Unreachable is the predicate daemon.go's boot gate judges every reconcile failure with: a boot
@@ -27,18 +29,18 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 			&Error{Status: 503, Message: "<html>503 Service Temporarily Unavailable</html>"}, true},
 		{"a codeless 4xx from whatever sits in front of Dispatch, such as a wrong host's own 404 page",
 			&Error{Status: 404, Message: "not found"}, true},
-		{"408 Request Timeout", &Error{Status: 408, Code: "TIMEOUT", Message: "come back later"}, true},
-		{"429 Too Many Requests", &Error{Status: 429, Code: "RATE_LIMITED", Message: "slow down"}, true},
+		{"408 Request Timeout", &Error{Status: 408, Code: oauth2calltest.Said("TIMEOUT"), Message: "come back later"}, true},
+		{"429 Too Many Requests", &Error{Status: 429, Code: oauth2calltest.Said("RATE_LIMITED"), Message: "slow down"}, true},
 		{"401, a credential answer PermanentRefusal rides out for a queued write and Unreachable rides out here too",
-			&Error{Status: 401, Code: "UNAUTHORIZED", Message: "bad token"}, true},
-		{"403, the same as 401", &Error{Status: 403, Code: "FORBIDDEN", Message: "denied"}, true},
+			&Error{Status: 401, Code: oauth2calltest.Said("UNAUTHORIZED"), Message: "bad token"}, true},
+		{"403, the same as 401", &Error{Status: 403, Code: oauth2calltest.Said("FORBIDDEN"), Message: "denied"}, true},
 		{"409 PARENT_CONTENDED: a concurrent reparent moved the parent at every attempt and nothing was applied",
-			&Error{Status: 409, Code: ParentContended, Message: "read the issue and retry"}, true},
+			&Error{Status: 409, Code: oauth2calltest.Said(ParentContended), Message: "read the issue and retry"}, true},
 		{"a genuine coded 409: any conflict but PARENT_CONTENDED is Dispatch refusing the write",
-			&Error{Status: 409, Code: "ISSUE_CLOSED", Message: "issue is closed"}, false},
+			&Error{Status: 409, Code: oauth2calltest.Said("ISSUE_CLOSED"), Message: "issue is closed"}, false},
 		{"a genuine coded 404: the project or route named is not there, no wait fixes that",
-			&Error{Status: 404, Code: "NOT_FOUND", Message: "no such project"}, false},
-		{"a genuine coded 400", &Error{Status: 400, Code: "BAD_REQUEST", Message: "malformed"}, false},
+			&Error{Status: 404, Code: oauth2calltest.Said("NOT_FOUND"), Message: "no such project"}, false},
+		{"a genuine coded 400", &Error{Status: 400, Code: oauth2calltest.Said("BAD_REQUEST"), Message: "malformed"}, false},
 		{"a TransientError wrapping a dial refusal", &TransientError{Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}}, true},
 		{"a decode error on a 2xx response: not Dispatch answering, not a transport failure — a schema mismatch",
 			errors.New("decode Dispatch GET /api/v1/issues response: unexpected end of JSON input"), false},
@@ -185,10 +187,10 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 // retry, while any other 409 is Dispatch refusing the write itself, so dropping the code half of
 // the rule fails here.
 func TestPermanentRefusalTellsAConflictByItsCode(t *testing.T) {
-	if _, permanent := PermanentRefusal(&Error{Status: 409, Code: ParentContended, Message: "retry"}); permanent {
+	if _, permanent := PermanentRefusal(&Error{Status: 409, Code: oauth2calltest.Said(ParentContended), Message: "retry"}); permanent {
 		t.Fatal("409 PARENT_CONTENDED read as permanent")
 	}
-	if _, permanent := PermanentRefusal(&Error{Status: 409, Code: "ISSUE_CLOSED", Message: "issue is closed"}); !permanent {
+	if _, permanent := PermanentRefusal(&Error{Status: 409, Code: oauth2calltest.Said("ISSUE_CLOSED"), Message: "issue is closed"}); !permanent {
 		t.Fatal("409 ISSUE_CLOSED read as an outage to ride out")
 	}
 }

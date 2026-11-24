@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -16,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -105,7 +105,8 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // The config every grant starts from, the code exchanges', Refresh's and CheckClient's,
 // authenticates as tokenAuthStyle says.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
-	provider, err := gooidc.NewProvider(ctx, issuer)
+	s := redact.Scope[*gooidc.Provider](ctx)
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
 	}
@@ -117,7 +118,8 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		RevocationEndpoint endpointString `json:"revocation_endpoint"`
 		TokenAuthMethods   authMethods    `json:"token_endpoint_auth_methods_supported"`
 	}
-	if err := provider.Claims(&metadata); err != nil {
+	claims := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&metadata))); err != nil {
 		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
 	}
 	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
@@ -294,7 +296,7 @@ func (f *CodeFlow) exchange(ctx context.Context, redirectURL, code, nonce string
 		return Session{}, err
 	}
 	answered := &oauthrefusal.Recorder{}
-	token, err := issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...)
+	token, err := redact.OAuth2(issuer.config.Exchange(oauthrefusal.Record(f.tokenContext(ctx), answered), code, append(redirectTo(redirectURL), options...)...))
 	if err != nil {
 		// The recorder reads the status of the answer an error came from, an answer x/oauth2
 		// reports in no *oauth2.RetrieveError among them (a 2xx with no token), and whether its
@@ -409,7 +411,7 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 	if err != nil {
 		return Session{}, err
 	}
-	token, err := issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
+	token, err := redact.OAuth2(issuer.config.TokenSource(f.tokenContext(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token())
 	if err != nil {
 		if oauthrefusal.EndsGrant(err) {
 			return Session{}, fmt.Errorf("oidc: refresh: %w: %w", ErrGrantRefused, err)
@@ -427,8 +429,11 @@ func (f *CodeFlow) Refresh(ctx context.Context, refreshToken string) (Session, e
 // (RFC 7009), as the client with HTTP Basic, as Cognito's /oauth2/revoke requires of a client with
 // a secret; the issuer ends every token it issued from it. An issuer answers 200 for a token it
 // has revoked already or does not know, so that is success too. Any other answer, a redirect
-// included, is an error naming the HTTP status and the OAuth error code the body names, if any;
-// the error never carries the token.
+// included, is an error naming the HTTP status and the OAuth error code the body names, if any, as
+// it prints itself (redact.RemoteText), since the code is the issuer's word, held with every
+// credential the request carried redacted (redact.Carried), since whatever answers for the
+// endpoint can echo the token or the client's secret back in it; the error never carries the
+// token.
 func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	issuer, err := f.discovery.discover(ctx)
 	if err != nil {
@@ -446,17 +451,23 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	request.SetBasicAuth(url.QueryEscape(issuer.config.ClientID), url.QueryEscape(issuer.config.ClientSecret))
 	response, err := f.http.Do(request)
 	if err != nil {
-		return fmt.Errorf("oidc: revoke: %w", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before the client's redirect policy), so it is named by its class alone
+		// (redact.Class).
+		return fmt.Errorf("oidc: revoke: %w", redact.Class(err))
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		return nil
 	}
 	var body struct {
-		Error string `json:"error"`
+		Error redact.RemoteText `json:"error"`
 	}
 	// A body that is not an OAuth error (a proxy's page) names no code; the status still stands.
-	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&body) != nil || body.Error == "" {
+	// The code is read through redact.ReadAnswer, so it holds the request's record: an answer in
+	// the issuer's place can echo the refresh token or the client's secret there.
+	answer, err := redact.ReadAnswer(response, 4096)
+	if (err != nil && !errors.Is(err, redact.ErrAnswerTooLarge)) || answer.Decode(&body) != nil || body.Error.IsEmpty() {
 		return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d", response.StatusCode)
 	}
 	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error)
@@ -498,7 +509,8 @@ type workspaceClaims struct {
 // which is the only place a claim a person or a caller is admitted on may come from.
 func readWorkspaceClaims(token *gooidc.IDToken, claims *Claims) error {
 	var workspace workspaceClaims
-	if err := token.Claims(&workspace); err != nil {
+	s := redact.Scope[struct{}](context.Background())
+	if _, err := redact.OAuth2(s.Read(struct{}{}, token.Claims(&workspace))); err != nil {
 		return fmt.Errorf("payload is not a claim set: %w", err)
 	}
 	claims.Email = jsonString(workspace.Email)
@@ -519,5 +531,5 @@ func jsonString(value json.RawMessage) string {
 // tokenContext hands oauth2 the bounded client its token-endpoint calls use; its default client has
 // no timeout.
 func (f *CodeFlow) tokenContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, f.http)
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(f.http))
 }

@@ -215,11 +215,12 @@ func ciUnreadDetail(head delivery.NewestHead, err error) string {
 // (githubapp.StatusError) or rate-limited it (githubapp.RateLimitError), the body the error's
 // text ends with, as githubapp.ShownBody shows it, is replaced by the `message` GitHub writes in
 // the JSON it refuses a request with, read from the whole body, and left out where the body holds
-// none (withGitHubMessage). Any other error keeps its text.
+// none (withGitHubMessage). A refusal's message is GitHub's words, a redact.RemoteText that prints
+// itself as the rule for remote text reads it. Any other error keeps its text.
 func gitHubErrorText(err error) string {
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		return withGitHubMessage(err.Error(), githubapp.ShownBody(refused.Body), refused.Message())
+		return withGitHubMessage(err.Error(), refused.PrintedBody(), refused.Message().String())
 	}
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		return withGitHubMessage(err.Error(), githubapp.ShownBody(limited.Body), limited.Message())

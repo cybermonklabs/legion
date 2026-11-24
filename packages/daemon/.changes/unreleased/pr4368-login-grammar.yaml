@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The daemon's lines and errors that name a GitHub account - a review's author, the account
+  GitHub's permission answer names - now print every login GitHub serves as itself: one ending in
+  a hyphen or holding a double one (`writer-`, `a--writer`) and a managed user's
+  `_<shortcode>` (`mona-cat_octo`) printed as "(a login GitHub does not allow)" before, a false
+  statement on the path that says why a review decided nothing. The daemon reads a login by one
+  grammar, `ghrepo.IsLogin`, in the repository parser, these messages, a token command's release
+  and the gh bundle's directories, and one test of GitHub's token forms, in `githubrest`, for the
+  token command's stderr, its release and these messages: a text spelled as a token still prints
+  as no login.
+time: 2026-11-23T04:11:02Z
+custom:
+    Issue: pr4368

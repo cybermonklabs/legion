@@ -200,13 +200,14 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		// Dispatch holds — is not this sign-in ending: marking it refused on one of those would
 		// enrol every later session under this machine for the life of the process. A broker's
 		// code is the answer's own text, so it is logged as the address lets it print
-		// (cipheraddr.Address.Words): beside an address that is not clean, whoever answers for
-		// it can write the credential the address carries into the code. The issuer's ending
-		// carries no RefusedError, and its code is this package's own invalid_grant.
+		// (cipheraddr.Address.WordsOf, which prints the field as it prints itself): beside an
+		// address that is not clean, whoever answers for it can write the credential the address
+		// carries into the code. The issuer's ending carries no RefusedError, and its code is this
+		// package's own invalid_grant.
 		code := "invalid_grant"
 		var refusal *RefusedError
 		if errors.As(err, &refusal) {
-			code = a.BrokerURL.Words(refusal.Code)
+			code = a.BrokerURL.WordsOf(refusal.code)
 		}
 		a.markRefused(name, record.Person, code)
 		return nil, nil

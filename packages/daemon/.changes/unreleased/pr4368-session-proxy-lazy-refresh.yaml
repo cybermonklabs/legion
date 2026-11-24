@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+  The session database proxy's Cloud SQL connector now refreshes its ephemeral certificate inside
+  a dial (`cloudsqlconn.WithLazyRefresh`), not in the background: the first dial, and the first one
+  within four minutes of the certificate's expiry, mints a new one, and every other dial reuses it.
+  It does so because a refusal of the Cloud SQL Admin API reaches the proxy as text alone, and only
+  a refresh in the dial is read with the record of the requests that dial sent, so a bearer the
+  refusal echoes prints redacted. A dial that refreshes holds the connector's cache while it does,
+  so the dials behind it wait for it, and a refresh that fails fails the dial that ran it, with no
+  fallback to the certificate it replaces; the next dial tries again. So every dial the proxy makes
+  for a connection now has the bound its start's proof dial has, half the launcher's stop grace
+  (`sessionproxy.Config.DialTimeout`, which replaces `ProofTimeout`): a dial with no answer within
+  it closes its connection and logs `sessionproxy: could not dial <instance> for a connection: no
+  answer within <bound>: <error>`. Every request the proxy sends to Google now has a bound of 30
+  seconds (`googleCallTimeout`): a Cloud SQL Admin API call, an IAM Credentials
+  `generateAccessToken` call, an exchange at the security token service, and a token read of the
+  pod's own credentials over a credential file. Before, only the writer token's requests had one,
+  so a request that never answered held its token source, and every later dial, for as long as
+  the proxy served.
+time: 2026-11-23T04:32:16Z
+custom:
+    Issue: pr4368

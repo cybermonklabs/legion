@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // dpopTransport signs an RFC 9449 DPoP proof of its key for every request it carries.
@@ -52,16 +55,21 @@ func (d *dpopTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode != http.StatusBadRequest || resp.Header.Get("DPoP-Nonce") == "" {
 		return resp, err
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// The answer is read through redact.ReadAnswer, its code compared and printed nowhere, and
+	// handed back whole (StreamTo) to whoever reads it next where it is not the nonce challenge; a
+	// body past the limit is cut there, as the limit always cut it.
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	resp.Body.Close()
-	if err != nil {
+	if err != nil && !errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, err
 	}
-	var answer struct {
+	var challenge struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(body, &answer) != nil || answer.Error != "use_dpop_nonce" || (r.Body != nil && r.GetBody == nil) {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
+	if answer.Decode(&challenge) != nil || challenge.Error != "use_dpop_nonce" || (r.Body != nil && r.GetBody == nil) {
+		var body bytes.Buffer
+		_, _ = answer.StreamTo(&body)
+		resp.Body = io.NopCloser(&body)
 		return resp, nil
 	}
 	retry := r.Clone(r.Context())

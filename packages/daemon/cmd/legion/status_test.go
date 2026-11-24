@@ -101,7 +101,7 @@ func TestStatusWithTheOperatorTokenFileFindsTheDaemonFromTheConfiguration(t *tes
 // status request follows.
 func TestStatusWithAWrongOperatorTokenIsRefusedAndSetsNothing(t *testing.T) {
 	d := newControllerDaemon(t)
-	tokenFile := writeFile(t, "operator-token", "not-the-operator-token\n")
+	tokenFile := writeFile(t, "operator-token", "wrong-9f3c27e1b04d\n")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "backlog", "--operator-token-file", tokenFile, "--port", strconv.Itoa(d.port))
 	if code != 1 || errb != "legion issue status: the daemon answered 403 Forbidden: Invalid operator token\n" {
 		t.Fatalf("legion issue status = %d, stderr %q; want the 403 refusal", code, errb)

@@ -15,6 +15,7 @@
 package legion
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // StatePath is the daemon route the sampler reads a project's state from. It authenticates
@@ -110,8 +113,10 @@ func callFailure(err error) error {
 // sampler records whether the read succeeded or not. Every failure wraps ErrUnavailable.
 //
 // The decode is loose — encoding/json ignores a field State does not name — so a daemon that
-// grows the route's shape is still read (state.go). The call carries no credential: the route
-// authenticates nobody.
+// grows the route's shape is still read (state.go). The members State keeps as the bytes the
+// daemon sent, each issue's wait and the settings, are read from the answer as data (keptState),
+// and every other member through its Decode (answeredState). The call carries no credential: the
+// route authenticates nobody.
 func (c *Client) State(ctx context.Context) (State, int, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+StatePath, nil)
 	if err != nil {
@@ -122,31 +127,71 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 		return State{}, 0, fmt.Errorf("%w: GET %s: %v", ErrUnavailable, StatePath, callFailure(err))
 	}
 	defer response.Body.Close()
-	body, read, err := readBounded(response.Body)
+	answer, read, err := readBounded(response)
 	if err != nil {
 		return State{}, read, fmt.Errorf("%w: GET %s: %w", ErrUnavailable, StatePath, err)
 	}
 	if response.StatusCode != http.StatusOK {
 		return State{}, read, fmt.Errorf("%w: GET %s answered %d", ErrUnavailable, StatePath, response.StatusCode)
 	}
-	var state State
-	if err := json.Unmarshal(body, &state); err != nil {
+	var answered answeredState
+	if err := answer.Decode(&answered); err != nil {
 		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, err)
 	}
-	return state, read, nil
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body) // a bytes.Buffer's Write never fails
+	var kept keptState
+	if err := json.Unmarshal(body.Bytes(), &kept); err != nil {
+		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, redact.DecodeError(err, body.Bytes(), &kept))
+	}
+	return answered.with(kept), read, nil
 }
 
-// readBounded reads at most ResponseLimit bytes of body and refuses one carrying more. It reads
-// one byte past the cap to tell a body exactly at it from one over it, so the refusal is never a
-// parse of a truncated document; the count it returns for such a body is where the read stopped,
-// the cap and one byte, since nothing counts past a body it refused.
-func readBounded(body io.Reader) ([]byte, int, error) {
-	read, err := io.ReadAll(io.LimitReader(body, ResponseLimit+1))
+// answeredState is the state as a read decodes it from the daemon's answer (Answer.Decode): every
+// member State holds but those it keeps as the bytes the daemon sent (keptState).
+type answeredState struct {
+	Issues    map[string]answeredIssue `json:"issues"`
+	Admission *Admission               `json:"admission,omitempty"`
+}
+
+// keptState is the members State keeps as the bytes the daemon sent, each issue's wait and the
+// settings, read from the answer as data (Answer.StreamTo): Dispatch stores them for the board and
+// the metrics to read, and prints neither. A member that does not decode is named in fixed text
+// (redact.DecodeError), as Decode names one of the rest.
+type keptState struct {
+	Issues map[string]struct {
+		WaitingOn json.RawMessage `json:"waitingOn"`
+	} `json:"issues"`
+	Settings map[string]json.RawMessage `json:"settings"`
+}
+
+// with is the State the two reads of one answer make: each issue's decoded members with its wait,
+// and the settings. Both read the same bytes by the same names, so they hold the same issues, and
+// an answer whose `issues` is an empty object is still an empty map rather than none.
+func (answered answeredState) with(kept keptState) State {
+	state := State{Admission: answered.Admission, Settings: kept.Settings}
+	if answered.Issues != nil {
+		state.Issues = make(map[string]Issue, len(answered.Issues))
+		for key, issue := range answered.Issues {
+			state.Issues[key] = Issue{answeredIssue: issue, WaitingOn: kept.Issues[key].WaitingOn}
+		}
+	}
+	return state
+}
+
+// readBounded reads at most ResponseLimit bytes of response's body, through redact.ReadAnswer,
+// and refuses one carrying more. It reads one byte past the cap to tell a body exactly at it from
+// one over it, so the refusal is never a parse of a truncated document; the count it returns for
+// such a body is where the read stopped, the cap and one byte, since nothing counts past a body
+// it refused.
+func readBounded(response *http.Response) (redact.Answer, int, error) {
+	answer, err := redact.ReadAnswer(response, ResponseLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return redact.Answer{}, ResponseLimit + 1, ErrResponseTooLarge
+	}
 	if err != nil {
-		return nil, len(read), fmt.Errorf("read the answer: %v", err)
+		return redact.Answer{}, 0, fmt.Errorf("read the answer: %v", err)
 	}
-	if len(read) > ResponseLimit {
-		return nil, len(read), ErrResponseTooLarge
-	}
-	return read, len(read), nil
+	read, _ := answer.StreamTo(io.Discard)
+	return answer, int(read), nil
 }

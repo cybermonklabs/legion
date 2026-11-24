@@ -27,6 +27,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/oauth2call"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -1991,7 +1993,7 @@ func (s *sessionStopsInFlight) wait() {
 // (supervise.Deps.RoleHolder, notify.HTTPPublisher.RoleHolder), which a forget of a session its
 // claim does not hold asks before it clears anything (supervise's mayForget). With no listener
 // configured it is nil, and nothing is asked.
-func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder, state string, err error) {
+func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role string) (holder oauth2call.RemoteText, state string, err error) {
 	if envoyURL == "" {
 		return nil
 	}

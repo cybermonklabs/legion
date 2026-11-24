@@ -40,7 +40,7 @@ func TestALateDialDuringCloseIsClosedNotCopied(t *testing.T) {
 	dialer := &heldDialer{fakeDialer: fakeDialer{addr: up.listener.Addr().String()}, held: make(chan struct{}), release: make(chan struct{})}
 	socket := socketPath(t)
 	proxy, err := Start(context.Background(), Config{
-		Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout, Drain: drain, NewDialer: dialer.build,
+		Socket: socket, Instance: testInstance, DialTimeout: testDialTimeout, Drain: drain, NewDialer: dialer.build,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

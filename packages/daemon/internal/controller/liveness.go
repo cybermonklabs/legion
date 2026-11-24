@@ -2,8 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,8 +9,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the
@@ -60,13 +61,15 @@ type Prober struct {
 	client *http.Client
 }
 
-// NewProber is a Prober over opts.
+// NewProber is a Prober over opts. Its lookup follows no redirect (redirects.Refused): it carries
+// the listener's bearer, which a followed redirect would hand the host the Location names, and a
+// 3xx is the listener's refusal, which the probe reads as Unknown.
 func NewProber(opts ProberOptions) *Prober {
 	p := &Prober{
 		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
 		token:  opts.EnvoyToken,
 		log:    opts.Log,
-		client: &http.Client{Timeout: probeTimeout},
+		client: redirects.Refused(&http.Client{Timeout: probeTimeout}),
 	}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -77,20 +80,23 @@ func NewProber(opts ProberOptions) *Prober {
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,
 // packages/envoy/cmd/listener/api.go), whose `last_seen` is in unix milliseconds, and its 404 for
 // a role it will not name a holder of is listenerwire.RoleRefusal (writeRoleHolderError,
-// packages/envoy/cmd/listener/role_holder.go): `reason` is `unclaimed` when nobody holds the role
-// and `holder_lapsed` when its holder is past the live window, and `holder_state` is that
-// holder's state, `unresponsive` or `gone`. A listener of an earlier release names neither. A
-// holder the listener calls unresponsive is stalled, not dead — it keeps its role claim, nothing
-// is released for it, and it answers for itself once its heartbeats land — so a probe of one is
-// never a death verdict.
+// packages/envoy/cmd/listener/role_holder.go); the probe reads them as listenerwire.RoleHolderAs
+// and listenerwire.RoleRefusalAs, each with its words and the holder's state held as
+// oauth2call.RemoteText, which print as the rule reads them. `reason` is `unclaimed` when nobody
+// holds the role and `holder_lapsed` when its holder is past the live window, and `holder_state`
+// is that holder's state, `unresponsive` or `gone`. A listener of an earlier release names
+// neither. A holder the listener calls unresponsive is stalled, not dead — it keeps its role
+// claim, nothing is released for it, and it answers for itself once its heartbeats land — so a
+// probe of one is never a death verdict.
 
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
-// both sessions or the holder's state.
+// both sessions or the holder's state. A lookup that could not be made or got no answer logs its
+// failure through redact.Unanswered, which prints none of net/http's own words for it.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", redact.Unanswered(err, nil, ""))
 		return Unknown
 	}
 	if p.token != "" {
@@ -98,11 +104,11 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", err)
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", redact.Unanswered(err, request, ""))
 		return Unknown
 	}
 	defer response.Body.Close()
-	body, readErr := io.ReadAll(response.Body)
+	read, readErr := oauth2call.ReadAnswer(response, 1<<20)
 	if response.StatusCode == http.StatusNotFound {
 		// A 404 whose body could not be read to its end may have named an unresponsive holder,
 		// which is not gone, so what it said is unknown: a reset mid-body is no answer that the
@@ -112,9 +118,11 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 				"url", p.lookup, "session", session, "error", readErr)
 			return Unknown
 		}
-		var refusal listenerwire.RoleRefusal
-		_ = json.Unmarshal(body, &refusal)
-		if refusal.HolderState == notify.StateUnresponsive {
+		// The reason, the state and the holder are the listener's words, so they are compared as
+		// they came and logged as the rule reads them (listenerwire.RoleRefusalAs).
+		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
+		_ = read.Decode(&refusal)
+		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
@@ -131,12 +139,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
-	var answer listenerwire.RoleHolder
-	if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
+	var answer listenerwire.RoleHolderAs[oauth2call.RemoteText, oauth2call.RemoteText]
+	if readErr != nil || read.Decode(&answer) != nil || answer.Holder.IsEmpty() || answer.LastSeen == nil {
 		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown
 	}
-	if answer.Holder != session {
+	if !answer.Holder.Equal(session) {
 		p.log.Info("controller liveness: another session holds the controller role; the recorded controller is gone",
 			"holder", answer.Holder, "session", session)
 		return Gone

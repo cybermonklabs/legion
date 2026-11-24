@@ -417,8 +417,15 @@ func (f *replayFetcher) createdSpecs(ctx context.Context, window []replayEvent) 
 				return err
 			}
 			var listing []listedArtifact
+			// The key is the event's, so an issue key (eventInShape). The listing is Dispatch's,
+			// or the words of whatever answers in its place: none of it is named, since its
+			// decoder's error can quote a time it could not read, and one that names an artifact
+			// by an id out of Dispatch's shape is refused, as the fetch's listings are.
 			if err := json.Unmarshal(body, &listing); err != nil {
-				return fmt.Errorf("%s artifacts: %w", k, err)
+				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			}
+			if !listingInShape(listing) {
+				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
 			}
 			for _, la := range listing {
 				if la.Primary {
@@ -523,7 +530,7 @@ func stateCounts(st replayState, window []replayEvent) replayCounts {
 	}
 	written := map[string]bool{}
 	for _, ev := range window {
-		c.WindowByType[ev.Type]++
+		c.WindowByType[shownEventType(ev.Type)]++
 		switch ev.Type {
 		case evCommentCreated:
 			var p struct {
@@ -790,8 +797,10 @@ func (f *replayFetcher) fetchBlockMaps(ctx context.Context, st *replayState, win
 				if err != nil || !ok {
 					return refused(err)
 				}
+				// The id is an anchor's, so in Dispatch's shape (eventInShape). The answer is
+				// Dispatch's: none of it is named, since its decoder's error can quote a time.
 				if err := json.Unmarshal(meta, &la); err != nil {
-					return fmt.Errorf("artifact %s: %w", id, err)
+					return fmt.Errorf("artifact %s: the answer is not the shape replay-fetch reads", id)
 				}
 			}
 			cur := 0

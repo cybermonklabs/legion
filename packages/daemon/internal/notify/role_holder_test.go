@@ -83,7 +83,7 @@ func TestRoleHolderNamesEveryHolderTheListenerNames(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || holder != tc.holder || state != tc.state {
+			if err != nil || !holder.Equal(tc.holder) || state != tc.state {
 				t.Fatalf("RoleHolder = %q (%q), %v; want %q (%q)", holder, state, err, tc.holder, tc.state)
 			}
 		})

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -39,6 +40,7 @@ const (
 	azureRealAccess    = "the-real-access-token"
 	azureNextAccess    = "the-second-real-access-token"
 	azureRealIDToken   = "the-real-id-token"
+	azureRealRefresh   = "the-real-refresh-token"
 	azureLifetime      = 3599
 )
 
@@ -300,6 +302,112 @@ func TestAnExchangeTheEndpointRefusesKeepsItsStatus(t *testing.T) {
 	}
 	if mints := r.grants.accessMints(); mints != 0 {
 		t.Errorf("the broker minted %d access placeholders for a refused exchange; want none", mints)
+	}
+}
+
+// answerExchangesWith makes the bound host's token endpoint answer every exchange 200 with body,
+// in place of the stand-in's own answer, and leaves every other request to the service.
+func answerExchangesWith(r *rig, body string) {
+	r.answerWith(func(w http.ResponseWriter, _ *http.Request, seen proxyrulestest.Request) bool {
+		if seen.Method != http.MethodPost || !strings.HasSuffix(seen.Path, "/token") {
+			return false
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = io.WriteString(w, body)
+		return true
+	})
+}
+
+// TestAnExchangeAnswersTheCommandEveryMemberTheEndpointWrote: the command is answered the
+// endpoint's own answer, so a member the proxy does not know, of whatever JSON kind, reaches it
+// as the endpoint wrote it; every token but the access token is left out; and the access token
+// the endpoint answered is the one a later request carries.
+func TestAnExchangeAnswersTheCommandEveryMemberTheEndpointWrote(t *testing.T) {
+	r, _ := newAzureRig(t, Options{})
+	forwarded := map[string]string{
+		"token_type":     `"Bearer"`,
+		"expires_in":     `3599`,
+		"ext_expires_in": `3599`,
+		"claims":         `{"tid":"the-tenant-id","roles":["reader",{"scope":7}]}`,
+		"scopes":         `["https://management.example.com/.default"]`,
+		"not_before":     `1.5e9`,
+		"foreign":        `true`,
+		"nothing":        `null`,
+		"note":           `"a \"quoted\" word"`,
+	}
+	members := []string{`"access_token":"` + azureRealAccess + `"`, `"refresh_token":"` + azureRealRefresh + `"`, `"id_token":"` + azureRealIDToken + `"`}
+	for name, value := range forwarded {
+		members = append(members, `"`+name+`":`+value)
+	}
+	answerExchangesWith(r, "{"+strings.Join(members, ",")+"}")
+
+	answer, body := tokenRequest(t, r, r.client(azureFederatedPlaceholder), azureFederatedPlaceholder)
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("the exchange answered %d %q; want 200", answer.StatusCode, body)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("the answer to the exchange is no JSON object: %q", body)
+	}
+	var placeholder string
+	if err := json.Unmarshal(got["access_token"], &placeholder); err != nil || !strings.HasPrefix(placeholder, requests.PlaceholderPrefix) {
+		t.Fatalf("the answer's access_token = %s; want a placeholder", got["access_token"])
+	}
+	for name, want := range forwarded {
+		if value, held := got[name]; !held {
+			t.Errorf("the answer leaves out the endpoint's %s; want %s, as the endpoint wrote it", name, want)
+		} else if string(value) != want {
+			t.Errorf("the answer's %s = %s; want %s, as the endpoint wrote it", name, value, want)
+		}
+	}
+	for _, left := range []string{"refresh_token", "id_token"} {
+		if _, held := got[left]; held {
+			t.Errorf("the answer carries the endpoint's %s: %q; want every token but the access token left out", left, body)
+		}
+	}
+	if len(got) != len(forwarded)+1 {
+		t.Errorf("the answer = %q; want the endpoint's members with the placeholder for its access token and nothing else", body)
+	}
+
+	r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+placeholder)
+	seen := r.requests()
+	if got, want := seen[len(seen)-1].Header.Get("Authorization"), "Bearer "+azureRealAccess; got != want {
+		t.Fatalf("the service saw Authorization %q; want %q, the access token the endpoint answered", got, want)
+	}
+}
+
+// TestAnExchangeAnswerWithNoAccessTokenIsRefused: an answer that is no JSON object, or one that
+// names no access token, buys the command nothing: the exchange is refused 502 in the broker's
+// own words, which quote none of the answer, and no placeholder is minted.
+func TestAnExchangeAnswerWithNoAccessTokenIsRefused(t *testing.T) {
+	const (
+		noObject      = "the token endpoint's answer to this exchange is no JSON object"
+		noAccessToken = "the token endpoint's answer to this exchange holds no access_token"
+	)
+	for _, row := range []struct{ name, answer, want string }{
+		{"empty", ``, noObject},
+		{"array", `["` + azureRealAccess + `"]`, noObject},
+		{"string", `"` + azureRealAccess + `"`, noObject},
+		{"cut", `{"access_token":"` + azureRealAccess, noObject},
+		{"null", `null`, noAccessToken},
+		{"no access_token", `{"token_type":"Bearer","expires_in":3599}`, noAccessToken},
+		{"empty access_token", `{"access_token":""}`, noAccessToken},
+		{"numeric access_token", `{"access_token":3599}`, noAccessToken},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r, _ := newAzureRig(t, Options{})
+			answerExchangesWith(r, row.answer)
+			answer, body := tokenRequest(t, r, r.client(azureFederatedPlaceholder), azureFederatedPlaceholder)
+			if answer.StatusCode != http.StatusBadGateway || !strings.Contains(body, row.want) {
+				t.Fatalf("the exchange answered %d %q; want 502 saying %q", answer.StatusCode, body, row.want)
+			}
+			if strings.Contains(body, azureRealAccess) {
+				t.Errorf("the refusal quotes the endpoint's answer: %q", body)
+			}
+			if mints := r.grants.accessMints(); mints != 0 {
+				t.Errorf("the broker minted %d access placeholders for an answer with no access token; want none", mints)
+			}
+		})
 	}
 }
 

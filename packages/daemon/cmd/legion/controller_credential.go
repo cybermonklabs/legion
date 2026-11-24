@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -34,13 +36,18 @@ var controllerGitHubRefreshInterval = time.Minute
 // (GITHUB_TOKEN_SOURCE_UNAVAILABLE), or a review App installed on no account
 // (GITHUB_OWNER_UNCONFIGURED) — apart from a capability a later start replaced
 // (INVALID_CONTROLLER_CAPABILITY) or a daemon that launches its own controller
-// (CONTROLLER_LAUNCHED), without parsing the sentence itself.
+// (CONTROLLER_LAUNCHED), without parsing the sentence itself. The code is one of those four
+// (controllerCredentialCodes), matched with the daemon's code as it came, and "" for any other.
 type controllerCredentialFailure struct {
 	code    string
 	message string
 }
 
 func (f *controllerCredentialFailure) Error() string { return f.message }
+
+// controllerCredentialCodes are the codes of the daemon's credential refusals this command
+// decides on (controllerStartGitHubCredential, controllerCredentialSuperseded).
+var controllerCredentialCodes = []string{"GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GITHUB_OWNER_UNCONFIGURED", "INVALID_CONTROLLER_CAPABILITY", "CONTROLLER_LAUNCHED"}
 
 // controllerCredentialSuperseded says whether err is a controllerCredentialFailure that ends the
 // refresh loop rather than retries it: the capability a later `legion controller start` replaced
@@ -66,51 +73,65 @@ func controllerCredentialSuperseded(err error) bool {
 // bundle, lowercased and sorted (api.ControllerCredentialResponse's Installed), which the
 // first fetch reads for the controller's addressing (controllerReach) and a refresh does not
 // read. An answer that is no valid bundle,
-// a rename of it naming a repository GitHub could hold no name for included, is
-// an error. A failed request names the daemon URL, as fetchControllerSecret's does, and never
-// tries another address. A refusal is a *controllerCredentialFailure carrying the daemon's code
-// when the body parses as one (api.Failure), quoting its sentence through refusal otherwise.
+// a rename of it naming a repository GitHub could hold no name for included, or whose App is
+// none of the App roles (appauth.Roles), is an error, which names the member of the answer it
+// read and never its value: a parser's error quotes the value it could not read, and every value
+// of the answer is the daemon's word. A failed request names the daemon URL, as
+// fetchControllerSecret's does, and never tries another address. A refusal is a
+// *controllerCredentialFailure carrying the daemon's code when the body parses as one
+// (api.Failure), quoting its sentence through refusal otherwise.
 func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOwner string) (bundle ghconfig.Bundle, installed []string, err error) {
 	const route = "/legion/v1/controller/github-credential"
-	status, body, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
+	answered, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
-	if status/100 != 2 {
-		var failure api.Failure
-		if json.Unmarshal(body, &failure) == nil && failure.Code != "" {
+	if answered.Status()/100 != 2 {
+		// Which refusal it is, is decided on the daemon's code as it came (RemoteText.Equal), and
+		// never on the rule's reading of it (SendBack), which is "" where a value the request
+		// carried shares a run of characters with the code; the sentence prints as the rule reads
+		// it (oauth2call.CodedRefusal, the shape of api.Failure).
+		var failure oauth2call.CodedRefusal
+		if answered.Decode(&failure) == nil && !failure.Code.IsEmpty() {
+			code := ""
+			if i := slices.IndexFunc(controllerCredentialCodes, failure.Code.Equal); i >= 0 {
+				code = controllerCredentialCodes[i]
+			}
 			return ghconfig.Bundle{}, nil, &controllerCredentialFailure{
-				code:    failure.Code,
+				code:    code,
 				message: fmt.Sprintf("%s%s: %s", daemonURL, route, failure.Error),
 			}
 		}
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(status, body))
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s: %s", daemonURL, route, refusal(answered))
 	}
 	var answer api.ControllerCredentialResponse
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := answered.Decode(&answer); err != nil {
 		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+	}
+	if !slices.Contains(appauth.Roles, appauth.AppRole(answer.App)) {
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an App (app) that is none of the App roles this legion knows, %s and %s", daemonURL, route, appauth.Implement, appauth.Review)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, answer.ExpiresAt)
 	if err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an expiry that is not RFC 3339: %w", daemonURL, route, err)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered an expiry (expiresAt) that is not RFC 3339", daemonURL, route)
 	}
 	bundle = ghconfig.Bundle{Default: answer.Default, Dirs: make(map[string]ghconfig.Rendered, len(answer.Owners))}
 	for owner, files := range answer.Owners {
 		bundle.Dirs[owner] = ghconfig.Rendered{Hosts: files.Hosts, Config: files.Config, App: answer.App, ExpiresAt: expiresAt}
 	}
-	for _, pair := range answer.Renames {
+	for i, pair := range answer.Renames {
 		from, err := ghrepo.Parse("the repository a rename moved", pair.From)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose from (renames[%d].from) names no repository GitHub could hold", daemonURL, route, i)
 		}
 		to, err := ghrepo.Parse("the repository a rename moved it to", pair.To)
 		if err != nil {
-			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename that names no repository: %w", daemonURL, route, err)
+			return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a rename whose to (renames[%d].to) names no repository GitHub could hold", daemonURL, route, i)
 		}
 		bundle.Pairs = append(bundle.Pairs, ghrepo.Rename{From: from, To: to})
 	}
-	if err := bundle.Validate(); err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a credential that is no gh bundle: %w", daemonURL, route, err)
+	if bundle.Validate() != nil {
+		return ghconfig.Bundle{}, nil, fmt.Errorf("%s%s answered a credential that is no gh bundle: its default and each of its owners (default, owners) must be a lowercased GitHub login, and its default one of its owners", daemonURL, route)
 	}
 	return bundle, answer.Installed, nil
 }

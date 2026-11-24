@@ -86,7 +86,9 @@ func checkSettingsKMSKeyName(settings Settings) error {
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
 // file. A file it cannot read is the os error, and one it cannot load errUnloadableCredentials,
 // never x/oauth2's or encoding/json's error, which quote the file's fields (credentialsFileRefusal).
-// Tests replace it.
+// The credentials' token source is put behind the boundary (redact.TokenSource), since the Secret
+// Manager client and the userinfo client ask it for a token and print a refusal it answers. Tests
+// replace it.
 var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -98,7 +100,8 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	if json.Unmarshal(data, &file) != nil {
 		return nil, errUnloadableCredentials
 	}
-	creds, err := google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
+	s := redact.Scope[*google.Credentials](ctx)
+	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)))
 	if err != nil {
 		return nil, errUnloadableCredentials
 	}
@@ -133,14 +136,15 @@ const metadataGenericPrincipal = "this machine's or this pod's identity"
 // connection within googleidentity.ProbeTimeout, no answer within the token read's bound, or an
 // answer that is not Google's - is the absence newGCPBackend skips; any other error is a Google
 // server that is present but could not mint a token, which stops the command. It never reads the
-// email: that is gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
+// email: that is gcpMetadataPrincipal's separate, best-effort job. Its token source is behind the
+// boundary, as gcpCredentialsFile's is. Tests replace it.
 var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
-	source := googleidentity.AccessTokenSource()
-	first, err := source.Token()
+	source := redact.TokenSource(googleidentity.AccessTokenSource())
+	first, err := redact.OAuth2(source.Token())
 	if err != nil {
 		return nil, err
 	}
-	return &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, source)}, nil
+	return &google.Credentials{TokenSource: redact.TokenSource(oauth2.ReuseTokenSource(first, source))}, nil
 }
 
 // gcpMetadataPrincipal is the account the metadata server names for this machine
@@ -164,25 +168,55 @@ const googleUserinfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
 // (redact.Answered), or the failure's class (redact.Class), and never Google's body or x/oauth2's
 // words: a Google error body has carried a token, and x/oauth2 keeps the token endpoint's body in
 // the error a refused refresh answers. Tests replace it so no form makes a network call for it.
+//
+// The email is Google's text, or the text of whatever answers in Google's place, which can echo
+// the bearer the read carried: it is held as redact.RemoteText with the read's record (the answer
+// googleUserinfo) and answered only as RemoteText.SendBack answers it, since the form prints it and
+// writes it as the secret's owner. An email the rule does not print as it came is
+// errUserinfoEmailWithheld, which names none of it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
-	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
-	resp, err := httpClient.Get(googleUserinfoURL)
+	s := redact.Scope[*http.Response](ctx)
+	httpClient := oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource))
+	// The client's transport asks creds.TokenSource for a token, and an OAuth error answer it
+	// gets comes back inside this call's *url.Error, so the call crosses the same boundary.
+	resp, err := redact.OAuth2(s.Read(httpClient.Get(googleUserinfoURL)))
 	if err != nil {
 		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
 	}
 	defer resp.Body.Close()
+	answer, err := redact.ReadAnswer(resp, 1<<20)
+	if err != nil {
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body))
+		var body bytes.Buffer
+		_, _ = answer.StreamTo(&body)
+		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body.Bytes()))
 	}
-	var userinfo struct {
-		Email string `json:"email"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&userinfo); err != nil {
+	var userinfo googleUserinfo
+	if err := answer.Decode(&userinfo); err != nil {
 		return "", fmt.Errorf("decode the Google sign-in's email: %w", err)
 	}
-	return userinfo.Email, nil
+	if userinfo.Email.IsEmpty() {
+		return "", nil
+	}
+	email, sent := userinfo.Email.SendBack()
+	if !sent {
+		return "", errUserinfoEmailWithheld
+	}
+	return email, nil
 }
+
+// googleUserinfo is the part of Google's userinfo answer gcpUserinfo reads: the account's email,
+// Google's text held as redact.RemoteText, which Answer.Decode holds with the read's record.
+type googleUserinfo struct {
+	Email redact.RemoteText `json:"email"`
+}
+
+// errUserinfoEmailWithheld is gcpUserinfo's answer for an email the rule does not print as it
+// came: one that echoes the bearer the read carried, or that the rule cannot read as clean. It
+// names none of it, and no form takes it as anyone's email.
+var errUserinfoEmailWithheld = errors.New("Google's userinfo endpoint answered an email the rule does not print as it came (not printed)")
 
 // gcpClientDial builds the Secret Manager client for creds, every call it makes through
 // interceptor (storeInterceptor, which words each failure). Tests replace it to dial a local fake
@@ -601,7 +635,7 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 	if err := b.signIn(ctx); err != nil {
 		return nil, err
 	}
-	client, err := gcpClientDial(ctx, b.storeCredentials(), b.storeInterceptor)
+	client, err := gcpClientDial(ctx, b.storeCredentials(ctx), b.storeInterceptor)
 	if err != nil {
 		return nil, fmt.Errorf("create the Secret Manager client: %w", err)
 	}
@@ -618,27 +652,31 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 // gRPC prints that error into the call's status message with %v, so by the time a form prints the
 // store's error the body is text no redaction can tell apart; the status code stays gRPC's. The
 // other sources' token sources fail in this program's own words already: gcloudToken's,
-// googleidentity's, and a lent token that never refreshes. b.creds itself is unchanged, so
-// gcpUserinfo still classifies a refused refresh by its RetrieveError.
-func (b *gcpBackend) storeCredentials() *google.Credentials {
-	tokens := b.creds.TokenSource
+// googleidentity's, and a lent token that never refreshes. Each source in the chain is behind the
+// boundary (redact.TokenSource), and the universe domain the client signs for is b.creds's, read
+// once here under a scope. b.creds itself is unchanged, so gcpUserinfo still classifies a refused
+// refresh by its RetrieveError.
+func (b *gcpBackend) storeCredentials(ctx context.Context) *google.Credentials {
+	tokens := redact.TokenSource(b.creds.TokenSource)
 	if b.source == sourceCredentialsFile || b.source == sourceWellKnownFile {
-		tokens = redactedTokens{tokens}
+		tokens = redact.TokenSource(redactedTokens{tokens})
 	}
-	b.tokens = &storeTokens{TokenSource: tokens}
+	b.tokens = &storeTokens{source: tokens}
+	s := redact.Scope[string](ctx)
+	domain, err := redact.OAuth2(s.Read(b.creds.GetUniverseDomain()))
 	return &google.Credentials{
-		ProjectID: b.creds.ProjectID, TokenSource: b.tokens, JSON: b.creds.JSON,
-		UniverseDomainProvider: b.creds.GetUniverseDomain,
+		ProjectID: b.creds.ProjectID, TokenSource: redact.TokenSource(b.tokens), JSON: b.creds.JSON,
+		UniverseDomainProvider: func() (string, error) { return domain, err },
 	}
 }
 
 // redactedTokens is a token source whose failure is its class alone (redact.Class), as text that
 // wraps nothing: an error that still wrapped the *oauth2.RetrieveError would be turned back into
 // one that prints the token endpoint's body (storeCredentials).
-type redactedTokens struct{ oauth2.TokenSource }
+type redactedTokens struct{ source *redact.BoundTokenSource }
 
 func (s redactedTokens) Token() (*oauth2.Token, error) {
-	token, err := s.TokenSource.Token()
+	token, err := s.source.Token()
 	if err != nil {
 		return nil, errors.New("fetch an access token with the credentials file: " + redact.Class(err).Error())
 	}
@@ -652,7 +690,7 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 
 	if token := os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN"); token != "" {
 		b.source, b.sourcePhrase, b.principal = sourceLentToken, "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN", principalUnknown
-		b.creds = &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})}
+		b.creds = &google.Credentials{TokenSource: redact.TokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"}))}
 		return nil
 	}
 	skip(sourceLentToken, "unset")
@@ -787,7 +825,7 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 		principal = unreadPrincipal(account)
 	}
 	b.source, b.sourcePhrase, b.principal, b.gcloudAccount = source, phrase, principal, account
-	b.creds = &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, tokens)}
+	b.creds = &google.Credentials{TokenSource: redact.TokenSource(oauth2.ReuseTokenSource(first, redact.TokenSource(tokens)))}
 	return nil
 }
 
@@ -868,11 +906,14 @@ func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 // Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token
 // without an email scope (an access token minted for cloud-platform alone, as a lent token or a
-// machine's commonly is), and an account that is no person's (personAccount): a service account's
-// email names no person.
+// machine's commonly is), an account that is no person's (personAccount): a service account's
+// email names no person, and an email the rule does not print as it came
+// (errUserinfoEmailWithheld), which it names nowhere.
 func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 	email, err := gcpUserinfo(ctx, b.creds)
 	switch {
+	case errors.Is(err, errUserinfoEmailWithheld):
+		return "", fmt.Errorf("Google's userinfo endpoint names %s as an account whose email is not printed: the rule does not print the email it answered as it came", b.sourcePhrase)
 	case err != nil:
 		return "", fmt.Errorf("Google's userinfo endpoint does not name the account behind %s, as it names none for a token without an email scope: %w", b.sourcePhrase, err)
 	case email == "":

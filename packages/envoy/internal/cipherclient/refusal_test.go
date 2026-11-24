@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func TestARefusalPrintsItsSentenceAndNoneOfACallersWrapper(t *testing.T) {
 		base = "http://127.0.0.1:1"
 		id   = tradeID("trade-5d1e8b-demo-not-a-secret")
 	)
-	refused := newRefusedError(refusedIdentity(projectedStub()), 400, "invalid_request", refusalBody)
+	refused := newRefusedError(refusedIdentity(projectedStub()), 400, redact.NewRemoteText("invalid_request"), redact.NewRemoteText(refusalBody))
 	sentence := "the secrets broker refused this machine's identity: HTTP 400 invalid_request: " + refusalBody
 	if refused.Error() != sentence || refused.PrintableText() != sentence {
 		t.Fatalf("the refusal reads %q and %q, want %q", refused.Error(), refused.PrintableText(), sentence)
@@ -72,9 +73,9 @@ func TestARefusalPrintsItsSentenceAndNoneOfACallersWrapper(t *testing.T) {
 
 // TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine: whoever answers at a clean broker
 // address writes the description, and a line break in it would start a line of its own where the
-// refusal prints, such as `legion controller start`'s stderr. redact prints such a refusal as
-// x/oauth2's own text of the answer, which quotes the code and the description, so the words are
-// all there on one line and the sentence is not.
+// refusal prints, such as `legion controller start`'s stderr. The refusal's sentence prints the
+// description as the rule for remote text reads it, on one line (redact.Field, Go-quoted where it
+// holds a control character), so the words are all there on one line, and so is the sentence.
 func TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine(t *testing.T) {
 	const base = "http://127.0.0.1:1"
 	for _, description := range []string{
@@ -82,10 +83,11 @@ func TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine(t *testing.T) {
 		"no entry lists this account\r\nagent-secrets: FORGED",
 		"no entry lists this account\x1b[2Kagent-secrets: FORGED",
 	} {
-		refused := newRefusedError(refusedIdentity(projectedStub()), 400, "invalid_grant", description)
-		want := fmt.Sprintf("oauth2: %q %q", "invalid_grant", description)
+		refused := newRefusedError(refusedIdentity(projectedStub()), 400, redact.NewRemoteText("invalid_grant"), redact.NewRemoteText(description))
+		want := "the secrets broker refused this machine's identity: HTTP 400 invalid_grant: " + strconv.Quote(description)
 		inCall := &url.Error{Op: "Post", URL: base + "/v1/oauth/token", Err: refused}
 		for what, got := range map[string]string{
+			"Error":                  refused.Error(),
 			"redact.Error":           redact.Error(refused, base).Error(),
 			"redact.Cause":           redact.Cause(refused, base).Error(),
 			"redact.Error in a call": redact.Error(inCall, base).Error(),
@@ -95,7 +97,7 @@ func TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine(t *testing.T) {
 				t.Errorf("%s of a description %q = %q, which holds a control character", what, description, got)
 			}
 			if !strings.HasSuffix(got, want) {
-				t.Errorf("%s of a description %q = %q, want it to end with the answer's own text %q", what, description, got, want)
+				t.Errorf("%s of a description %q = %q, want it to end with %q", what, description, got, want)
 			}
 		}
 	}

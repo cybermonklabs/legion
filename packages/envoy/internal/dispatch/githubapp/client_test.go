@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 )
 
 func testKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
@@ -438,8 +439,8 @@ func TestReadRejectsAResponseLargerThanTheLimit(t *testing.T) {
 	if !errors.As(err, &tooLarge) || tooLarge.Limit != responseLimit {
 		t.Fatalf("Read: err = %v, want a *ResponseTooLargeError with limit %d", err, responseLimit)
 	}
-	if body != nil || status != 0 || header != nil {
-		t.Fatalf("Read: body=%d status=%d header=%v, want no truncated response", len(body), status, header)
+	if answertest.Text(body) != "" || status != 0 || header != nil {
+		t.Fatalf("Read: body=%d status=%d header=%v, want no truncated response", len(answertest.Text(body)), status, header)
 	}
 }
 
@@ -459,8 +460,8 @@ func TestReadAcceptsAResponseAtTheLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if status != http.StatusOK || string(body) != want {
-		t.Fatalf("Read: status=%d body length=%d, want 200 and %d bytes", status, len(body), len(want))
+	if status != http.StatusOK || answertest.Text(body) != want {
+		t.Fatalf("Read: status=%d body length=%d, want 200 and %d bytes", status, len(answertest.Text(body)), len(want))
 	}
 }
 
@@ -537,7 +538,7 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 			}
 			read := func(ctx context.Context) string {
 				body, status, _, err := client.ReadConditionalWithin(ctx, "installation-token", tc.path, tc.etag, limit)
-				return fmt.Sprintf("status %d, body %q, error %v", status, body, err)
+				return fmt.Sprintf("status %d, body %q, error %v", status, answertest.Text(body), err)
 			}
 			ctx, attempt := githubreads.Begin(context.Background())
 			withAttempt := read(ctx)
@@ -810,8 +811,8 @@ func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {
 			OK bool `json:"ok"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &decoded); err != nil || !decoded.Data.OK {
-		t.Fatalf("GraphQL response = %s, want {\"data\":{\"ok\":true}}: %v", body, err)
+	if err := body.Decode(&decoded); err != nil || !decoded.Data.OK {
+		t.Fatalf("GraphQL response = %s, want {\"data\":{\"ok\":true}}: %v", answertest.Text(body), err)
 	}
 	if !strings.Contains(fake.lastGraphQLQuery, "search(query: $q") {
 		t.Errorf("fake received query = %q, want it to carry the search() call", fake.lastGraphQLQuery)

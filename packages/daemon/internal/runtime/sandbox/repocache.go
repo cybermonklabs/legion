@@ -26,7 +26,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -737,8 +740,9 @@ func (r *Runtime) cacheStreams(ctx context.Context, pod *corev1.Pod, repo ghrepo
 }
 
 // cacheHealthOf is GET <address>/healthz through client, carrying no credential, decoded, within a
-// call's budget: an error when the answer names a repository other than repo
-// (workspace.CacheRepositoryHeader).
+// call's budget: an error when the answer is a redirect, which the daemon's client never follows
+// (cacheHealthClient), or names a repository other than repo (workspace.CacheRepositoryHeader). A
+// read that got no answer names its failure through redact.Unanswered.
 func cacheHealthOf(ctx context.Context, client *http.Client, address string, repo ghrepo.Repository) (repocache.Health, error) {
 	bounded, cancel := call(ctx)
 	defer cancel()
@@ -748,23 +752,39 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return repocache.Health{}, err
+		return repocache.Health{}, redact.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
-	if named := response.Header.Get(workspace.CacheRepositoryHeader); !strings.EqualFold(named, repo.String()) {
-		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s naming the repository %q, not %s", address, response.Status, named, repo)
+	// A redirect is the answer itself, refused by its status: its Location is the answering
+	// party's own words, and a cache answers none, whatever repository the answer names.
+	if redirects.Status(response.StatusCode) {
+		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s, a redirect, which the daemon never follows", address, oauth2call.StatusLine(response.StatusCode))
+	}
+	// The repository the answer names is its own words, so it is compared as it came and printed
+	// as the rule reads it (oauth2call.Header).
+	if named := oauth2call.Header(response, workspace.CacheRepositoryHeader); !named.EqualFold(repo.String()) {
+		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s naming the repository %q, not %s", address, oauth2call.StatusLine(response.StatusCode), named, repo)
 	}
 	var health repocache.Health
-	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
-		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s with a body that is not the cache's health: %w", address, response.Status, err)
+	answer, err := oauth2call.ReadAnswer(response, 1<<20)
+	if err == nil {
+		err = answer.Decode(&health)
+	}
+	if err != nil {
+		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s with a body that is not the cache's health: %w", address, oauth2call.StatusLine(response.StatusCode), err)
 	}
 	return health, nil
 }
 
 // cacheHealthClient reaches a cache's pod directly through cacheDial: no proxy stands between the
-// daemon and a pod of its namespace.
+// daemon and a pod of its namespace. It follows no redirect (redirects.Refused): a Location is the
+// answering party's own words, which a followed redirect makes the address whose health is read
+// and the URL of net/http's error, user information and query included. A redirect is the answer
+// itself, which cacheHealthOf refuses by its status.
 func (r *Runtime) cacheHealthClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: r.cacheDial, DisableKeepAlives: true}}
+	return redirects.Refused(&http.Client{
+		Transport: &http.Transport{Proxy: nil, DialContext: r.cacheDial, DisableKeepAlives: true},
+	})
 }
 
 // storedCaches are the cache Sandboxes in the store that are not being deleted.

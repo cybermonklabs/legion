@@ -196,6 +196,58 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	}
 }
 
+// waitsAndSettingsState is a state whose issues carry a wait in every shape the read takes — none,
+// null, a string, and an object holding members Dispatch models nowhere — and whose settings hold
+// a value of each JSON kind, nested ones among them.
+const waitsAndSettingsState = `{
+  "issues": {
+    "LEGION-1": {"key": "LEGION-1", "phase": "implementing"},
+    "LEGION-2": {"key": "LEGION-2", "phase": "awaiting_person", "waitingOn": null},
+    "LEGION-3": {"key": "LEGION-3", "phase": "awaiting_person", "waitingOn": "a person"},
+    "LEGION-4": {"key": "LEGION-4", "phase": "awaiting_person", "waitingOn": {
+      "kind": "gate", "gateVersion": 4, "since": "2026-11-03T09:00:00Z", "next": {"on": ["a", "b"], "at": null}}}
+  },
+  "settings": {"project": "LEGION", "admission_cap": 6, "linger_hours": 1.5, "github_apps": null,
+    "review": true, "hooks": [{"name": "setup"}], "gates": {"design": true}}
+}`
+
+// TestTheWaitAndTheSettingsAreRecordedAsTheDaemonSentThem: Dispatch models neither an issue's wait
+// nor the settings, so a read records each as the daemon sent it, whatever its shape, beside the
+// members it does model; and a settings block that is not an object is a failed read naming the
+// member in fixed text, which quotes nothing of it.
+func TestTheWaitAndTheSettingsAreRecordedAsTheDaemonSentThem(t *testing.T) {
+	state, _, err := New(stateServer(t, waitsAndSettingsState).URL).State(t.Context())
+	if err != nil {
+		t.Fatalf("read a state carrying a wait of each shape: %v", err)
+	}
+	recorded := map[string]string{}
+	for _, observation := range state.Observations() {
+		recorded[observation.IssueKey+"/"+observation.Field] = string(observation.Value)
+	}
+	for key, want := range map[string]string{
+		"LEGION-1/" + FieldWaitingOn: `null`,
+		"LEGION-2/" + FieldWaitingOn: `null`,
+		"LEGION-3/" + FieldWaitingOn: `"a person"`,
+		"LEGION-4/" + FieldWaitingOn: `{"kind":"gate","gateVersion":4,"since":"2026-11-03T09:00:00Z","next":{"on":["a","b"],"at":null}}`,
+		"LEGION-4/" + FieldPhase:     `"awaiting_person"`,
+		AdmissionKey + "/" + FieldSettings: `{"admission_cap":6,"gates":{"design":true},"github_apps":null,` +
+			`"hooks":[{"name":"setup"}],"linger_hours":1.5,"project":"LEGION","review":true}`,
+	} {
+		if got, observed := recorded[key]; !observed || got != want {
+			t.Errorf("%s recorded %q (observed %t), want %s", key, got, observed, want)
+		}
+	}
+
+	const kept = "settings-text-kept-out"
+	_, _, err = New(stateServer(t, `{"issues":{},"settings":"`+kept+`"}`).URL).State(t.Context())
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("a state whose settings are a string: err = %v, want a failed read", err)
+	}
+	if !strings.Contains(err.Error(), `the answer's "settings"`) || strings.Contains(err.Error(), kept) {
+		t.Errorf("the failed read reads %q, want it to name the settings and quote nothing of them", err)
+	}
+}
+
 // TestAMalformedOrRefusedAnswerIsAFailedRead: a body that is not the route's JSON, and a status
 // that is not 200, are each a failed read, so the sampler records the failure and leaves the last
 // good observations standing.

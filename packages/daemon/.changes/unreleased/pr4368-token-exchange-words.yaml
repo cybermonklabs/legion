@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A GitHub App token exchange whose answer names a token wider than the permissions asked for no
+  longer prints the permission and the access that answer wrote as they came. The refusal names a
+  permission only when the request asked for it, and an access only when it is `read`, `write` or
+  `admin`; in place of anything else it prints `(a permission the request did not name)` or `(an
+  access this daemon cannot order)`. The warning a mint logs for a permission the installation is
+  granted less of than the role's set asks for names the access granted the same way, in its
+  message and in its `granted` field. The refusal of a suspended installation names its
+  `suspended_at` only as the time it parses as, and `(a value that is no time)` otherwise. Before,
+  something answering in GitHub's place that echoed the request's Authorization, the App's JWT, as
+  a permission's name, its access, the access the installation is granted or the installation's
+  `suspended_at` had it printed in the refusal, which the daemon's credential routes log, or in
+  that warning.
+time: 2026-11-23T05:13:49Z
+custom:
+    Issue: pr4368

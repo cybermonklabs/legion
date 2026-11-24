@@ -57,7 +57,7 @@ func (w *workflowRuntime) reviewBody(ctx context.Context, review intake.PullRequ
 	var answer struct {
 		Body string `json:"body"`
 	}
-	if err := client.Get(ctx, "/pulls/"+strconv.Itoa(review.Number)+"/reviews/"+strconv.FormatInt(review.ID, 10), &answer); err != nil {
+	if err := client.Get(ctx, "/pulls/"+strconv.Itoa(review.Number)+"/reviews/"+strconv.FormatInt(review.ID, 10), "", &answer); err != nil {
 		var refused *githubrest.Answer
 		if errors.As(err, &refused) && refused.RateLimited {
 			w.holdRateLimit(refused.RetryAfter)

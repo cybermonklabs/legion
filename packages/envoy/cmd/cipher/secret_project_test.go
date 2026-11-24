@@ -40,7 +40,7 @@ func TestCreateWritesTheProjectTag(t *testing.T) {
 	})
 	t.Run("the broker's refusal", func(t *testing.T) {
 		local := secrets.NewLocal()
-		startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonProjectUnchecked} })
+		startSecretBroker(t, func(name string) rereadReply { return rereadReply{Name: name, Reason: policy.ReasonProjectUnchecked} })
 		useAWS(t, local, testAccount, adaSignIn)
 		useStdin(t, "stored-value")
 		stdout, stderr, code := runSecret("create", "PRIV_KEY", "--owner", "me", "--tier", "agent", "--project", "PRIV")

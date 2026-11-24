@@ -78,7 +78,9 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	r.broker.srv.Config.Handler = mux
 
 	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte("projected.service.account.token"), 0o600); err != nil {
+	// An opaque token: a real projected token holds its service account only inside base64, never
+	// a run of the words a refusal prints in plain text.
+	if err := os.WriteFile(tokenFile, []byte("projected-sa-1a2b3c-subject"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r.waits = &tradeWaits{}

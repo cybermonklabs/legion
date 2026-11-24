@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -97,11 +100,67 @@ func writeAnswer(w io.Writer, answer []byte) error {
 }
 
 // decodeAnswer reads a 2xx answer into into, refusing a member the struct does not have: a daemon
-// whose wire this binary does not speak says so rather than printing half of it.
+// whose wire this binary does not speak says so rather than printing half of it. Its error is
+// fixed text naming what into is and, where encoding/json names it, the member of into's own type
+// that did not decode and the JSON kind it held; never a value or a member name the answer wrote,
+// since encoding/json's errors quote a member into does not have, and the errors of the types it
+// decodes into (time.Time's among them) quote the value they could not read.
 func decodeAnswer(answer []byte, into any) error {
 	decoder := json.NewDecoder(bytes.NewReader(answer))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(into)
+	err := decoder.Decode(into)
+	if err == nil {
+		return nil
+	}
+	what := reflect.TypeOf(into).Elem().String()
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax):
+		return fmt.Errorf("it is not JSON (at byte %d), so it is no %s", syntax.Offset, what)
+	case errors.As(err, &typed):
+		member := "the whole of it"
+		if typed.Field != "" {
+			member = fmt.Sprintf("its %q", typed.Field)
+		}
+		kind, _, _ := strings.Cut(typed.Value, " ")
+		return fmt.Errorf("%s is a JSON %s where the %s this legion reads holds a %s", member, kind, what, typed.Type)
+	case strings.HasPrefix(err.Error(), "json: unknown field "):
+		return fmt.Errorf("it holds a member the %s this legion reads does not have: the daemon is of another release than this legion", what)
+	}
+	return fmt.Errorf("a value of it does not decode into the %s this legion reads", what)
+}
+
+// claimTokenShape is a claim token's shape: claim.NewToken's `legion-<project>-<issue>-<role>` and
+// claim.ControllerToken's `legion-<project>-controller`, each segment lowercase letters and digits.
+var claimTokenShape = regexp.MustCompile(`^legion-[a-z0-9]+-(?:[a-z][a-z0-9]*-[0-9]+-)?[a-z]+$`)
+
+// claimShaped says whether token, a claim token of the daemon's answer, has a claim token's shape
+// and ends in a role (legionclaim.Token.Role): the shape the daemon makes every token in, which
+// holds no credential.
+func claimShaped(token legionclaim.Token) bool {
+	_, ok := token.Role()
+	return ok && claimTokenShape.MatchString(string(token))
+}
+
+// claimWord is a claim token of the daemon's answer as a line of the command names it: the token
+// where it has a claim token's shape (claimShaped), and words saying it has none otherwise, since
+// the token is the daemon's word and a line prints it only in the shape the daemon makes one.
+func claimWord(token legionclaim.Token) string {
+	if claimShaped(token) {
+		return string(token)
+	}
+	return "a claim whose token has no claim token's shape"
+}
+
+// stateWord is a claim's state of the daemon's answer as a line of the command names it: the
+// state where it is one this legion knows (supervise.States), and words saying it is not
+// otherwise, since the state is the daemon's word.
+func stateWord(state string) string {
+	if slices.Contains(supervise.States(), supervise.ClaimState(state)) {
+		return state
+	}
+	return "in a state this legion does not know"
 }
 
 // printClaim is the claim a route answered, as the one line writeClaimLine writes.
@@ -446,8 +505,10 @@ func printCompaction(w io.Writer, answer []byte) error {
 // one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
 // naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
 // prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
-// so --failed passes over it: name it with --claim.
+// refused, having asked for every one. A failed claim the list names by a token without a claim
+// token's shape (claimShaped), which no token the daemon makes lacks, is reported as not retried
+// and not asked for. A claim an operator stopped is retired rather than failed, so --failed passes
+// over it: name it with --claim.
 //
 // --fresh-session starts the claim in a new session rather than resuming the recorded one, which
 // is what a claim whose provider refused its session needs: resuming it would be refused again.
@@ -498,8 +559,12 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 		if supervise.ClaimState(held.State) != supervise.StateFailed {
 			continue
 		}
-		if c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
-			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), held.Token)
+		// The token is the daemon's word, and the retry's path names it, which a retry that gets
+		// no answer, or an answer that does not read, prints (request, printAnswer, operator.do).
+		// So a claim is asked for only by a token in the shape the daemon makes one (claimShaped),
+		// and any other is not retried and is named as claimWord names it.
+		if !claimShaped(held.Token) || c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(string(held.Token))+"/retry", retry, printClaim) != 0 {
+			fmt.Fprintf(c.stderr, "%s: %s was not retried\n", c.name(), claimWord(held.Token))
 			code = 1
 		}
 	}
@@ -581,12 +646,12 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		if !seen.SuspensionHeld {
 			fmt.Fprintf(c.stderr, "%s: the daemon no longer holds the suspension of %s, which is %s: a start run against "+
-				"the claim dropped it, or the daemon restarted\n", c.name(), token, seen.State)
+				"the claim dropped it, or the daemon restarted\n", c.name(), token, stateWord(seen.State))
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, stateWord(seen.State), *c.wait)
 			return nil, false
 		}
 		select {

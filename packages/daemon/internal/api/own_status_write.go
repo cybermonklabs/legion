@@ -23,7 +23,7 @@ func (s *server) setDispatchStatus(w http.ResponseWriter, r *http.Request, issue
 	var dispatchError *dispatch.Error
 	switch {
 	case errors.As(err, &dispatchError):
-		s.writeFailure(w, r, http.StatusBadGateway, dispatchError.Code, dispatchError.Message)
+		s.writeFailure(w, r, http.StatusBadGateway, dispatchError.Code.String(), dispatchError.Message)
 		return dispatch.Issue{}, false
 	case err != nil:
 		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", "Dispatch status update failed")

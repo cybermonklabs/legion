@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -40,7 +42,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 	refusedTwice := []supervise.TurnOutcome{{Generation: 1, Sequence: 1, Refused: true}, {Generation: 1, Sequence: 2, Refused: true}}
 	// shared is a supervisor whose session taken another claim, legion-943's implementer,
 	// recorded first, and whose listener answers every role lookup with lookup.
-	shared := func(t *testing.T, lookup func(context.Context, string) (string, string, error)) *supervisor {
+	shared := func(t *testing.T, lookup roleLookup) *supervisor {
 		t.Helper()
 		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 		if _, err := sup.deps.Store.(*outboxClaimStore).HoldSessions(context.Background(), "legion",
@@ -50,13 +52,15 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 		sup.deps.RoleHolder = lookup
 		return sup
 	}
-	namesTaken := func(context.Context, string) (string, string, error) { return taken, "live", nil }
-	unauthorized := func(context.Context, string) (string, string, error) {
-		return "", "", fmt.Errorf("look up the holder: %w", &notify.RoleLookupRefused{Status: 401, Reason: `listener returned 401 Unauthorized: {"error":"unauthorized"}`})
+	namesTaken := func(context.Context, string) (oauth2call.RemoteText, string, error) {
+		return oauth2calltest.Said(taken), "live", nil
+	}
+	unauthorized := func(context.Context, string) (oauth2call.RemoteText, string, error) {
+		return oauth2call.RemoteText{}, "", fmt.Errorf("look up the holder: %w", &notify.RoleLookupRefused{Status: 401, Reason: `listener returned 401 Unauthorized: {"error":"unauthorized"}`})
 	}
 	// keeper runs a failed daemon controller, whose provider refused its recorded session out of
 	// its budget, through the keeper's first look and three retries, an hour apart.
-	keeper := func(t *testing.T, lookup func(context.Context, string) (string, string, error)) string {
+	keeper := func(t *testing.T, lookup roleLookup) string {
 		t.Helper()
 		sup := shared(t, lookup)
 		token := claim.ControllerToken("legion")
@@ -131,13 +135,13 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 	t.Run("the controller keeper, a retry admitted and then a launch that fails", func(t *testing.T) {
 		var mu sync.Mutex
 		freed := false
-		sup := shared(t, func(context.Context, string) (string, string, error) {
+		sup := shared(t, func(context.Context, string) (oauth2call.RemoteText, string, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if freed {
-				return "", "", nil
+				return oauth2call.RemoteText{}, "", nil
 			}
-			return taken, "live", nil
+			return oauth2calltest.Said(taken), "live", nil
 		})
 		runtime := sup.deps.Runtime.(*fake.Runtime)
 		sup.deps.Limits.LaunchFailures = 1
@@ -188,7 +192,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 	t.Run("a start row", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
-			lookup func(context.Context, string) (string, string, error)
+			lookup roleLookup
 			wait   bool
 		}{
 			{"the role held under the session", namesTaken, true},

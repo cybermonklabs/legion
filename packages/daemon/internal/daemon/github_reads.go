@@ -72,16 +72,16 @@ func (w *workflowRuntime) unapplied(ctx context.Context, eventID string) bool {
 // and MergeCommitSHA are whether GitHub merged it and the commit the merge made, which the
 // merge-queue read applies as the merge (outbox's mergeQueueRead): GitHub answers a merged pull
 // request `closed`, so State alone cannot tell a merge from a close. The list leaves Merged out,
-// and only the read of one pull request names it.
+// and only the read of one pull request names it. The base branch is GitHub's words, read as it
+// came and as the rule reads it (githubText): the record keeps it and the base's rules are read
+// for it as it came, and the line of that read names it as the rule reads it (readBaseRules).
 type githubPullRequest struct {
-	Number  int    `json:"number"`
-	State   string `json:"state"`
-	HTMLURL string `json:"html_url"`
-	Body    string `json:"body"`
-	Base    struct {
-		Ref string `json:"ref"`
-	} `json:"base"`
-	Head struct {
+	Number  int             `json:"number"`
+	State   string          `json:"state"`
+	HTMLURL string          `json:"html_url"`
+	Body    string          `json:"body"`
+	Base    pullRequestBase `json:"base"`
+	Head    struct {
 		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
@@ -90,6 +90,12 @@ type githubPullRequest struct {
 	MergeableState string    `json:"mergeable_state"`
 	Merged         bool      `json:"merged"`
 	MergeCommitSHA string    `json:"merge_commit_sha"`
+}
+
+// pullRequestBase is a pull request's base as GitHub answers it: the branch, GitHub's words
+// (githubText).
+type pullRequestBase struct {
+	Ref githubText `json:"ref"`
 }
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null
@@ -151,7 +157,7 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
 	var pull githubPullRequest
-	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
+	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), "", &pull); err != nil {
 		return githubrest.Client{}, githubPullRequest{}, err
 	}
 	return github, pull, nil

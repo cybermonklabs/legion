@@ -147,8 +147,10 @@ var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AW
 
 // requireAccount refuses, before any read or write, a sign-in in an account other than the
 // broker's, naming both accounts and how to choose another sign-in (another, awsSource.another): a
-// read there would list another account's secrets as if they were the agent secrets. It answers
-// the sign-in's ARN.
+// read there would list another account's secrets as if they were the agent secrets. The broker's
+// account is text of its settings answer, so it prints as the broker's address lets that answer
+// print (Settings.words): checkSettingsKeyARN read twelve digits in it, which a credential the
+// address carries can still be. It answers the sign-in's ARN.
 func requireAccount(ctx context.Context, st stsAPI, settings Settings, another string) (arn string, err error) {
 	id, err := st.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
@@ -156,8 +158,9 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings, another s
 	}
 	arn, account := aws.ToString(id.Arn), aws.ToString(id.Account)
 	if account != settings.AWSAccountID {
+		theirs := settings.words(settings.AWSAccountID)
 		return "", fmt.Errorf("your AWS sign-in %s is in account %s, but the agent secrets are in account %s: sign in to account %s; %s",
-			arn, account, settings.AWSAccountID, settings.AWSAccountID, another)
+			arn, account, theirs, theirs, another)
 	}
 	return arn, nil
 }

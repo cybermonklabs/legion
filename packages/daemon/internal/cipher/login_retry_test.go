@@ -387,7 +387,7 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 			brokerURL, httpClient, cause := row.rig(t)
 			logged := &lockedLog{}
 			client := &Client{
-				URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "token"),
+				URL: brokerURL, HTTP: httpClient, TokenFile: tokenFile(t, "pod-credential-7Hq2Vx"), // a pod token, as a real one, shares no word with the broker's
 				Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
 			}
 			ctx, cancel := context.WithCancel(context.Background())

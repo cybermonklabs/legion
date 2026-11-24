@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -23,7 +24,7 @@ func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ string) (app
 	if role == appauth.Review {
 		name = "legion-reviewer[bot]"
 	}
-	return appauth.Lease{Token: "installation-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: name}}, nil
+	return appauth.Lease{Token: githubtest.InstallationToken(name), ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: name}}, nil
 }
 
 // ReadToken is Token's lease with "-read" appended to the token text.

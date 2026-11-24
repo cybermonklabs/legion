@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -234,8 +235,10 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		return intake.Result{}, err
 	}
 	if fact.HeadSHA != pr.HeadSHA {
+		// The head GitHub answered for is GitHub's words, which the record never takes: the line
+		// names it only in a commit's shape (githubrest.ShownSHA).
 		e.logOnCommit(ctx, "workflow: GitHub's merge state answered for a head the pull request has moved past; the read is dropped",
-			"issue", pr.Issue, "pullRequest", pr.Number, "answered", fact.HeadSHA, "head", pr.HeadSHA,
+			"issue", pr.Issue, "pullRequest", pr.Number, "answered", githubrest.ShownSHA(fact.HeadSHA), "head", pr.HeadSHA,
 			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
 		return intake.Result{}, nil
 	}

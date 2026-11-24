@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // githubPageAttempts bounds how many times one list/search page is asked for before the step
@@ -46,7 +47,7 @@ var githubPageRetryWait = time.Second
 // notes on a try asked again are dropped, since the page's outcome is the try it returns, and that
 // try's notes are kept. A page GitHub answers 502 once and then reads is no failure of the pass,
 // and one it answers 502 every try is the last try's 502.
-func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) ([]byte, int, http.Header, error) {
+func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) (redact.Answer, int, http.Header, error) {
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
 		body, status, header, err := client.Read(asked, token, path)
@@ -62,7 +63,7 @@ func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path s
 // queryGitHubPage is readGitHubPage for one GraphQL search page: the same bounded retry, each try
 // held the same way. A GraphQL query is a read however GitHub spells it, so retrying one repeats
 // nothing.
-func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query string, variables map[string]any) ([]byte, int, http.Header, error) {
+func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query string, variables map[string]any) (redact.Answer, int, http.Header, error) {
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
 		body, status, header, err := client.GraphQL(asked, token, query, variables)

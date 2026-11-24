@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // GCPSecretManager is the --store value of Google Cloud Secret Manager.
@@ -96,7 +97,7 @@ func gcpClientOptions() ([]option.ClientOption, error) {
 		if token == "" {
 			return nil, refuse("GOOGLE_OAUTH_ACCESS_TOKEN is set but empty; unset it to use Application Default Credentials")
 		}
-		opts = append(opts, option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})))
+		opts = append(opts, option.WithTokenSource(redact.TokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}))))
 	}
 	if raw, ok := os.LookupEnv("SECRET_MANAGER_ENDPOINT"); ok {
 		endpoint, err := gcpEndpoint(raw)

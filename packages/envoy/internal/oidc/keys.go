@@ -3,16 +3,16 @@ package oidc
 import (
 	"context"
 	"crypto"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Key failure. A key the issuer does not publish and an issuer that cannot be
@@ -122,14 +122,16 @@ type keysFetch struct {
 // whose discovery document cannot be read or names no jwks_uri. No key is fetched here: the first
 // Key reads the set, and ctx bounds discovery alone.
 func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
-	provider, err := gooidc.NewProvider(ctx, issuer)
+	s := redact.Scope[*gooidc.Provider](ctx)
+	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
-	if err := provider.Claims(&discovery); err != nil {
+	claims := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&discovery))); err != nil {
 		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
 	}
 	if discovery.JWKSURI == "" {
@@ -412,10 +414,14 @@ func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, resp.Status)
+		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, redact.StatusLine(resp.StatusCode))
+	}
+	answer, err := redact.ReadAnswer(resp, maxKeySetBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, k.jwksURI, err)
 	}
 	var set jose.JSONWebKeySet
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeySetBytes)).Decode(&set); err != nil {
+	if err := answer.Decode(&set); err != nil {
 		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, k.jwksURI, err)
 	}
 	return set.Keys, nil

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // What GET /signin/status answers about this page is written from here: a sign-in that
@@ -56,16 +57,23 @@ func signInFailureCode(err error) string {
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return codeIssuerUnreachable
-	case oauthrefusal.Refusal(err) != "":
+	case oauthrefusal.Refusal(err) != redact.OAuthNone:
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field. It is read only from a refusal, a 4xx that is no outage (oauthrefusal.Refusal).
-		// Every answer that is no outage is the endpoint answering, so the case above has not
-		// taken it: a refusal naming no error or one outside the four, and a 2xx or 3xx naming
-		// one, write nothing, and the status keeps its last named failure.
-		switch code := oauthrefusal.Refusal(err); code {
-		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
-			return code
+		// field. It is read only from a refusal, a 4xx that is no outage (oauthrefusal.Refusal), as
+		// the closed set redact.RefusalCode answers, so what is written is always one of this
+		// page's own words. Every answer that is no outage is the endpoint answering, so the case
+		// above has not taken it: a refusal naming no error or one outside the four, and a 2xx or
+		// 3xx naming one, write nothing, and the status keeps its last named failure.
+		switch oauthrefusal.Refusal(err) {
+		case redact.InvalidClient:
+			return codeInvalidClient
+		case redact.UnauthorizedClient:
+			return codeUnauthorizedClient
+		case redact.RedirectURIMismatch:
+			return codeRedirectURIMismatch
+		case redact.InvalidGrant:
+			return codeInvalidGrant
 		}
 	case errors.Is(err, oidc.ErrIssuer):
 		return codeBadIssuer

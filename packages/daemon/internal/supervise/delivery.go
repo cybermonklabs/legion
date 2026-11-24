@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 
@@ -1599,10 +1600,12 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // send's refusal is logged by that name (table.go's refused).
 //
 // An adoption the shim answers ok is logged here, once, at Info: the task, its phase, the App's git
-// name — never a token — and how long the call to adopt took (Runtime.AdoptWorkingCopy): the
-// runtime's own check of where the claim's process runs, then the round trip to the shim and back,
-// with the shim's own work inside it. The refusals are logged where the send's outcome is
-// (refused); without this line nothing in the log tells which tasks adopted the working copy,
+// name only as a login GitHub allows (githubrest.ShownLogin), since that name is the bot login an
+// App read of GitHub answered — never a token — and how long the call to adopt took
+// (Runtime.AdoptWorkingCopy): the runtime's own check of where the claim's process runs, then the
+// round trip to the shim and back, with the shim's own work inside it. The refusals are logged
+// where the send's outcome is (refused); without this line nothing in the log tells which tasks
+// adopted the working copy,
 // which is what a production check reads to see the rule held (dispatch://INFRA-2695).
 func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
@@ -1617,7 +1620,7 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 		return err
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",
-		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
+		"delivery", d.ID, "phase", string(d.Phase), "identity", githubrest.ShownLogin(id.Name), "took", m.deps.Clock.Now().Sub(started))
 	return nil
 }
 

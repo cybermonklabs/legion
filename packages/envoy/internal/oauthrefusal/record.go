@@ -6,21 +6,28 @@ import (
 	"net/http"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Record is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests with - the
 // one ctx carries (oauth2.HTTPClient), else http.DefaultClient - timeout and all, with its
-// transport wrapped so answered records what became of each request it carries. A reader whose
+// transport wrapped so answered records what became of each request it carries, under a
+// RefusalClient as every client handed to those libraries is (redact.OAuth2). A reader whose
 // library error drops an answer's status, or quotes its body, reads the answer from answered
 // instead.
 func Record(ctx context.Context, answered *Recorder) context.Context {
-	wrapped := *oauth2.NewClient(ctx, nil)
+	base, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	if base == nil {
+		base = http.DefaultClient
+	}
+	wrapped := *base
 	answered.base = wrapped.Transport
 	if answered.base == nil {
 		answered.base = http.DefaultTransport
 	}
 	wrapped.Transport = answered
-	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
+	return context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(&wrapped))
 }
 
 // Recorder is a transport that records what became of the last request it carried: the host it
@@ -41,12 +48,20 @@ type Recorder struct {
 	body   *readOf
 }
 
+// answerLimit is the most of an answer's body a Recorder hands on to the library that asked for
+// it (redact.StreamAnswer): a discovery document, a token answer and an error body are each far
+// shorter.
+const answerLimit = 8 << 20
+
 func (r *Recorder) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := r.base.RoundTrip(request)
 	r.Host, r.Status, r.body = request.URL.Host, 0, nil
 	if response != nil {
 		r.Status = response.StatusCode
-		r.body = &readOf{ReadCloser: response.Body, keep: response.StatusCode/100 != 2}
+		// The body goes back to the library that asked for it, as a stream of data
+		// (redact.StreamAnswer): the library reads it, under the boundary, and this transport only
+		// watches how the read ends.
+		r.body = &readOf{ReadCloser: redact.StreamAnswer(response, answerLimit), keep: response.StatusCode/100 != 2}
 		response.Body = r.body
 	}
 	return response, err

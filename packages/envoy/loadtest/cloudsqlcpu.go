@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cloudsqlCPUMetric is Cloud Monitoring's metric for a Cloud SQL instance's CPU: the fraction of
@@ -179,17 +180,17 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 		return "", fmt.Errorf("the metadata server at %s gave no access token: %w", redactURL(tokenURL), err)
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	read, err := redact.ReadAnswer(resp, 1<<16)
 	if err != nil {
 		return "", fmt.Errorf("the metadata server at %s gave no access token: %w", redactURL(tokenURL), err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("the metadata server at %s answered %d %s, so this pod has no access token", redactURL(tokenURL), resp.StatusCode, trunc(b))
+		return "", fmt.Errorf("the metadata server at %s answered %d %s, so this pod has no access token", redactURL(tokenURL), resp.StatusCode, answerWords(read))
 	}
 	var answer struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.Unmarshal(b, &answer); err != nil {
+	if err := read.Decode(&answer); err != nil {
 		return "", fmt.Errorf("the metadata server's answer at %s did not decode as JSON: %w", redactURL(tokenURL), err)
 	}
 	if answer.AccessToken == "" {
@@ -231,7 +232,7 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		if err != nil {
 			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, err)
 		}
-		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<22))
+		read, readErr := redact.ReadAnswer(resp, 1<<22)
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, readErr)
@@ -240,17 +241,17 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		case http.StatusOK:
 		case http.StatusForbidden:
 			return nil, fmt.Errorf("Cloud Monitoring answered 403 to the read of %s for %s: this pod's Google identity may not read project %s's time series: %s",
-				metric, databaseID, project, trunc(b))
+				metric, databaseID, project, answerWords(read))
 		case http.StatusNotFound:
 			return nil, fmt.Errorf("Cloud Monitoring answered 404 to the read of %s for %s: project %s or the timeSeries route is not there: %s",
-				metric, databaseID, project, trunc(b))
+				metric, databaseID, project, answerWords(read))
 		default:
 			return nil, fmt.Errorf("Cloud Monitoring answered %d to the read of %s for %s: %s",
-				resp.StatusCode, metric, databaseID, trunc(b))
+				resp.StatusCode, metric, databaseID, answerWords(read))
 		}
 		var answer cloudsqlTimeSeriesAnswer
-		if err := json.Unmarshal(b, &answer); err != nil {
-			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err, trunc(b))
+		if err := read.Decode(&answer); err != nil {
+			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err, answerWords(read))
 		}
 		if len(answer.TimeSeries) > 1 {
 			return nil, fmt.Errorf("the filter for %s matched %d series of %s, not one; name one instance", databaseID, len(answer.TimeSeries), metric)

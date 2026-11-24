@@ -27,6 +27,12 @@ var (
 	repositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
+// IsLogin says whether login is a GitHub account's login as GitHub serves them (ownerName): a
+// letter or digit, then up to 38 letters, digits, hyphens and underscores. It is the daemon's one
+// grammar of a login: the owner Parse takes, a message's login (githubrest.ShownLogin), a token
+// command's release key (appauth) and, lowercased, a gh bundle's directory (ghconfig.IsOwner).
+func IsLogin(login string) bool { return ownerName.MatchString(login) }
+
 // Repository is a GitHub repository as Parse read it. Its names are unexported, so outside this
 // package a Repository is one Parse returned or the zero value, no repository: no caller can build
 // one Parse would refuse, whose names, joined under a state directory, would name another

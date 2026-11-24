@@ -1,7 +1,6 @@
 package redact
 
 import (
-	"io"
 	"strings"
 	"unicode/utf8"
 )
@@ -84,9 +83,9 @@ func Tail(text string, n int) (tail string, cut int) {
 // Every URL before the run ends at or before the byte before it, as it does in the whole text. The
 // rule then reads what is left, which Read answers; with cut false, that is the whole text.
 //
-// A read tells whether its bound cut it by reading one byte past the bound, as ReadBounded does.
-// A read that ended on an error stopped where the error came, which is as unknown a place as the
-// bound's, so it is cut too.
+// A read tells whether its bound cut it by reading one byte past the bound (oauth2call.ReadAnswer
+// reads an answer so, and answers ErrAnswerTooLarge). A read that ended on an error stopped where
+// the error came, which is as unknown a place as the bound's, so it is cut too.
 func Read(text string, cut bool) string {
 	if cut {
 		end := len(text)
@@ -98,15 +97,4 @@ func Read(text string, cut bool) string {
 		}
 	}
 	return URLCredentials(text)
-}
-
-// ReadBounded reads r to its end or to limit bytes, limit at least 0, and one byte more, so a read
-// its bound cut is told from one read whole: it answers the first limit bytes, whether they were
-// cut, and the read's error. A read that ended on an error is cut as well, where the error came:
-// that can be inside a URL before its "@", as the bound's place can, so a caller that quotes what
-// was kept and drops the error still gives it to Read as cut.
-func ReadBounded(r io.Reader, limit int) (kept []byte, cut bool, err error) {
-	kept, err = io.ReadAll(io.LimitReader(r, int64(limit)+1))
-	cut = len(kept) > limit || err != nil
-	return kept[:min(len(kept), limit)], cut, err
 }

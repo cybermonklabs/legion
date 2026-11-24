@@ -2,16 +2,17 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ErrPullRequestNotFound is a 404 or 410 from GitHub fetching a specific pull request: the pull
@@ -128,7 +129,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var commits []commitPayload
-	if err := json.Unmarshal(commitsBody, &commits); err != nil {
+	if err := commitsBody.Decode(&commits); err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("decode first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	if len(commits) == 0 {
@@ -177,7 +178,7 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var payload pullRequestPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return pullRequestPayload{}, fmt.Errorf("decode %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	return payload, nil
@@ -208,7 +209,7 @@ func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, toke
 		return nil, nil
 	}
 	var payloads []pullRequestPayload
-	if err := json.Unmarshal(body, &payloads); err != nil {
+	if err := body.Decode(&payloads); err != nil {
 		return nil, fmt.Errorf("decode the pull requests of %s@%s: %w", repoFull, sha, err)
 	}
 	return payloads, nil
@@ -243,7 +244,8 @@ func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner,
 
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
 // GitHub reports no author for the commit (an unlinked email still carries a committer date).
-// Neither present is a malformed answer.
+// Neither present is a malformed answer, whose error names the commit by its sha only where the
+// sha is one, forty hex digits (commitSHA): the sha is GitHub's words, or a stand-in's.
 func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Author != nil {
 		return c.Commit.Author.Date, nil
@@ -251,8 +253,15 @@ func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Committer != nil {
 		return c.Commit.Committer.Date, nil
 	}
-	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", c.SHA)
+	shown := "(a sha that is not a commit's)"
+	if commitSHA.MatchString(c.SHA) {
+		shown = c.SHA
+	}
+	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", shown)
 }
+
+// commitSHA is a commit's sha as GitHub writes one: forty lowercase hex digits.
+var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func labelNames(labels []githubLabel) []string {
 	names := make([]string, len(labels))
@@ -278,9 +287,14 @@ type searchPullRequestsResponse struct {
 			Nodes      []searchPullRequestNode `json:"nodes"`
 		} `json:"search"`
 	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors"`
+	// Errors are GitHub's words beside the data, held with the request's record
+	// (redact.Answer.Decode): an answer in GitHub's place can echo the token there.
+	Errors []searchError `json:"errors"`
+}
+
+// searchError is one entry of a search answer's errors.
+type searchError struct {
+	Message redact.RemoteText `json:"message"`
 }
 
 type searchPullRequestsPage struct {
@@ -572,7 +586,7 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
 	}
 	var response searchPullRequestsResponse
-	if err := json.Unmarshal(body, &response); err != nil {
+	if err := body.Decode(&response); err != nil {
 		return searchPage{}, fmt.Errorf("decode page after %q: %w", after, err)
 	}
 	if len(response.Errors) > 0 {

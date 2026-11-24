@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
@@ -44,6 +45,10 @@ type who struct {
 // with receipt times and Postgres commit timestamps on the same box.
 type callResult struct {
 	status int
+	// answer is the answer as redact.ReadAnswer read it: a message prints its words through the
+	// rule (text), and a decode reads it (Decode), whose error quotes no value. body is its bytes,
+	// the data a run measures, hashes and keeps (redact.Answer.StreamTo), which no message prints.
+	answer redact.Answer
 	body   []byte
 	// etag is the answer's ETag header, empty when it carries none.
 	etag string
@@ -56,14 +61,32 @@ type callResult struct {
 	err      error
 }
 
+// answerLimit bounds one answer the load test reads: a seeded page is far smaller.
+const answerLimit = 64 << 20
+
 func (r callResult) ok() bool { return r.err == nil && r.status/100 == 2 }
 
-// errorCode is the code a non-2xx answer's body names; "" for a 2xx answer or a transport error.
-func (r callResult) errorCode() string {
+// text is the answer's words as a message prints them (answerWords).
+func (r callResult) text() string { return answerWords(r.answer) }
+
+// answerWords is answer's words as a message prints them: the rule's reading, with every
+// credential the request carried redacted (redact.Answer.Words), cut to 300 bytes (trunc).
+func answerWords(answer redact.Answer) string { return trunc([]byte(answer.Words().String())) }
+
+// errorCode is the code a non-2xx answer's body names (writeError writes {"error": ..., "code":
+// ...}); empty for a 2xx answer, a transport error, and a body that names none or is not JSON at
+// all. It is Dispatch's word, held as redact.RemoteText with every credential the request carried
+// redacted (redact.Answer.Decode), since whatever answers in Dispatch's place can echo the bearer
+// back: a caller compares it through the box and prints it as it prints itself.
+func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
-		return ""
+		return redact.RemoteText{}
 	}
-	return errorCode(r.body)
+	var refusal struct {
+		Code redact.RemoteText `json:"code"`
+	}
+	_ = r.answer.Decode(&refusal)
+	return refusal.Code
 }
 
 // transient is a failure worth retrying: a transport error, 429 or 5xx.
@@ -143,8 +166,11 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	if err == nil {
 		res.status = resp.StatusCode
 		res.etag = resp.Header.Get("ETag")
-		res.body, err = io.ReadAll(resp.Body)
+		res.answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
+		var body bytes.Buffer
+		_, _ = res.answer.StreamTo(&body)
+		res.body = body.Bytes()
 	}
 	res.end = time.Now().UnixNano()
 	res.err = err
@@ -168,22 +194,12 @@ func (a *api) callRetryKeyed(ctx context.Context, method, path string, w who, bo
 	for attempt := 0; ; attempt++ {
 		res := a.callKeyed(ctx, method, path, w, body, key)
 		transient := res.transient() ||
-			(key != "" && res.status == http.StatusConflict && errorCode(res.body) == contracts.IdempotencyKeyInFlight)
+			(key != "" && res.status == http.StatusConflict && res.errorCode().Equal(contracts.IdempotencyKeyInFlight))
 		if res.ok() || !transient || attempt >= 6 || ctx.Err() != nil {
 			return res
 		}
 		time.Sleep(time.Second)
 	}
-}
-
-// errorCode is the code a Dispatch error body names (writeError writes {"error": ..., "code": ...});
-// "" when the body names none or is not JSON at all.
-func errorCode(body []byte) string {
-	var refusal struct {
-		Code string `json:"code"`
-	}
-	_ = json.Unmarshal(body, &refusal)
-	return refusal.Code
 }
 
 // sessionActor is a write's actor body field for a session id, the form a request body and

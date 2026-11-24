@@ -2,6 +2,7 @@ package oidctest
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net"
 	"net/http"
@@ -44,7 +45,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i.mu.Lock()
-	if failure := flow.token; failure.status != 0 || failure.drop {
+	if failure := flow.token; failure.status != 0 || failure.drop || failure.statusLine != "" {
 		// The failure and the refresh count are read and kept under the lock; the answer is written
 		// without it, as the delay above and handleRevoke's failure answer are.
 		if r.PostForm.Get("grant_type") == "refresh_token" {
@@ -55,6 +56,15 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		case failure.drop:
 			if hijacker, ok := w.(http.Hijacker); ok {
 				if conn, _, err := hijacker.Hijack(); err == nil {
+					_ = conn.Close()
+				}
+			}
+		case failure.statusLine != "":
+			if hijacker, ok := w.(http.Hijacker); ok {
+				if conn, buf, err := hijacker.Hijack(); err == nil {
+					const page = "<html>gateway</html>"
+					_, _ = fmt.Fprintf(buf, "HTTP/1.1 %s\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", failure.statusLine, len(page), page)
+					_ = buf.Flush()
 					_ = conn.Close()
 				}
 			}

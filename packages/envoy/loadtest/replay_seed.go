@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // replayIDsDDL is the logged-to-local id map a seed writes as it goes and a resumed seed reads,
@@ -166,15 +168,27 @@ type replaySeeder struct {
 }
 
 // seedError stops the seed: a refusal that is not transient, named by step, logged id, status and
-// Dispatch's error code, never the body.
+// Dispatch's error code, never the body. The code is Dispatch's word, held as redact.RemoteText,
+// which prints only the rule's reading of it under every verb.
 type seedError struct {
 	step, logged string
 	status       int
-	code         string
+	code         redact.RemoteText
+}
+
+// newSeedError is the refusal of step for logged, with Dispatch's status and code.
+func newSeedError(step, logged string, status int, code redact.RemoteText) *seedError {
+	return &seedError{step: step, logged: logged, status: status, code: code}
 }
 
 func (e *seedError) Error() string {
 	return fmt.Sprintf("%s %s: status %d code %q", e.step, e.logged, e.status, e.code)
+}
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this error's fields.
+func (e *seedError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
 }
 
 func (s *replaySeeder) run(ctx context.Context, plans []seedIssuePlan) error {
@@ -292,7 +306,9 @@ func jsonBody(v any) rawBody {
 }
 
 // actorOf is how the seed acts as a logged actor: a session through the agent bearer with the
-// session named in the body, a user through the identity header.
+// session named in the body, a user through the identity header. Any other kind is refused, and not
+// named: Dispatch names no closed list of kinds, so a kind has no shape a line could hold it to, and
+// whatever answered in Dispatch's place may have written anything there.
 func actorOf(a *replayActor) (who, map[string]any, error) {
 	if a == nil {
 		return who{}, sessionActor(replaySeedActorID), nil
@@ -304,7 +320,7 @@ func actorOf(a *replayActor) (who, map[string]any, error) {
 	case "user":
 		return who{person: a.ID}, nil, nil
 	}
-	return who{}, nil, fmt.Errorf("actor kind %q cannot be acted as", a.Kind)
+	return who{}, nil, errors.New("an actor of a kind other than session or user cannot be acted as")
 }
 
 // withActor adds the body's actor when the request acts as a session.
@@ -360,7 +376,7 @@ func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) 
 			accepted = accepted || res.status == st
 		}
 		if !accepted {
-			return nil, &seedError{step: sw.step, logged: sw.logged, status: res.status, code: errorCode(res.body)}
+			return nil, newSeedError(sw.step, sw.logged, res.status, res.errorCode())
 		}
 		if res.ok() {
 			s.record(sw.kind, sw.issue, sw.docBytes, sw.docID, time.Duration(res.end-res.start), before, after)
@@ -498,9 +514,13 @@ func (s *replaySeeder) issueBody(p seedIssuePlan) (who, map[string]any, int, err
 	return w, withActor(body, actor), len(spec), nil
 }
 
+// mapIssue maps p's issue to the key Dispatch created it as (createIssue) or holds it under (an
+// issue adopted from the database). A key that is not p's is refused, and named only in an issue
+// key's shape (shownKey): Dispatch's answer, or whatever answers in its place, can echo the
+// request's bearer there.
 func (s *replaySeeder) mapIssue(ctx context.Context, p seedIssuePlan, key, primary string) error {
 	if key != p.Key {
-		return fmt.Errorf("issue number %d was created as %s, want %s: the numbering no longer matches the bundle", p.Number, key, p.Key)
+		return fmt.Errorf("issue number %d was created as %s, want %s: the numbering no longer matches the bundle", p.Number, shownKey(key), p.Key)
 	}
 	if !p.placeholder() {
 		if err := s.ids.put(ctx, idArtifact, primaryArtifact(p.Issue).ID, primary); err != nil {
@@ -951,7 +971,7 @@ func (s *replaySeeder) restoreOps(ctx context.Context, d *issueDoc, markdown, pa
 	p := d.plan
 	res := s.api.call(ctx, "GET", "/api/v1/artifacts/"+d.local+"/blocks", who{}, nil)
 	if !res.ok() {
-		return nil, &seedError{step: "blocks-read", logged: d.a.ID, status: res.status, code: errorCode(res.body)}
+		return nil, newSeedError("blocks-read", d.a.ID, res.status, res.errorCode())
 	}
 	var blocks []struct {
 		ID   string `json:"id"`

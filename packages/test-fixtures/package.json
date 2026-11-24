@@ -33,6 +33,10 @@
       "types": "./src/loopback-host.ts",
       "bun": "./src/loopback-host.ts"
     },
+    "./print-test": {
+      "types": "./src/print-test.ts",
+      "bun": "./src/print-test.ts"
+    },
     "./standin-body": {
       "types": "./src/standin-body.ts",
       "bun": "./src/standin-body.ts"

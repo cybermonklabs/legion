@@ -98,12 +98,12 @@ func heldPart(text, planted string) string {
 }
 
 // A listener's answer longer than refusalBodyLimit whose bound falls inside a URL's user name,
-// before its "@", is named in the error with no part of that user name, by every reader: the read
-// knows its bound cut the body and drops the run it stopped inside before the URL rule reads it,
-// and a 200's body, read whole, is cut only after the rule. A cut made first leaves the user
-// name's start where the rule reads it as the URL's host. A body whose read ends on an error
-// inside the user name, short of the bound, is cut there as well, and a reader that quotes it
-// with its error dropped names no part of the user name either.
+// before its "@", is named in the error with no part of that user name, by every reader that
+// quotes a refusal: the read knows its bound cut the body and drops the run it stopped inside
+// before the URL rule reads it. A cut made first leaves the user name's start where the rule
+// reads it as the URL's host. A 200's body is data, which the error quotes none of
+// (listenerAnswer), and a body whose read ends on an error is no body the reader quotes
+// (oauth2call.ReadAnswer): neither error names any of the answer, the user name among it.
 func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 	cutAt := " https://" + plantedUser[:len("qzv-plan")]
 	body := strings.Repeat("w", refusalBodyLimit-len(cutAt)) + " https://" + plantedUser + "@listener.example/v1/messages/publish was the listener asked"
@@ -114,24 +114,27 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
+		// quoted is whether the error names the listener's answer: a refusal's, and not a
+		// 200's, which is data.
+		quoted bool
 		call   func(p *HTTPPublisher) error
 	}{
-		{"Publish", http.StatusInternalServerError, func(p *HTTPPublisher) error {
+		{"Publish", http.StatusInternalServerError, true, func(p *HTTPPublisher) error {
 			return p.Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
 		}},
-		{"ReadSessionRegistration", http.StatusInternalServerError, func(p *HTTPPublisher) error {
+		{"ReadSessionRegistration", http.StatusInternalServerError, true, func(p *HTTPPublisher) error {
 			_, err := p.ReadSessionRegistration(ctx, "ses_s")
 			return err
 		}},
-		{"RoleHolder", http.StatusInternalServerError, func(p *HTTPPublisher) error {
+		{"RoleHolder", http.StatusInternalServerError, true, func(p *HTTPPublisher) error {
 			_, _, err := p.RoleHolder(ctx, "legion-x")
 			return err
 		}},
-		{"RoleHolder's body of a 200", http.StatusOK, func(p *HTTPPublisher) error {
+		{"RoleHolder's body of a 200", http.StatusOK, false, func(p *HTTPPublisher) error {
 			_, _, err := p.RoleHolder(ctx, "legion-x")
 			return err
 		}},
-		{"DeleteSession", http.StatusInternalServerError, func(p *HTTPPublisher) error {
+		{"DeleteSession", http.StatusInternalServerError, true, func(p *HTTPPublisher) error {
 			_, err := p.DeleteSession(ctx, "ses_s", DeleteConditions{NotRegisteredAfter: time.Now()})
 			return err
 		}},
@@ -143,8 +146,8 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 			err := tc.call(New(server.URL, ""))
-			if err == nil || !strings.Contains(err.Error(), "wwww") {
-				t.Fatalf("%s, the listener answering %d: %v; want an error naming the listener's answer", tc.name, tc.status, err)
+			if err == nil || strings.Contains(err.Error(), "wwww") != tc.quoted {
+				t.Fatalf("%s, the listener answering %d: %v; want an error that names the listener's answer: %t", tc.name, tc.status, err, tc.quoted)
 			}
 			if part := heldPart(err.Error(), plantedUser); part != "" {
 				t.Fatalf("%s, the listener answering %d: an error ending %q, which holds %q of the URL's user name",
@@ -162,8 +165,8 @@ func TestAnAnswerCutInsideAURLsUserNameNamesNoPartOfIt(t *testing.T) {
 			t.Fatalf("the served half of the body ends %q, not inside the user name", ended[len(ended)/2-len(cutAt):len(ended)/2])
 		}
 		_, err := New(cutAnswer(t, http.StatusInternalServerError, ended), "").ReadSessionRegistration(ctx, "ses_s")
-		if err == nil || !strings.Contains(err.Error(), "wwww") {
-			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: %v; want an error naming the listener's answer", err)
+		if err == nil || strings.Contains(err.Error(), "wwww") {
+			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: %v; want an error that names none of the answer", err)
 		}
 		if part := heldPart(err.Error(), plantedUser); part != "" {
 			t.Fatalf("ReadSessionRegistration, its answer's body ending on a read error: an error ending %q, which holds %q of the URL's user name",

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ttlFlag is --ttl's usage line, the request form's and the exec form's alike.
@@ -36,9 +37,11 @@ func ttlSeconds(flags *flagSet, ttl time.Duration) (*int, error) {
 // a pending request this call joined (`coalesced`, which a broker from before --ttl answers for
 // any request naming the same secrets, whatever lifetime either asked for); the error names it.
 // This check stays: a client can meet an older broker or helper on every future independent
-// rollout.
+// rollout. The ids it ends are the broker's text, sent back only as RemoteText.SendBack answers
+// them: an id the rule does not print as it came is sent nowhere, and the error says it was not
+// ended.
 func grantedLifetime(ctx context.Context, c *client, signer Signer, result RequestResult, ttl *int) error {
-	if ttl == nil || result.State == "denied" || (result.LifetimeSeconds != nil && *result.LifetimeSeconds == *ttl) {
+	if ttl == nil || result.State.Equal("denied") || (result.LifetimeSeconds != nil && *result.LifetimeSeconds == *ttl) {
 		return nil
 	}
 	given := "no lifetime"
@@ -46,22 +49,30 @@ func grantedLifetime(ctx context.Context, c *client, signer Signer, result Reque
 		given = fmt.Sprintf("a lifetime of %ds", *result.LifetimeSeconds)
 	}
 	// The request and grant ids are the broker's, so each prints as the broker's address lets its
-	// answer print, or by its shape (idWords); the calls below take them as they came.
-	words := func(id string) string { return idWords(c.baseURL, id) }
+	// answer print, or by its shape (idWordsOf).
+	words := func(id redact.RemoteText) string { return idWordsOf(c.baseURL, id) }
 	mismatch := fmt.Sprintf("the broker gave request %s %s, not --ttl %ds", words(result.RequestID), given, *ttl)
 	const why = "the broker or this machine's agent-secrets-helper is from before --ttl; restart the helper on the pinned release, or request without --ttl"
 	switch {
 	case result.GrantID != nil && result.RecordID != nil:
 		return fmt.Errorf("%s, so nothing was run and the existing grant %s was left as approved: %s", mismatch, words(*result.GrantID), why)
-	case result.State == "pending" && result.Coalesced:
+	case result.State.Equal("pending") && result.Coalesced:
 		return fmt.Errorf("%s, so nothing was run and the existing pending request %s was left waiting for its approver: %s", mismatch, words(result.RequestID), why)
 	case result.GrantID != nil:
-		if err := c.RevokeGrant(ctx, signer, *result.GrantID); err != nil {
+		grantID, sent := result.GrantID.SendBack()
+		if !sent {
+			return fmt.Errorf("%s, and its grant %s was not ended: %s; nothing was run: %s", mismatch, words(*result.GrantID), notSentBack, why)
+		}
+		if err := c.RevokeGrant(ctx, signer, grantID); err != nil {
 			return fmt.Errorf("%s, and revoking its grant %s failed: %w", mismatch, words(*result.GrantID), err)
 		}
 		return fmt.Errorf("%s, so its grant %s was ended and nothing was run: %s", mismatch, words(*result.GrantID), why)
-	case result.State == "pending":
-		if err := c.CancelRequest(ctx, signer, result.RequestID); err != nil {
+	case result.State.Equal("pending"):
+		requestID, sent := result.RequestID.SendBack()
+		if !sent {
+			return fmt.Errorf("%s, and it was not cancelled: %s; nothing was run: %s", mismatch, notSentBack, why)
+		}
+		if err := c.CancelRequest(ctx, signer, requestID); err != nil {
 			return fmt.Errorf("%s, and cancelling it failed: %w", mismatch, err)
 		}
 		return fmt.Errorf("%s, so the request was ended and nothing was run: %s", mismatch, why)

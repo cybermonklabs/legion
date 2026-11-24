@@ -3,11 +3,12 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // Client is the Dispatch surface the workflow needs. It deliberately exposes only the reads and
@@ -39,9 +40,11 @@ type Client interface {
 	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
 	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
-	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
-	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
-	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
+	// EventsAfter is the issue's event log after a sequence, oldest first, each event typed in the
+	// shape the durable stream carries (Event), its payload as data: the boot catch-up's read of
+	// what a root's durable stream may not have delivered, the set-back's check of later status
+	// changes, and the read of who set an issue's label.
+	EventsAfter(ctx context.Context, key string, after int64) ([]Event, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	// PlanDocument reads one version of a document with its typed blocks and the issue carrying
 	// it (DocumentVersion): what register_plan reads a plan from at the version its owner gave. A
@@ -500,7 +503,7 @@ const ArtifactNotFound = "ARTIFACT_NOT_FOUND"
 // artifactNotFound says whether refusal is Dispatch answering that it holds no document of the id
 // a read of one document names: 404 under the code ArtifactNotFound (ErrDocumentNotFound).
 func artifactNotFound(refusal *Error) bool {
-	return refusal.Status == http.StatusNotFound && refusal.Code == ArtifactNotFound
+	return refusal.Status == http.StatusNotFound && refusal.Code.Equal(ArtifactNotFound)
 }
 
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
@@ -526,12 +529,20 @@ type HandoffAuthor struct {
 // IsSession says whether the record's author is the session id.
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
-// Error is a non-success response from Dispatch. Code is empty only when the response did not
-// carry Dispatch's normal error body.
+// Error is a non-success response from Dispatch. Code is Dispatch's code and Said its sentence,
+// each as it came, held as Dispatch's words (oauth2call.RemoteText): what a decision on the
+// refusal reads (Claimed, Contended, NoRoute, PermanentRefusal), compared as it came (Equal,
+// HasPrefix, Contains, IsEmpty), since the rule's reading of a field whose URL it cannot read is
+// WordsNotReadable and a run of a value the request carried - a message that quotes the code, the
+// token - is cut from it. Each prints only as the rule reads it. Code is empty only when the
+// response did not carry Dispatch's normal error body. Message is the sentence the error prints:
+// Said as the rule reads it, the rule's reading of a body that is not Dispatch's refusal, or the
+// status's text where neither says anything.
 type Error struct {
 	Status  int
-	Code    string
+	Code    oauth2call.RemoteText
 	Message string
+	Said    oauth2call.RemoteText
 }
 
 // Missing says whether a Dispatch call failed because what it asked for is not there, as against
@@ -545,14 +556,14 @@ func Missing(err error) bool {
 // caller may not release (409 IssueClaimed).
 func Claimed(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == IssueClaimed
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code.Equal(IssueClaimed)
 }
 
 // Contended is whether err is Dispatch's answer that the claim changed twice while the request
 // ran, so nothing was applied and nobody's liveness was checked (409 ClaimContended).
 func Contended(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == ClaimContended
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code.Equal(ClaimContended)
 }
 
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
@@ -594,8 +605,8 @@ const IssueNotFound = "ISSUE_NOT_FOUND"
 // Dispatch's, so the spellings change together.
 func NoRoute(err error) bool {
 	var refusal *Error
-	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
-		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code.Equal(noRouteCode) &&
+		refusal.Said.HasPrefix(noRouteMessagePrefix)
 }
 
 const (
@@ -621,15 +632,15 @@ func PermanentRefusal(err error) (*Error, bool) {
 		return nil, false
 	}
 	switch {
-	case refusal.Code == "ISSUE_CHANGED",
-		refusal.Code == "",
+	case refusal.Code.Equal("ISSUE_CHANGED"),
+		refusal.Code.IsEmpty(),
 		refusal.Status < 400 || refusal.Status >= 500,
 		refusal.Status == http.StatusRequestTimeout,
 		refusal.Status == http.StatusTooManyRequests,
 		refusal.Status == http.StatusUnauthorized,
 		refusal.Status == http.StatusForbidden,
-		refusal.Status == http.StatusConflict && refusal.Code == ParentContended,
-		refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_JSON" && unknownNewerField(refusal.Message):
+		refusal.Status == http.StatusConflict && refusal.Code.Equal(ParentContended),
+		refusal.Status == http.StatusBadRequest && refusal.Code.Equal("INVALID_JSON") && unknownNewerField(refusal.Said):
 		return nil, false
 	}
 	return refusal, true
@@ -643,9 +654,11 @@ func PermanentRefusal(err error) (*Error, bool) {
 // body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
-func unknownNewerField(message string) bool {
+// unknownNewerField is whether said, Dispatch's sentence as it came, refuses one of newerFields by
+// name.
+func unknownNewerField(said oauth2call.RemoteText) bool {
 	for _, field := range newerFields {
-		if strings.Contains(message, `unknown field "`+field+`"`) {
+		if said.Contains(`unknown field "` + field + `"`) {
 			return true
 		}
 	}
@@ -693,9 +706,11 @@ func Unreachable(err error) bool {
 	return !permanent
 }
 
+// Error is Dispatch's code and its sentence, each as the rule reads it, or the sentence alone where
+// Dispatch sent no code.
 func (e *Error) Error() string {
-	if e.Code == "" {
+	if e.Code.IsEmpty() {
 		return e.Message
 	}
-	return e.Code + ": " + e.Message
+	return e.Code.String() + ": " + e.Message
 }

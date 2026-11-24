@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  An App on `token_command` no longer prints the login GitHub's GraphQL viewer names for a
+  released token as it came. That read is made with the released token, so whatever answers in
+  GitHub's place can echo the token back as the login, and the refusals printed it: a login that is
+  no App's bot, a token that acts as another bot than the App acted as, the App read of its slug
+  (in the refusal, in the path of GitHub's answer, which the start prints on a rate limit, and in
+  net/http's error for a read that got no answer), the bot user's read of the login, and the App id
+  GitHub answered. Each now prints the login only as a login GitHub allows, the slug as that
+  login's, and the id only where it is a number; every check still decides on the answer as it
+  came.
+time: 2026-11-23T06:24:33Z
+custom:
+    Issue: pr4368

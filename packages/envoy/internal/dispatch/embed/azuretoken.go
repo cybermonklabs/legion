@@ -3,10 +3,8 @@ package embed
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -124,9 +123,8 @@ func (s *EntraTokenSource) Token(ctx context.Context) (string, error) {
 }
 
 type entraTokenResponse struct {
-	AccessToken string          `json:"access_token"`
-	ExpiresIn   json.RawMessage `json:"expires_in"`
-	Error       string          `json:"error"`
+	AccessToken string       `json:"access_token"`
+	ExpiresIn   entraSeconds `json:"expires_in"`
 }
 
 // exchange makes one client-credentials request. Its errors name the token file's path, the HTTP
@@ -157,41 +155,50 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 	request.Header.Set("Accept", "application/json")
 	response, err := s.http.Do(request)
 	if err != nil {
-		return "", 0, fmt.Errorf("embed: entra token exchange: %w", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is named by its class alone (redact.Class).
+		return "", 0, fmt.Errorf("embed: entra token exchange: %w", redact.Class(err))
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, entraResponseLimit))
+	answer, err := redact.ReadAnswer(response, entraResponseLimit)
 	if err != nil {
 		return "", 0, fmt.Errorf("embed: entra read response: %w", err)
 	}
-	var decoded entraTokenResponse
-	decodeErr := json.Unmarshal(body, &decoded)
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		if decoded.Error != "" {
-			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", response.Status, decoded.Error)
+		var refusal struct {
+			Error redact.RemoteText `json:"error"`
 		}
-		return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s", response.Status)
+		if answer.Decode(&refusal) == nil && !refusal.Error.IsEmpty() {
+			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", redact.StatusLine(response.StatusCode), refusal.Error)
+		}
+		return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s", redact.StatusLine(response.StatusCode))
 	}
-	if decodeErr != nil {
-		return "", 0, fmt.Errorf("embed: entra decode response: %w", decodeErr)
+	var decoded entraTokenResponse
+	if err := answer.Decode(&decoded); err != nil {
+		return "", 0, fmt.Errorf("embed: entra decode response: %w", err)
 	}
 	if decoded.AccessToken == "" {
 		return "", 0, errors.New("embed: entra answered no access_token")
 	}
-	lifetime, err := entraLifetime(decoded.ExpiresIn)
-	if err != nil {
-		return "", 0, err
+	if decoded.ExpiresIn <= 0 {
+		return "", 0, errors.New("embed: entra answered an expires_in that is no positive number of seconds")
 	}
-	return decoded.AccessToken, lifetime, nil
+	return decoded.AccessToken, time.Duration(decoded.ExpiresIn) * time.Second, nil
 }
 
-// entraLifetime reads expires_in, the token's lifetime in seconds, which may arrive as a JSON
-// number or as a string; both are accepted.
-func entraLifetime(raw json.RawMessage) (time.Duration, error) {
-	value := strings.Trim(string(raw), `"`)
-	seconds, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || seconds <= 0 {
-		return 0, fmt.Errorf("embed: entra answered expires_in %q, want a positive number of seconds", value)
+// entraSeconds is expires_in, the token's lifetime in seconds, which may arrive as a JSON number
+// or as a string; both are read. It keeps nothing of the value but the number, and a value it
+// cannot read is zero, which exchange refuses with any other that is not positive, without quoting
+// it: an answer in Entra's place can put the assertion the exchange carried there.
+type entraSeconds int64
+
+// UnmarshalJSON reads data, a JSON number or a JSON string of digits, as a number of seconds, and
+// anything else as zero. It returns no error, so no part of data reaches one.
+func (s *entraSeconds) UnmarshalJSON(data []byte) error {
+	seconds, err := strconv.ParseInt(strings.Trim(string(data), `"`), 10, 64)
+	if err != nil {
+		seconds = 0
 	}
-	return time.Duration(seconds) * time.Second, nil
+	*s = entraSeconds(seconds)
+	return nil
 }

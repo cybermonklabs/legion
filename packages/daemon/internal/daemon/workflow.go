@@ -546,7 +546,16 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, waits *startWaits
 		return "", err
 	}
 	if logins[appauth.Review] == "" || logins[appauth.Review] == logins[appauth.Implement] {
-		return "", fmt.Errorf("the review App names bot login %q and the implement App %q; the workflow needs two different Apps", logins[appauth.Review], logins[appauth.Implement])
+		// Each login is GitHub's answer to an App read, so it prints only as a login GitHub allows,
+		// and a login GitHub answered empty prints empty.
+		shown := func(login string) string {
+			if login == "" {
+				return ""
+			}
+			return githubrest.ShownLogin(login)
+		}
+		return "", fmt.Errorf("the review App names bot login %q and the implement App %q; the workflow needs two different Apps",
+			shown(logins[appauth.Review]), shown(logins[appauth.Implement]))
 	}
 	return logins[appauth.Review], nil
 }

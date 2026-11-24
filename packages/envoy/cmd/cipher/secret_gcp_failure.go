@@ -167,15 +167,16 @@ func gcpMissingPermission(message string) string {
 
 // storeTokens is the token source the Secret Manager client signs its calls with, which keeps its
 // last failure (failure) so a call gRPC refuses as Unauthenticated can say why in this program's
-// own words (storeFailure). A token it fetches clears the failure.
+// own words (storeFailure). A token it fetches clears the failure. Its source is behind the
+// boundary (storeCredentials).
 type storeTokens struct {
-	oauth2.TokenSource
-	mu   sync.Mutex
-	last error
+	source *redact.BoundTokenSource
+	mu     sync.Mutex
+	last   error
 }
 
 func (s *storeTokens) Token() (*oauth2.Token, error) {
-	token, err := s.TokenSource.Token()
+	token, err := s.source.Token()
 	s.mu.Lock()
 	s.last = err
 	s.mu.Unlock()

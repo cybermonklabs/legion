@@ -25,7 +25,18 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// box is s as the broker's text, held as the box, as a decoded answer holds a member the CLI
+// prints.
+func box(s string) redact.RemoteText { return redact.NewRemoteText(s) }
+
+// boxOf is a pointer to box(s), for a member the answer can leave null.
+func boxOf(s string) *redact.RemoteText {
+	held := box(s)
+	return &held
+}
 
 // forged is a broker-answer value that, printed as it came, would end the line it is on, start a
 // line of its own and then rewrite it.
@@ -166,15 +177,15 @@ func TestTheRequestFormsPrintTheBrokersValuesOnOneLine(t *testing.T) {
 func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 	slot := forged
 	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
-	plain := OperatorGrant{GrantID: "grant-1", Granted: "approved", Names: []string{"A", "B"},
-		Approver: new("ada@example.com"), DecidedBy: new("judge:model-1"),
-		Enrollment: OperatorGrantEnrollment{Kind: "session", RuntimeID: "h:1:1", Operator: "ada@example.com"}, ExpiresAt: &at}
+	plain := OperatorGrant{GrantID: box("grant-1"), Granted: box("approved"), Names: []redact.RemoteText{box("A"), box("B")},
+		Approver: boxOf("ada@example.com"), DecidedBy: boxOf("judge:model-1"),
+		Enrollment: OperatorGrantEnrollment{Kind: box("session"), RuntimeID: box("h:1:1"), Operator: box("ada@example.com")}, ExpiresAt: &at}
 	if got, want := grantRow(cipheraddr.New("https://broker.example"), plain), []string{"grant-1", "A,B", "approved", "ada@example.com", "judge:model-1", "session/h:1:1", "ada@example.com", "2026-11-17T09:00:00Z"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("grantRow of plain values = %q, want %q", got, want)
 	}
 	tabbed := "a\tb"
-	row := grantRow(cipheraddr.New("https://broker.example"), OperatorGrant{GrantID: forged, Granted: forged, Names: []string{forged}, Approver: &slot, DecidedBy: &tabbed,
-		Enrollment: OperatorGrantEnrollment{Kind: forged, RuntimeID: "h:1:1", Operator: forged, Slot: &slot}})
+	row := grantRow(cipheraddr.New("https://broker.example"), OperatorGrant{GrantID: box(forged), Granted: box(forged), Names: []redact.RemoteText{box(forged)}, Approver: boxOf(slot), DecidedBy: boxOf(tabbed),
+		Enrollment: OperatorGrantEnrollment{Kind: box(forged), RuntimeID: box("h:1:1"), Operator: box(forged), Slot: boxOf(slot)}})
 	for i, cell := range row {
 		if strings.ContainsAny(cell, "\t\r\n\x1b") {
 			t.Errorf("grantRow cell %d (%s) = %q, which holds a control character", i, grantColumns[i], cell)
@@ -184,11 +195,11 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 		t.Errorf("grantRow = %q, want the grant id %s and the decider %s", row, quotedForged, strconv.Quote(tabbed))
 	}
 
-	if got, want := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: "lcred-1", Host: "box", ApprovedBy: "ada@example.com", IssuedAt: at, ExpiresAt: at}),
+	if got, want := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: box("lcred-1"), Host: box("box"), ApprovedBy: box("ada@example.com"), IssuedAt: at, ExpiresAt: at}),
 		[]string{"lcred-1", "box", "ada@example.com", "2026-11-17T09:00:00Z", "2026-11-17T09:00:00Z", "ok"}; strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("machineRow of plain values = %q, want %q", got, want)
 	}
-	cells := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: forged, Host: forged, ApprovedBy: tabbed, IssuedAt: at, ExpiresAt: at, Expired: true})
+	cells := machineRow(cipheraddr.New("https://broker.example"), OperatorMachine{CredentialID: box(forged), Host: box(forged), ApprovedBy: box(tabbed), IssuedAt: at, ExpiresAt: at, Expired: true})
 	if cells[0] != quotedForged || cells[1] != quotedForged || cells[2] != strconv.Quote(tabbed) || cells[5] != "expired" {
 		t.Errorf("machineRow = %q, want the credential and the host %s and the approver %s", cells, quotedForged, strconv.Quote(tabbed))
 	}
@@ -253,16 +264,20 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 	t.Run("the grant and machine tables", func(t *testing.T) {
 		base := cipheraddr.New("http://demouser7q:demopass9z-not-a-secret@broker.example")
 		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
-		grant := grantRow(base, OperatorGrant{GrantID: planted, Granted: planted, Names: []string{planted}, Approver: &planted,
-			Enrollment: OperatorGrantEnrollment{Kind: planted, RuntimeID: planted, Operator: planted}, ExpiresAt: &at})
-		machine := machineRow(base, OperatorMachine{CredentialID: planted, Host: planted, ApprovedBy: planted, IssuedAt: at, ExpiresAt: at})
+		grant := grantRow(base, OperatorGrant{GrantID: box(planted), Granted: box(planted), Names: []redact.RemoteText{box(planted)}, Approver: boxOf(planted),
+			Enrollment: OperatorGrantEnrollment{Kind: box(planted), RuntimeID: box(planted), Operator: box(planted)}, ExpiresAt: &at})
+		machine := machineRow(base, OperatorMachine{CredentialID: box(planted), Host: box(planted), ApprovedBy: box(planted), IssuedAt: at, ExpiresAt: at})
 		wantNamedNotPrinted(t, "the rows", strings.Join(grant, "|")+"|"+strings.Join(machine, "|"), []string{cipheraddr.WordsNotPrinted}, planted)
 	})
 }
 
-// TestTheEnrollmentIDsPrintOnOneLine: the enrollment enroll and a pod's enrolment print, which the
-// broker made, prints as it came where it holds no control character and Go-quoted where it holds
-// one. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for register.
+// TestTheEnrollmentIDsPrintOnOneLine: the enrollment enroll prints, which the broker made through
+// the helper, prints as it came where it holds no control character and Go-quoted where it holds
+// one. A pod's enrolment and a sign-in keep the id the broker answers and sign every later call
+// with it, so they take it only where the rule prints it as it came (RemoteText.SendBack): one
+// that holds a control character is refused, on one line, saying the id is not printed, and is
+// printed and kept nowhere. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for
+// register.
 func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 	t.Run("enroll", func(t *testing.T) {
 		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"enroll-session-key": {OK: true, EnrollmentID: forged}})
@@ -291,10 +306,13 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 		t.Setenv("AGENT_SECRETS_KEY_DIR", out)
 		t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 		var stdout, stderr bytes.Buffer
-		if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", out}, &stdout, &stderr); code != 0 {
-			t.Fatalf("enroll --pod = %d (stderr %q), want 0", code, stderr.String())
+		if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", out}, &stdout, &stderr); code != 1 {
+			t.Fatalf("enroll --pod = %d (stdout %q, stderr %q), want 1: an enrollment id with a control character is no id to keep", code, stdout.String(), stderr.String())
 		}
-		everyLineIsOne(t, "enroll --pod's stdout", stdout.String(), 1)
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), "not printed") || strings.Contains(stderr.String(), "FORGED") {
+			t.Errorf("enroll --pod printed stdout %q, stderr %q; want nothing on stdout and a refusal saying the id is not printed", stdout.String(), stderr.String())
+		}
+		everyLineIsOne(t, "enroll --pod's stderr", stderr.String(), 0)
 	})
 	t.Run("a pod's refused enrolment", func(t *testing.T) {
 		tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
@@ -328,10 +346,14 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 		t.Setenv(cipherclient.SessionVar, "")
 		forceMetadataMachine(t)
 		var stdout bytes.Buffer
-		if err := login(context.Background(), &stdout, &approvingWriter{t: t, issuer: issuer}); err != nil {
-			t.Fatalf("login: %v", err)
+		err := login(context.Background(), &stdout, &approvingWriter{t: t, issuer: issuer})
+		if err == nil {
+			t.Fatalf("login took an enrollment id with a control character in it: stdout %q", stdout.String())
 		}
-		everyLineIsOne(t, "login's stdout", stdout.String(), 1)
+		if stdout.Len() != 0 || !strings.Contains(err.Error(), "not printed") || strings.Contains(err.Error(), "FORGED") {
+			t.Errorf("login printed stdout %q and refused %q; want nothing on stdout and a refusal saying the id is not printed", stdout.String(), err)
+		}
+		everyLineIsOne(t, "login's refusal", err.Error(), 0)
 	})
 }
 
@@ -496,8 +518,8 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 	t.Run("the grant and machine tables", func(t *testing.T) {
 		at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 		cells := func(base cipheraddr.Address, id string) string {
-			grant := grantRow(base, OperatorGrant{GrantID: id, Names: []string{"SOME_SECRET"}, ExpiresAt: &at})
-			machine := machineRow(base, OperatorMachine{CredentialID: id, IssuedAt: at, ExpiresAt: at})
+			grant := grantRow(base, OperatorGrant{GrantID: box(id), Names: []redact.RemoteText{box("SOME_SECRET")}, ExpiresAt: &at})
+			machine := machineRow(base, OperatorMachine{CredentialID: box(id), IssuedAt: at, ExpiresAt: at})
 			return grant[0] + "|" + machine[0]
 		}
 		withPassword := cipheraddr.New("http://tokuser:" + uuidPassword + "@broker.example")
