@@ -285,6 +285,22 @@ func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
 	}
 }
 
+// resumeHeld, at the edge, resumes sessionID's relay as a registration does: a resume starts this
+// replica's relay run for the session if it had ended for want of an admission, which the entry's
+// change (a relayCheck) does not. It is for the claim refresh that just recorded the session's
+// admission (admitHeld). It does nothing for a request no edge listener admitted (heldProjects),
+// which every listener but an edge one is, nor for a nil delivery or one with no relay: on a hub a
+// run ends for want of a consumer or a grant (restartFailed), which a claim cannot cure, and a
+// session the claim moves here has no run, which apply starts on the entry's change (run == nil).
+func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
+	if d == nil || d.relay == nil {
+		return
+	}
+	if _, held := heldProjects(r); held {
+		d.relay.registered(sessionID, false, 0)
+	}
+}
+
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is
