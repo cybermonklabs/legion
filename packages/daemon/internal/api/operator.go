@@ -14,11 +14,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -162,16 +165,22 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 }
 
 // claimRequest is one operator request on an existing claim: event builds the request the claim's
-// machine is posted, or answers the caller itself and reports false. A suspension the machine holds
-// for the agent's turn (supervise.ErrSuspendHeld) is not a refusal: it answers 202 with the claim as
-// it is, still working.
+// machine is posted, or answers the caller itself and reports false, and post posts it, answers
+// every refusal itself and reports the status the success answer takes. A suspend and a stop
+// are posted through claimEvent (answeredStatus): a suspension the machine holds for the agent's
+// turn (supervise.ErrSuspendHeld) is not a refusal, and answers 202 with the claim as it is,
+// still working. A resume starts the claim, and so does a deliver to a suspended claim, which
+// revives it for the task (supervise's deliverResuming): both are answered once that start is
+// under way (startedStatus, dispatch://INFRA-5649 R4), and a deliver to a claim that runs is
+// answered there as before, since it writes no launch.
 //
 // Both reads of the claim are the machine's published view (supervise.Machine.View), never
 // Machine.Claim: a claim whose launch is running holds its machine's lock for as long as the
 // runtime waits on its pod, and a route that read through that lock would not even reach the
 // machine with the suspension that stops that start (dispatch://INFRA-714 R10). The view is what
 // the claim's latest decision left, which is what the answer reports.
-func (s *server) claimRequest(request string, event func(http.ResponseWriter, *http.Request, supervise.Claim) (supervise.Event, bool)) http.HandlerFunc {
+func (s *server) claimRequest(request string, event func(http.ResponseWriter, *http.Request, supervise.Claim) (supervise.Event, bool),
+	post func(http.ResponseWriter, *http.Request, *supervise.Machine, claim.Token, string, supervise.Event) (int, bool)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := claim.Token(r.PathValue("token"))
 		m, ok := s.supervisor.Machine(token)
@@ -183,17 +192,47 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		if !ok {
 			return
 		}
-		held, ok := s.claimEvent(w, r, m, token, request, ev)
+		status, ok := post(w, r, m, token, request, ev)
 		if !ok {
 			return
-		}
-		status := http.StatusOK
-		if held {
-			status = http.StatusAccepted
 		}
 		s.operatorDone(r, token)
 		s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(r.Context(), m.View().Claim))
 	}
+}
+
+// answeredStatus posts ev through claimEvent and reports the status of its success answer: 202
+// for a request the machine held for the agent's turn, 200 for every other it took.
+func (s *server) answeredStatus(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	request string, ev supervise.Event) (int, bool) {
+	held, ok := s.claimEvent(w, r, m, token, request, ev)
+	switch {
+	case !ok:
+		return 0, false
+	case held:
+		return http.StatusAccepted, true
+	}
+	return http.StatusOK, true
+}
+
+// startedStatus posts ev, a request that starts the claim, through startUnderWay, answers every
+// refusal itself, and reports the status of its success answer: 202 for a start this request
+// wrote launching and for a request the machine held, 200 for one that wrote no launch, such as a
+// launch the wake pacing parked.
+func (s *server) startedStatus(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	request string, ev supervise.Event) (int, bool) {
+	underWay, stopping, err := s.startUnderWay(r, m, token, request, ev)
+	switch {
+	case stopping != "":
+		s.refuse(w, r, http.StatusServiceUnavailable, stopping)
+		return 0, false
+	case underWay, errors.Is(err, supervise.ErrSuspendHeld):
+		return http.StatusAccepted, true
+	case err != nil:
+		s.operatorFailure(w, r, request, token, err)
+		return 0, false
+	}
+	return http.StatusOK, true
 }
 
 // claimEvent posts one request to a claim's machine (postClaimEvent), as every operator request
@@ -229,6 +268,84 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 		return false, nil
 	}
 	return true, m.Handle(ctx, ev)
+}
+
+// startUnderWay posts ev, a request that starts a claim that runs nothing — a resume, or the
+// machine's own retry of a failed or retired claim — and reports once that start is under way
+// rather than once it has ended (dispatch://INFRA-5649 R4). A start under Kubernetes waits minutes
+// on a pod, and a route that waited for all of it held its caller past the caller's own timeout:
+// the controller's fresh_session timed out 45 times of 138 calls on 2026-11-12, after 142 to 356 s
+// (dispatch://INFRA-3439, folded into dispatch://INFRA-5649).
+//
+// underWay is whether this decision wrote the claim launching and the store took that write
+// (supervise.Machine.HandleStart), with no error answered before the route answers: the
+// published view then shows the launch, which is what the caller is answered with, and the start
+// goes on or has just ended. The route answers at that write, never later, so a start that hangs
+// holds nobody. A decision that ended without writing a launch reports false, with err what the
+// machine answered, as Handle answers it: a refusal, or nil for a launch the wake pacing parked.
+// One whose answer, an error, had arrived by the moment the route answers reports that error, as
+// Handle would, since that is the fuller answer. That the launch was written, not whether its
+// start has ended, decides underWay, so one request answers alike however fast its runtime
+// starts a process. stopping is the refusal of a request the daemon's stop came before, which
+// asked nothing of the machine.
+//
+// The decision runs on a context of its own (decision), so the route's answer does not cancel it:
+// it outlives the caller's connection, it ends at the daemon's drain, and a suspension cancels the
+// start it runs, as it cancels every start (supervise's stopStart). It takes a store mark of its
+// own (store.ForConcurrentWorker), because it runs on a goroutine beside the request. The claim
+// stays recorded as a route's decision (RouteDecisions) until that decision ends, as it stayed
+// while the route waited for it, so the daemon's stop treats the claim as it did before. Where
+// the route answered before the end, the end is logged (logStartEnded), and the claim's state —
+// `read_state`, `legion claims list` — carries what the start came to: running, or failed with
+// the start's failure.
+func (s *server) startUnderWay(r *http.Request, m *supervise.Machine, token claim.Token, request string,
+	ev supervise.Event) (underWay bool, stopping string, err error) {
+	ctx, decided := s.decision(r, token)
+	if stopping := s.stopRefusal(request); stopping != "" {
+		decided()
+		return false, stopping, nil
+	}
+	launched, done := m.HandleStart(store.ForConcurrentWorker(ctx), ev)
+	select {
+	case err := <-done:
+		decided()
+		return err == nil && wasClosed(launched), "", err
+	case <-launched:
+	}
+	select {
+	case err := <-done:
+		decided()
+		return err == nil, "", err
+	default:
+	}
+	go func() {
+		err := <-done
+		decided()
+		s.logStartEnded(token, request, err)
+	}()
+	return true, "", nil
+}
+
+// wasClosed is whether ch has been closed, without waiting.
+func wasClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// logStartEnded writes the end of a start whose route answered while it ran (startUnderWay): the
+// answer said the start was under way, so this line and the claim's state are where its end is
+// read. A start that ended in an error is logged as a failure (logFailure), at Info once the
+// daemon's stop has begun, since the stop is what ends a start at the drain.
+func (s *server) logStartEnded(token claim.Token, request string, err error) {
+	if err != nil {
+		s.logFailure("api: a start answered while it ran ended in an error", "request", request, "claim", token, "error", err)
+		return
+	}
+	s.log.Info("api: a start answered while it ran ended", "request", request, "claim", token)
 }
 
 // deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
@@ -333,9 +450,13 @@ func forgettable(state supervise.ClaimState) bool {
 // leave behind, and nothing else answers either: a plain retry acts on a failed or retired
 // claim, resuming the session it recorded, or a new one once supervise's Machine.forgetSession
 // has dropped it, while a fresh session reaches every claim of the project that is not in a turn
-// and whose launch is not in flight, and drops that session first. Only the fresh session answers
-// the claim with a phase restart that was refused named on it
-// (OperatorClaim.PhaseNotRestarted).
+// and whose launch is not in flight, and drops that session first. Either answers what the claim
+// does not record on it (OperatorClaim.PhaseNotRestarted): a start that waits for its issue's
+// admission slot, for both, and, for the fresh session alone, a phase restart that was refused,
+// or a start refused once the request had changed the claim.
+//
+// The claim answered is the machine's published view (supervise.Machine.View), never
+// Machine.Claim, which waits out a start still running (dispatch://INFRA-5649 R4).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
@@ -359,42 +480,53 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	} else if s.refusedWhilePaused(w, r, "retry", m.View().Claim) {
 		return
 	} else {
-		status, ok = s.retryStart(w, r, m, token, false)
+		status, notRestarted, _, ok = s.retryStart(w, r, m, token, false, "")
 	}
 	if !ok {
 		return
 	}
 	s.operatorDone(r, token)
-	view := s.operatorAnswer(r.Context(), m.Claim())
+	view := s.operatorAnswer(r.Context(), m.View().Claim)
 	view.PhaseNotRestarted = notRestarted
 	s.writeUnparsedAnswer(w, r, status, view)
 }
 
 // retryStart starts a claim that is running nothing: one that failed or retired, whatever retired
-// it. It answers every refusal itself and reports the status its caller's success answer takes.
-// Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
-// starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
-// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
-// an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
-// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
-// launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
-// gone.
+// it. It answers every refusal itself and reports the status its caller's success answer takes,
+// with the sentence that answer carries (OperatorClaim.PhaseNotRestarted) and whether it started
+// the claim. Whether the retry goes through the issue's phase is restartWorkedPhase's to decide:
+// where it starts that phase again, a relaunched phase worker is handed the phase's task, since a
+// worker relaunched outside its own phase is handed none and does nothing. Every claim it does
+// not reach, an architect among them, is the machine's to answer (machineRetry), relaunched on
+// its own with whatever task it still holds. It is how an operator relaunches the claims a
+// runtime failed to launch — every failed claim in turn, with `legion claims retry --failed` —
+// once the cause is gone.
 //
 // The session is the claim's own either way: this start relaunches the recorded one, or a new one
 // once supervise's Machine.forgetSession has dropped it. A caller that wants a new session forgets
 // it before calling here (freshSession), which is also what reaches a claim this start refuses.
-func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
+// forgot is the session that caller left behind, and "" for the plain retry and for a claim that
+// recorded none. Once a session is forgotten the claim has changed, so a start refused after it is
+// answered as what the request did and not as a refusal of it (refusedAfterTheForget).
+//
+// A restart whose start waits for the issue's admission slot started nothing: started is false,
+// and the sentence names the wait (slotWait.stays), for a caller at claimStartContract or above
+// (waitNamed). Every other start that ran reports started.
+func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
+	forgot string) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
 	if supervise.FailedOrRetired(c.State) {
-		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
-			if refusal != "" {
-				s.refuse(w, r, status, refusal)
-				return 0, false
+		if status, refusal, waits, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
+			switch {
+			case refusal != "":
+				return s.refusedAfterTheForget(w, r, m, token, forgot, refusal, func() { s.refuse(w, r, status, refusal) })
+			case waits != nil:
+				return status, s.waitNamed(r, token, waits.stays(token, c.State, forgot)), false, true
 			}
-			return status, true
+			return status, "", true, true
 		}
 	}
-	return s.machineRetry(w, r, m, token, fresh)
+	return s.machineRetry(w, r, m, token, fresh, forgot)
 }
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
@@ -419,20 +551,29 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
 // rather than reported as a restart.
-func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
+//
+// A restart that ran can still start nothing yet: the workflow writes the worker's start marked
+// for the issue's admission slot wherever the issue's phase keeps one (workflow.StartOrOwe), and
+// the outbox runs no such row while the issue holds no slot (record's outboxInOrder). So the slot
+// is read after the restart is applied, with the issue's record (restartedIssue), and a start
+// that waits for it is reported as waits, for the caller to name in its answer: before
+// dispatch://INFRA-5649 the answer said nothing of it, and the controller read a restart that had
+// not happened. The line this logs says the start waits and for what.
+func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string,
+	waits *slotWait, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
-		return 0, "", false
+		return 0, "", nil, false
 	}
 	if stopping := s.stopRefusal("retry"); stopping != "" {
-		return http.StatusServiceUnavailable, stopping, true
+		return http.StatusServiceUnavailable, stopping, nil, true
 	}
 	recorded, err := s.recordedIssue(r.Context(), c.Issue)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the issue of a phase worker to retry", "claim", token)
-		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record: %v", c.Issue, err), true
+		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record: %v", c.Issue, err), nil, true
 	}
 	if recorded == nil || s.roleFor(recorded.WorkingPhase()) != c.Role {
-		return 0, "", false
+		return 0, "", nil, false
 	}
 	working := recorded.WorkingPhase()
 	fact := intake.Fact(intake.RestartPhase{Issue: c.Issue, Role: c.Role, FreshSession: fresh})
@@ -442,21 +583,98 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: apply the operator's retry of a phase", "claim", token, "issue", c.Issue)
-		return http.StatusInternalServerError, fmt.Sprintf("could not retry %s's phase %s: %v", c.Issue, working, err), true
+		return http.StatusInternalServerError, fmt.Sprintf("could not retry %s's phase %s: %v", c.Issue, working, err), nil, true
 	}
 	if result.Refusal != nil {
-		return result.Refusal.Status, result.Refusal.Message, true
+		return result.Refusal.Status, result.Refusal.Message, nil, true
 	}
-	after, err := s.recordedIssue(r.Context(), c.Issue)
+	after, waits, err := s.restartedIssue(r.Context(), c.Issue, working)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read the issue after the operator's retry of its phase", "claim", token, "issue", c.Issue)
-		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record after the retry: %v", c.Issue, err), true
+		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record after the retry: %v", c.Issue, err), nil, true
 	}
 	if after != nil && after.Phase == phase.Held {
-		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), true
+		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), nil, true
+	}
+	if waits != nil {
+		s.log.Info("api: a retry restarted a phase, and its start was not run: it waits for the issue's admission slot",
+			"claim", token, "issue", c.Issue, "phase", working, "waitsOn", waits.waitsOn)
+		return http.StatusAccepted, "", waits, true
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
-	return http.StatusAccepted, "", true
+	return http.StatusAccepted, "", nil, true
+}
+
+// restartedIssue reads issue's record after the restart of its phase working, and, in the same
+// read-only transaction, what the start that restart wrote waits for: the issue's admission slot,
+// where the issue's phase keeps one (record.KeepsSlot) and no slot row names the issue
+// (record.Store.Slots), which is the rule the outbox holds such a start by; and then the issues the
+// mirror of Dispatch says it waits on that are not done (blockers.Load, blockers.Unfinished),
+// which is what keeps a started issue from getting its slot back. waits is nil where the start
+// waits for no slot, and for an issue the daemon does not record.
+func (s *server) restartedIssue(ctx context.Context, issue string, working phase.Phase) (recorded *record.Issue, waits *slotWait, err error) {
+	err = store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		waits = nil
+		var err error
+		if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil || !record.KeepsSlot(*recorded) {
+			return err
+		}
+		slots, err := s.records.Slots(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, slot := range slots {
+			if slot.Issue == issue {
+				return nil
+			}
+		}
+		rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, []string{issue})
+		if err != nil {
+			return err
+		}
+		waits = &slotWait{issue: issue, phase: working, waitsOn: blockers.Unfinished(rows, issue)}
+		return nil
+	})
+	return recorded, waits, err
+}
+
+// slotWait is a phase start the workflow queued behind its issue's admission slot
+// (restartWorkedPhase): the issue, the phase the start is for, and the issues the issue waits on
+// that are not done, in the order Dispatch lists them.
+type slotWait struct {
+	issue   string
+	phase   phase.Phase
+	waitsOn []string
+}
+
+// showsItsState ends a sentence of what became of a claim: the list its state is published on,
+// in the forms both callers have, and no moment of what comes next (askAgainLater says why).
+const showsItsState = "`read_state` (`legion claims list`) shows its state"
+
+// slot is the wait in words: the slot the issue does not hold, and the issues it waits on.
+func (w slotWait) slot() string {
+	said := fmt.Sprintf("waits for an admission slot of %s, which holds none", w.issue)
+	if len(w.waitsOn) > 0 {
+		said += " and waits on " + strings.Join(w.waitsOn, ", ")
+	}
+	return said
+}
+
+// stays is the sentence of a claim that runs nothing and is left so, its start waiting for the
+// slot: one failed or retired, with the session a fresh session left behind named where there is
+// one (forgot).
+func (w slotWait) stays(token claim.Token, state supervise.ClaimState, forgot string) string {
+	left := ""
+	if forgot != "" {
+		left = " with its recorded session " + forgot + " left behind"
+	}
+	return fmt.Sprintf("%s stays %s%s, and the start of its phase %s %s; %s", token, state, left, w.phase, w.slot(), showsItsState)
+}
+
+// runs is the sentence of a claim that runs again at once, in a new session, while the task of
+// its phase waits for the slot: a suspended claim's fresh session (freshSession).
+func (w slotWait) runs(token claim.Token) string {
+	return fmt.Sprintf("%s is back in a new session, and the task of its phase %s %s; %s", token, w.phase, w.slot(), showsItsState)
 }
 
 // machineRetry is the retry an architect or a phase worker that runs nothing gets from its own
@@ -464,18 +682,53 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 // supervise's Machine.forgetSession has dropped it. The machine refuses it for a claim in any
 // other state, naming that state, and for the daemon's controller, naming who retries it
 // (supervise's operatorRetry). A caller that asked for a new session has forgotten the recorded one
-// before it gets here (freshSession), so the relaunch spawns rather than resumes. A relaunch the
-// machine holds for the agent's turn answers 202, as every operator request on a claim answers one
+// before it gets here (freshSession), so the relaunch spawns rather than resumes, and a refusal
+// then is answered as what the request did (refusedAfterTheForget, forgot).
+//
+// The retry is answered once its start is under way (startUnderWay), 202 with the claim launching,
+// and 200 where it wrote no launch, such as one the wake pacing parked; a relaunch the machine
+// holds for the agent's turn answers 202, as every operator request on a claim answers one
 // (claimRequest).
-func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
-	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
-	if !ok {
-		return 0, false
+func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
+	forgot string) (status int, notRestarted string, started, ok bool) {
+	underWay, stopping, err := s.startUnderWay(r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
+	switch {
+	case stopping != "":
+		return s.refusedAfterTheForget(w, r, m, token, forgot, stopping, func() { s.refuse(w, r, http.StatusServiceUnavailable, stopping) })
+	case underWay, errors.Is(err, supervise.ErrSuspendHeld):
+		return http.StatusAccepted, "", true, true
+	case err != nil:
+		return s.refusedAfterTheForget(w, r, m, token, forgot, err.Error(), func() { s.operatorFailure(w, r, "retry", token, err) })
 	}
-	if held {
-		return http.StatusAccepted, true
+	return http.StatusOK, "", true, true
+}
+
+// refusedAfterTheForget answers a start of a claim that runs nothing which was refused — the
+// workflow's refusal of the phase's restart, the machine's of its retry, the machine's of the
+// resume of a claim suspended before the request, or the daemon's stop —
+// in the words refusal gives. Where nothing of the claim changed before it, forgot is "" and the
+// refusal is the caller's answer, as before (asBefore writes it). Where a fresh session had left
+// the claim's session behind first, the claim has changed, and the answer says so: 200, at both
+// doors, with the refusal and the state the claim stands in, failed or retired with no session,
+// in phaseNotRestarted (dispatch://INFRA-5649 R2). The operator's door already answered that way
+// for every other refusal phaseNotRestarted carries, and the contract reads a changed claim as a
+// 200. A caller below claimStartContract is answered as before, with the refusal (answersAsBefore).
+func (s *server) refusedAfterTheForget(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, forgot,
+	refusal string, asBefore func()) (status int, notRestarted string, started, ok bool) {
+	if forgot == "" {
+		asBefore()
+		return 0, "", false, false
 	}
-	return http.StatusOK, true
+	if at, below := s.answersAsBefore(r); below {
+		asBefore()
+		s.servedAsBefore(r, at, token, servedTheRefusal)
+		return 0, "", false, false
+	}
+	state := m.View().State
+	s.log.Warn("api: a fresh session left the claim's recorded session behind, and its start was refused",
+		"claim", token, "session", forgot, "state", state, "refusal", refusal)
+	return http.StatusOK, fmt.Sprintf("%s left its recorded session %s behind for a fresh session, and its start was refused: %s. It is %s now, with no session recorded; %s",
+		token, forgot, refusal, state, showsItsState), false, true
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is

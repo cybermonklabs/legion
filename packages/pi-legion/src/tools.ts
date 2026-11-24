@@ -664,9 +664,15 @@ export function createLegionTool(deps: {
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "The answer is empty when the claim came back and its start is under way: the daemon answers once it has written the " +
+        "claim launching, and read_state shows how the start ended, running or failed with the start's failure. " +
+        "phaseNotRestarted says why nothing " +
         "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
-        "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
+        "claim is running, and no work was handed to it. It names a start that waits for an admission slot, where the issue " +
+        "holds none while its phase keeps one, and the issues the issue waits on: a suspended claim runs again at once and " +
+        "only its phase's task waits, and a failed or retired claim stays failed or retired, with its session forgotten, " +
+        "until the slot comes; ask for nothing more of it. It names a start refused after the session was forgotten, which " +
+        "leaves the claim failed, retired or suspended with no session. It says what was refused, where this request stopped the claim " +
         "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
         "in read_state, and ask for a fresh session again only where the claim is suspended. " +
         "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +

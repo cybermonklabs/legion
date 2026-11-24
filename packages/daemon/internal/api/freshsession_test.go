@@ -405,7 +405,9 @@ func lineKeys(line []record.LineEntry) []string {
 // retired. So the fresh session has to apply the phase's restart, whose start is written as an
 // owed row (workflow.StartOrOwe), and not merely revive the claim: a worker brought back to an
 // issue admission can never offer a slot to does nothing, with no record saying anything is
-// wrong. Both doors are held to it, since the effect behind them is one.
+// wrong. Both doors are held to it, since the effect behind them is one. That start waits for the
+// slot, so the answer names the wait (dispatch://INFRA-5649 R1): an empty answer would say the
+// start ran.
 func TestAFreshSessionLeavesAStoppedWorkersWaitingIssueAbleToGetASlot(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
@@ -424,8 +426,10 @@ func TestAFreshSessionLeavesAStoppedWorkersWaitingIssueAbleToGetASlot(t *testing
 			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
 				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
 			}
-			if note := freshSessionNote(t, recorder); note != "" {
-				t.Fatalf("the answer says %q, want nothing: the phase was restarted", note)
+			want := string(token) + " stays retired with its recorded session ses_implementer left behind, and the start of its phase " +
+				"implementing waits for an admission slot of LEGION-209, which holds none; `read_state` (`legion claims list`) shows its state"
+			if note := freshSessionNote(t, recorder); note != want {
+				t.Fatalf("the answer says %q, want %q: the phase was restarted, and its start waits for the slot", note, want)
 			}
 			if after := h.stored(token); after.Session != "" || after.SessionFile != "" {
 				t.Errorf("the fresh session left session %q (%q) on the claim, want both forgotten", after.Session, after.SessionFile)
@@ -571,6 +575,9 @@ func TestAFreshSessionOutrunsTheRuleResumeThePhaseFactWakes(t *testing.T) {
 				facts := &ruleResumingRestart{}
 				h := freshSessionHarness(t, facts)
 				token := suspendedImplementer(t, h, by)
+				// The issue holds its admission slot, so the restart's start waits for none and the
+				// answer names no wait (TestAFreshSessionOfASuspendedWorkerWhoseTaskWaitsForASlotSaysItRuns).
+				slotOf(t, h, "LEGION-209")
 				m, _ := h.supervisor.Machine(token)
 				facts.resume = func() error {
 					return m.Handle(h.ctx, supervise.RequestRuleResume{Claim: token, Reason: "it owns its issue's phase"})
@@ -615,6 +622,7 @@ func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *t
 			facts := &phaseRestarter{}
 			h := freshSessionHarness(t, facts)
 			token := readyImplementer(t, h)
+			slotOf(t, h, "LEGION-209")
 			m, _ := h.supervisor.Machine(token)
 			// The worker's process dies in a turn of the agent's own, so the relaunch records what
 			// it cut off, and the relaunched agent's ready, holding no task, is given the daemon's
@@ -664,6 +672,7 @@ func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T
 			facts := &phaseRestarter{}
 			h := freshSessionHarness(t, facts)
 			token := readyImplementer(t, h)
+			slotOf(t, h, "LEGION-209")
 			m, _ := h.supervisor.Machine(token)
 			// A news-only start reached the worker between turns. No shim is connected, so the
 			// task waits unsent.

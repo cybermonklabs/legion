@@ -73,16 +73,26 @@ export const LegionClaimRequest = z.strictObject({
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim
- * came back and its start ran. `phaseNotRestarted` carries one of two refusals. The first is the
- * workflow's: the claim came back in a new session owing no task, and the workflow refused the
- * restart that would have handed it one, so the claim is running and holds no work. The second
- * is the machine's: this request stopped the claim, and a step that would have brought it back
- * was refused — the forget of the session it recorded, or the start of it in a new session. That
- * sentence names the state the step left the claim in: a suspended claim is one nothing starts
- * by itself, so a fresh session asked again is what starts it, and a claim in any other state is
- * read in `read_state` before anything more is asked of it. Both refusals ride a success answer,
- * because the request changed the claim either way. A reader of the claim cannot tell the first
- * one, since the state records nowhere that the restart did not run. */
+ * came back and its start is under way: the daemon answers once it has written the claim
+ * `launching`, and `read_state` shows how the start ended — running, or failed with the start's
+ * failure. `phaseNotRestarted` carries one of four sentences. The first is the workflow's
+ * refusal: the claim came back in a new session owing no task, and the workflow refused the
+ * restart that would have handed it one, so the claim is running and holds no work. The second is
+ * a start that waits for an admission slot: the issue holds none while its phase keeps one, so the
+ * start of its phase waits for that slot, and the sentence names the issue and the issues it waits
+ * on. A suspended claim runs again at once and only its phase's task waits; a failed or retired
+ * claim stays failed or retired, with its session left behind, until the slot comes. The third is
+ * a start refused after the session was left behind: the claim stays failed, retired or
+ * suspended with no session, and the sentence names the refusal. The fourth is the machine's:
+ * this request stopped the claim, and a step that would have brought it back was refused — the
+ * forget of the session it recorded, or the start of it in a new session. That sentence names the
+ * state the step left the claim in: a suspended claim is one nothing starts by itself, so a fresh
+ * session asked again is what starts it, and a claim in any other state is read in `read_state`
+ * before anything more is asked of it. Each rides a success answer, because the request changed
+ * the claim either way. A reader of the claim cannot tell the first three, since the state
+ * records nowhere that the restart did not run or that the start waits. A plugin below daemon
+ * contract 266 is answered the second and the third as before: no sentence, and the refusal as
+ * an error. */
 export const LegionFreshSessionResponse = z.object({
   phaseNotRestarted: nonEmptyString.optional(),
 });

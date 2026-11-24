@@ -1,7 +1,10 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,6 +123,54 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			}
 			if len(starts) != 1 || starts[0].Role != tc.role || starts[0].Phase != tc.wantPhase || starts[0].Task != tc.wantTask {
 				t.Fatalf("the restart queued %+v, want one start of the %s on %s with %q", starts, tc.role, tc.wantPhase, tc.wantTask)
+			}
+		})
+	}
+}
+
+// The operator's restart of a phase its issue stands in releases no hold, since none was there,
+// so the line it logs says the phase was restarted and never that a held phase was released
+// (dispatch://INFRA-5649 R2). The same restart of an issue held from that phase is the control:
+// it releases the hold, and says so.
+func TestARestartOfAPhaseNotHeldLogsNoRelease(t *testing.T) {
+	root := "LEGION-208"
+	const (
+		released  = "workflow: a held phase is released"
+		restarted = "workflow: a phase its issue stands in is restarted"
+	)
+	for _, tc := range []struct {
+		name     string
+		issue    record.Issue
+		want     string
+		mustMiss string
+	}{
+		{name: "the issue stands in the phase", issue: record.Issue{Phase: phase.Implementing}, want: restarted, mustMiss: released},
+		{name: "the issue is held from the phase", issue: record.Issue{Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}},
+			want: released, mustMiss: restarted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			var logged bytes.Buffer
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+				Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
+			child := tc.issue
+			child.Key, child.Repo, child.DefaultBranch, child.GitHubRepo = "LEGION-209", "acme/widgets", "main", "acme/widgets"
+			child.Tree, child.Parent, child.Project, child.Title, child.Generation, child.Rank, child.Status = root, &root, "LEGION", "child", 1, "V", "in_progress"
+			seedIssue(t, pool, child)
+
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "operator-restart",
+				intake.RestartPhase{Issue: child.Key, Role: claim.RoleImplementer},
+				testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil))), admissionStub{})
+			if err != nil || result.Refusal != nil {
+				t.Fatalf("ApplyFact the operator's restart = %+v, %v; want it applied", result.Refusal, err)
+			}
+
+			line := logged.String()
+			if !strings.Contains(line, tc.want) || !strings.Contains(line, "the operator retried this phase's worker") {
+				t.Errorf("the log of the restart = %q, want %q with the operator's reason", line, tc.want)
+			}
+			if strings.Contains(line, tc.mustMiss) {
+				t.Errorf("the log of the restart = %q, want no %q", line, tc.mustMiss)
 			}
 		})
 	}

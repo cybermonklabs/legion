@@ -49,8 +49,9 @@ func TestTheStoreRecordsWhoSuspendedAClaim(t *testing.T) {
 		t.Fatalf("the root's own exit recorded %q, want exit", got)
 	}
 
-	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/resume", nil); recorder.Code != http.StatusOK {
-		t.Fatalf("resume = %d; body %s", recorder.Code, recorder.Body)
+	// A resume is answered once its start is written launching (dispatch://INFRA-5649 R4).
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(suspended)+"/resume", nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("resume = %d, want 202; body %s", recorder.Code, recorder.Body)
 	}
 	if got := h.suspendedBy(suspended); got != "" {
 		t.Fatalf("the resumed claim records %q, want nobody", got)
@@ -115,8 +116,12 @@ func TestEachSuccessfulOperatorClaimRequestLogsOneInfoLine(t *testing.T) {
 	}
 	for _, s := range succeeded {
 		want := http.StatusOK
-		if s.target == "/legion/v1/operator/claims" {
+		switch {
+		case s.target == "/legion/v1/operator/claims":
 			want = http.StatusCreated
+		case strings.HasSuffix(s.target, "/resume"):
+			// A resume is answered once its start is written launching (dispatch://INFRA-5649 R4).
+			want = http.StatusAccepted
 		}
 		run(s, want)
 	}

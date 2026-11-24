@@ -38,11 +38,14 @@ type OperatorClaim struct {
 	ForgottenSession     string      `json:"forgottenSession,omitempty"`
 	ForgottenSessionFile string      `json:"forgottenSessionFile,omitempty"`
 	// PhaseNotRestarted is what the request did to the claim that the claim itself does not
-	// record, which only the retry with `--fresh-session` sets (freshSession): the claim came
-	// back owing no task and the workflow refused that phase's restart, or this request
-	// stopped the claim and the machine refused the forget or the start that would have
-	// brought it back (notStartedAgain). It is absent everywhere else, a refused retry
-	// included, since that answer is the refusal itself and nothing of the claim changed.
+	// record, which only the retry sets (retryClaim). Both of its forms name a start that waits
+	// for its issue's admission slot (slotWait). The retry with `--fresh-session` also names
+	// what FreshSessionResponse.PhaseNotRestarted names (freshSession): the claim came back
+	// owing no task and the workflow refused that phase's restart, a start refused after the
+	// claim's session was left behind (refusedAfterTheForget), or this request stopped the claim
+	// and the machine refused the forget or the start that would have brought it back
+	// (notStartedAgain). It is absent everywhere else, a refused retry included, since that
+	// answer is the refusal itself and nothing of the claim changed.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 	// Locator is the claim's process, the runtime's nested shape; none while nothing runs.
 	Locator         *runtime.Locator `json:"locator,omitempty"`

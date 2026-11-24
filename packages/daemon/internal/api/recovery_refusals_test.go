@@ -629,8 +629,10 @@ func TestAFreshSessionReachesAClaimOverADeadProcess(t *testing.T) {
 
 					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-					if recorder.Code != http.StatusOK {
-						t.Fatalf("the fresh session over the dead process = %d, want the 200 of a claim started again; body %s",
+					// The operator's door answers 202 once the start is written launching, the
+					// controller's 200 (dispatch://INFRA-5649 R4).
+					if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+						t.Fatalf("the fresh session over the dead process = %d, want the 200 or 202 of a claim started again; body %s",
 							recorder.Code, recorder.Body)
 					}
 					if got := processReads(h) - reads; got != 1 {
@@ -856,8 +858,8 @@ func TestACompactionOfTheControllerOverADeadProcessNamesTheOperatorsSuspendAndRe
 				if state := h.stored(token).State; state != supervise.StateSuspended {
 					t.Fatalf("the controller is %s after the suspend, want it suspended", state)
 				}
-				if resumed := h.operator(http.MethodPost, route+"resume", nil); resumed.Code != http.StatusOK {
-					t.Fatalf("the resume the refusal names = %d, want 200; body %s", resumed.Code, resumed.Body)
+				if resumed := h.operator(http.MethodPost, route+"resume", nil); resumed.Code != http.StatusAccepted {
+					t.Fatalf("the resume the refusal names = %d, want 202: it is answered once its start is written launching; body %s", resumed.Code, resumed.Body)
 				}
 				if m, _ := h.supervisor.Machine(token); m.Claim().State != supervise.StateLaunching {
 					t.Errorf("the controller is %s after the resume, want it launching", m.Claim().State)

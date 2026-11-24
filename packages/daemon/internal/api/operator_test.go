@@ -264,26 +264,30 @@ func TestSuspendResumeAndStopDriveTheClaimsMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The resume is answered once its start is written launching, 202, and its start may still
+	// be running at the answer, so the runtime's calls are read once it has ended (startEnded).
 	steps := []struct {
 		token  claim.Token
 		action string
+		status int
 		want   supervise.ClaimState
 		method string
 	}{
-		{architectToken, "suspend", supervise.StateSuspended, "Suspend"},
-		{architectToken, "resume", supervise.StateLaunching, "Resume"},
-		{workerToken, "stop", supervise.StateRetired, "Release"},
+		{architectToken, "suspend", http.StatusOK, supervise.StateSuspended, "Suspend"},
+		{architectToken, "resume", http.StatusAccepted, supervise.StateLaunching, "Resume"},
+		{workerToken, "stop", http.StatusOK, supervise.StateRetired, "Release"},
 	}
 	for _, step := range steps {
 		recorder := h.operator(http.MethodPost, route(step.token, step.action), nil)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("%s = %d, want 200; body %s", step.action, recorder.Code, recorder.Body)
+		if recorder.Code != step.status {
+			t.Fatalf("%s = %d, want %d; body %s", step.action, recorder.Code, step.status, recorder.Body)
 		}
 		var got OperatorClaim
 		decodeInto(t, recorder, &got)
 		if got.State != string(step.want) {
 			t.Fatalf("%s answered state %s, want %s", step.action, got.State, step.want)
 		}
+		startEnded(h, step.token)
 		if len(h.runtime.CallsOf(step.method)) != 1 {
 			t.Fatalf("after %s the runtime saw %v, want one %s", step.action, h.runtime.Methods(), step.method)
 		}
@@ -327,8 +331,8 @@ func TestTheOperatorsRetryRelaunchesAFailedClaimOnItsKeptSessionWithFreshBudgets
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/retry", nil)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("retry of the failed claim = %d, want 200; body %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("retry of the failed claim = %d, want 202: it is answered once its start is written launching; body %s", recorder.Code, recorder.Body)
 	}
 	var got OperatorClaim
 	decodeInto(t, recorder, &got)
@@ -337,6 +341,7 @@ func TestTheOperatorsRetryRelaunchesAFailedClaimOnItsKeptSessionWithFreshBudgets
 		t.Fatalf("retry answered %+v, want the claim launching at generation %d with fresh budgets on %s",
 			got, failed.Generation+1, failed.SessionFile)
 	}
+	startEnded(h, architectToken)
 	resumes := h.runtime.CallsOf("Resume")
 	if last := resumes[len(resumes)-1]; last.Spec.ResumeSessionFile != failed.SessionFile || last.Spec.Generation != got.Generation {
 		t.Fatalf("the retry's launch resumed %q at generation %d, want %q at %d",
@@ -388,9 +393,10 @@ func TestForgetSessionLetsTheOperatorRetryAFailedArchitectWithAFreshSpawn(t *tes
 	}
 
 	retried := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/retry", nil)
-	if retried.Code != http.StatusOK {
-		t.Fatalf("retry after forget-session = %d, want 200; body %s", retried.Code, retried.Body)
+	if retried.Code != http.StatusAccepted {
+		t.Fatalf("retry after forget-session = %d, want 202: it is answered once its start is written launching; body %s", retried.Code, retried.Body)
 	}
+	startEnded(h, architectToken)
 	if spawns := h.runtime.CallsOf("Spawn"); len(spawns) != 2 || spawns[1].Spec.ResumeSessionFile != "" {
 		t.Fatalf("spawns after retry = %+v, want the retry to spawn a fresh session", spawns)
 	}
@@ -452,14 +458,15 @@ func TestForgetSessionWithExplicitSessionResumesASuspendedClaimFresh(t *testing.
 		t.Fatalf("forget-session answered %+v, want the suspended claim with its task and no session", forgotten)
 	}
 	resumed := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/resume", nil)
-	if resumed.Code != http.StatusOK {
-		t.Fatalf("resume = %d, want 200; body %s", resumed.Code, resumed.Body)
+	if resumed.Code != http.StatusAccepted {
+		t.Fatalf("resume = %d, want 202: it is answered once its start is written launching; body %s", resumed.Code, resumed.Body)
 	}
 	var launched OperatorClaim
 	decodeInto(t, resumed, &launched)
 	if launched.State != string(supervise.StateLaunching) || launched.Pending == nil || launched.Pending.Task != body.Task {
 		t.Fatalf("resume answered %+v, want the fresh launch carrying its pending task", launched)
 	}
+	startEnded(h, architectToken)
 	if spawns := h.runtime.CallsOf("Spawn"); len(spawns) != 2 || spawns[1].Spec.ResumeSessionFile != "" {
 		t.Fatalf("spawns = %+v, want the resumed claim to spawn fresh", spawns)
 	}
@@ -544,9 +551,10 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerWithNoRecordsRelaunchesIt(t *testi
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("retry of a failed worker = %d, want 200; body %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("retry of a failed worker = %d, want 202: it is answered once its start is written launching; body %s", recorder.Code, recorder.Body)
 	}
+	startEnded(h, workerToken)
 	if after := h.stored(workerToken); after.State != supervise.StateLaunching || after.Budgets != (supervise.Budgets{}) {
 		t.Errorf("the retried worker is %+v, want a launching claim with fresh budgets", after)
 	}
@@ -681,9 +689,10 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerHeldForAnotherRoleStartsNoPhase(t 
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("retry of a worker held for the tester's phase = %d, want 200; body %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("retry of a worker held for the tester's phase = %d, want 202: it is answered once its start is written launching; body %s", recorder.Code, recorder.Body)
 	}
+	startEnded(h, workerToken)
 	if applied := facts.recorded(); len(applied) != 0 {
 		t.Errorf("the retry applied %#v, want nothing: the issue is held for the tester", applied)
 	}
@@ -826,27 +835,6 @@ func TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied
 	}
 }
 
-// A refused retry has forgotten the session all the same, and that is what this order costs: the
-// forget runs before the fact, so an issue the retry leaves held because its tree lingers is
-// answered 409 by a claim that records no session. Only the claim's record goes — the session
-// stands, and the route logs the id — and the claim keeps its state and its task, so the
-// operator retries it again.
-func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *testing.T) {
-	facts := &heldRetrier{lingers: true}
-	h, workerToken := stoppedImplementer(t, facts)
-	heldIssue(t, h, phase.Implementing)
-
-	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", RetryRequest{FreshSession: true}), http.StatusConflict,
-		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": its tree lingers, and a lingering tree's members stay where they stood")
-	after := h.stored(workerToken)
-	if after.Session != "" || after.SessionFile != "" {
-		t.Errorf("the refused fresh-session retry left session %q (%q) on the claim, want both forgotten before the fact", after.Session, after.SessionFile)
-	}
-	if after.State != supervise.StateRetired {
-		t.Errorf("the refused fresh-session retry left the claim %s, want it retired with its task, for the operator to retry again", after.State)
-	}
-}
-
 // R2: an operator's retry of an architect builds no phase restart and relaunches the claim
 // through its machine, on the session it recorded. restartWorkedPhase answers a role that is no
 // phase worker before it reads the issue (isPhaseWorker), so the architect never reaches
@@ -878,9 +866,10 @@ func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *test
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", nil)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("retry of a stopped architect = %d, want 200; body %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("retry of a stopped architect = %d, want 202: it is answered once its start is written launching; body %s", recorder.Code, recorder.Body)
 	}
+	startEnded(h, token)
 	if applied := facts.recorded(); len(applied) != 0 {
 		t.Errorf("the retry applied %#v, want nothing: no phase start reaches an architect", applied)
 	}
@@ -1469,6 +1458,8 @@ func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 		}
 	}
 
+	// The resume and the retry are answered once their start is written launching, 202
+	// (dispatch://INFRA-5649 R4), and each row's start has ended before the next row runs.
 	for _, answer := range []struct {
 		route  string
 		target string
@@ -1476,29 +1467,31 @@ func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
 		token  claim.Token
 		step   supervise.StepRecord
 		before func()
+		status int
 	}{
 		{route: "deliver", target: "/legion/v1/operator/claims/" + string(architectToken) + "/deliver",
-			body: DeliverRequest{Task: "carry on"}, token: architectToken, step: stored},
+			body: DeliverRequest{Task: "carry on"}, token: architectToken, step: stored, status: http.StatusOK},
 		{route: "suspend", target: "/legion/v1/operator/claims/" + string(architectToken) + "/suspend",
-			token: architectToken, step: stored},
+			token: architectToken, step: stored, status: http.StatusOK},
 		{route: "resume", target: "/legion/v1/operator/claims/" + string(architectToken) + "/resume",
-			token: architectToken, step: stored},
+			token: architectToken, step: stored, status: http.StatusAccepted},
 		{route: "forget-session", target: "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session",
-			body: ForgetSessionRequest{Session: "ses_architect"}, token: architectToken, step: stored, before: failArchitect},
+			body: ForgetSessionRequest{Session: "ses_architect"}, token: architectToken, step: stored, before: failArchitect, status: http.StatusOK},
 		{route: "retry", target: "/legion/v1/operator/claims/" + string(architectToken) + "/retry",
-			token: architectToken, step: stored},
+			token: architectToken, step: stored, status: http.StatusAccepted},
 		{route: "stop", target: "/legion/v1/operator/claims/" + string(workerToken) + "/stop",
-			token: workerToken, step: workerStep},
+			token: workerToken, step: workerStep, status: http.StatusOK},
 		{route: "close", target: "/legion/v1/operator/claims/" + string(architectToken) + "/close",
-			token: architectToken, step: stored},
+			token: architectToken, step: stored, status: http.StatusOK},
 	} {
 		if answer.before != nil {
 			answer.before()
 		}
 		recorder := h.operator(http.MethodPost, answer.target, answer.body)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("%s = %d, want 200; body %s", answer.route, recorder.Code, recorder.Body)
+		if recorder.Code != answer.status {
+			t.Fatalf("%s = %d, want %d; body %s", answer.route, recorder.Code, answer.status, recorder.Body)
 		}
+		startEnded(h, answer.token)
 		var got OperatorClaim
 		decodeInto(t, recorder, &got)
 		if got.Token != answer.token {

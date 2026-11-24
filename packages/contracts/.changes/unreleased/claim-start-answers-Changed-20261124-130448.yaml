@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `LegionFreshSessionResponse`'s text says that an empty answer means the start is under way and
+  `read_state` shows how it ended, and that `phaseNotRestarted` also names a start that waits for
+  an admission slot and a start refused after the session was left behind. The daemon API
+  fixtures are at contract 266.
+time: 2026-11-24T13:04:48Z
+custom:
+    Issue: INFRA-5649
