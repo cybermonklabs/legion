@@ -160,9 +160,12 @@ func projectKubeError(op string, err error) error {
 
 // classOf is why err, an error of a Kubernetes client that carries no status, carries no answer,
 // and the sentinel error of the context or of io it is, which errors.Is finds in a projection.
+// client-go hands a body's decoder refusal back as it came, and a bearer file's read refusal as it
+// came or inside net/http's *url.Error, so those two are read there and nowhere deeper.
 func classOf(err error) (kubeClass, error) {
 	var urlErr *url.Error
 	var netErr net.Error
+	inURL := errors.As(err, &urlErr)
 	switch {
 	case errors.Is(err, context.Canceled):
 		return kubeCanceled, context.Canceled
@@ -170,11 +173,11 @@ func classOf(err error) (kubeClass, error) {
 		return kubeTimeout, context.DeadlineExceeded
 	case errors.As(err, &netErr) && netErr.Timeout():
 		return kubeTimeout, nil
-	case anyInChain(err, tokenFileError):
+	case tokenFileError(err) || inURL && urlErr.Err != nil && tokenFileError(urlErr.Err):
 		return kubeCredentialRead, nil
-	case anyInChain(err, decodeError):
+	case decodeError(err):
 		return kubeDecode, nil
-	case errors.As(err, &urlErr) && urlErr.Op == "parse":
+	case inURL && urlErr.Op == "parse":
 		return kubeConfiguration, nil
 	case errors.Is(err, io.ErrUnexpectedEOF):
 		return kubeTransport, io.ErrUnexpectedEOF
@@ -182,28 +185,6 @@ func classOf(err error) (kubeClass, error) {
 		return kubeTransport, io.EOF
 	}
 	return kubeTransport, nil
-}
-
-// anyInChain is whether test holds for err or for any error err wraps, through Unwrap() error and
-// Unwrap() []error.
-func anyInChain(err error, test func(error) bool) bool {
-	if err == nil {
-		return false
-	}
-	if test(err) {
-		return true
-	}
-	switch wrapped := err.(type) {
-	case interface{ Unwrap() error }:
-		return anyInChain(wrapped.Unwrap(), test)
-	case interface{ Unwrap() []error }:
-		for _, inner := range wrapped.Unwrap() {
-			if anyInChain(inner, test) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // tokenFileError is whether err is client-go's own refusal to read the file its bearer comes
