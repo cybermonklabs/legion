@@ -434,9 +434,15 @@ and each command runs there.
   for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
   query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
   that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
-  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-  imports that module at its top: a load that a row starts can arrive between two of that row's
-  `act` scopes or in a later row, where React reports a suspended resource outside `act`
+  row whose wait can end before such a load does warms the module before it mounts: a `waitFor` or
+  `findBy*` on a held clock (`jest.useFakeTimers()`) spends its budget in fake time, and a load can
+  outlast a `timeout` a row sets below the suite's budget (`web/src/__tests__/setup.ts`). The
+  web-cold lane holds each lazy load 1 s, and the engine's loads come one after another, 2 to 3 s
+  in all: rows of `reference-titles.test.tsx` and `document-references.test.tsx` that waited 2 s,
+  and rows of `SearchPalette.test.tsx` on a held clock, failed there. A test file whose rows mount
+  a lazily loaded part that no row reads, such as the shell's margin, imports that module at its
+  top: a load that a row starts can arrive between two of that row's `act` scopes or in a later
+  row, where React reports a suspended resource outside `act`
   (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
   `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
   do).
