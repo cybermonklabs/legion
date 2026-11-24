@@ -28,7 +28,7 @@ import (
 // net/http's own error holds the echo and a following client sends the stand-in the report.
 // Captures claudebridge.redirect/<case>.
 func TestATurnReportRedirectSendsTheBootTokenNowhereAndLogsNoLocation(t *testing.T) {
-	const token = "kq4vn-not-a-secret-boot-token-7e2f"
+	const token = "kq4vn-boot-not-a-secret-token-7e2f"
 	target, asked := redirectstest.Target(t)
 	dead := redirectstest.Dead(t)
 	// echo answers every report 307 with the Location location makes of the boot token the
