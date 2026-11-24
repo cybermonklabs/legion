@@ -9,7 +9,12 @@ body: |-
   GitHub answers a state, its head moves or it closes, and one query covers every such pull request
   of the base. A climb of one pull request, after a head push, a review round that waits on GitHub
   or a restart, still reads that pull request alone, and hands a head GitHub still answers
-  `unknown` for to its base's batch. Each read is logged as before, and each batch logs
+  `unknown` for to its base's batch. Each answer is stamped with the time its own page was read,
+  so an answer older than one the record holds changes nothing. A batch read that fails is read
+  again on the ladder, with every pull request it owed. A pull request the query does not list on
+  its recorded base, because it closed or moved to another base, is read alone; that read records
+  the base GitHub holds it on, and a pull request still `unknown` there is followed by that base's
+  batch. Each read is logged as before, and each batch logs
   `github: read the merge state of the open pull requests on a base` with the base, how many pull
   requests it owed a read and how many pages it read.
 

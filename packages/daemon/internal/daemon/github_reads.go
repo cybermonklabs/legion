@@ -171,11 +171,14 @@ const etagBytes = 16 << 20
 // token for that repository's owner account: the App every read of an issue's own repository is
 // made as, the per-issue reads' and the outbox rows' alike. The token names no repository, so one
 // mint serves every repository of the owner the App is installed on. The mint failure is returned
-// bare, so each caller says in its own words what it was minting the token for.
+// bare, so each caller says in its own words what it was minting the token for. Its Scope names
+// that App, its write permissions and the owner, which the conditional reads key what they keep
+// by (githubrest.Client.Scope).
 func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI string, repository ghrepo.Repository) (githubrest.Client, error) {
 	lease, err := tokens.Token(ctx, appauth.Implement, repository.Owner())
 	if err != nil {
 		return githubrest.Client{}, err
 	}
-	return githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(githubAPI, repository)}, nil
+	return githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(githubAPI, repository),
+		Scope: "implement write " + strings.ToLower(repository.Owner())}, nil
 }

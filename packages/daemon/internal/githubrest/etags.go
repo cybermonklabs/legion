@@ -6,8 +6,9 @@ import (
 )
 
 // ETags is what a client's conditional reads keep (Client.ETags): for each URL a GET answered 200
-// with an ETag, that ETag, the answer's body and the next page its Link header named, so the
-// next GET of the same URL asks GitHub with If-None-Match and reads a 304 as that answer. GitHub
+// with an ETag, under the client's Scope, that ETag, the answer's body and the next page its Link
+// header named, so the next GET of the same URL in the same scope asks GitHub with If-None-Match
+// and reads a 304 as that answer. A client of another scope keeps answers of its own. GitHub
 // counts a 304 against no rate limit ("Use conditional requests if appropriate", REST API best
 // practices), so an unchanged pull request, rules list or branch costs a read nothing.
 //

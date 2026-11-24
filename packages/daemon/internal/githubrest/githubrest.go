@@ -33,16 +33,21 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 // queries (GraphQL) instead.
 //
 // ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
-// answered for the same URL (If-None-Match), and GitHub's 304, which says the answer has not
-// changed and costs none of the token's rate limit, is read as that earlier answer (ETags.keep).
-// Nil sends every GET whole. WithETags sets it for one read.
+// answered for the same URL under the same Scope (If-None-Match), and GitHub's 304, which says the
+// answer has not changed and costs none of the token's rate limit, is read as that earlier answer
+// (ETags.keep). Nil sends every GET whole. WithETags sets it for one read. Scope names, with no
+// secret, what the token may read - its App, its installation's owner and its permissions - so
+// that clients of two scopes sharing one ETags never answer each other's reads: a token minted
+// again in the same scope keeps the answers kept before it.
 type Client struct {
 	Token string
 	API   string
+	Scope string
 	ETags *ETags
 }
 
-// WithETags is the client with every GET conditional on what etags kept (Client.ETags).
+// WithETags is the client with every GET conditional on what etags kept for its Scope
+// (Client.ETags).
 func (c Client) WithETags(etags *ETags) Client {
 	c.ETags = etags
 	return c
@@ -196,9 +201,10 @@ func (c Client) exchange(ctx context.Context, method, target string, body []byte
 	}
 	var kept etagEntry
 	conditional := method == http.MethodGet && c.ETags != nil
+	cacheKey := c.Scope + " " + target
 	if conditional {
 		var found bool
-		if kept, found = c.ETags.lookup(target); found {
+		if kept, found = c.ETags.lookup(cacheKey); found {
 			request.Header.Set("If-None-Match", kept.etag)
 		}
 	}
@@ -223,7 +229,7 @@ func (c Client) exchange(ctx context.Context, method, target string, body []byte
 	}
 	next := nextPage(response.Header.Get("Link"))
 	if conditional {
-		c.ETags.keep(target, response.Header.Get("ETag"), answer, next)
+		c.ETags.keep(cacheKey, response.Header.Get("ETag"), answer, next)
 	}
 	if into == nil {
 		return next, response.Header, nil

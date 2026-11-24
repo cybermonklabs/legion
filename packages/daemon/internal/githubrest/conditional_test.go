@@ -200,3 +200,51 @@ func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
 		t.Fatalf("GraphQL refused for a secondary limit = %v, want an *Answer that is the secondary rate limit", err)
 	}
 }
+
+// Clients of two scopes that share one ETags keep their answers apart: a client of one scope
+// sends no ETag another scope's read kept, so it never reads that scope's answer from a 304, and
+// each scope's own second read is conditional on its own first.
+func TestTwoScopesKeepTheirConditionalAnswersApart(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sent = append(sent, r.Header.Get("Authorization")+" "+r.Header.Get("If-None-Match"))
+		mu.Unlock()
+		etag := `"` + strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") + `"`
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write([]byte(`{"seen_by":` + etag + `}`))
+	}))
+	defer server.Close()
+	etags := NewETags(1 << 20)
+	read := func(token, scope string) string {
+		t.Helper()
+		var answer struct {
+			SeenBy string `json:"seen_by"`
+		}
+		client := Client{Token: token, API: server.URL + "/repos/acme/widgets", Scope: scope}.WithETags(etags)
+		if err := client.Get(context.Background(), "/pulls/86", &answer); err != nil {
+			t.Fatalf("Get under %s = %v", scope, err)
+		}
+		return answer.SeenBy
+	}
+	if got := read("implement", "implement write acme"); got != "implement" {
+		t.Fatalf("the implement scope read %q, want its own answer", got)
+	}
+	if got := read("review", "review read acme"); got != "review" {
+		t.Fatalf("the review scope read %q, want its own answer, not the implement scope's", got)
+	}
+	if got := read("implement", "implement write acme"); got != "implement" {
+		t.Fatalf("the implement scope's second read answered %q, want its own kept answer", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"Bearer implement ", "Bearer review ", `Bearer implement "implement"`}
+	if !slices.Equal(sent, want) {
+		t.Fatalf("GitHub was sent %q, want %q: no scope sends another scope's ETag", sent, want)
+	}
+}
