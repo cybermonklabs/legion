@@ -4,6 +4,7 @@ import {
   isStepRole,
   LEGION_ROLES,
   type LegionStepRole,
+  parseRoleToken,
 } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -147,6 +148,12 @@ const pauseActorWords = (session: string | undefined): string =>
 const pauseWords = (id: number, since: string, by: string, reason: string): string =>
   `pause ${id} since ${since} by ${by}: ${reason}`;
 
+/** The agent named by a valid issue claim token, never a controller or an unreadable token. */
+function agentOfToken(token: string): string | undefined {
+  const parsed = parseRoleToken(token.split("-")[1] ?? "", token);
+  return parsed !== undefined && "role" in parsed ? parsed.role : undefined;
+}
+
 /** The pause line's name of a claim of `issue` on `role` whose token is `token`, by the rule the
  * issue lines name a claim by (`stateSummary`): its issue and role, and its token beside them where
  * the issue and the role do not reach it, so a tool reaches it by its token alone. The issue and the
@@ -162,7 +169,7 @@ function pausedClaimName(
 ): string {
   const served = state.issues[issue];
   const shown = (role === "architect" ? served?.architect : served?.workers?.[role]?.claim)?.token;
-  return token === undefined || token === shown
+  return token === undefined || agentOfToken(token) === undefined || token === shown
     ? `${issue} ${role}`
     : `${issue} ${role} (claim ${token})`;
 }
