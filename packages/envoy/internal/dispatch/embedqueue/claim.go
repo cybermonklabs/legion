@@ -69,8 +69,13 @@ func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 
 // due is how long until renew(need) renews c's claim, and 0 once it would: the claim's time left
 // less the larger of need and claimWindow less renewClaimInterval, which is the time a claim has
-// left renewClaimInterval after its renewal. A nil *claimRenewal, which renews nothing, is never
-// due.
+// left renewClaimInterval after its renewal. The second term holds for a call's need too, and it
+// is why no renewal comes before a reservation: a call's own renewal, a statement after the
+// reservation, renews whatever such a renewal would. At today's values a call's need renews at
+// 45 s, before the interval's 60 s, but a shorter renewClaimInterval reverses that, and without the
+// term no renewal would run between bisection's attempts
+// (TestProcessBatchActuallyCallsRenewalAndReservesTokens). A nil *claimRenewal, which renews
+// nothing, is never due.
 func (c *claimRenewal) due(need time.Duration) time.Duration {
 	if c == nil {
 		return math.MaxInt64

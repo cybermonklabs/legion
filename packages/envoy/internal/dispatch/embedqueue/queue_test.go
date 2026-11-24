@@ -1273,33 +1273,36 @@ func (canaryThrottledEmbedder) Embed(_ context.Context, texts []string, _ embed.
 // either call site left the full suite green. This test shrinks renewClaimInterval to make a
 // renewal observable in milliseconds, forces real wall-clock time to pass between two embed
 // calls (an artificial sleep in the fake embedder, standing in for real network latency), and has
-// the second call read the database directly to prove a renewal already ran before it - the one
+// the first call read the claim the scan wrote and the second require it raised since - the one
 // signal that survives retryRows' own final overwrite of next_attempt_at at the end of the call,
 // which would otherwise hide an intermediate renewal from a check made after ProcessBatch
-// returns. The token budget is checked the ordinary way: it must be measurably drawn down.
+// returns. The scan's own claim is no renewal: it already sets next_attempt_at claimWindow on, so
+// only a later claim than the scan's proves one. The token budget is checked the ordinary way: it
+// must be measurably drawn down.
 type wiringCheckEmbedder struct {
 	bedrockShaped
 	t          *testing.T
 	database   *store.Store
 	ids        []string
-	before     time.Time
 	calls      int
+	claimed    time.Time
 	sawRenewal bool
 }
 
 func (e *wiringCheckEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
 	e.calls++
-	if e.calls == 1 {
-		time.Sleep(30 * time.Millisecond)
-		return nil, errors.New("simulated: a non-throttled embed failure")
-	}
 	var minNext time.Time
 	if err := e.database.Pool.QueryRow(ctx,
 		`select min(next_attempt_at) from embeddings where kind = 'issue' and id = any($1::text[])`, e.ids,
 	).Scan(&minNext); err != nil {
 		e.t.Fatalf("read next_attempt_at mid-call: %v", err)
 	}
-	if minNext.After(e.before.Add(claimWindow - time.Second)) {
+	if e.calls == 1 {
+		e.claimed = minNext
+		time.Sleep(30 * time.Millisecond)
+		return nil, errors.New("simulated: a non-throttled embed failure")
+	}
+	if minNext.After(e.claimed) {
 		e.sawRenewal = true
 	}
 	return fakeVectors(len(texts)), nil
@@ -1319,7 +1322,7 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	).Scan(&tokensBefore); err != nil {
 		t.Fatalf("read tokens_available before: %v", err)
 	}
-	embedder := &wiringCheckEmbedder{t: t, database: database, ids: ids, before: time.Now()}
+	embedder := &wiringCheckEmbedder{t: t, database: database, ids: ids}
 	deps := Deps{Store: database, Embedder: embedder}
 
 	if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
