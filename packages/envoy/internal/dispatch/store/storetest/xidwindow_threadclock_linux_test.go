@@ -466,19 +466,11 @@ func xidRequireBalancingDetector(t *testing.T) {
 // not one. answer names what the kernel answered.
 func xidMempolicyRefusal() (refused bool, answer string) {
 	isRefusal := func(errno unix.Errno) bool { return errno == unix.EPERM || errno == unix.ENOSYS }
-	var mode int
-	var nodes [16]uint64
-	_, _, errno := unix.Syscall6(unix.SYS_GET_MEMPOLICY, uintptr(unsafe.Pointer(&mode)),
-		uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64), 0, 0, 0)
+	policy, errno := xidGetPolicy(nil, 0)
 	if errno != 0 {
 		return isRefusal(errno), fmt.Sprintf("get_mempolicy answered %v", errno)
 	}
-	if mode == xidMempolicyDefault {
-		_, _, errno = unix.Syscall(unix.SYS_SET_MEMPOLICY, xidMempolicyDefault, 0, 0)
-	} else {
-		_, _, errno = unix.Syscall(unix.SYS_SET_MEMPOLICY, uintptr(mode), uintptr(unsafe.Pointer(&nodes[0])), uintptr(len(nodes)*64))
-	}
-	if errno != 0 {
+	if errno = policy.set(); errno != 0 {
 		return isRefusal(errno), fmt.Sprintf("get_mempolicy succeeded, and set_mempolicy of the mode it read answered %v", errno)
 	}
 	return false, "get_mempolicy and set_mempolicy both succeeded"
