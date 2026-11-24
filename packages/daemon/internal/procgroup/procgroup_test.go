@@ -543,15 +543,15 @@ func TestAStoppedCommandGetsSIGTERMThenSIGKILLOverItsGroup(t *testing.T) {
 // any SIGKILL, which would have ended it by the signal instead.
 //
 // The row also reads that the grace ended once the group was gone, not at the end of its span
-// (StopGrace). A stop that sits the grace out returns from Cancel no sooner than StopGrace after
-// it sent the SIGTERM, and Wait returns only once Cancel has, so such a run ends no sooner than
-// StopGrace after the stop: a bound the production constant sets from below, which no load can
-// shorten. A run that ended sooner shows the early end. A run that ended later is judged only
-// where the row's own watch saw the group gone inside half the grace (watchGroupGone): that run
-// went on for at least the other half with nothing left in its group to stop, and the row fails.
-// Where the group went later, a loaded machine that held up the child's own exit cannot be told
-// from a grace sat out, so that run is not judged, and the row runs again, until a run of the
-// right order comes, within a minute.
+// (StopGrace): the run must end within half the grace after the stop. A run that ended later is
+// judged only where the row's own watch saw the group gone within a quarter of the grace
+// (watchGroupGone). That run then went on for more than a quarter of the grace with nothing left
+// in its group to stop, so the grace did not end with the group, and the row fails. The quarter
+// is the run's own path from the group's end to Wait's return (the stop's next poll, Cancel's
+// return, the hand-off to the row), which starts no process. Where the group went later, a loaded
+// machine that held up the child's own exit cannot be told from a grace that outlived the group,
+// so that run is not judged, and the row runs again, until a run of the right order comes, within
+// a minute.
 func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 	// The last run may spend its own far bound (answerBudget) and a second for the row to fail in.
 	within := testwait.Bounded(t, time.Minute, answerBudget+time.Second)
@@ -579,11 +579,11 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 		if !child.killed() {
 			t.Errorf("run %d: killed() = false for a command the end of its context stopped (Run = %v)", runs, err)
 		}
-		if t.Failed() || took < StopGrace {
+		if t.Failed() || took <= StopGrace/2 {
 			return
 		}
-		if seen && gone.Sub(stopped) < StopGrace/2 {
-			t.Errorf("run %d: the run ended %s after the stop, though its group was gone %s after it, inside half the %s grace: a group that leaves on its SIGTERM must end the grace, not sit out its whole span (Run = %v)", runs, took, gone.Sub(stopped), StopGrace, err)
+		if seen && gone.Sub(stopped) <= StopGrace/4 {
+			t.Errorf("run %d: the run ended %s after the stop, past half the %s grace, though its group was gone %s after it, within a quarter of the grace: a group that leaves on its SIGTERM must end the grace, not sit out its span (Run = %v)", runs, took, StopGrace, gone.Sub(stopped), err)
 			return
 		}
 		went := "was not seen gone while the run lasted"
@@ -591,10 +591,10 @@ func TestAChildThatHandlesSIGTERMRemovesItsLockBeforeTheRunEnds(t *testing.T) {
 			went = fmt.Sprintf("was seen gone %s after the stop", gone.Sub(stopped))
 		}
 		if time.Now().Before(until) {
-			t.Logf("run %d is not judged: it ended %s after the stop, no sooner than the %s grace, and its group %s, not inside half the grace", runs, took, StopGrace, went)
+			t.Logf("run %d is not judged: it ended %s after the stop, past half the %s grace, and its group %s, not within a quarter of the grace", runs, took, StopGrace, went)
 			continue
 		}
-		t.Fatalf("no run of the right order in %d runs over %s: the last ended %s after the stop, no sooner than the %s grace, and its group %s, not inside half the grace", runs, within, took, StopGrace, went)
+		t.Fatalf("no run of the right order in %d runs over %s: the last ended %s after the stop, past half the %s grace, and its group %s, not within a quarter of the grace", runs, within, took, StopGrace, went)
 	}
 }
 
