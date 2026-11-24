@@ -1164,7 +1164,7 @@ func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
 	runner := &outbox{pool: r.pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", trees: r.st,
 		backstop: time.Hour, log: quietLogger(), now: time.Now}
 
-	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save failed"); err != nil {
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldWorkspaceUnread, "the workspace read failed"); err != nil {
 		t.Fatalf("cancel the release while paused: %v", err)
 	}
 	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and issue = $2`, held.ID, pauseIssue); got != 2 {
