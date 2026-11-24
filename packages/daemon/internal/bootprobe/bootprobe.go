@@ -387,19 +387,19 @@ func RoleOverlaysRefused(output string) (role, why string, ok bool) {
 }
 
 // NoVerdictExit is the status `legion probe-image` exits with when a check has no verdict and
-// nothing failed: a TLS run of a client that the probe's own limits stopped short of an answer, or
-// a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a later try can
-// clear, and the probe writes a line that starts with NoVerdictPrefix to stderr before it, naming
-// each such run and check. The daemon's probe Sandbox reads both (internal/runtime/sandbox's
-// judge); a daemon of an earlier release reads the exit as a refusal, as it reads exit 1.
+// nothing failed: a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a
+// later try can clear, and the probe writes a line that starts with NoVerdictPrefix to stderr
+// before it, naming each such check. The daemon's probe Sandbox reads both
+// (internal/runtime/sandbox's judge); a daemon of an earlier release reads the exit as a
+// refusal, as it reads exit 1.
 const NoVerdictExit = 75
 
 // NoVerdictPrefix begins the line `legion probe-image` prints before it exits NoVerdictExit; the
-// rest of the line names each TLS run and check with no verdict, joined by "; ".
+// rest of the line names each check with no verdict, joined by "; ".
 const NoVerdictPrefix = "legion probe-image: worker probe has no verdict: "
 
-// NoVerdictLine is that line naming entries, each TLS run and check with no verdict, joined by "; "
-// with every run of white space in them turned to one space, so the line carries the whole of each.
+// NoVerdictLine is that line naming entries, each check with no verdict, joined by "; " with every
+// run of white space in them turned to one space, so the line carries the whole of each.
 func NoVerdictLine(entries []string) string {
 	return NoVerdictPrefix + strings.Join(strings.Fields(strings.Join(entries, "; ")), " ")
 }
