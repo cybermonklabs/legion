@@ -335,10 +335,8 @@ func publishRefusal(status int, answer oauth2call.Answer, refusal error) error {
 	case http.StatusGatewayTimeout:
 		var failure listenerwire.RoleSendFailureAs[oauth2call.RemoteText]
 		if answer.Decode(&failure) == nil {
-			for _, reason := range []string{ReasonReceiptTimeout, ReasonDeliveryFailed} {
-				if failure.Reason.Equal(reason) {
-					return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: reason, Holder: failure.Holder, EventID: failure.EventID})
-				}
+			if reason, named := failure.Reason.OneOf(ReasonReceiptTimeout, ReasonDeliveryFailed); named {
+				return fmt.Errorf("%w: %w", refusal, ErrNotDelivered{Reason: reason, Holder: failure.Holder, EventID: failure.EventID})
 			}
 		}
 	case http.StatusForbidden:
@@ -528,13 +526,11 @@ const (
 )
 
 // roleHolderState is the holder state a role lookup's answer names (said), as a message may print
-// it: the listener's word where said is one of its states, compared as it came; absent where said
-// is empty; and the rule's reading of any other text, which nothing decides on.
+// it: the listener's word where said is one of its states, compared as it came (RemoteText.OneOf);
+// absent where said is empty; and the rule's reading of any other text, which nothing decides on.
 func roleHolderState(said oauth2call.RemoteText, absent string) string {
-	for _, state := range []string{StateLive, StateUnresponsive, StateGone} {
-		if said.Equal(state) {
-			return state
-		}
+	if state, named := said.OneOf(StateLive, StateUnresponsive, StateGone); named {
+		return state
 	}
 	if said.IsEmpty() {
 		return absent
