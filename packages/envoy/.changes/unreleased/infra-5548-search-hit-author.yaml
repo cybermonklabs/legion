@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `GET /api/v1/search` and `GET /api/v1/search/results` name the `author` of each comment, message
+  and ask hit, the actor that wrote it, so a reader of the hit alone can say who said it. An issue
+  hit and a document hit carry none. The field is optional, so a client that does not read it is
+  unchanged.

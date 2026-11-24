@@ -2,10 +2,20 @@
 // BROKER_TEST_DATABASE_URL server, dropped when the test ends. Every broker package's tests run
 // against one server at once, and the poller's passes act on every row of their tables, so tests
 // that shared tables would act on each other's rows; with a schema per test no test can see
-// another's rows, in its own package, a sibling package, or a concurrent run of either. It also
-// writes the rows only a database writer other than the broker could (Exec, ForgeRequestSignature,
-// CopyAsOtherKind), for the tests that pin what a release or an authentication refuses. It is an
-// ordinary package rather than a _test.go file so every broker package can import it.
+// another's rows, in its own package, a sibling package, or a concurrent run of either.
+//
+// The schemas of one test binary are made in a database of that binary's own
+// (testdb.ProcessDatabaseOn), which Main drops after the binary's tests. Every migration takes the
+// broker's advisory lock (store.go's lockAndPin), and Postgres holds an advisory lock for the
+// whole database: with every package's schemas in one database, each migration, a broker's at
+// its boot among them, waited for the migrations of every other package of the run and of every
+// other run on the server. In a database of the binary's own it waits only for its own binary's
+// tests. So a package that uses URL or Open runs its tests through Main.
+//
+// It also writes the rows only a database writer other than the broker could (Exec,
+// ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
+// authentication refuses. It is an ordinary package rather than a _test.go file so every broker
+// package can import it.
 package storetest
 
 import (
@@ -13,6 +23,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -25,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -55,12 +67,15 @@ func randomName(t testing.TB) string {
 	return "broker_test_" + hex.EncodeToString(suffix[:])
 }
 
-// URL creates a fresh schema on the DatabaseURLEnv server, migrates it, drops it when t ends, and
+// URL creates a fresh schema in the test binary's own database on the DatabaseURLEnv server
+// (testdb.ProcessDatabaseOn: the package comment says why), migrates it, drops it when t ends, and
 // returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
+// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset, and
+// fails it when the package's TestMain does not run its tests through Main. The server's login
+// needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
-	raw := serverURL(t)
+	raw := testdb.ProcessDatabaseOn(t, serverURL(t), "broker_test_binary")
 	ctx := context.Background()
 	schema := randomName(t)
 	admin(t, raw, "create schema "+schema)
@@ -106,6 +121,15 @@ func Open(t testing.TB, params ...string) *store.Store {
 	return st
 }
 
+// Main runs the package's tests and then drops the database URL made their schemas in. A package
+// whose tests call URL or Open uses it as its TestMain:
+// func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
+func Main(m *testing.M) int { return testdb.Main(m) }
+
+// Run is Main for a package whose TestMain also runs another harness's Main, or runs its tests
+// more than once (testdb.Run).
+func Run(run func() int) int { return testdb.Run(run) }
+
 // RepeatableReadByDefault opens a second pool on st's database whose connections begin every
 // transaction at REPEATABLE READ unless it names a level (default_transaction_isolation), closed
 // when t ends. A transaction that asks for READ COMMITTED by name reads alike on either pool, so a
@@ -147,14 +171,16 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // only when what it exercises is per-database rather than per-schema, and two things are.
 // LISTEN/NOTIFY is one: a channel name is a database-wide identifier, so every schema on one
 // server hears every other's notifications on the one channel constant a feature listens to, and
-// a test on a schema would hear a sibling test's sends. The migration advisory lock is the
-// other: Migrate takes it database-wide, so two processes migrating their own schemas of one
-// database still serialize on each other.
+// a test on a schema would hear a sibling test's sends. The broker's advisory locks are the
+// other: an advisory lock's key is database-wide, so two processes migrating their own schemas of
+// one database still serialize on Migrate's lock, and a test that holds Migrate's lock or a
+// serving beat's lock (enroll's servingLock) while it waits holds up every other test's broker on
+// that database for as long.
 //
-// The DSN is unmigrated because that is what both callers need: a LISTEN/NOTIFY test, which
-// reads no table at all, and a test that starts two broker processes against a database neither
-// has migrated yet, which is the race those two processes are there to settle. A caller that
-// wants tables runs store.Migrate on it itself.
+// The DSN is unmigrated because some callers need it so: a LISTEN/NOTIFY test, which reads no
+// table at all, and a test that starts two broker processes against a database neither has
+// migrated yet, which is the race those two processes are there to settle. A caller that wants
+// tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
 	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
@@ -180,27 +206,24 @@ type Querier interface {
 }
 
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
-// pids, failing t after ten seconds. A backend counts when it waits on a lock (wait_event_type
-// 'Lock') that holder's backend holds, or that a backend already counted holds or is ahead of it
-// in the queue for: a second waiter for one row waits on the first waiter's tuple lock, and
-// pg_blocking_pids names only that first waiter, never the holder. Waiters behind other holders,
-// in other tests on the same server, never count.
-func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
+// pids. It waits through testwait.Until, so its one bound is the test binary's deadline less
+// testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
+// when it waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend
+// already counted holds or is ahead of it in the queue for: a second waiter for one row waits on
+// the first waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the
+// holder. Waiters behind other holders, in other tests on the same server, never count.
+func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waiting := testwait.Until(t, fmt.Sprintf("%d backends to wait on a lock behind %d", n, pid), func() ([]int32, bool) {
 		waiting := LockWaitersBehind(t, q, pid)
-		if len(waiting) >= n {
-			pids := make([]uint32, len(waiting))
-			for i, w := range waiting {
-				pids[i] = uint32(w)
-			}
-			return pids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends waited on a lock behind %d, want %d", len(waiting), pid, n)
-		}
+		return waiting, len(waiting) >= n
+	})
+	pids := make([]uint32, len(waiting))
+	for i, w := range waiting {
+		pids[i] = uint32(w)
 	}
+	return pids
 }
 
 // LockWaitersBehind is every backend that waits on a lock behind pid's backend, read once and in

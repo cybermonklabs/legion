@@ -388,6 +388,7 @@ func (s *jjScratch) resolve(revision, tool string) {
 // `legion gh` runs — once, each by its LEGION_<TOOL>_PATH override or on the daemon's PATH, and
 // names every missing one with its override.
 func TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool(t *testing.T) {
+	t.Parallel()
 	onPath, elsewhere := t.TempDir(), t.TempDir()
 	executable(t, onPath, "git")
 	pinned := executable(t, elsewhere, "git")
@@ -419,6 +420,7 @@ func TestResolveToolsPrefersTheOverrideAndNamesEveryMissingTool(t *testing.T) {
 // built claude-envoy plugin: boot names every gap in one refusal, and takes each tool's override
 // before PATH.
 func TestResolveClaudeNamesEveryGap(t *testing.T) {
+	t.Parallel()
 	onPath, plugin := t.TempDir(), t.TempDir()
 	env := map[string]string{"PATH": onPath}
 	lookup := func(name string) (string, bool) { v, ok := env[name]; return v, ok }
@@ -470,6 +472,7 @@ func TestResolveClaudeNamesEveryGap(t *testing.T) {
 // LEGION_GH_PATH, rather than taking the compiled gh behind it. LEGION_GH_PATH is the operator's
 // own word, so a script it names is taken.
 func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
+	t.Parallel()
 	shims, bin := t.TempDir(), t.TempDir()
 	binary(t, bin, "git")
 	fakeJJ(t, bin, currentJJ)
@@ -500,6 +503,7 @@ func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
 // the jj came from the override or from PATH; 0.38 itself and later releases, a build's suffix
 // included, pass.
 func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, version string
 		override      bool
@@ -547,6 +551,7 @@ func TestResolveToolsRefusesAJJOlderThanTheLayoutProvisioningReliesOn(t *testing
 // The jj --version boot runs starts without either raw NATS seed the daemon holds, as every
 // command the daemon starts does (runtime.WithoutNATSSeeds).
 func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
 	t.Setenv("NATS_NKEY_SEED", paneSeed)

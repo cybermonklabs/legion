@@ -154,9 +154,9 @@ func (s source) seed() (string, error) {
 // name is what the connection calls itself to the server, and it is a parameter rather than an
 // option because an option can be forgotten and an unnamed connection is one nobody can place:
 // an operator reading /connz on the Envoy NATS sees which process holds each connection, and a
-// test fixture reporting a connection a test left open can say which client it was. It is
-// appended after the caller's own options, beside detectSilentCuts, so a caller's own nats.Name
-// does not win here.
+// test fixture reporting a connection a test left open can say which client it was. The daemon
+// names its build after its name (ConnectionName). It is appended after the caller's own options,
+// beside detectSilentCuts, so a caller's own nats.Name does not win here.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if seed != "" {
 		user, err := userKey(seed, "the NATS nkey seed")
@@ -172,6 +172,20 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 	// Last, so these pings and this name hold whatever a caller passed before them.
 	options = append(options, detectSilentCuts, nats.Name(name))
 	return nats.Connect(strings.Join(urls, ","), options...)
+}
+
+// fullCommit is a whole commit id, the only form of a build a connection name carries.
+var fullCommit = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// ConnectionName is name with the build of the binary built from commit revision after it,
+// legion@<revision>, or name alone when revision is no whole commit id (a build nothing stamped).
+// legacy-subjects-gate.sh reads each connection's build from the end of its name in the hub's census
+// of connections, and a connection that names none keeps the gate from opening.
+func ConnectionName(name, revision string) string {
+	if !fullCommit.MatchString(revision) {
+		return name
+	}
+	return name + " legion@" + revision
 }
 
 // ReconnectForever is the connection option that never gives up reconnecting. nats.go's own

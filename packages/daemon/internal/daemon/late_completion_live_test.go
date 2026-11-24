@@ -209,7 +209,6 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 			t.Fatalf("%s is not on PATH: %v", tool, err)
 		}
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
@@ -294,7 +293,7 @@ func (r *lateCompletionLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Late completion live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	var created struct {
 		Key string `json:"key"`
 	}
@@ -397,7 +396,7 @@ func (r *lateCompletionLive) seed() {
 	t.Helper()
 	ctx := context.Background()
 	listed := r.dispatch.issue(r.key)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: listed.Title, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",

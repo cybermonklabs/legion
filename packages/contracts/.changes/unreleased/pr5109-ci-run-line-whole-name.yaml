@@ -1,0 +1,2 @@
+kind: Changed
+body: The `dispatch results` tool's description says a pull-request line writes `CI run <name>` only when it keeps every word of the run's name, and `the CI run the check names` where it drops one.

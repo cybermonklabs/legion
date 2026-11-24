@@ -282,7 +282,7 @@ function ParentForm({
         saving={isClosed || saving}
       />
       <span className="sr-only" id="issue-parent-help">
-        Parent issue key in {issue.project}; leave empty to clear the parent.
+        Parent issue key, in {issue.project} or another project; leave empty to clear the parent.
       </span>
     </EditorForm>
   );

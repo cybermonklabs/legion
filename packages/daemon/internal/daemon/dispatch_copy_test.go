@@ -33,6 +33,7 @@ import (
 // re-read through the turn itself, the last three read over HTTP by the daemon's own Dispatch
 // client from a board whose JSON names each field as Dispatch's own model does.
 func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
+	t.Parallel()
 	const key = "CAPTURE-3"
 	labels, rank := []string{"design", "urgent"}, "a3"
 	t.Run("an issue event", func(t *testing.T) {
@@ -101,6 +102,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // on nothing, takes no slot, which is the tick's admission pass reading B's row as that reading
 // wrote it.
 func TestEachReadingKindWritesItsBlockers(t *testing.T) {
+	t.Parallel()
 	const waiter, blocker, other = "CAPTURE-3", "CAPTURE-7", "CAPTURE-8"
 	t.Run("an issue event", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
@@ -205,6 +207,7 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 // wait ended in that pass and not at a later fact. With the mirror after admission in the handler
 // list, P would still wait after the event, so the test holds the order of the handlers.
 func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
+	t.Parallel()
 	const root, child, elsewhere = "CAPTURE-1", "CAPTURE-3", "CAPTURE-9"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -217,7 +220,7 @@ func TestAnEventsParentIsInTheCopyBeforeItsDecisions(t *testing.T) {
 	openTree(t, pool, "CAPTURE", root)
 	seedTickMirror(t, pool, root, "in_progress", 1)
 	putOutboxGate(t, pool, record.NewStore(), record.DesignGate{Issue: root, ArtifactID: "artifact-1", LatestVersion: 1})
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: child, Project: "CAPTURE", Seq: 5,
 			Status: record.Carry("backlog"), Parent: record.Carry(root), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
@@ -263,7 +266,7 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 		Projects: map[string]config.Project{"CAPTURE": {}}}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", workflowDispatchToken, nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now)
+		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}

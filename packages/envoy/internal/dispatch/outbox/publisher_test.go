@@ -7,16 +7,20 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -115,7 +119,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		delivered:    delivered,
 	}
 	want := newWanted()
-	_, _, _ = eventDestinations(ctx, deps, single, want)
+	_, _ = eventDestinations(ctx, deps, single, want)
 	found, err := loadLookups(ctx, deps.Store.Pool, want)
 	if err != nil {
 		return err
@@ -123,8 +127,8 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// As a batch does before it reads any destination, and the roles it resolved there are the
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
-	list, mentionPending, resolveErr := eventDestinations(ctx, deps, single, found)
-	single.destinationsOf, single.mentionPending = list, mentionPending
+	to, resolveErr := eventDestinations(ctx, deps, single, found)
+	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)
 	var failures []error
@@ -673,6 +677,136 @@ func TestRunSummarizesCommentBody(t *testing.T) {
 	waitFor(t, time.Second, "comment publication", func() bool { return len(publisher.all()) == 1 })
 	if summary := publisher.all()[0].PayloadSummary; summary != "T-1 comment created: Tighten this paragraph" {
 		t.Fatalf("payload summary = %q", summary)
+	}
+}
+
+// A correction's summary is the first thing a reader of its envelope sees. An edit's carries the
+// head of the body the edit gave the post. A delete's payload is built from the post after its
+// body is cleared (Dispatch's deleteComment and deleteMessage), so the summary names the issue and
+// the kind and carries no text of the post.
+func TestRunSummarizesAnEditByItsNewBodyAndADeleteByNoText(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	seedIssue(t, database, "T-1", nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	commentID := seedComment(t, database, "T-1", alice, "Tighten this paragraph", nil)
+	messageID := seedMessage(t, database, "T-1", alice, "The staging run is green", nil)
+	editedAt := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	commentEditedAt := editedAt.Format(time.RFC3339Nano)
+	deletedAt := editedAt.Add(time.Minute)
+	var written []model.Event
+	for _, event := range []model.Event{
+		{Type: "comment.edited", Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: commentID, IssueKey: new("T-1"), Author: alice, Body: "Tighten the second paragraph instead", EditedAt: &commentEditedAt,
+		}}},
+		{Type: "comment.deleted", Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: commentID, IssueKey: new("T-1"), Author: alice, EditedAt: &commentEditedAt, DeletedAt: &deletedAt, DeletedBy: &alice,
+		}}},
+		{Type: "message.edited", Payload: model.MessageEventPayload{Message: model.Message{
+			ID: messageID, IssueKey: new("T-1"), Author: alice, Body: "The staging run is green again", EditedAt: &editedAt,
+		}}},
+		{Type: "message.deleted", Payload: model.MessageEventPayload{Message: model.Message{
+			ID: messageID, IssueKey: new("T-1"), Author: alice, EditedAt: &editedAt, DeletedAt: &deletedAt, DeletedBy: &alice,
+		}}},
+	} {
+		event.IssueKey, event.Actor = new("T-1"), alice
+		written = append(written, appendEvent(t, database, broker, event))
+	}
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "the corrections' publication", func() bool {
+		return len(publisher.all()) == len(written) && publishedAt(t, database, written[len(written)-1].ID) != nil
+	})
+	want := map[string]string{
+		"notifications.dispatch.issue.T-1.comment.edited":  "T-1 comment edited: Tighten the second paragraph instead",
+		"notifications.dispatch.issue.T-1.comment.deleted": "T-1 comment deleted",
+		"notifications.dispatch.issue.T-1.message.edited":  "T-1 message edited: The staging run is green again",
+		"notifications.dispatch.issue.T-1.message.deleted": "T-1 message deleted",
+	}
+	for _, item := range publisher.all() {
+		if summary, held := want[item.Topic]; !held || item.PayloadSummary != summary {
+			t.Errorf("%s payload summary = %q, want %q", item.Topic, item.PayloadSummary, summary)
+		}
+	}
+}
+
+// The outbox publishes each row of events as it was written: the Design keeps it ("An outbox
+// row that carries such an event is published as recorded"). A comment.created row still
+// unpublished when its author deleted the comment is published with the body it recorded, and
+// the comment.deleted row the delete appended follows it to every destination the create
+// reached, after it on each, so no reader is handed the delete before the post it withdraws.
+func TestRunPublishesADeletedCommentsCreateAsRecordedAndItsDeleteAfterIt(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "session:5a660655-04ad-4ce0-8a9b-93dd03c412b7"
+	seedIssue(t, database, "T-1", &route)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	const body = "Hold the deploy until the rollback is rehearsed."
+	commentID := seedComment(t, database, "T-1", alice, body, nil)
+	created := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+		Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Author: alice, Body: body}},
+	})
+	// The delete, before the outbox has run: the row's body cleared and marked, as
+	// clearDeletedPostBody leaves it, and the delete's own event appended.
+	var deletedAt time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
+		update comments set body = '', deleted_at = now(), deleted_by = '{"kind":"user","id":"alice"}'
+		where id = $1 returning deleted_at
+	`, commentID).Scan(&deletedAt); err != nil {
+		t.Fatalf("delete the comment: %v", err)
+	}
+	deleted := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.deleted", Actor: alice,
+		Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: commentID, IssueKey: new("T-1"), Author: alice, DeletedAt: &deletedAt, DeletedBy: &alice,
+		}},
+	})
+	publisher := &recordingPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	waitFor(t, time.Second, "the create's and the delete's publication", func() bool {
+		return publishedAt(t, database, created.ID) != nil && publishedAt(t, database, deleted.ID) != nil
+	})
+	// Where each event reached, by destination, and the order each destination was handed them
+	// in. The issue's topic names the event's type, so its two subjects are one destination.
+	reached := map[int64][]string{}
+	order := map[string][]int64{}
+	for _, item := range publisher.all() {
+		var event struct {
+			ID      int64                     `json:"id"`
+			Payload model.CommentEventPayload `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope published to %s: %v", item.Topic, err)
+		}
+		if event.ID == created.ID && (event.Payload.Body != body || event.Payload.DeletedAt != nil) {
+			t.Errorf("comment.created reached %s with body %q and deleted_at %v, want the body it recorded and no mark",
+				item.Topic, event.Payload.Body, event.Payload.DeletedAt)
+		}
+		destination := item.Topic
+		if strings.HasPrefix(destination, "notifications.dispatch.issue.T-1.") {
+			destination = "notifications.dispatch.issue.T-1"
+		}
+		reached[event.ID] = append(reached[event.ID], destination)
+		order[destination] = append(order[destination], event.ID)
+	}
+	destinations := []string{"notifications.agent.5a660655-04ad-4ce0-8a9b-93dd03c412b7", "notifications.dispatch.issue.T-1"}
+	for _, event := range []model.Event{created, deleted} {
+		got := append([]string(nil), reached[event.ID]...)
+		slices.Sort(got)
+		if !slices.Equal(got, destinations) {
+			t.Fatalf("%s reached %v, want %v", event.Type, got, destinations)
+		}
+	}
+	for _, destination := range destinations {
+		if !slices.Equal(order[destination], []int64{created.ID, deleted.ID}) {
+			t.Errorf("%s was handed events %v, want comment.created %d and then comment.deleted %d",
+				destination, order[destination], created.ID, deleted.ID)
+		}
 	}
 }
 
@@ -1851,24 +1985,20 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}), time.Second)
+	return runDeps(t, withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it, which fails t unless Run returns within
-// stopWithin. A test that needs more of Deps than run's store, publisher and broker - a metrics
-// counter among them - builds it itself and calls this.
-func runDeps(t *testing.T, deps Deps, stopWithin time.Duration) func() {
+// runDeps runs New(deps) until the returned func stops it, which waits for Run to return through
+// the shared wait, with no span of its own. A test that needs more of Deps than run's store,
+// publisher and broker - a metrics counter among them - builds it itself and calls this.
+func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { New(deps).Run(ctx); close(done) }()
 	return func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(stopWithin):
-			t.Fatal("outbox did not stop")
-		}
+		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
 	}
 }
 
@@ -1916,16 +2046,40 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 	`, issueKey, authorJSON, question).Scan(&id); err != nil {
 		t.Fatalf("create ask: %v", err)
 	}
-	if err := asks.FollowAuthor(context.Background(), database.Pool, id, author); err != nil {
-		t.Fatalf("follow ask: %v", err)
+	if author.Kind != "session" || author.ID == "" {
+		return id
 	}
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
+		return err
+	})
 	return id
 }
 
 func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) {
 	t.Helper()
-	if _, err := asks.Follow(context.Background(), database.Pool, askID, sessionID); err != nil {
+	inFollowTransaction(t, database, func(tx pgx.Tx) error {
+		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
+			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+		return err
+	})
+}
+
+// inFollowTransaction runs follow in a transaction of its own and commits it: a follow writes
+// its session's node beside the follower row, and the store writes only inside a transaction.
+func inFollowTransaction(t *testing.T, database *store.Store, follow func(pgx.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the follow: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := follow(tx); err != nil {
 		t.Fatalf("follow ask: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the follow: %v", err)
 	}
 }
 

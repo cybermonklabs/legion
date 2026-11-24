@@ -30,6 +30,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // The copy's subjects (manifests/listener.yaml, cluster.sh mint_identity), and one the listener
 // lists nowhere.
 const (

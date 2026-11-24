@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-func createThreadComment(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
+func createThreadComment(t testing.TB, handler http.Handler, issueKey string, input map[string]any, login string) model.Comment {
 	t.Helper()
 	var response *httptest.ResponseRecorder
 	if login == "" {
@@ -26,6 +26,7 @@ func createThreadComment(t *testing.T, handler http.Handler, issueKey string, in
 	return decodeBody[model.Comment](t, response)
 }
 func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
+	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,6 +192,7 @@ func countCommentRows(t *testing.T, handler http.Handler, issueKey string) int {
 }
 
 func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reopen comment", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -232,6 +234,7 @@ func TestReopenCommentClearsResolutionAndReprojects(t *testing.T) {
 }
 
 func TestReplyToResolvedRootReopensIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply reopens root", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -258,6 +261,7 @@ func TestReplyToResolvedRootReopensIt(t *testing.T) {
 // Accepting or rejecting a suggestion takes its mark out of the document. A reply still joins
 // that thread, and it leaves the decision as it was: who decided it and when, with no reopen.
 func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"accept", "reject"} {
 		t.Run(action, func(t *testing.T) {
 			handler := newTestHandler(t)
@@ -292,6 +296,7 @@ func TestReplyToADecidedSuggestionLandsAndKeepsTheDecision(t *testing.T) {
 }
 
 func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread root replies", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -316,6 +321,7 @@ func TestReplyToNestedCommentUsesThreadRoot(t *testing.T) {
 }
 
 func TestReplyToAskClarificationContinuesAskThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask clarification", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -374,6 +380,7 @@ func resolveAskAs(kind string) func(t *testing.T, handler http.Handler, issueKey
 // carries none, its comment.created names the ask's state and no ask_waiting_on, and the ask's
 // WaitingOn stays empty. The ask stays closed as it was.
 func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// close takes the open ask askID on issueKey to the state and resolution kind below.
@@ -491,6 +498,7 @@ func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
 }
 
 func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread IDs", "before")
 	otherResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
@@ -556,6 +564,7 @@ func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
 }
 
 func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply target", "A spec")
 	first := createEditableAsk(t, handler, issue.Key)
@@ -577,6 +586,7 @@ func TestCommentReplyToNumberedAskListsOpenAsks(t *testing.T) {
 }
 
 func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply suggestions", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "root"}, "alice")
@@ -615,6 +625,7 @@ func TestCreateCommentRejectsReplySuggestions(t *testing.T) {
 }
 
 func TestEditCommentIsAuthorOnly(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit comment", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -640,19 +651,72 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 	if other.Code != http.StatusForbidden || !strings.Contains(other.Body.String(), `"code":"NOT_AUTHOR"`) {
 		t.Fatalf("edit by another user: status=%d body=%s", other.Code, other.Body.String())
 	}
+	// The route names no person scope since INFRA-1523, so a session reaches it: one that is
+	// not the author is refused for that, and not for what its credential is.
 	bearer := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]any{
 		"body": "agent edit", "actor": sessionActor(),
 	})
-	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's edit: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	if bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"NOT_AUTHOR"`) {
+		t.Fatalf("a session edits a person's comment: status=%d body=%s, want 403 NOT_AUTHOR", bearer.Code, bearer.Body.String())
 	}
 	stored := readThreadComment(t, handler, comment.ID)
 	if stored.Body != "after edit" {
 		t.Fatalf("comment after rejected edits = %q, want %q", stored.Body, "after edit")
 	}
+
+	// The session arms: the authoring session edits its own comment, and a second session of
+	// the one shared credential is refused it.
+	agents := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "the session's first body", "actor": sessionActor(),
+	}, "")
+	author := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+agents.ID, map[string]any{
+		"body": "the session's second body", "actor": sessionActor(),
+	})
+	if author.Code != http.StatusOK {
+		t.Fatalf("the authoring session edits its own comment: status=%d body=%s", author.Code, author.Body.String())
+	}
+	if own := decodeBody[model.Comment](t, author); own.Body != "the session's second body" || own.EditedAt == nil {
+		t.Fatalf("the session's edit = %#v, want the new body and edited_at", own)
+	}
+	second := sessionRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+agents.ID, map[string]any{
+		"body": "another session's edit", "actor": map[string]any{"kind": "session", "id": "session-fedcba9876543210"},
+	})
+	if second.Code != http.StatusForbidden || !strings.Contains(second.Body.String(), `"code":"NOT_AUTHOR"`) {
+		t.Fatalf("a second session edits it: status=%d body=%s, want 403 NOT_AUTHOR", second.Code, second.Body.String())
+	}
+	if held := readThreadComment(t, handler, agents.ID); held.Body != "the session's second body" {
+		t.Fatalf("the session's comment after the refused edit = %q, want its own second body", held.Body)
+	}
+}
+
+// A comment an earlier build stored keeps its author's login in the case that build wrote it, and
+// no backfill rewrites it. The edit compares the stored author with the caller through
+// model.Actor.SameAs, which reads a person's id in its canonical form on both sides, so alice
+// edits the comment stored under "Alice" as her own. The comment is written by the route and its
+// author then restated under "Alice", in case only, as such a build stored it.
+func TestACommentStoredUnderAnotherCaseIsEditableByItsAuthor(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Edit a comment stored in another case", "before")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "before edit"}, "alice")
+	if moved, err := database.Pool.Exec(context.Background(),
+		`update comments set author = jsonb_set(author, '{id}', '"Alice"') where id = $1`, comment.ID); err != nil {
+		t.Fatalf("store the comment under \"Alice\": %v", err)
+	} else if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d comment(s) with id %s, want the comment", moved.RowsAffected(), comment.ID)
+	}
+
+	edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]string{"body": "after edit"}, "alice")
+	if edited.Code != http.StatusOK {
+		t.Fatalf("alice's edit of the comment stored under \"Alice\" answers %d, want 200: the author is compared in its canonical form", edited.Code)
+	}
+	if stored := readThreadComment(t, handler, comment.ID); stored.Body != "after edit" {
+		t.Fatalf("the comment stored under \"Alice\" reads %q after alice's edit, want %q", stored.Body, "after edit")
+	}
 }
 
 func TestResolveRecordsWhoAndWhen(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Resolution metadata", "before")
 	started := time.Now().UTC().Add(-time.Minute)
@@ -700,6 +764,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 // created_at - so a host in another zone answering "2026-10-01T17:00:01.12-07:00" where this one
 // answers "2026-10-02T00:00:01.12Z" is a different server to every one of those readers.
 func TestAPIWritesStoredTimestampsInUTC(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Timestamps", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "written first"}, "alice")

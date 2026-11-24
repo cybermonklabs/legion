@@ -1,7 +1,8 @@
 // Package docstest speaks the Hocuspocus websocket sync that docs.Service.ServeHTTP serves,
-// writes the deep trees a crafted client sends, and builds the load harness's spec, for Dispatch
+// writes the deep trees a crafted client sends, builds the load harness's spec, and holds the
+// whole-view backlink count refs.BacklinkCounts is held to (ViewBacklinkCountSQL), for Dispatch
 // tests in more than one package. It is an ordinary package rather than a _test.go file because
-// api, docs and pmdoc cannot import one another's test helpers, and it imports none of them.
+// api, docs, pmdoc and refs cannot import one another's test helpers, and it imports none of them.
 package docstest
 
 import (
@@ -22,6 +23,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -111,7 +113,7 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(peer.Close)
+	testcleanup.Add(t, peer.Close)
 	return peer
 }
 

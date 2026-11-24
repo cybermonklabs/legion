@@ -1,0 +1,5 @@
+kind: Fixed
+body: The advised answer of a Dispatch write, the process line a document socket's upgrade answer carries, and `loadgen cgroup-merge`'s rewrite of summary.json each join their parts with `slices.Concat`, which checks the sum of the parts' lengths, in place of a capacity summed by hand. CodeQL's `go/allocation-size-overflow` query reported the three hand-summed capacities. No input could make them overflow (every build target has a 64-bit `int`, and the parts are all in memory at once), and every byte written stays the same.
+time: 2026-11-22T08:21:26.876391687Z
+custom:
+    Issue: pr4982

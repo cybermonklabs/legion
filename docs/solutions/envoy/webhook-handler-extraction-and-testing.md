@@ -111,7 +111,7 @@ Table-driven tests with `httptest.NewRequest` + `httptest.NewRecorder`. Every ha
 ### Provider-specific additions
 
 **Slack:**
-- `url_verification` challenge response BEFORE signature check (Slack sends it unsigned during app setup)
+- `url_verification` challenge response only AFTER the signature check: Slack signs the handshake like every other request, and its documentation says to verify the request before answering the challenge (https://docs.slack.dev/reference/events/url_verification)
 - Timestamp within 5-minute window — tests must use `time.Now()`, not static timestamps
 - `event_callback` with empty `event_id` → no publish
 

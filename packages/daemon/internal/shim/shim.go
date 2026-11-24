@@ -14,7 +14,6 @@ package shim
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -80,7 +80,17 @@ const (
 // launcher SIGKILLs the shim at the stop grace (endGeneration, internal/launcher/process.go),
 // which would leave the lease behind. With the defaults, 10 s − 5 s − 1 s = 4 s.
 func warmUpDrain(stopGrace, grace time.Duration) time.Duration {
-	return max(stopGrace-grace-DrainTimeout, MinWarmUpDrain)
+	return max(stopGrace-grace-DrainTimeout, programbound.Of(&warmUpDrainFloor))
+}
+
+// warmUpDrainFloor is MinWarmUpDrain as warmUpDrain reads it, through programbound: a variable so
+// that cmd/legion's tests can give it their own deadline, since a warm-up a loaded machine makes
+// slow to release its lease is not left at 3 s there. MinWarmUpDrain stays the constant
+// internal/config sizes MinStopGrace by.
+var warmUpDrainFloor = MinWarmUpDrain
+
+func init() {
+	programbound.Register(&warmUpDrainFloor)
 }
 
 // Clock is the time the shim waits on: the backoff between dials and the grace before a kill.
@@ -216,7 +226,7 @@ type shim struct {
 	started time.Time
 
 	// commands is what every git and jj the shim starts builds its budget on (runAdoption,
-	// runBundle), each keeping a budget of its own on top of it. Each of those commands
+	// readWorkspaceWork), each keeping a budget of its own on top of it. Each of those commands
 	// runs in a process group of its own now (internal/procgroup), which is a group the SIGHUP a
 	// tmux kill-pane gives every process of the pane does not reach, so the shim's own end is what
 	// passes that stop on: a command left on context.Background() runs on against a clone every
@@ -367,7 +377,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -381,9 +391,6 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.AdoptWorkingCopy:
 		s.answer(func() { s.adopt(f) })
-		return
-	case shimwire.BundleWorkspace:
-		s.answer(func() { s.bundleWorkspace(f) })
 		return
 	case shimwire.WorkspaceWork:
 		s.answer(func() { s.workspaceWork(f) })
@@ -681,34 +688,6 @@ func (s *shim) finish(code int, err error) {
 		s.code, s.err = code, err
 		s.stop()
 	})
-}
-
-// toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
-// and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is this shim's one frame that can be: everything else fits a line.
-func (s *shim) toDaemonChunked(frame shimwire.Frame) {
-	line, err := json.Marshal(frame)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not encode a %s frame: %v", frame.FrameType(), err)
-		return
-	}
-	if len(line) < shimwire.MaxFrameBytes {
-		s.out.send(line)
-		return
-	}
-	chunks, err := shimwire.SplitChunks(rand.Text(), line)
-	if err != nil {
-		s.log.Printf("[worker-shim] could not chunk a %s frame of %d bytes: %v", frame.FrameType(), len(line), err)
-		return
-	}
-	for _, chunk := range chunks {
-		encoded, err := json.Marshal(chunk)
-		if err != nil {
-			s.log.Printf("[worker-shim] could not encode an rpc_chunk frame: %v", err)
-			return
-		}
-		s.out.send(encoded)
-	}
 }
 
 // envValue is name's value in env, the last assignment winning as it does for a process started

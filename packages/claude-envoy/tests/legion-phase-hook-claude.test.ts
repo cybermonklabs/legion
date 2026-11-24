@@ -6,6 +6,8 @@ import { LegionStateResponse } from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { loopbackHost } from "@legion/test-fixtures/loopback-host"
+import { readStandinBody } from "@legion/test-fixtures/standin-body"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -112,11 +114,15 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   const requests: Request[] = []
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    // An address of its own, out of reach of a client of another test that still dials this port
+    // at 127.0.0.1 (`loopbackHost`); the worker's URLs are built from `base` below.
+    hostname: loopbackHost(),
     async fetch(request) {
       const url = new URL(request.url)
-      const text = request.method === "POST" ? await request.text() : ""
-      const body = text === "" ? {} : (JSON.parse(text) as Record<string, unknown>)
+      // A body that is no JSON object is refused by name, and is neither recorded nor handed to
+      // `answer` (`readStandinBody`).
+      const { body, refusal } = await readStandinBody(request)
+      if (refusal !== undefined) return refusal
       requests.push({ path: url.pathname, body })
       return answer(url, body)
     },
@@ -124,7 +130,7 @@ function serveStandin(answer: (url: URL, body: Record<string, unknown>) => Respo
   cleanup.push(async () => {
     await server.stop(true)
   })
-  return { requests, base: `http://127.0.0.1:${server.port}` }
+  return { requests, base: server.url.origin }
 }
 
 // The phase reminder's Claude Code half on the real Claude Code binary (src/legion-phase-hook.ts,

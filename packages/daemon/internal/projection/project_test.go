@@ -43,6 +43,13 @@ type projectionStore struct {
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
+	// planTasks is the task of each issue that has plan rows at its generation, as
+	// record.Store.PlanTasksOf answers them.
+	planTasks []record.PlanTask
+}
+
+func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
+	return s.planTasks, nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
@@ -83,11 +90,26 @@ func (projectionStore) PendingStatusWrites(context.Context, pgx.Tx, string) ([]r
 func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.Time) ([]record.HeldRow, error) {
 	return s.held, nil
 }
+
+// OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
+// intake_giveups_test.go's, on PostgreSQL.
+func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (record.IntakeGiveUps, error) {
+	return record.IntakeGiveUps{}, nil
+}
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
 }
-func (s projectionStore) PullRequest(_ context.Context, _ pgx.Tx, issue string) (*record.PullRequest, error) {
-	return s.pullRequests[issue], nil
+
+// PullRequestsOf answers the pull request of each of issues the store holds, by key, as the real
+// store reads them in one statement: an issue it holds none for has no entry.
+func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
+	of := make(map[string]record.PullRequest, len(issues))
+	for _, issue := range issues {
+		if pr := s.pullRequests[issue]; pr != nil {
+			of[issue] = *pr
+		}
+	}
+	return of, nil
 }
 func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
 	return s.gates[issue], nil
@@ -871,11 +893,13 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
 // holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
-// it waits on another issue before then, when it gives the row back and is not named here
+// moment the daemon starts it while it stands in a phase that keeps one (record.KeepsSlot),
+// except while it waits on another issue there, when it gives the row back and is not named here
 // (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
-// of it is running this second. An issue with no row of its own waits for nothing here: it
-// stands in neither list.
+// of it is running this second. The fixture gives a row to an issue in accepting and one in
+// merging as well, which keep none and whose rows admission's release would take back; the
+// projection names them all the same, since it reads the rows. An issue with no row of its own
+// waits for nothing here: it stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}
@@ -948,12 +972,59 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	}
 }
 
+// An issue with plan rows counts its returns on its task (record.ReturnCounts), so the implementer's
+// view of it shows the task's counts, read for every issue in one statement
+// (record.Store.PlanTasksOf); its implementer's phases row counts nothing. An issue with no plan
+// rows shows the counts its implementer's phases row holds, as before plans.
+func TestProjectShowsATasksCountsAndAnIssueWithNoPlanRowsItsImplementersRow(t *testing.T) {
+	planned, unplanned := claim.Token("legion-208-implementer"), claim.Token("legion-209-implementer")
+	taskMoves := map[string]int{"reviewing-implementing": 3, "testing-implementing": 2}
+	rowMoves := map[string]int{"testing-implementing": 1}
+	issue := func(key string) record.Issue {
+		return record.Issue{Key: key, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Tree: key, Status: "in_progress", Phase: phase.Implementing, Generation: 1}
+	}
+	store := projectionStore{
+		issues: []record.Issue{issue("LEGION-208"), issue("LEGION-209")},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-208": {{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: planned}},
+			"LEGION-209": {{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: unplanned, Pass: 2, Rounds: 1, BackwardMoves: rowMoves}},
+		},
+		planTasks: []record.PlanTask{{Issue: "LEGION-208", Generation: 1, Task: "a", State: record.TaskRunning,
+			Place:  record.TaskPlace{Kind: record.PlaceStep, Position: 1},
+			Counts: record.ReturnCounts{Pass: 5, Rounds: 3, BackwardMoves: taskMoves, CapTold: 3}}},
+	}
+
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{
+		{Token: planned, Issue: "LEGION-208", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_208"},
+		{Token: unplanned, Issue: "LEGION-209", Role: claim.RoleImplementer, State: supervise.StateIdle, Session: "ses_209"},
+	}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	for _, want := range []struct {
+		key          string
+		pass, rounds int
+		moves        map[string]int
+		where        string
+	}{
+		{"LEGION-208", 5, 3, taskMoves, "its task's"},
+		{"LEGION-209", 2, 1, rowMoves, "its implementer's phases row's"},
+	} {
+		view := got.Issues[want.key].Workers[claim.RoleImplementer]
+		if view.Pass != want.pass || view.Rounds != want.rounds || !reflect.DeepEqual(view.BackwardMoves, want.moves) {
+			t.Fatalf("the implementer's view of %s counts pass %d, rounds %d, moves %v; want %s %d, %d and %v",
+				want.key, view.Pass, view.Rounds, view.BackwardMoves, want.where, want.pass, want.rounds, want.moves)
+		}
+	}
+}
+
 // Every issue of a live tree is served that tree's quiet time (contract 111): `treeMovedAt`, the
 // newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
 // has been still at the instant the state is measured at. The pair is the tree's, so the root
-// and a child of it past its own review carry the same two values, though that child holds no
-// admission slot and the root holds one: what has stopped is the tree, and an issue past its
-// review is measured like every other member of it. The child's own record is the newest
+// and a child of it in retro carry the same two values, though that child holds no admission
+// slot, since retro keeps none, and the root holds one: what has stopped is the tree, and an
+// issue in retro is measured like every other member of it. The child's own record is the newest
 // movement here, which is what makes the two values the tree's rather than each issue's.
 //
 // An issue whose tree has left the workflow carries neither key: it is the root of no live tree,
@@ -982,7 +1053,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 		t.Fatalf("admission.trees = %v, want LEGION-10 alone: the tree that left the workflow must be no live root, or this test proves nothing", trees)
 	}
 	if got.Issues["LEGION-10"].Slot == nil || got.Issues["LEGION-11"].Slot != nil {
-		t.Fatalf("the root holds slot %+v and the child past its review holds %+v, want a row on the root and none on the child; this test proves nothing",
+		t.Fatalf("the root holds slot %+v and the child in retro holds %+v, want a row on the root and none on the child; this test proves nothing",
 			got.Issues["LEGION-10"].Slot, got.Issues["LEGION-11"].Slot)
 	}
 	for _, key := range []string{"LEGION-10", "LEGION-11"} {

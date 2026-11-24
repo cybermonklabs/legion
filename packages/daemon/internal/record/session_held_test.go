@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -65,7 +66,7 @@ func TestAFailedSessionHeldReadLeavesTheFactUsable(t *testing.T) {
 			t.Fatalf("rename claim_sessions: %v", err)
 		}
 	})
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		held, err := SessionHeld(ctx, tx, "legion", holder, "ses_holder", "")
 		if err == nil || held {
 			t.Errorf("SessionHeld with no claim_sessions table = %t, %v; want false and the read's error", held, err)

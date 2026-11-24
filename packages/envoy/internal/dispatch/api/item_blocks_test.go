@@ -137,6 +137,7 @@ func carriedBlocks(pairs ...any) []map[string]any {
 // unchanged ones keeps its id at a new revision, a deleted one is removed, and the same text
 // written back takes the id back.
 func TestACommentsEditKeepsItsBlockIDs(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment blocks", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "First.\n\nSecond.\n\nThird."}, "alice")
@@ -198,6 +199,7 @@ func oweBlockGrammar(t *testing.T, database *store.Store, kind, id string) refs.
 // reconciliation (refs.ReindexOwed): nothing recorded when those blocks were made, so each
 // has no making time, while a block a later edit adds is made at that edit.
 func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Older comment", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Old one.\n\nOld two."}, "alice")
@@ -235,11 +237,83 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 	}
 }
 
+// A re-index of an edited message leaves its blocks stamped at the edit and not at the moment the
+// message was sent: refs.ReindexOwed reads a message's text at coalesce(edited_at, created_at),
+// as it reads a comment's and an ask's (refs/rebuild.go, sourceText). What the queue holds a row
+// for is a build whose grammar reads the stored body otherwise, so the message is left as such a
+// build left it: one block's stored sum is not the sum this build reads, and one block this build
+// reads is stored by nothing.
+func TestReindexingAnEditedMessageStampsItsBlocksAtTheEdit(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "Re-index an edited message", "before")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "First.\n\nSecond."}, "alice")
+	edited := editIssueMessage(t, handler, message.ID, "First.\n\nSecond, reworded.\n\nAnd a third.", "alice")
+	if edited.EditedAt == nil || !edited.EditedAt.After(message.CreatedAt) {
+		t.Fatalf("the message's edit at %v is not after it was sent at %s", edited.EditedAt, message.CreatedAt)
+	}
+	for _, statement := range []string{
+		`update message_blocks set text_sha256 = 'the older grammar''s sum' where message_id = $1 and block_id = 'b2'`,
+		`delete from message_blocks where message_id = $1 and block_id = 'b3'`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement, message.ID); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+
+	owed := oweBlockGrammar(t, database, "message", message.ID)
+	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		t.Fatalf("reindex the message = %v (%v), want it indexed", indexed, err)
+	}
+
+	// b1, which neither the edit nor the re-index rewrote, still stands at the moment the message
+	// was sent; b2, whose text this build reads otherwise, changed at the edit and keeps the
+	// made_at it was sent with; b3, the row this re-index wrote first, was made at the edit.
+	rows, err := database.Pool.Query(ctx, `
+		select b.block_id, b.made_at = m.created_at, b.made_at = m.edited_at,
+		       b.changed_at = m.created_at, b.changed_at = m.edited_at
+		from message_blocks b join messages m on m.id = b.message_id
+		where b.message_id = $1 and b.position is not null order by b.position
+	`, message.ID)
+	if err != nil {
+		t.Fatalf("read the blocks of the re-indexed message: %v", err)
+	}
+	defer rows.Close()
+	when := func(sent, edit bool) string {
+		switch {
+		case sent:
+			return "sent"
+		case edit:
+			return "edited"
+		}
+		return "neither"
+	}
+	stamps := []string{}
+	for rows.Next() {
+		var id string
+		var madeWhenSent, madeAtEdit, changedWhenSent, changedAtEdit bool
+		if err := rows.Scan(&id, &madeWhenSent, &madeAtEdit, &changedWhenSent, &changedAtEdit); err != nil {
+			t.Fatalf("scan a block of the re-indexed message: %v", err)
+		}
+		stamps = append(stamps, fmt.Sprintf("%s:%s/%s", id,
+			when(madeWhenSent, madeAtEdit), when(changedWhenSent, changedAtEdit)))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the blocks of the re-indexed message: %v", err)
+	}
+	const want = "b1:sent/sent b2:sent/edited b3:edited/edited"
+	if got := strings.Join(stamps, " "); got != want {
+		t.Fatalf("the re-indexed message's blocks stand at %q, want %q (<id>:<made_at>/<changed_at>)", got, want)
+	}
+}
+
 // A13 over the API: the editor carries each block's id through a move, a reword, a split, a
 // deletion and a restore, and the cited block b2 keeps its id through each, where matching by text
 // alone would lose it. A carried list made against a revision that is no longer the comment's is
 // ignored, and the ids follow the text.
 func TestTheEditorsCarriedIDsSurviveMoveRewordAndSplit(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carried ids", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta.\n\nGamma."}, "alice")
@@ -283,6 +357,7 @@ func TestTheEditorsCarriedIDsSurviveMoveRewordAndSplit(t *testing.T) {
 // type text; adding block HTML elsewhere in a comment keeps an unchanged paragraph's id and
 // changed revision.
 func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Block HTML", "before")
 	sent := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
@@ -316,6 +391,7 @@ func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
 // Each wrong field of a carried list is refused with 400 INVALID_COMMENT naming it, and the
 // comment is left as it was.
 func TestBadCarriedIDsAreRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Bad carried ids", "before")
 	body := "Alpha.\n\nBeta."
@@ -445,6 +521,7 @@ func itemBlockRefs(t *testing.T, database *store.Store, kind, itemID string) []s
 // reply to it, and a session's delivery callback reply to a comment. (Each copy of a broadcast is
 // covered in TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest.)
 func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Message blocks", "before")
@@ -522,6 +599,7 @@ func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
 // and referenced_by_count counts each citing paragraph. A link that moves between two blocks of a
 // comment is a change the edit's event names, though the comment still cites the target.
 func TestAMentionStartsAtItsBlock(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions in blocks", "before")
 	target := createInteractionIssue(t, handler, "ACME", "Cited issue", "before")
@@ -602,6 +680,7 @@ func TestAMentionStartsAtItsBlock(t *testing.T) {
 // link moved from one block to another. An edit that moves a link past the head names that target
 // alone, and one that moves only the head names every cited target though no block row moved.
 func TestACommentEditNamesItsMovedHeadAndItsMovedLinks(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edits that move links", "before")
 	headTarget := createInteractionIssue(t, handler, "ACME", "Cited in the head", "before")
@@ -664,6 +743,7 @@ func TestACommentEditNamesItsMovedHeadAndItsMovedLinks(t *testing.T) {
 // does not hold answers 404, and a message block pinned to a revision is no reference. A reply
 // that names a block of the item read is listed once, under that block, and belongs to it.
 func TestABlockOfACommentIsAddressable(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment block references", "before")
 	x := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
@@ -770,6 +850,7 @@ func TestABlockOfACommentIsAddressable(t *testing.T) {
 // removed (after an edit deletes it, with the revision that removed it). The unpinned link reads
 // the current text, or 404 once the block is gone; a pin past the comment's revision answers 404.
 func TestAPinnedCommentBlockReadsItsRevision(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned comment blocks", "before")
 	x := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
@@ -855,6 +936,7 @@ func describeRevision(revision *int) string {
 // message is read under GET /api/v1/messages/{id}'s rule: a session reads a direct message's
 // blocks only in a conversation it is in, and they have no reference.
 func TestTheBlocksRoutesListAnItemsBlocks(t *testing.T) {
+	t.Parallel()
 	handler, database, direct, reply, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "Blocks routes", "before")
 	read := func(step, path string, human bool) (model.ItemBlocks, string) {
@@ -1018,6 +1100,7 @@ func TestTheBlocksRoutesListAnItemsBlocks(t *testing.T) {
 // or the message's, which GET /api/v1/messages/{id}/blocks reads only to a session in the
 // conversation.
 func TestADirectMessagesBlockHasNoAddress(t *testing.T) {
+	t.Parallel()
 	handler, _, direct, _, _ := directConversationFrom(t, "alice")
 	for _, key := range []string{"TEST-1", "NONE-9"} {
 		reference := "dispatch://" + key + "/message/" + direct.ID + "#b-b1"

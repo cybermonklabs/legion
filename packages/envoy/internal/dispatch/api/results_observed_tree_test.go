@@ -12,6 +12,7 @@ import (
 // the header carries none. The result's write stores that tree, as every write of a stored text
 // does, so the read copies the stored bytes rather than reading the markdown again.
 func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "OBST", "Observed trees", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)

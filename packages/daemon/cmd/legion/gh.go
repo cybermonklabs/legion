@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's or pod's PATH: runs LEGION_GH_PATH with GH_CONFIG_DIR set to the gh directory of the owner the command names, under LEGION_GH_OWNERS_DIR)"
@@ -1248,7 +1249,20 @@ func refuseLegionGhAsRealGh(gh string) error {
 	return nil
 }
 
+// ghHelpTimeout is the longest readGhHelp waits for the real gh to print a command's help. The
+// real gh prints it from its own binary in well under a second; a gh that has not in 30 s is
+// hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
+// that never returns. A test shortens it to read that the stop comes.
 var ghHelpTimeout = 30 * time.Second
+
+// The bounds legion sets on a program it starts and waits for, which this package's tests give
+// their own deadline through programbound: the git reads of `legion gh` (ghGitReadBound), its read
+// of gh's help (ghHelpTimeout), its answer to the shared check's own visibility read
+// (visibilityAnswerBound), the credential helper's fork read (forkReadBound), and the worker shim's
+// grace for its agent (workerShimGrace). Each wait reads its bound through programbound.Of.
+func init() {
+	programbound.Register(&ghGitReadBound, &ghHelpTimeout, &visibilityAnswerBound, &forkReadBound, &workerShimGrace)
+}
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), run with env (runGh's ghChildEnviron of the caller's GH_CONFIG_DIR) and refused when
@@ -1257,10 +1271,13 @@ var ghHelpTimeout = 30 * time.Second
 // is stopped whole when the read outlives ghHelpTimeout or ctx ends (procgroup.Configure): a stop
 // that killed gh alone would leave whatever gh started running, reparented and unwaited for. That
 // group is not the terminal's, so none of the terminal's signals reach it, and ctx is how they do:
-// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. It runs
-// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+// runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP. A timeout or
+// an end of ctx that came before gh started, which exec then never starts, is said as such, and
+// never as an answer of gh's. It runs under leakguard.RunByRealGhVar, so a gh that leads back to
+// `legion gh` is refused there.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
+	bound := programbound.Of(&ghHelpTimeout)
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
@@ -1270,9 +1287,13 @@ func readGhHelp(ctx context.Context, gh string, env, path []string) (string, err
 	if err := cmd.Run(); err != nil {
 		switch {
 		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
-			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", ghHelpTimeout)
+			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", bound)
 		case killed():
 			return "", fmt.Errorf("gh's help read was stopped, with its process group: %v", context.Cause(ctx))
+		case errors.Is(err, context.DeadlineExceeded):
+			return "", fmt.Errorf("gh did not answer its help within %s: the time passed before gh started", bound)
+		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
+			return "", fmt.Errorf("gh's help read was stopped before gh started: %v", context.Cause(ctx))
 		}
 		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
 	}

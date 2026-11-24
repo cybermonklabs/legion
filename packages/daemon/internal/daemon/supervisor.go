@@ -215,16 +215,17 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 	var unfinished []claim.Token
 	live := supervise.LiveStates()
 	for i, c := range claims {
+		// Before the repair below moves a ready, working or idle claim to launch_uncertain: the
+		// start failure goes by the state the claim's agent last reached.
+		dropped := supervise.DropStaleStartFailure(&c)
 		repaired := (c.Locator == nil && slices.Contains(live, c.State)) || c.ReleasedLaunch()
 		if repaired {
 			s.log.Warn("supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no process is recorded for it",
 				"claim", c.Token, "stored", c.State, "generation", c.Generation)
 			c.State = supervise.StateLaunchUncertain
 		}
-		before := c
-		enrollment := supervise.NormalizeClaim(&c)
-		normalized := repaired || len(c.CapabilityHash) != len(before.CapabilityHash) ||
-			c.SuspendedBy != before.SuspendedBy || c.Enrollment != before.Enrollment
+		enrollment, normalized := supervise.NormalizeClaim(&c)
+		normalized = normalized || repaired || dropped
 		if normalized {
 			if err := s.deps.Store.PutClaim(ctx, supervise.StoredClaim(c)); err != nil {
 				return nil, err
@@ -321,21 +322,23 @@ func (s *supervisor) inDecision() []string {
 	return busy
 }
 
-// post queues ev for the claim's machine. An event for a claim the daemon does not supervise, or
-// one that arrives once supervision is stopping, goes nowhere.
-func (s *supervisor) post(token claim.Token, ev supervise.Event) {
+// post queues ev for the claim's machine and answers whether it delivered. An event for a claim
+// the daemon does not supervise, or one that arrives once supervision is stopping, goes nowhere
+// and answers false.
+func (s *supervisor) post(token claim.Token, ev supervise.Event) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.stopped {
-		return
+		return false
 	}
 	m, ok := s.machines[token]
 	if !ok {
 		s.log.Warn("supervise: an event for a claim this daemon does not supervise", "claim", token,
 			"event", fmt.Sprintf("%T", ev))
-		return
+		return false
 	}
 	m.inbox.put(ev)
+	return true
 }
 
 // drained puts the stream's mark (stream.Drained) in token's inbox behind every event posted to it
@@ -663,13 +666,18 @@ func (b *inbox) take() (inboxItem, bool) {
 }
 
 // close ends the inbox. A mark it still holds is closed, since no event before it will be
-// handled now and its asker waits for nothing more.
+// handled now and its asker waits for nothing more. A refresh post it still holds gives back the
+// credit of the stale-plugin refresh gate it carries, since no machine will decide that post and
+// the post is the credit's one holder until one does (supervise.RefreshGate, its rule of return).
 func (b *inbox) close() {
 	b.mu.Lock()
 	b.closed = true
 	for _, item := range b.items {
 		if item.drained != nil {
 			close(item.drained)
+		}
+		if stale, ok := item.ev.(supervise.StalePlugin); ok {
+			stale.Credit.Release()
 		}
 	}
 	b.items = nil

@@ -23,6 +23,8 @@
 
 package api
 
+//ci:reads packages/envoy/**/*.go !**/*_test.go internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata and all) and :83 parses every .go file it finds but the test files (:80), for the tests that ask it for the module's sources:, event_insert_guard_test.go:46, review_order_guard_test.go:49, review_write_guard_test.go:53, one_expression_guard_test.go:72, issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:126 also walks packages/envoy and reads every non-test file of it as text
+
 import (
 	"path/filepath"
 	"regexp"
@@ -45,15 +47,22 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 // ownerRowLockSites are the places allowed to lock an owner row, keyed by the file that declares
 // them, each named as a statement's locatedStatement names where it is: a function, or a
 // package-level value. They are the events' lockEventOwner, which takes the row `for no key
-// update` when the transaction appends, under the owner's advisory lock it takes first; and the
+// update` when the transaction appends, under the owner's advisory lock it takes first; the
 // store's three owner lock levels, the package-level variables ownerLockExclusive,
 // ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
 // after its advisory lock, before the read it guards, while its fleet read answers that a process
-// of an earlier build is live (store.lockOwnerRows). Every other declaration and function of
-// ownerlock.go is under the rule.
+// of an earlier build is live (store.lockOwnerRows); and an issue create's `for share` of its
+// parent's row (createIssue). That one runs only with the parent-status rule on, in the create's
+// write phase, after the update of the project's next_number gave the transaction its id, as the
+// statement just before `insert into issues`. It orders the create against a close of that
+// parent: a close whose update ran first makes it wait and read `done`, and a create whose share
+// lock ran first makes the close's update wait, and the close's second read then sees the new
+// child. It takes no lock in the read phase and replaces no advisory lock. Every other
+// declaration and function of ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
-	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
-	"internal/dispatch/store/ownerlock.go": {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
+	"internal/dispatch/api/issue_create.go": {"createIssue"},
+	"internal/dispatch/events/broker.go":    {"lockEventOwner"},
+	"internal/dispatch/store/ownerlock.go":  {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }
 
 var (
@@ -99,11 +108,11 @@ var (
 // makes.
 //
 // Row locks elsewhere are untouched: doc_checkpoints is read plainly under the document lock, and
-// message_deliveries, comment_mentions, comment_deliveries, repo_projects and
-// architecture_sources still use `for update`. A targeted message's own row is taken `for no key
-// update` (message_delivery.go), so the session's reply, whose foreign key takes it `for key
-// share`, never waits on it. The viewer's own state row takes none: its route serialises on the
-// project's advisory owner lock (state.go, store.LockOwner).
+// message_deliveries, comment_mentions, comment_deliveries and architecture_sources still use
+// `for update`. A targeted message's own row is taken `for no key update` (message_delivery.go),
+// so the session's reply, whose foreign key takes it `for key share`, never waits on it. The
+// viewer's own state row takes none: its route serialises on the project's advisory owner lock
+// (state.go, store.LockOwner).
 //
 // The match is statement-scoped and conservative, and it prints the statement rather than naming
 // a table, because which row a statement locks is a property of the whole statement. A lock
@@ -119,6 +128,7 @@ var (
 // strings.Repeat("issues", 0) prints `... for update issues`: the tell is a word the statement
 // did not spell, an owner table outside its `from` or a lock clause the query never assembles.
 func TestNoForUpdateOnOwnerTables(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {

@@ -33,6 +33,7 @@ import (
 // With no pair configured the same record is read under its own name, as a deployment that
 // configures no rename always did.
 func TestThePullRequestReadsOfATreeRecordedBeforeItsTransferAddressTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		renames ghrepo.Renames
@@ -156,8 +157,7 @@ func (g *readRenameGitHub) assertAddressed(t *testing.T, repo, branch string) {
 func seedRenamedCapture(t *testing.T, pool *store.Pool, pr record.PullRequest) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: pr.Issue, Repo: pr.Repo, DefaultBranch: "main",
 			GitHubRepo: pr.Repo, Tree: pr.Issue, Project: "CAPTURE", Title: "root", Phase: phase.Implementing,
 			Generation: 1, Status: "in_progress", Rank: "U"}); err != nil {

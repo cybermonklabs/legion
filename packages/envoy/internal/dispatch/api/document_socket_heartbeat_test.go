@@ -136,11 +136,13 @@ func presentedHeaders(presented *http.Request) http.Header {
 // so its heartbeat re-checks that cookie and nothing the request carries beside it
 // (signInStillResolves). A token sent beside the cookie admitted nothing, and the broker holding
 // it live must not keep the socket open once the cookie's session has ended: not a read-only
-// token, which the read list lets read no document at all, and not a token that writes, which is
-// its session's credential and still not what opened this socket. The socket stays open while
-// the cookie resolves, with the token beside it, and closes within a heartbeat of the session's
-// end, while the broker still holds the token live and has not once been asked about it.
+// token, which may read a document through the API's reads and never through this socket, and
+// not a token that writes, which is its session's credential and still not what opened this
+// socket. The socket stays open while the cookie resolves, with the token beside it, and closes
+// within a heartbeat of the session's end, while the broker still holds the token live and has
+// not once been asked about it.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name   string
@@ -194,6 +196,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -229,6 +232,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // holding it live and the answer it remembered has run out. The heartbeat is a second, so the
 // client's pong meets the pong deadline on a loaded runner.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	caller := newBrokerCaller(t)

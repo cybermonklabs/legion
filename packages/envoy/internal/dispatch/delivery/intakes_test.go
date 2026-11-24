@@ -24,6 +24,7 @@ import (
 // keeps one JetStream subscription, so two intakes binding through one client leave whichever bound
 // first with its durable unbound: its messages stay pending and its handler never runs.
 func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -41,7 +42,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -79,6 +80,19 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}, func() string {
 		return "the intakes' durables are not both push-bound: " + consumers()
 	})
+	// StartIntakes times both intakes by production's tuning (newIntakeTuning), which the delivery
+	// durable it created carries: an ack wait of maxAckPending message timeouts plus a minute, and
+	// that maxAckPending. A tuning of a test's, or none, gives the durable other values.
+	delivery, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+	if err != nil {
+		t.Fatalf("read the delivery durable: %v", err)
+	}
+	if got, want := delivery.Config.AckWait, time.Duration(intakeMaxAckPending)*intakeMessageTimeout+time.Minute; got != want {
+		t.Errorf("the delivery durable StartIntakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
+	}
+	if got := delivery.Config.MaxAckPending; got != intakeMaxAckPending {
+		t.Errorf("the delivery durable StartIntakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
+	}
 	// The server can read the two durables while one registration's unsubscribe is still on its way
 	// to it, so both are read again a moment later: nothing binds an unbound durable again.
 	time.Sleep(time.Second)
@@ -152,7 +166,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -217,9 +231,8 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
 // redoes it within seconds instead of after the ack wait.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
-	budget := intakeStopBudget
-	intakeStopBudget = time.Second
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = time.Second
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -230,9 +243,9 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	t.Cleanup(held.release)
 
 	runCtx, cancel := context.WithCancel(ctx)
-	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
+	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -248,16 +261,16 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	started := time.Now()
 	cancel()
 	stop()
-	if waited, within := time.Since(started), budget/2; waited > within {
+	if waited, within := time.Since(started), intakeStopBudget/2; waited > within {
 		t.Fatalf("stop returned %s after ctx ended under a %s stop budget, want within %s: the budget did not bound the handler wait",
-			waited, intakeStopBudget, within)
+			waited, tuning.stopBudget, within)
 	}
 	// The fake records the end once it sees the request cancelled, a moment after the client did.
 	waitFor(t, 5*time.Second, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, publisher)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -267,10 +280,11 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 // TestIntakesWithoutTheAppConnectNothing: with no GitHub App neither intake reads anything, so
 // StartIntakes opens no connection and its stop returns at once.
 func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
+	t.Parallel()
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
-	}, nil, IntakeLeases{}, nil, nil, nil, nil)
+	}, nil, IntakeLeases{}, nil, nil, nil, nil, unrenamed())
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -289,6 +303,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 // TestIntakesWhoseSecondConnectFailsStartNeither: the job intake's connect failing returns its
 // error with neither intake started and the intake's client closed, so no durable is bound.
 func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
+	t.Parallel()
 	// A real pool rather than none: the intakes' settings cache reads delivery_settings through
 	// it, and their reservations of its lease pool are what they take their holds on.
 	pool, _ := deliveryTestPool(t)
@@ -303,7 +318,7 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 		var err error
 		first, err = bus.Connect([]string{natsURL})
 		return first, err
-	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil)
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil, unrenamed())
 	if !errors.Is(err, refused) {
 		t.Fatalf("start the intakes = %v, want the job intake's connect error", err)
 	}
@@ -334,7 +349,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
 	jobsDone := make(chan struct{})
-	jobs := newJobIntake(shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
 	go func() {
 		defer close(jobsDone)
 		jobs.Run(jobsCtx)
@@ -348,7 +363,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	startIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	startIntake(t, newIntake(tuningFor(t), shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	var refusal map[string]any
 	waitFor(t, 20*time.Second, func() bool {
 		for _, record := range logs() {

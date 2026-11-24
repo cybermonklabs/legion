@@ -28,6 +28,7 @@ func pinAgent(t *testing.T, handler http.Handler, login, sessionID string, pinne
 // direct_marks nor unread_direct_replies, and a two-way join would leave it out of the answer
 // altogether, so the sidebar would have nothing to draw.
 func TestUserAgentPinIsAcceptedAloneAndReadBackWithNoOtherMark(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	before := time.Now().UTC().Add(-time.Second)
 	written := pinAgent(t, handler, "alice", "s1", true)
@@ -48,6 +49,7 @@ func TestUserAgentPinIsAcceptedAloneAndReadBackWithNoOtherMark(t *testing.T) {
 // A gate that still demanded a Clear, a read mark or replies read by id would refuse the pin
 // write, so the refusal's own message names every field the route takes.
 func TestUserAgentPinIsNamedByTheRefusalOfAnEmptyBody(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	empty := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/agents/s1/state", map[string]any{}, "alice")
 	if empty.Code != http.StatusBadRequest {
@@ -63,6 +65,7 @@ func TestUserAgentPinIsNamedByTheRefusalOfAnEmptyBody(t *testing.T) {
 // The pin is keyed on the canonical login, so one person holds one pin however their identity
 // source spells them: aLiCe pins and alice reads that pin, not a second one of their own.
 func TestUserAgentPinIsOnePinWhateverTheCasingOfTheirLogin(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	written := pinAgent(t, handler, "aLiCe", "s1", true)
 	if written.PinnedAt == nil {
@@ -86,6 +89,7 @@ func TestUserAgentPinIsOnePinWhateverTheCasingOfTheirLogin(t *testing.T) {
 // leaves the Clear exactly as it was — pinning a conversation is not reading it — and the Clear
 // leaves the pin, so a person who clears a pinned agent keeps it in their sidebar.
 func TestUserAgentPinAndClearAreOneRecordAndNeitherWriteTouchesTheOther(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// Truncated as TestPerUserAgentStateRoundTripsAndIsIsolated truncates: timestamptz holds
 	// microseconds, so a nanosecond the write sends is not one the read answers with.
@@ -120,6 +124,7 @@ func TestUserAgentPinAndClearAreOneRecordAndNeitherWriteTouchesTheOther(t *testi
 // focus. The handler commits only where it announces, so an unannounced pin would also be a pin
 // that was never written.
 func TestUserAgentPinWriteAnnouncesItselfToTheViewersOtherDevices(t *testing.T) {
+	t.Parallel()
 	for _, pinned := range []bool{true, false} {
 		t.Run(map[bool]string{true: "pinned", false: "unpinned"}[pinned], func(t *testing.T) {
 			handler, database := newTestHandlerWithStore(t)

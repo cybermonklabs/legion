@@ -46,7 +46,7 @@ func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
 	record := func(trimmer string, episode int, when time.Time) int {
 		t.Helper()
 		var notices int
-		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			notices, err = records.RecordVolumeNotice(ctx, tx, "LEGION-208", "pod-uid", trimmer, episode, when)
 			return err
@@ -58,7 +58,7 @@ func TestTheVolumeNoticeCountsArriveWith20261111090000(t *testing.T) {
 	read := func(trimmer string, episode int) VolumeNoticeCounts {
 		t.Helper()
 		var counts VolumeNoticeCounts
-		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			counts, err = records.VolumeNoticeCounts(ctx, tx, "LEGION-208", "pod-uid", trimmer, episode)
 			return err

@@ -10,7 +10,7 @@ tags:
   - second-retro
   - legion-handoffs
 date: 2026-10-09
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes.
 module: packages/pi-legion/CHANGELOG.md, bun.lock, .legion handoffs
 related_issues:
   - "LEGION-634"
