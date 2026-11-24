@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,12 +62,10 @@ func (s *HTTPServer) Stopped() bool {
 func (s *HTTPServer) Start() error {
 	// 1. Connect to {url}/sse. The configured URL can carry a credential, in its user information,
 	// which net/http sends as the request's Basic Authorization, or in a query value. So the URL
-	// prints as redact.URL allows, and the client follows a redirect only on the server's own
-	// origin (redirects.SameOrigin): the server is any MCP server a person configures, which may
-	// move its stream on its own origin (a trailing slash, say), and a Location naming another
-	// host is the answering party's words. net/http's error can quote a Location it could not
-	// parse (Go reads one before any redirect policy), so it prints through redact.Cause: the
-	// failure's own text beside a clean URL, and its class beside any other.
+	// prints as redact.URL allows, a failed connect prints through redact.Cause, and the client
+	// follows a redirect only on the server's own origin (redirects.SameOrigin): the server is any
+	// MCP server a person configures, which may move its stream on its own origin (a trailing
+	// slash, say), and a Location naming another host is the answering party's words.
 	sseURL := strings.TrimRight(s.cfg.URL, "/") + "/sse"
 	shown := redact.URL(sseURL)
 	req, err := http.NewRequest("GET", sseURL, nil)
@@ -85,11 +84,11 @@ func (s *HTTPServer) Start() error {
 	}
 	s.sseResp = resp
 
-	// 2. Read the first SSE event (type "endpoint") to get the message POST URL. The event stream
-	// is data the session reads for its whole life (redact.StreamAnswer), bounded by that life
-	// and not by its size.
+	// 2. Read the first SSE event (type "endpoint") to get the message POST URL, resolved against
+	// the SSE URL (readEndpointEvent). The event stream is data the session reads for its whole
+	// life (redact.StreamAnswer), bounded by that life and not by its size.
 	scanner := bufio.NewScanner(redact.StreamAnswer(resp, math.MaxInt64))
-	messageURL, err := readEndpointEvent(scanner)
+	messageURL, err := readEndpointEvent(scanner, req.URL)
 	if err != nil {
 		resp.Body.Close()
 		return fmt.Errorf("read endpoint event: %w", err)
@@ -97,15 +96,15 @@ func (s *HTTPServer) Start() error {
 	s.messageURL = messageURL
 
 	// 3. Create session with HTTP POST send function. The endpoint is the server's words: an error
-	// names it as the rule reads it (redact.Field), with no user information and no query value.
-	// net/http's error for a POST that failed quotes the endpoint again, so it prints through
-	// redact.Cause: the failure alone beside an endpoint the allow-list passes, and its class beside
-	// any other. The endpoint can carry the session in its query and a credential in its user
-	// information (the POST's Basic Authorization), which whatever answers can quote in a Location;
-	// a followed redirect also sends the endpoint, query included, as the next request's Referer,
-	// and a followed 307 or 308 sends the message again. So the POST follows a redirect only on the
-	// endpoint's own origin (redirects.SameOrigin), as the connect does; any other is the server's
-	// answer, which took no message: an error naming its status, and nothing of its Location or body.
+	// names it as the rule reads it (redact.Field), with no user information and no query value,
+	// and net/http's error for a POST that failed, which quotes the endpoint again, prints through
+	// redact.Cause. The endpoint can carry the session in its query and a credential in its user
+	// information (the POST's Basic Authorization): its own, or the configured URL's where it is
+	// relative. Whatever answers can quote either in a Location; a followed redirect also sends the
+	// endpoint, query included, as the next request's Referer, and a followed 307 or 308 sends the
+	// message again. So the POST follows a redirect only on the endpoint's own origin
+	// (redirects.SameOrigin), as the connect does; any other is the server's answer, which took no
+	// message: an error naming its status, and nothing of its Location or body.
 	s.session = newSession(s.cfg.Name, func(data []byte) error {
 		postResp, postErr := redirects.SameOrigin(http.DefaultClient).Post(s.messageURL, "application/json", bytes.NewReader(data))
 		if postErr != nil {
@@ -191,8 +190,15 @@ func (s *HTTPServer) readLoop(scanner *bufio.Scanner) {
 	}
 }
 
-// readEndpointEvent reads SSE events until it finds one with type "endpoint".
-func readEndpointEvent(scanner *bufio.Scanner) (string, error) {
+// readEndpointEvent reads SSE events until it finds one with type "endpoint", and answers the URL
+// it names resolved against base, the SSE URL the bridge connected to (RFC 3986, section 5.2). The
+// SSE transport lets a server name its endpoint by a relative reference, such as
+// /messages?session_id=..., which takes base's scheme, host and user information: the POST carries
+// the configured credential to the SSE URL's own origin and to no other, since an endpoint that
+// names a host of its own (http://host/... or //host/...) takes none of base's user information.
+// An endpoint that does not parse is refused in the bridge's own words: url.Parse's error quotes
+// the endpoint, the server's words, user information and query included.
+func readEndpointEvent(scanner *bufio.Scanner, base *url.URL) (string, error) {
 	for {
 		eventType, data, err := readSSEEvent(scanner)
 		if err != nil {
@@ -203,7 +209,11 @@ func readEndpointEvent(scanner *bufio.Scanner) (string, error) {
 			if u == "" {
 				return "", fmt.Errorf("empty endpoint URL in SSE event")
 			}
-			return u, nil
+			ref, err := url.Parse(u)
+			if err != nil {
+				return "", fmt.Errorf("endpoint URL in SSE event does not parse")
+			}
+			return base.ResolveReference(ref).String(), nil
 		}
 	}
 }

@@ -7,10 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 type mockHTTPMCPServer struct {
@@ -378,7 +381,7 @@ func TestReadSSEEvent_EOF(t *testing.T) {
 
 func TestReadEndpointEvent(t *testing.T) {
 	scanner := bufio.NewScanner(strings.NewReader("event: endpoint\ndata: http://localhost:3456/message?sessionId=abc\n\n"))
-	u, err := readEndpointEvent(scanner)
+	u, err := readEndpointEvent(scanner, sseBase(t, "http://localhost:3456/sse"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -389,11 +392,43 @@ func TestReadEndpointEvent(t *testing.T) {
 
 func TestReadEndpointEvent_SkipsOtherEvents(t *testing.T) {
 	scanner := bufio.NewScanner(strings.NewReader("event: other\ndata: something\n\nevent: endpoint\ndata: http://localhost/msg\n\n"))
-	u, err := readEndpointEvent(scanner)
+	u, err := readEndpointEvent(scanner, sseBase(t, "http://localhost/sse"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if u != "http://localhost/msg" {
 		t.Fatalf("unexpected url: %s", u)
 	}
+}
+
+// A relative endpoint resolves against the SSE URL as RFC 3986 section 5.2 reads a reference: a
+// path takes the SSE URL's origin and user information, and drops its query, and a reference that
+// names a host of its own takes the SSE URL's scheme alone.
+func TestReadEndpointEvent_ResolvesAgainstTheSSEURL(t *testing.T) {
+	const origin = "http://" + redacttest.User + ":" + redacttest.Password + "@mcp.example:3456"
+	const base = origin + "/bridge/sse?key=k"
+	for _, c := range []struct{ endpoint, want string }{
+		{"/messages?session_id=abc", origin + "/messages?session_id=abc"},
+		{"messages?session_id=abc", origin + "/bridge/messages?session_id=abc"},
+		{"../messages", origin + "/messages"},
+		{"//other.example/messages", "http://other.example/messages"},
+		{"https://other.example/messages", "https://other.example/messages"},
+		{"http://mcp.example:3456/messages", "http://mcp.example:3456/messages"},
+	} {
+		scanner := bufio.NewScanner(strings.NewReader("event: endpoint\ndata: " + c.endpoint + "\n\n"))
+		got, err := readEndpointEvent(scanner, sseBase(t, base))
+		if err != nil || got != c.want {
+			t.Errorf("readEndpointEvent(%q) = %q, %v; want %q", c.endpoint, got, err, c.want)
+		}
+	}
+}
+
+// sseBase is raw, an SSE URL, parsed.
+func sseBase(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	base, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base
 }
