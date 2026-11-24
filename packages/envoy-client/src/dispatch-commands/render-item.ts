@@ -305,7 +305,11 @@ export function commentSummary(
  *  `commentSummary` prints it, the ask it replies to (`Ask:`), and its body as every read prints a
  *  post (`postBodyLines`): the deleted mark alone for a deleted comment. At a cut (`asOf`) each
  *  comment prints what the records at the cut give, as `commentSummary` does. */
-export function commentsSummary(issueKey: string, comments: readonly Comment[], asOf?: string): string {
+export function commentsSummary(
+  issueKey: string,
+  comments: readonly Comment[],
+  asOf?: string
+): string {
   return [
     `Comments: ${issueKey}`,
     ...(comments.length === 0
