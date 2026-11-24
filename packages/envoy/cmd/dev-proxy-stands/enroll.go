@@ -190,11 +190,11 @@ func readToken(path string) (string, error) {
 	return token, nil
 }
 
-// brokerRoute is the URL of route at the broker: route joined onto the path of base, --url as
-// given, with base's query kept and its fragment dropped (urljoin.Join), where route appended to
-// base's text would sit inside a query or a fragment and the broker would be asked another path. A
-// base that does not parse or names no host is refused by --url and the class alone: url.Parse's
-// error quotes it whole, user information and query included.
+// brokerRoute is the URL of route at the broker: route joined onto the path of base, --url less
+// its trailing slashes, with base's query kept and its fragment dropped (urljoin.Join), where route
+// appended to base's text would sit inside a query or a fragment and the broker would be asked
+// another path. A base that does not parse or names no host is refused by --url and the class
+// alone: url.Parse's error quotes it whole, user information and query included.
 func brokerRoute(base, route string) (string, error) {
 	joined, err := urljoin.Join(base, route)
 	if err != nil {
