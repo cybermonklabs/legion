@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -50,10 +51,10 @@ func (b *boundTransport) calls() []bool {
 func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	opts := testOptions(t, dispatch, model, machine)
-	transport := &boundTransport{inner: opts.Dispatch.HTTP.Transport}
-	client := *opts.Dispatch.HTTP
+	client := *dispatch.server.Client()
+	transport := &boundTransport{inner: client.Transport}
 	client.Transport = transport
-	opts.Dispatch.HTTP = &client
+	opts.Dispatch = NewDispatch(dispatch.server.URL, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), &client)
 	New(t.Context(), opts).consider(t.Context(), pending())
 
 	if applied, _ := machine.rows(); len(applied) != 1 {

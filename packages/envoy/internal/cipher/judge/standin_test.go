@@ -608,7 +608,7 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 	t.Helper()
 	return Options{
 		Rules:    testRules(),
-		Dispatch: Dispatch{BaseURL: d.server.URL, Account: ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), HTTP: d.server.Client()},
+		Dispatch: NewDispatch(d.server.URL, ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), d.server.Client()),
 		Model: Model{
 			ID: testModel,
 			Endpoint: agentloop.Endpoint{

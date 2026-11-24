@@ -15,7 +15,7 @@ import (
 // TestAJudgeReadFollowsNoRedirect: whatever answers at Dispatch's address answers the judge's
 // issue read, which carries the broker's account token, with a 302, a 307 or a 308 whose Location
 // names a stand-in on another host and quotes the token in its query. Under the default client (a
-// nil HTTP) and a client its caller gives, as cmd/cipherd does, the stand-in is sent nothing, so
+// nil client) and a client its caller gives, as cmd/cipherd does, the stand-in is sent nothing, so
 // no request carries the token on to it, and the read fails on Dispatch's 3xx by its status. The
 // twins show a client that follows each of them sends the stand-in the token, so the rows can see
 // one sent on. Captures judge.redirect-followed/<client> (the 302) and
@@ -51,7 +51,7 @@ func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 	}
 	for _, c := range clients {
 		t.Run(c.name, func(t *testing.T) {
-			dispatch := Dispatch{BaseURL: redirectstest.EchoBearer(t, location), Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: c.client}
+			dispatch := NewDispatch(redirectstest.EchoBearer(t, location), ciphertoken.NewAccountToken(tokenFile(t, token)), c.client)
 			_, err := dispatch.Issue(t.Context(), testIssue)
 			text := sent()
 			redacttest.RequireNoPiece(t, "judge.redirect-followed/"+c.name, text, token)
@@ -75,7 +75,7 @@ func TestAJudgeReadFollowsNoRedirect(t *testing.T) {
 		})
 		for _, c := range clients {
 			t.Run(c.name+"-"+code, func(t *testing.T) {
-				dispatch := Dispatch{BaseURL: moved(t, status), Account: ciphertoken.NewAccountToken(tokenFile(t, token)), HTTP: c.client}
+				dispatch := NewDispatch(moved(t, status), ciphertoken.NewAccountToken(tokenFile(t, token)), c.client)
 				_, err := dispatch.Issue(t.Context(), testIssue)
 				text := sent()
 				redacttest.RequireNoPiece(t, "judge.redirect-followed/"+c.name+"-"+code, text, token)

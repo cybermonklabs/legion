@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -216,11 +217,34 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 		t.Fatalf("request Machine's Assignees = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", m.Assignees)
 	}
 
-	cfg.JudgeDispatchURL = "https://dispatch.internal.example"
+	// The read judgeDispatch builds asks the Dispatch at BROKER_JUDGE_DISPATCH_URL for an issue's
+	// assignee under the token BROKER_JUDGE_DISPATCH_TOKEN_FILE holds.
+	asked := make(chan string, 1)
+	stand := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case asked <- r.Method + " " + r.URL.Path + " " + r.Header.Get("Authorization"):
+		default:
+		}
+		_, _ = w.Write([]byte(`{"assignee":"ada@example.com"}`))
+	}))
+	t.Cleanup(stand.Close)
+	cfg.JudgeDispatchURL = stand.URL
 	cfg.JudgeDispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
+	if err := os.WriteFile(cfg.JudgeDispatchTokenFile, []byte("example-judge-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	dispatch := judgeDispatch(cfg)
-	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
-		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
+	if dispatch == nil {
+		t.Fatalf("judgeDispatch = nil with BROKER_JUDGE_DISPATCH_URL %s; want a read of Dispatch there", cfg.JudgeDispatchURL)
+	}
+	assignee, err := dispatch.Assignee(t.Context(), "example-issue")
+	var request string
+	select {
+	case request = <-asked:
+	default:
+	}
+	if err != nil || assignee != "ada@example.com" || request != "GET /api/v1/issues/example-issue Bearer example-judge-token" {
+		t.Fatalf("judgeDispatch's read = %q, %v, asking %q; want ada@example.com, asked at %s under the token file's token", assignee, err, request, cfg.JudgeDispatchURL)
 	}
 	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch, nil)
 	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {

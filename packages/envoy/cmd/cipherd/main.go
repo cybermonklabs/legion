@@ -650,7 +650,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.NewEnvoy(cfg.EnvoyURL, ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), &http.Client{Timeout: 10 * time.Second})
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -1494,11 +1494,8 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 	if cfg.JudgeDispatchURL == "" {
 		return nil
 	}
-	return &judge.Dispatch{
-		BaseURL: cfg.JudgeDispatchURL,
-		Account: ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
-		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
-	}
+	dispatch := judge.NewDispatch(cfg.JudgeDispatchURL, ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile), &http.Client{Timeout: judgeDispatchTimeout})
+	return &dispatch
 }
 
 // The request machine answers every question the model judge asks of the broker. The assertion

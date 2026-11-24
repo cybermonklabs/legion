@@ -49,7 +49,7 @@ func TestANoticeFollowsNoRedirect(t *testing.T) {
 	t.Run("given", func(t *testing.T) {
 		var logged bytes.Buffer
 		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-		Envoy{URL: redirectstest.EchoBearer(t, location), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
+		NewEnvoy(redirectstest.EchoBearer(t, location), staticAccount(token), &http.Client{}).Notify(context.Background(), "sess-123", "req-456", "approved")
 		text := sent()
 		redacttest.RequireNoPiece(t, "wake.redirect-followed/given", text, token)
 		if text != "" {
@@ -72,7 +72,7 @@ func TestANoticeFollowsNoRedirect(t *testing.T) {
 		t.Run("given-"+code, func(t *testing.T) {
 			var logged bytes.Buffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-			Envoy{URL: moved(t, status), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
+			NewEnvoy(moved(t, status), staticAccount(token), &http.Client{}).Notify(context.Background(), "sess-123", "req-456", "approved")
 			text := sent()
 			redacttest.RequireNoPiece(t, "wake.redirect-followed/given-"+code, text, token)
 			if text != "" {

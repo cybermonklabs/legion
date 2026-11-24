@@ -27,16 +27,23 @@ import (
 )
 
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
-// the broker's own platform identity (Account, read afresh for each notice) as its bearer: the
+// the broker's own platform identity (its account, read afresh for each notice) as its bearer: the
 // listener admits the account that token names, as it admits every caller's, so no bearer is
-// shared between the broker and the listener's other callers.
+// shared between the broker and the listener's other callers. NewEnvoy builds one.
 type Envoy struct {
-	URL     string
-	Account ciphertoken.Account
-	// HTTP sends the notice, as a copy that follows no redirect (redirects.Refused): the notice
-	// carries the broker's account token, and the listener answers /v1/messages/send itself with
-	// no redirect, so a Location is the answering party's words and a 3xx a status Notify logs.
-	HTTP *http.Client
+	url     string
+	account ciphertoken.Account
+	// http sends the notice: the client NewEnvoy is given, as a copy that follows no redirect.
+	http *http.Client
+}
+
+// NewEnvoy is the notice to the listener at url (BROKER_ENVOY_URL), presenting the token account
+// reads, sent with client. It keeps a copy of client that follows no redirect (redirects.Refused),
+// made once here: the notice carries the broker's account token, and the listener answers
+// /v1/messages/send itself with no redirect, so a Location is the answering party's words and a
+// 3xx a status Notify logs. client must not be nil.
+func NewEnvoy(url string, account ciphertoken.Account, client *http.Client) Envoy {
+	return Envoy{url: url, account: account, http: redirects.Refused(client)}
 }
 
 type secretRequestPayload struct {
@@ -72,21 +79,21 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL+"/v1/messages/send", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.url+"/v1/messages/send", bytes.NewReader(body))
 	if err != nil {
 		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	bearer, err := e.Account.Read()
+	bearer, err := e.account.Read()
 	if err != nil {
 		slog.Warn("wake envoy: read the broker's account token", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := redirects.Refused(e.HTTP).Do(req)
+	resp, err := e.http.Do(req)
 	if err != nil {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.Cause(err, e.URL))
+		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.Cause(err, e.url))
 		return
 	}
 	defer resp.Body.Close()
