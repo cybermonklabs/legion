@@ -5318,133 +5318,133 @@
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-query",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-after-scheme-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-after-scheme",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-after-equals-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-after-equals",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-inside-slashes-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-inside-slashes",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-scheme-separator-twice-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-scheme-separator-twice",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-colon-gap-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-colon-gap",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-fragment-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon-fragment",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-bare-query-segment-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-bare-query-segment",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-bare-fragment-segment-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-bare-fragment-segment",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-backslashes-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-before-colon-backslashes",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-relative-bare-segment-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-relative-bare-segment",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-equals-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-equals",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-ampersand-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-ampersand",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-comma-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-password-comma",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-quoted-key-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-quoted-key",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-single-quoted-key-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-single-quoted-key",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-spaced-key-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-spaced-key",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "split-user-info-underscore-host-go",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
       "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/split-user-info-underscore-host",
-      "production": "redact.Remote step 8, squeezedRemovesNoMore"
+      "production": "redact.Remote step 8, markersAccounted"
     },
     {
       "id": "marker-between-apostrophe-go",
@@ -14134,133 +14134,133 @@
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-query reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-after-scheme-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-after-scheme reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-after-equals-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-after-equals reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-inside-slashes-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-inside-slashes reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-scheme-separator-twice-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-scheme-separator-twice reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-before-colon reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-colon-gap-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-colon-gap reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-fragment-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-before-colon-fragment reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-bare-query-segment-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-bare-query-segment reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-bare-fragment-segment-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-bare-fragment-segment reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-before-colon-backslashes-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-before-colon-backslashes reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-relative-bare-segment-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-relative-bare-segment reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-equals-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-password-equals reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-ampersand-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-password-ampersand reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-password-comma-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-password-comma reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-quoted-key-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-quoted-key reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-single-quoted-key-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-single-quoted-key reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-spaced-key-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-spaced-key reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "split-user-info-underscore-host-ts",
       "requirement": "r1-fail-closed",
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-underscore-host reads as the fixture says",
-      "production": "readRemoteText step 8, squeezedRemovesNoMore"
+      "production": "readRemoteText step 8, markersAccounted"
     },
     {
       "id": "marker-between-apostrophe-ts",
