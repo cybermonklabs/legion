@@ -1,8 +1,9 @@
 /** What `e2e/tools/shard-weights.ts` reads out of a merged report and writes into the table
  *  `e2e/shard-split.ts` places files by. */
 import { expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 
-import { rowTimes, weightsOf } from "../tools/shard-weights";
+import { admittedRows, configuredProjects, rowTimes, weightsOf } from "../tools/shard-weights";
 
 /** A report of one file, `a.e2e.ts`, whose rows ran in `chromium` with the durations given, in
  *  milliseconds, one attempt per entry. */
@@ -66,4 +67,39 @@ test("a row is its median over the reports, a file the mean of its rows, a proje
     { commit: "c1", run: 1 },
     { commit: "c2", run: 2 },
   ]);
+});
+
+test("the table this checkout commits names only projects its config names and specs it holds", () => {
+  // The control of the tool's filter: read with this checkout's own config and e2e/, every row of
+  // the committed table would be written again, so the filter leaves out no row of a real run.
+  const e2e = new URL("..", import.meta.url);
+  const projects = configuredProjects(readFileSync(new URL("playwright.config.ts", e2e), "utf8"));
+  const table = JSON.parse(readFileSync(new URL("shard-weights.json", e2e), "utf8")) as {
+    files: Record<string, Record<string, number>>;
+  };
+  const rows = new Map(
+    Object.entries(table.files).flatMap(([project, files]) =>
+      Object.keys(files).map((file) => [`${project}\n${file}\na row`, 1] as const)
+    )
+  );
+  expect(rows.size).toBeGreaterThan(0);
+  const { refused } = admittedRows(rows, projects, (file) => existsSync(new URL(file, e2e)));
+  expect(refused).toEqual([]);
+});
+
+test("a row is written only for a configured project and a spec of e2e/ by its bare name", () => {
+  const rows = new Map([
+    ["chromium\na.e2e.ts\nkept", 1],
+    ["chromium\n../a.e2e.ts\na path out of e2e/", 1],
+    ["chromium\nb.e2e.ts\na spec this checkout lacks", 1],
+    ["firefox\na.e2e.ts\na project the config does not name", 1],
+    ["chromium\na.spec.ts\nno spec's shape", 1],
+  ]);
+  const { admitted, refused } = admittedRows(
+    rows,
+    new Set(["chromium"]),
+    (file) => file === "a.e2e.ts"
+  );
+  expect([...admitted.keys()]).toEqual(["chromium\na.e2e.ts\nkept"]);
+  expect(refused).toHaveLength(4);
 });

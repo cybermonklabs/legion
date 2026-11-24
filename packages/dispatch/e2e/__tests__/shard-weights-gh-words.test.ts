@@ -13,7 +13,7 @@
  *  write of `e2e/shard-weights.json`: each one ends at the refusal it holds. */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
@@ -68,11 +68,12 @@ interface Call {
 /** One run of the tool with the stand-in gh answering the listing as `list` and the download as
  *  `zip`, and the cache holding `cached` as run 9's report where it is given: what it printed,
  *  stdout and stderr together, its exit code, the stand-in's calls, and the text of each file the
- *  output names under the kept directory. */
+ *  output names under the kept directory. `script` is the tool to run, this checkout's by default. */
 async function toolRun(
   list: Call,
   zip: Call,
-  cached?: string
+  cached?: string,
+  script = join(dispatchPackage, "e2e/tools/shard-weights.ts")
 ): Promise<{ code: number; output: string; calls: string[]; kept: string[] }> {
   const bin = scratch("bin");
   const gh = scratch("gh");
@@ -105,7 +106,7 @@ async function toolRun(
     { mode: 0o755 }
   );
   const { code, stdout, stderr } = await runBounded({
-    argv: ["bun", "e2e/tools/shard-weights.ts", "--main", "1", "--cache", cache],
+    argv: ["bun", script, "--main", "1", "--cache", cache],
     bound: "short",
     cwd: dispatchPackage,
     env: { HOME: scratch("home"), PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
@@ -212,3 +213,72 @@ describe.skipIf(skipWithout("bash", "unzip"))("shard-weights.ts prints no word o
     rowLimit("short")
   );
 });
+
+/** A report of one file per row, each `[project, file]` run once for a second. */
+function reportOf(rows: readonly (readonly [string, string])[]): string {
+  return JSON.stringify({
+    suites: rows.map(([project, file]) => ({
+      specs: [
+        {
+          file,
+          tests: [{ projectName: project, results: [{ duration: 1000, status: "passed" }] }],
+          title: "a row",
+        },
+      ],
+      title: file,
+    })),
+  });
+}
+
+describe.skipIf(skipWithout("bash"))(
+  "shard-weights.ts writes no row a report names but this checkout's",
+  () => {
+    test(
+      "a row whose file is the marker's, and one whose project is: neither is written, and both are kept",
+      async () => {
+        // A copy of the tool beside a copy of the split it imports, an e2e/ of one spec and a config of
+        // one project, so the run writes its table into the copy and never into this checkout's.
+        const tree = scratch("tree");
+        mkdirSync(join(tree, "tools"));
+        writeFileSync(
+          join(tree, "tools/shard-weights.ts"),
+          readFileSync(join(dispatchPackage, "e2e/tools/shard-weights.ts"))
+        );
+        writeFileSync(
+          join(tree, "shard-split.ts"),
+          readFileSync(join(dispatchPackage, "e2e/shard-split.ts"))
+        );
+        writeFileSync(
+          join(tree, "playwright.config.ts"),
+          'const projects = [\n  {\n    name: "chromium",\n  },\n];\n'
+        );
+        writeFileSync(join(tree, "a.e2e.ts"), "");
+        const run = await toolRun(
+          listed,
+          { out: "" },
+          reportOf([
+            ["chromium", "a.e2e.ts"],
+            ["chromium", `${marker}.e2e.ts`],
+            [marker, "a.e2e.ts"],
+          ]),
+          join(tree, "tools/shard-weights.ts")
+        );
+        const table = existsSync(join(tree, "shard-weights.json"))
+          ? readFileSync(join(tree, "shard-weights.json"), "utf8")
+          : "";
+        // The control: the run read the listing and wrote its table, the admitted row in it.
+        expect(run.calls).toEqual([listCall]);
+        expect(run.code, `the tool printed:\n${run.output}`).toBe(0);
+        expect(runsOf(marker, table), `the table:\n${table}`).toEqual([]);
+        expect(JSON.parse(table).files).toEqual({ chromium: { "a.e2e.ts": 1 } });
+        expect(runsOf(marker, run.output), `the tool printed:\n${run.output}`).toEqual([]);
+        expect(run.output).toContain(
+          "left out 2 rows whose project is none e2e/playwright.config.ts names"
+        );
+        // The twin: the file the tool names keeps both rows it left out.
+        expect(run.kept.some((text) => runsOf(marker, text).length > 0)).toBe(true);
+      },
+      rowLimit("short")
+    );
+  }
+);

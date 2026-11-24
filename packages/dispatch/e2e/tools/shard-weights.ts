@@ -36,11 +36,17 @@
  * The browser step's guard holds up to that 1.11, so each leg warns when the table is more than 7
  * days old or a tenth of its rows are estimated (`tableWarnings`, e2e/shard-split.ts): read it
  * again then.
+ *
+ * What it writes, a person commits to a public repository, and a report's rows are what answered
+ * gh: a row is written only when its project is one e2e/playwright.config.ts names and its file is
+ * a spec of e2e/ that this checkout holds, by its bare `<name>.e2e.ts`. Every other row is left out
+ * of the table, kept in the directory above, and counted in a line that names the file.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { median, type ShardWeights } from "../shard-split";
@@ -91,6 +97,36 @@ export function rowTimes(report: {
   // A report's top-level suites are its files, whose title is the file: no part of a row's title.
   for (const file of report.suites ?? []) walk(file, []);
   return rows;
+}
+
+/** e2e/: the spec files a row may name, and the Playwright config whose projects it may name. */
+const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
+
+/** A spec file as a row names it: a file of e2e/ by its bare name, Playwright's `*.e2e.ts`. */
+const specFile = /^[a-z0-9][a-z0-9.-]*\.e2e\.ts$/;
+
+/** The projects a Playwright config's text names, each a `name: "<project>"` line of its list. */
+export function configuredProjects(configText: string): Set<string> {
+  return new Set(
+    [...configText.matchAll(/^\s*name: "([a-z0-9-]+)",?$/gm)].map(([, name]) => name ?? "")
+  );
+}
+
+/** `rows` split into those whose project is one of `projects` and whose file is of the spec shape
+ *  and one `isSpec` takes, and the others, each by its whole key. */
+export function admittedRows(
+  rows: ReadonlyMap<string, number>,
+  projects: ReadonlySet<string>,
+  isSpec: (file: string) => boolean
+): { admitted: Map<string, number>; refused: string[] } {
+  const admitted = new Map<string, number>();
+  const refused: string[] = [];
+  for (const [row, seconds] of rows) {
+    const [project = "", file = ""] = row.split("\n");
+    if (projects.has(project) && specFile.test(file) && isSpec(file)) admitted.set(row, seconds);
+    else refused.push(row);
+  }
+  return { admitted, refused };
 }
 
 /** The table of the reports given, each with the run and commit it came from. */
@@ -247,7 +283,11 @@ function mainReports(
     );
     process.exit(1);
   }
-  return runs.slice(0, count).map((artifact, index) => {
+  const projects = configuredProjects(
+    readFileSync(join(e2eDirectory, "playwright.config.ts"), "utf8")
+  );
+  const refused: string[] = [];
+  const reports = runs.slice(0, count).map((artifact, index) => {
     const run = artifact.workflow_run as NonNullable<Artifact["workflow_run"]>;
     // The ids name files and the commit is printed and written: each only in GitHub's shape.
     if (
@@ -284,12 +324,23 @@ function mainReports(
       }
       writeFileSync(file, unzip.stdout);
     }
-    const rows = rowTimes(
+    const read = rowTimes(
       json(`the report of run ${run.id} (${file})`, `report-${run.id}.answer`, readFileSync(file))
     );
+    const { admitted: rows, refused: left } = admittedRows(read, projects, (spec) =>
+      existsSync(join(e2eDirectory, spec))
+    );
+    refused.push(...left);
     console.error(`run ${run.id} at ${run.head_sha.slice(0, 10)}: ${rows.size} rows`);
     return { commit: run.head_sha, rows, run: run.id };
   });
+  if (refused.length > 0) {
+    console.error(
+      `left out ${refused.length} rows whose project is none e2e/playwright.config.ts names or whose ` +
+        `file is no spec of e2e/ here; they are kept in ${keep("rows-left-out.answer", `${refused.join("\n\n")}\n`)}`
+    );
+  }
+  return reports;
 }
 
 if (import.meta.main) {
