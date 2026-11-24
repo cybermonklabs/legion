@@ -82,7 +82,7 @@ type CapabilityRow struct {
 // worker has in front of it, so the daemon refuses one that names any other round
 // (supervise.ErrForeignUpdateRound). `Head` is the commit the worker
 // reports as the head of its issue branch at `origin`, empty when the branch is not there (a
-// planner before its first push).
+// planner step that runs before the branch's first push).
 // The daemon records the worker's word and verifies nothing, exactly as
 // `api.HandoffCompleteRequest.Commit` is the worker's report of the commit it completed at.
 type ReadyForUpdateRequest struct {
