@@ -507,7 +507,7 @@ export const NODE_REFERENCES_WORDS = freeze({
 
 /**
  * The words the rows of a lens, a finding, a risk and a constraint draw of their own: the lines
- * under a lens's, a risk's and a statement's words, the chain a focused lens unfolds, and the
+ * under a lens's, a risk's and a statement's words, the chain control of a lens, and the
  * act that opens the menu of lens kinds with that menu's heading. `taken_at` is lowercase
  * because a measurement's line draws it between the author's own words. What a read or an
  * invocation the reader started says while it is out and when it failed is `LENS_ANSWERS`.
@@ -520,17 +520,17 @@ export const LENS_WORDS = freeze({
   triggered_by: "Triggered by",
   triggered: "Triggered",
   /** A risk's line that opens its `early_warning` words, the line of chips for the checks that
-   *  prevent it or the one line saying none does, and the focused body's line that opens its
-   *  `prevention` words. */
+   *  prevent it or the one line saying none does, and the line that opens its `prevention`
+   *  words. */
   early_warning: "Early warning:",
   prevented_by: "Prevented by",
   prevented_by_nothing: "Prevented by nothing",
   prevention: "Prevention:",
-  /** The control of a focused lens that reads its chain, and the end of a chain the read cut
+  /** The control of a lens that reads its chain, and the end of a chain the read cut
    *  short, before the chip of the lens it stopped at. */
   show_chain: "Show the whole chain",
   more_lenses: "More lenses past this one",
-  /** The menu of lens kinds' heading, and the act of a focused row that opens it. */
+  /** The menu of lens kinds' heading, and the act of a row that opens it. */
   menu_title: "Examine through a lens",
   act: "Lens",
   /** A statement's line of chips for the constraints it names, and what a measurement's line
