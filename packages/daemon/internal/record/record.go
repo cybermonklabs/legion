@@ -256,10 +256,12 @@ type Issue struct {
 	// first phase waits for — and nil for every other record. It is the mark that stands an issue
 	// whose row was taken away for a wait in the waiting line at the moment it lost that row
 	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
-	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
-	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
-	// a row for good, and the issue's departure from the workflow, which the release's own read
-	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Four
+	// writes clear it (Store.ClearReleasedForWait, Store.ReleaseTreeSlots): the grant of a slot, the
+	// ordinary release of a row for good, the issue's departure from the workflow, which the
+	// release's own read of the live issues no longer reaches (workflow's leave), and the
+	// re-admission of its tree's root, for every issue of the tree (admit's releaseTreeSlots).
+	// PutIssue keeps the stored value.
 	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
@@ -294,10 +296,10 @@ type Issue struct {
 	// that finds its tree running before any promotion while the root is still handed to Legion
 	// and its design gate has opened (admit's returnMembersOfRunningTrees, MembersReturnOwed). The
 	// third is that same pass meeting a root a daemon of an earlier release promoted, which brought
-	// the members back and never names the column: a root holding a slot, a wait mark or a phase of
-	// its own past admitted. It clears that mark and starts nothing. A root whose label a person
-	// takes off while it waits stops being a queued root and keeps the mark until the label
-	// returns. While the mark stands, a tree whose lifecycle is not open under the workflow keeps
+	// the members back and never names the column (admit's promotedByEarlierRelease). It clears
+	// that mark and starts nothing. A root whose label a person takes off while it waits stops
+	// being a queued root and keeps the mark until the label returns. While the mark stands, a
+	// tree whose lifecycle is not open under the workflow keeps
 	// its root queued whatever the gate says (ran).
 	// It is false on a child's row and on every root no re-admission started. Only Store.OweMembers
 	// and Store.ClearMembersOwed write it, and PutIssue keeps the stored value, as it does for
@@ -2350,6 +2352,11 @@ type Store interface {
 	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseTreeSlots frees the slot of every issue of tree and clears Issue.ReleasedForWaitAt
+	// from every issue of it, and answers the issues whose slot it freed, in slot order: the
+	// re-admission of the tree's own root, which ends the generation those rows and marks were of
+	// (admit's releaseTreeSlots).
+	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error)
 	// OweMembers sets Issue.MembersOwed on the root key: its re-admission has started a generation
 	// whose members are still to be brought back (admit's readmit).
 	OweMembers(ctx context.Context, tx pgx.Tx, key string) error

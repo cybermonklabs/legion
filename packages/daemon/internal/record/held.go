@@ -198,12 +198,12 @@ func liveAncestry(issue Issue, live map[string]struct{}) []string {
 // AwaitsPromotion) offers none of them a phase. It is written over QueuedRoot with no slot term,
 // and the two name the same roots wherever the gate is open: a queued root whose gate is open
 // holds no row the daemon granted it in this tree, since a promotion that granted one opened its
-// tree's lifecycle, after which an open gate makes the tree run, and the re-admission frees the row
-// of the generation before (admit's readmit); a root handed over awaits its promotion whatever row
-// it carries. Without this the ladder's gate word
-// would pass over them, the gate being open, and leave each at at_work or unclassified, which say
-// that its workers run or that no rule names its wait. A queued root whose gate is shut answers
-// false, and its members read design_gate as they always have.
+// tree's lifecycle, after which an open gate makes the tree run, and the re-admission frees every
+// row of its tree from the generation before (admit's releaseTreeSlots); a root handed over
+// awaits its promotion whatever row it carries. Without this the ladder's gate word would pass
+// over them, the gate being open, and leave each at at_work or unclassified, which say that its
+// workers run or that no rule names its wait. A queued root whose gate is shut answers false, and
+// its members read design_gate as they always have.
 func reopensAtPromotion(root Issue, facts LineFacts) bool {
 	gate := facts.Gates[root.Key]
 	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)

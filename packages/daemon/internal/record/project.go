@@ -1584,9 +1584,9 @@ func AwaitsPromotion(root Issue, lifecycle treelifecycle.Lifecycle, gate TreeGat
 // that brings a re-admitted tree's members back (admit's returnOwedMembers) no longer comes, and
 // the pass brings them back instead, once, and clears the mark (dispatch://INFRA-5471). This
 // release's promotion clears the mark itself, so a tree it opened never reads true here. A true
-// answer for a root that holds a slot, a wait mark or a phase of its own past admitted is a stale
-// mark an earlier release's promotion left, which never names the column: the pass clears it and
-// starts nothing (admit's returnMembersOfRunningTrees).
+// answer can also be a stale mark an earlier release's promotion left, which never names the
+// column (admit's promotedByEarlierRelease): the pass clears it and starts nothing (admit's
+// returnMembersOfRunningTrees).
 //
 // The root must still be handed to Legion (Issue.HandedOver), as a promotion asks of a queued root:
 // a root whose label a person took off while it waited is no queued root either, and the tree runs

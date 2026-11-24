@@ -64,18 +64,13 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 	})
 }
 
-// readmittedTree records a running tree and moves its root to backlog and back to todo, as the
-// controller's restart did on 2026-11-23. The tree runs first: its root holds the cap's one slot at
-// admitted with its design gate opened, LEGION-ACTIVE waits in the line behind it, and its members
-// stand mid-phase, one implementing, one merging, one in accepting whose own architect and
-// implementer have run, and one a person reopened at done. Their claims are suspended by the
-// daemon, as the suspends the tree's close queues leave them. The backlog parks the root and gives
-// its slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it waits in the line.
+// readmittedTree records the running tree runningTree seeds and moves its root to backlog and back
+// to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
+// slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it waits in the line.
 //
 // With cleaned false the root comes back inside its linger, so its tree's lifecycle stands open
 // under the workflow, as INFRA-3118's did on 2026-11-23. With cleaned true the tree's cleanup was
-// reserved between the backlog and the todo, as after a linger that ended, and the tree holds a
-// released child at admitted beside the others.
+// reserved between the backlog and the todo, as after a linger that ended.
 func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, cleaned bool) {
 	t.Helper()
 	runningTree(t, pool, cleaned)
@@ -106,17 +101,18 @@ func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, clea
 	}
 }
 
-// runningTree records the tree readmittedTree moves out and back as it runs before the move: its
-// root holds the cap's one slot at admitted with its design gate opened, LEGION-ACTIVE waits in the
-// line behind it, and its members stand where readmittedTree says, with a released child at
-// admitted beside them when cleaned is set.
+// runningTree records the tree the cases move out and back as it runs before the move: its root
+// holds the cap's one slot at admitted with its design gate opened, LEGION-ACTIVE waits in the
+// line behind it, and its members stand mid-phase, one implementing, one merging, one in accepting
+// whose own architect and implementer have run, and one a person reopened at done. Their claims
+// are suspended by the daemon, as the suspends the tree's close queues leave them. With cleaned
+// set the tree also holds a released child at admitted.
 func runningTree(t *testing.T, pool *pgxpool.Pool, cleaned bool) {
 	t.Helper()
 	seedSlottedInPhase(t, pool, testProject, rmRoot, "B", phase.Admitted, func(root *record.Issue) {
 		root.Title, root.DispatchStatus, root.LastDispatchSeq = "root", "in_progress", 1
 	})
-	approved := 3
-	seedGate(t, pool, record.DesignGate{Issue: rmRoot, ArtifactID: "artifact-300", LatestVersion: 3, ApprovedVersion: &approved, EverOpened: true})
+	openRootGate(t, pool)
 	seedWaiting(t, pool, rmActive, "A")
 	midPhaseChild(t, pool, rmRoot, rmImplementing, phase.Implementing, "in_progress")
 	midPhaseChild(t, pool, rmRoot, rmMerging, phase.Merging, "in_progress")
@@ -129,6 +125,12 @@ func runningTree(t *testing.T, pool *pgxpool.Pool, cleaned bool) {
 		putIssue(t, pool, record.Issue{Key: rmAdmitted, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 			Title: rmAdmitted, Tree: rmRoot, Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "B5", LastDispatchSeq: 1})
 	}
+}
+
+// openRootGate records the root's spec approved at version 3 and its gate opened at every step.
+func openRootGate(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	seedGate(t, pool, record.DesignGate{Issue: rmRoot, ArtifactID: "artifact-300", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
 }
 
 // registerApprovedSpec starts the root's architect and applies its register_gate of the spec a
@@ -368,7 +370,7 @@ func TestReadmittedMembersOfATreePromotedBeforeTheChangeStartNothing(t *testing.
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlottedInPhase(t, pool, testProject, rmRoot, "B", phase.Admitted, func(root *record.Issue) { root.Generation = 2 })
-	seedGate(t, pool, record.DesignGate{Issue: rmRoot, ArtifactID: "artifact-300", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+	openRootGate(t, pool)
 	midPhaseChild(t, pool, rmRoot, rmImplementing, phase.Implementing, "in_progress")
 	midPhaseChild(t, pool, rmRoot, rmMerging, phase.Merging, "in_progress")
 	midPhaseChild(t, pool, rmRoot, rmAccepting, phase.Accepting, "needs_review")
@@ -464,10 +466,13 @@ func TestReadmittedMembersOfARootAnEarlierReleasePromotedComeBackNoSecondTime(t 
 	}{
 		{name: "holding its slot at admitted", movedOn: func(*testing.T, *pgxpool.Pool) {}},
 		{name: "released for a wait at admitted", movedOn: func(t *testing.T, pool *pgxpool.Pool) {
-			releaseRootSlot(t, pool, `update issues set released_for_wait_at = $2 where key = $1`, fixedNow)
+			releaseForWait(t, pool, rmRoot)
 		}},
 		{name: "in accepting with no slot", movedOn: func(t *testing.T, pool *pgxpool.Pool) {
-			releaseRootSlot(t, pool, `update issues set phase = 'accepting' where key = $1`)
+			if _, err := pool.Exec(context.Background(), `with released as (delete from slots where issue = $1)
+				update issues set phase = 'accepting' where key = $1`, rmRoot); err != nil {
+				t.Fatalf("move %s on into accepting: %v", rmRoot, err)
+			}
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -484,8 +489,7 @@ func TestReadmittedMembersOfARootAnEarlierReleasePromotedComeBackNoSecondTime(t 
 				t.Fatalf("the root the earlier release promoted = %#v, want it still marked: the case's premise", got)
 			}
 
-			approved := 3
-			seedGate(t, pool, record.DesignGate{Issue: rmRoot, ArtifactID: "artifact-300", LatestVersion: 3, ApprovedVersion: &approved, EverOpened: true})
+			openRootGate(t, pool)
 			applyFact(t, pool, admission, "tick", intake.ControllerTick{})
 			if got := membersStarted(t, pool); !reflect.DeepEqual(got, before) {
 				t.Fatalf("the members after the gate opened = %#v, want them as the earlier release's promotion left them, %#v", got, before)
@@ -527,45 +531,88 @@ func earlierReleasePromotes(t *testing.T, pool *pgxpool.Pool, admission *Admissi
 	}
 }
 
-// releaseRootSlot takes the root's slot back and runs update on its record, with the root's key as
-// $1 and args after it.
-func releaseRootSlot(t *testing.T, pool *pgxpool.Pool, update string, args ...any) {
+// releaseForWait gives key's slot back for a wait, as releaseSlotsForWaits does: the row and the
+// mark in one statement (record.Store.ReleaseSlotForWait).
+func releaseForWait(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `delete from slots where issue = $1`, rmRoot); err != nil {
-		t.Fatalf("release the slot of %s: %v", rmRoot, err)
-	}
-	if _, err := pool.Exec(context.Background(), update, append([]any{rmRoot}, args...)...); err != nil {
-		t.Fatalf("move %s on: %v", rmRoot, err)
-	}
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().ReleaseSlotForWait(context.Background(), tx, key, fixedNow); err != nil {
+			t.Fatalf("release the slot of %s for a wait: %v", key, err)
+		}
+	})
 }
 
-// A root moved to backlog and back to todo while its project is paused is re-admitted with the
-// slot of its generation before still standing, since a paused pass releases nothing. The
-// re-admission gives that slot back, so after the resume the root waits in the line, and the
-// opening of its gate brings its members back. Kept, that slot would read as a promotion, and the
-// pass would clear the mark as one an earlier release left and strand the members.
+// A root moved to backlog and back to todo while its project is paused comes back with its tree's
+// slots and wait marks of the generation before still standing, since a paused pass releases
+// nothing and the re-admission ends the linger that release reads. The re-admission frees them
+// all, so after the resume the root's promotion opens its tree and brings its members back. Kept,
+// the root's own slot would read as a promotion, and the pass would clear the mark as one an
+// earlier release left and strand the members; a member's slot would fill the cap of one, so the
+// root would never be promoted.
 func TestReadmittedMembersOfARootMovedOutAndBackDuringAPauseComeBackAfterTheResume(t *testing.T) {
-	pool := migratedPool(t)
-	admission, lines := readmittedAdmission(t, 1)
-	runningTree(t, pool, false)
-	pause := pauseTestProject(t, pool, fixedNow)
-	apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-		Status: "backlog", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
-	apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
-		Status: "todo", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
-	if got := issue(t, pool, rmRoot); got.Generation != 2 || got.Phase != phase.Admitted || !got.MembersOwed {
-		t.Fatalf("the root re-admitted during the pause = %#v, want generation 2 at admitted with its members owed their return", got)
-	}
-	if holdsSlot(t, pool, rmRoot) {
-		t.Fatalf("the slots after the re-admission during the pause = %#v, want none held by %s: its generation before's slot is given back", slots(t, pool), rmRoot)
-	}
+	for _, row := range []struct {
+		name string
+		// before is how the running tree stands when the pause comes.
+		before func(t *testing.T, pool *pgxpool.Pool, admission *Admission)
+		// after is what follows the resume until the members come back.
+		after func(t *testing.T, pool *pgxpool.Pool, admission *Admission)
+	}{
+		{
+			name: "the root holds its slot and a member's was given back for a wait",
+			before: func(t *testing.T, pool *pgxpool.Pool, _ *Admission) {
+				takeSlot(t, pool, rmImplementing)
+				releaseForWait(t, pool, rmImplementing)
+			},
+			after: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+				if holdsSlot(t, pool, rmRoot) || !slices.Contains(waitingLine(t, pool, testProject, nil), rmRoot) {
+					t.Fatalf("after the resume %s holds a slot or stands outside the line (%v, slots %#v), want it waiting behind %s",
+						rmRoot, waitingLine(t, pool, testProject, nil), slots(t, pool), rmActive)
+				}
+				registerApprovedSpec(t, pool, admission, "root-gate")
+			},
+		},
+		{
+			name: "a member holds the cap's one slot and the root's was given back for a wait",
+			before: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
+				apply(t, pool, admission, "active-backlog", intake.DispatchIssue{Key: rmActive, ResolvedRepo: "acme/widgets", Seq: 2,
+					Type: "issue.updated", Status: "backlog", Title: rmActive, Rank: "A", HandedOver: handed}, admission.engine)
+				releaseForWait(t, pool, rmRoot)
+				takeSlot(t, pool, rmImplementing)
+			},
+			after: func(t *testing.T, pool *pgxpool.Pool, _ *Admission) {
+				if !holdsSlot(t, pool, rmRoot) {
+					t.Fatalf("after the resume the slots = %#v, want %s promoted onto the cap's one slot", slots(t, pool), rmRoot)
+				}
+			},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission, lines := readmittedAdmission(t, 1)
+			runningTree(t, pool, false)
+			row.before(t, pool, admission)
+			pause := pauseTestProject(t, pool, fixedNow)
+			apply(t, pool, admission, "root-backlog", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+				Status: "backlog", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
+			apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: rmRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+				Status: "todo", Title: "root", Rank: "B", HandedOver: handed}, admission.engine)
+			if got := issue(t, pool, rmRoot); got.Generation != 2 || got.Phase != phase.Admitted || !got.MembersOwed {
+				t.Fatalf("the root re-admitted during the pause = %#v, want generation 2 at admitted with its members owed their return", got)
+			}
+			for _, key := range append([]string{rmRoot}, rmMembers...) {
+				if holdsSlot(t, pool, key) {
+					t.Fatalf("the slots after the re-admission during the pause = %#v, want none held by %s: its tree's slots of the generation before are given back",
+						slots(t, pool), key)
+				}
+				if got := issue(t, pool, key); got.ReleasedForWaitAt != nil {
+					t.Fatalf("%s after its tree's re-admission during the pause = %#v, want no mark of a slot released for a wait", key, got)
+				}
+			}
 
-	endTestPause(t, pool, pause, fixedNow)
-	applyFact(t, pool, admission, "resumed", intake.ProjectResumed{})
-	if holdsSlot(t, pool, rmRoot) || !slices.Contains(waitingLine(t, pool, testProject, nil), rmRoot) {
-		t.Fatalf("after the resume %s holds a slot or stands outside the line (%v, slots %#v), want it waiting there",
-			rmRoot, waitingLine(t, pool, testProject, nil), slots(t, pool))
+			endTestPause(t, pool, pause, fixedNow)
+			applyFact(t, pool, admission, "resumed", intake.ProjectResumed{})
+			row.after(t, pool, admission)
+			assertMembersBack(t, pool, admission, lines)
+		})
 	}
-	registerApprovedSpec(t, pool, admission, "root-gate")
-	assertMembersBack(t, pool, admission, lines)
 }

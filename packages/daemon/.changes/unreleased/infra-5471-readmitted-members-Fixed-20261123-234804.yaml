@@ -11,15 +11,16 @@ body: |-
     lifecycle is not open (its cleanup reserved after the linger ended) stays in the line whatever
     its design gate says until the promotion that opens its tree; meanwhile no member of the tree
     starts, and each reads `tree_closed`. A root whose label is taken off while it waits brings
-    nothing back until the label returns. A root re-admitted while its project is paused gives back
-    the slot of its generation before, so its promotion after the resume opens its tree. Store
-    migration `20261123224717_members_owed` adds `issues.members_owed` and marks every re-admitted
-    root no promotion has opened yet: a tree whose gate opened before its promotion on the release
-    before has its members brought back once, at the first admission pass of this release. A root
-    that a daemon of the release before promotes after the migration ran, as when the daemons that
-    share a database upgrade one after another, keeps its mark; this release clears that mark and
-    brings nothing back once that root holds a slot, a wait mark or a phase of its own past
-    admitted. A rollback past this release runs the way back in that migration's header first,
+    nothing back until the label returns. A root re-admitted in its own tree frees every slot of
+    that tree and the wait marks of its issues, as the release of a lingering tree does; before, a
+    tree moved out and back while its project was paused kept its old slots, which could fill the
+    cap and leave its root unpromoted after the resume. Store migration
+    `20261123224717_members_owed` adds `issues.members_owed` and marks every re-admitted root no
+    promotion has opened yet: a tree whose gate opened before its promotion on the release before
+    has its members brought back once, at the first admission pass of this release. A root that a
+    daemon of the release before promotes after the migration ran, as when the daemons that share
+    a database upgrade one after another, keeps its mark; this release clears that mark and brings
+    nothing back. A rollback past this release runs the way back in that migration's header first,
     with every daemon of the database stopped.
 time: 2026-11-23T23:48:04Z
 custom:
