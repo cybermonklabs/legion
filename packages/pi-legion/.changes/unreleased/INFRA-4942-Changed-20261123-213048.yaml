@@ -6,7 +6,10 @@ body: |-
     not from the body. The spec scorer names the parts of a spec as the outline of
     `dispatch-writing-specs` names them: `Verification` is one of them, and no `Acceptance` part
     states a design. A batch given both `SKILL_SCENARIOS_POSTGRES_URL` and
-    `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container.
+    `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container. The given Postgres
+    must be on this machine: the batch refuses a URL whose host is not `127.0.0.1`, `localhost` or
+    `::1`. When `LEGION_E2E_MODEL_PROVIDER` names a built-in provider such as `anthropic`, the
+    provider route's profile no longer disables that provider.
 time: 2026-11-23T21:30:48Z
 custom:
     Issue: INFRA-4942

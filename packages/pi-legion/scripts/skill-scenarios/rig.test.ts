@@ -638,45 +638,38 @@ describe("next_run", () => {
 
 // A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
 // (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
-describe("safe_url and pg_database_url", () => {
-  // Catches: a run's database URL that keeps the given server's own database, drops the query a
-  // given URL carries (sslmode, say), adds a query to a URL that has none, or keeps a `dbname`
-  // parameter, which libpq and pgx take over the path.
-  test("pg_database_url keeps the server and the query less its dbname, and names the run's database", () => {
-    expect(
-      bash(`${fn("pg_database_url")}\nfor url; do pg_database_url "$url" run_x; done`, [
-        "postgres://u:p@127.0.0.1:5433/legion_test?sslmode=disable",
-        "postgres://u:p@127.0.0.1:5433/legion_test",
-        "postgres://u:p@127.0.0.1:5433/legion_test?dbname=legion_test&sslmode=disable",
-        "postgres://u:p@127.0.0.1:5433/legion_test?dbname=x",
-      ])
-    ).toEqual({
-      code: 0,
-      stdout:
-        "postgres://u:p@127.0.0.1:5433/run_x?sslmode=disable\n" +
-        "postgres://u:p@127.0.0.1:5433/run_x\n" +
-        "postgres://u:p@127.0.0.1:5433/run_x?sslmode=disable\n" +
-        "postgres://u:p@127.0.0.1:5433/run_x\n",
-      stderr: "",
-    });
-  });
-
+describe("safe_url", () => {
   // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
-  // server the operator gave, a raw `@` in it included, and a safe_url that changes a URL with no
-  // password in it.
+  // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
+  // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
+  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
+  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
+  // or `&`; and a safe_url that changes a URL with no password in it.
   test("safe_url drops the password of a URL and keeps the rest", () => {
     expect(
       bash(`${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
         "postgres://u:p@h:1/d",
         "postgres://u@h:1/d",
         "nats://127.0.0.1:4222",
-        "postgres://u:p@ss@127.0.0.1:5433/legion_test",
+        "postgres://u:?@127.0.0.1:5433/legion_test",
+        "postgres://u@localhost:5432@10.1.2.3/db",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
+        "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
+        "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
+        "nats://u:p@ss@127.0.0.1:4222",
+        "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
       ])
     ).toEqual({
       code: 0,
       stdout:
         "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
-        "postgres://u@127.0.0.1:5433/legion_test\n",
+        "postgres://u@127.0.0.1:5433/legion_test\n" +
+        "postgres://u@localhost:5432@10.1.2.3/db\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
+        "postgresql://u@127.0.0.1:5433/d\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
+        "nats://u@127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
       stderr: "",
     });
   });

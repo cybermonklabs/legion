@@ -113,10 +113,11 @@
 # Postgres and the NATS are two containers the batch starts and removes, or, when
 # SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL are both set, the two servers those
 # URLs name, which the batch uses and leaves running: that is how a batch runs where there is no
-# docker. Each run gets a Dispatch of its own (own_dispatch): a database named after the run
-# in the batch's Postgres, and the e2e harness's real Go Dispatch server
-# (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its API
-# (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
+# docker. The two Optional entries below say what each given server must be: the Postgres on this
+# machine, and a NATS of the batch's own. Each run gets a Dispatch of its own (own_dispatch): a
+# database named after the run in the batch's Postgres, and the e2e harness's real Go Dispatch
+# server (packages/dispatch/e2e/run-server.sh) on that database, seeded and read back through its
+# API (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
 # and score.ts does not score two runs that name one database. A given server's URL carries its
@@ -159,24 +160,38 @@
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
 #                                 start, as a URL
-#                                 (postgres://<user>:<password>@<host>:<port>/<database>). Its
-#                                 login must be allowed to CREATE DATABASE, since each run makes a
-#                                 database of its own on it (own_dispatch); those databases stay
-#                                 there, because the batch drops no database and stops no server
-#                                 it was given, so drop them between batches: a later run of the
-#                                 same name finds its database there and fails, naming it. Its
-#                                 max_connections must admit 30 connections for
-#                                 each concurrent run and 20 more: services_up reads
-#                                 max_connections and refuses a SKILL_SCENARIOS_PARALLEL above
-#                                 what the server admits. A server that admits 100 takes a
+#                                 (postgres://<user>:<password>@<host>:<port>/<database>). It must
+#                                 be the Postgres on this machine: services_up reads the URL with
+#                                 require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh) before
+#                                 anything connects to it or the batch writes the URL anywhere,
+#                                 and refuses every host libpq reads from it but 127.0.0.1,
+#                                 localhost and ::1. Its login must be allowed to CREATE
+#                                 DATABASE, since each run makes a database of
+#                                 its own on it (own_dispatch), and each new database must offer
+#                                 the `vector` extension, as the container (pgvector) does: each
+#                                 run's Dispatch runs `create extension if not exists vector`, so
+#                                 the extension is in the server's template1 or the login may
+#                                 create it. Those databases stay there, because the batch drops
+#                                 no database and stops no server it was given, so drop them
+#                                 between batches: a later run of the same name finds its database
+#                                 there and fails, naming it. Its max_connections must admit 30
+#                                 connections for each concurrent run and 20 more: services_up
+#                                 reads max_connections and refuses a SKILL_SCENARIOS_PARALLEL
+#                                 above what the server admits. A server that admits 100 takes a
 #                                 parallelism of 1 or 2
 #   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
-#                                 as a URL (nats://<host>:<port>). A tester-proof run's agent is
-#                                 given it as ENVOY_NATS_URL, so give a URL whose credentials a run
-#                                 may hold
-# Set both and the batch starts no container, so it needs neither docker nor a docker daemon. Set
-# one without the other and the batch ignores it and starts both containers, as it does when
-# neither is set.
+#                                 as a URL (nats://<host>:<port>). It must run JetStream, as the
+#                                 container does (`-js`), on a nats-server at or above the floor
+#                                 packages/envoy/natsversion holds: v2.11.12, v2.12.4, or v2.14.0
+#                                 and later (the container runs the image
+#                                 scripts/e2e/lib/nats-image.sh reads). It must be a scratch server
+#                                 of the batch's own: the listener and every tester-proof run's
+#                                 agent (as ENVOY_NATS_URL) get this URL, so never give a pod's own
+#                                 ENVOY_NATS_URL or a shared hub here
+# Set both and the batch starts no container, so it needs neither docker nor a docker daemon. It
+# needs psql and python3 instead: it reads the Postgres URL with python3 and libpq, and reaches the
+# server with psql. Set one without the other and the batch ignores it and starts both
+# containers, as it does when neither is set.
 # For spec-writing and spec-rewrite:
 #   SKILL_SCENARIOS_SOURCE      `batch`: a directory name under $SKILL_SCENARIOS_WORK/sources
 #   SKILL_SCENARIOS_SUPERPOWERS `profile`: the superpowers plugin's directory; its writing-plans
@@ -231,8 +246,13 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go too, for the loopback guard services_up reads a given
+# Postgres URL with (require_loopback_dsn, scripts/e2e/lib/loopback-dsn.sh): the guard reads the
+# URL alone, psql reads PGHOSTADDR, and PGSERVICE with PGSERVICEFILE name a service entry that can
+# set hostaddr, so psql would connect to an address the guard never read. The sweep runs in every
+# process of this script, so `rig.sh run`, which runs own_dispatch, has them cleared too.
 for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -818,44 +838,57 @@ given_services() {
   [ -n "${SKILL_SCENARIOS_POSTGRES_URL:-}" ] && [ -n "${SKILL_SCENARIOS_NATS_URL:-}" ]
 }
 
-# safe_url URL prints URL without the password of its userinfo, for a note, a failure message and a
-# run's dispatch.json: a server the operator gave can carry one in its URL. The password runs to the
-# last `@` before the path, the query or the fragment, so a raw `@` in it goes too.
-safe_url() { printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'; }
-
-# pg_sql URL SQL runs SQL on URL and prints each row's values, one row a line, tabs between them.
-# It speaks to Postgres through the bun every command here already runs on, rather than a psql an
-# operator's box may not carry. URL goes in the environment, never the command line, which every
-# user of the box reads. A failure is bun's own: it prints what Postgres answered and exits 1.
-# until_true polls this for readiness, so the connect carries a bound of its own, as nats_ready's
-# probe does: a host that takes the connection and never answers holds no caller past five seconds.
-pg_sql() {
-  RIG_PG_URL=$1 bun -e '
-const sql = new Bun.SQL({ url: process.env.RIG_PG_URL, max: 1, connectionTimeout: 5 });
-try {
-  for (const row of await sql.unsafe(Bun.argv[1])) console.log(Object.values(row).join("\t"));
-} finally {
-  await sql.close();
-}' -- "$2"
-}
-
-# pg_database_url URL NAME prints URL with NAME as its database and its query kept, less each
-# `dbname=` parameter: libpq and pgx take a `dbname` in the query over the path, so a kept one would
-# send every run's Dispatch to the database it names. The other parameters stay in their order, and
-# a URL whose query keeps none prints no `?`. This is where a run's own Dispatch server reaches the
-# database own_dispatch made for it.
-pg_database_url() {
-  local scheme=${1%%://*} rest=${1#*://} kept='' param
+# safe_url URL prints URL without its password, for a note, a failure message and a run's
+# dispatch.json: a server the operator gave can carry one in its URL. A postgres:// or
+# postgresql:// URL is read as libpq reads it: its user info runs to the first `@`, unless a `/`
+# comes first, and the password from the first `:` in it. A raw `@` in a password would end it
+# there, but such a URL never reaches this function: services_up reads every given Postgres URL
+# with require_loopback_dsn first, and the guard refuses the host libpq reads after that `@`
+# (ss@127.0.0.1 for postgres://u:p@ss@127.0.0.1/db). With a raw `/` in a password, libpq finds no
+# user info, since its search for the `@` stops at a `/`, and it reads the user name as the host:
+# the guard refused postgres://u:p/ss@127.0.0.1:5433/db, whose host libpq read as u. The query
+# loses each `password` and `sslpassword` parameter, its key percent-decoded as libpq decodes it
+# (`%70assword=` is `password=`), the other parameters stay in their order, and a query that keeps
+# none prints no `?`. Any other URL, the NATS one, is read as Go's net/url
+# reads it, which nats.go parses a server URL with: the password runs to the last `@` before the
+# path, the query or the fragment, so a raw `@` in it goes too.
+safe_url() {
+  local scheme=${1%%://*} rest=${1#*://} user='' kept='' param key
   local -a params=()
+  case $scheme in
+  postgres | postgresql) ;;
+  *)
+    printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'
+    return
+    ;;
+  esac
+  if [[ ${rest%%/*} == *@* ]]; then
+    user=${rest%%@*}
+    user=${user%%:*}@
+    rest=${rest#*@}
+  fi
   case $rest in *\?*)
     IFS='&' read -ra params <<<"${rest#*\?}"
     rest=${rest%%\?*}
     ;;
   esac
   for param in "${params[@]}"; do
-    case $param in dbname=*) ;; *) kept+="&$param" ;; esac
+    key=${param%%=*}
+    printf -v key '%b' "${key//%/\\x}"
+    case $key in password | sslpassword) ;; *) kept+="&$param" ;; esac
   done
-  printf '%s://%s/%s%s\n' "$scheme" "${rest%%/*}" "$2" "${kept:+?${kept#&}}"
+  printf '%s://%s%s%s\n' "$scheme" "$user" "$rest" "${kept:+?${kept#&}}"
+}
+
+# pg_sql URL SQL runs SQL on URL with psql and prints each row's values, one row a line, tabs
+# between them. psql is libpq, so the host it connects to is the host require_loopback_dsn read
+# from the same URL (services_up). The URL is on psql's command line, as the repository's other
+# proofs give theirs. A failure is psql's own: it prints what Postgres answered and exits non-zero.
+# until_true polls this for readiness, so the connect carries a bound of its own
+# (PGCONNECT_TIMEOUT), as nats_ready's probe does: a host that takes the connection and never
+# answers holds no caller past five seconds.
+pg_sql() {
+  PGCONNECT_TIMEOUT=5 psql "$1" -X -q -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
 }
 
 # nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
@@ -881,11 +914,21 @@ nats_ready() {
 # servers at once, so a container this batch starts gets max_connections of 30 for each concurrent
 # run and 20 more for the batch's own queries. A given server's max_connections is the operator's,
 # not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
+#
+# A given Postgres's URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
+# before anything connects to that server or this batch writes the URL anywhere. The guard reads
+# the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
+# the host the guard read.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host tool
   needs=$((30 * parallel + 20))
   if given_services; then
+    for tool in psql python3; do
+      command -v "$tool" >/dev/null ||
+        fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
+    done
+    require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
@@ -945,7 +988,10 @@ services_down() {
 # Postgres, and a Dispatch server on it, which stop_run stops. It records the Postgres, the
 # database and the server in $R/dispatch.json, which score.ts reads, and sets dispatch_port. The
 # batch's Postgres is the server $services_postgres names, and the batch's own container when that
-# file is absent.
+# file is absent. On a given server, the run's Dispatch gets the connection string
+# run_database_url (scripts/e2e/lib/loopback-dsn.sh) rebuilds from the given URL with libpq, with
+# the run's database as its dbname: pgx, which Dispatch opens it with, reads that keyword/value
+# form.
 own_dispatch() {
   local seed=$1 database=run_${R##*/} pg_port postgres url
   database=${database//-/_}
@@ -953,7 +999,7 @@ own_dispatch() {
   [ "${#database}" -le 63 ] || fail "the run's database name $database is longer than Postgres's 63 bytes"
   if [ -f "$services_postgres" ]; then
     postgres=$(<"$services_postgres")
-    url=$(pg_database_url "$postgres" "$database")
+    run_database_url url SKILL_SCENARIOS_POSTGRES_URL "$postgres" "$database" "this run creates a database there" || fail "$url"
     # A given server must let its login make a database. Nothing here checks that: the refusal a
     # server without the right gives is Postgres's own, in the run's fixture.log.
     pg_sql "$postgres" "CREATE DATABASE $database" >>"$R/fixture.log" 2>&1 ||
