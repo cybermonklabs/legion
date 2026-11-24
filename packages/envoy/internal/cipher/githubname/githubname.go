@@ -41,6 +41,15 @@ func SplitEntry(entry string) (account, name string, ok bool) {
 	return strings.Cut(entry, "/")
 }
 
+// ValidEntry reports whether entry can be a repository as Entry writes one, account/name: its two
+// halves as SplitEntry reads them, the account a login (ValidLogin) and the name a repository's own
+// (ValidRepositoryName). A caller that must say which half is wrong splits it itself and calls the
+// two rules; this is the whole test, for a caller whose refusal names the entry.
+func ValidEntry(entry string) bool {
+	account, name, ok := SplitEntry(entry)
+	return ok && ValidLogin(account) && ValidRepositoryName(name)
+}
+
 // MetadataPermission is the permission GitHub grants at read with every installation token,
 // whatever its request named, and which every installation it lists holds. The minter refuses a
 // token holding a permission its request did not name (secrets' heldBy), so every GitHub profile

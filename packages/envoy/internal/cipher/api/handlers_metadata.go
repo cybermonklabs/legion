@@ -84,12 +84,31 @@ type authorizationServerMetadata struct {
 // base every other absolute URL the broker writes is built from, and the one address its callers
 // reach it at — and from the provider that actually serves the endpoints, so the document and
 // the routes cannot disagree. The row is mounted only with that provider, as the OAuth rows are.
+//
+// Each endpoint is its path joined onto that URL's path, the configured query kept after the
+// joined path (publicURL): RFC 6749 section 3.1 says an endpoint URI may carry a query component
+// and that it must be retained when further parameters are added, and the path appended to the
+// URL's text would have sat inside such a query and named another path. The issuer is that URL as
+// it is, since it is the identifier the document is published under and every signed proof and
+// request object names, and no part of it is this handler's to drop; RFC 8414 section 2 requires
+// an issuer identifier to carry no query and no fragment, so a deployment that sets one on
+// BROKER_PUBLIC_URL publishes a document no client can read that member of, which is that
+// deployment's own error and not a document this handler can repair.
 func (s *server) authorizationServerMetadata(w http.ResponseWriter, _ *http.Request) {
+	endpoints := make(map[string]string, 4)
+	for _, path := range []string{tokenPath, introspectionPath, revocationPath, deviceAuthorizationPath} {
+		endpoint, err := s.publicURL(path)
+		if err != nil {
+			writeInternal(w, "read the broker's authorization server metadata", err)
+			return
+		}
+		endpoints[path] = endpoint
+	}
 	document := authorizationServerMetadata{
 		Issuer:                            s.deps.PublicURL,
-		TokenEndpoint:                     s.deps.PublicURL + tokenPath,
-		IntrospectionEndpoint:             s.deps.PublicURL + introspectionPath,
-		RevocationEndpoint:                s.deps.PublicURL + revocationPath,
+		TokenEndpoint:                     endpoints[tokenPath],
+		IntrospectionEndpoint:             endpoints[introspectionPath],
+		RevocationEndpoint:                endpoints[revocationPath],
 		GrantTypesSupported:               s.deps.OAuth.GrantTypes(),
 		ResponseTypesSupported:            []string{},
 		TokenEndpointAuthMethodsSupported: []string{authMethodNone},
@@ -97,7 +116,7 @@ func (s *server) authorizationServerMetadata(w http.ResponseWriter, _ *http.Requ
 		SubjectTokenTypesSupported:        s.deps.OAuth.SubjectTokenTypes(),
 	}
 	if s.deps.OAuth.DeviceGrant() {
-		document.DeviceAuthorizationEndpoint = s.deps.PublicURL + deviceAuthorizationPath
+		document.DeviceAuthorizationEndpoint = endpoints[deviceAuthorizationPath]
 	}
 	writeJSON(w, http.StatusOK, document)
 }

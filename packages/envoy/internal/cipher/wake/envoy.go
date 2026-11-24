@@ -22,9 +22,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/redirects"
 )
+
+// sendPath is the listener's route a notice is posted to, under BROKER_ENVOY_URL.
+const sendPath = "/v1/messages/send"
 
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
 // the broker's own platform identity (its account, read afresh for each notice) as its bearer: the
@@ -55,6 +59,13 @@ type secretRequestPayload struct {
 // reaching Envoy, or a non-2xx response (including a 404 for a session that is no longer live) —
 // is logged with slog.Warn and otherwise ignored: the caller has already applied the decision
 // and this is only a best-effort nudge.
+//
+// sendPath is joined onto BROKER_ENVOY_URL's path (urljoin.Join), its query kept and its
+// fragment, which no request sends, dropped: the path appended to that URL's text would sit
+// inside a query or a fragment and the listener would be asked another route. A URL that does not
+// parse or names no host, and a joined URL that does not parse again, are logged in this
+// package's own words naming the setting, never url.Parse's error, which http.NewRequest's
+// carries and which quotes the URL whole, user information and query included.
 func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	payload, err := json.Marshal(secretRequestPayload{
 		Type:      "secret-request",
@@ -78,9 +89,16 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.url+"/v1/messages/send", bytes.NewReader(body))
+	target, err := urljoin.Join(e.url, sendPath)
 	if err != nil {
-		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
+		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID,
+			"error", "BROKER_ENVOY_URL is not an absolute URL with a host")
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.String(), bytes.NewReader(body))
+	if err != nil {
+		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID,
+			"error", "the URL joined from BROKER_ENVOY_URL does not parse")
 		return
 	}
 	bearer, err := e.account.Read()

@@ -39,7 +39,7 @@ const maxDispatchAnswer = 1 << 20
 // data. Every route they read is authAny (internal/dispatch/api/routes_table.go), and the
 // projected ServiceAccount token its account reads authenticates as a service actor holding no
 // scope, which reaches an issue, its documents and the asks on it, and nothing that belongs to a
-// person. NewDispatch builds one.
+// person.
 type Dispatch struct {
 	// baseURL is the root Dispatch's /api/v1 paths hang off.
 	baseURL string
@@ -50,16 +50,13 @@ type Dispatch struct {
 	// the reader so a test can stand in for it; cmd/cipherd wires
 	// ciphertoken.NewAccountToken(BROKER_JUDGE_DISPATCH_TOKEN_FILE).
 	account ciphertoken.Account
-	// http is the client every call is made with: the one NewDispatch is given, as a copy that
-	// follows no redirect.
+	// http is the client every call is made with.
 	http *http.Client
 }
 
 // NewDispatch is the broker's read of the Dispatch at baseURL, presenting the token account reads
 // on every call, made with client; a nil client is http.DefaultClient. It keeps a copy of either
-// that follows no redirect (redirects.Refused), made once here: every call carries the broker's
-// account token, and none of the routes it reads answers a redirect, so a 3xx is Dispatch's
-// answer by its status, which Issue, Assignee and Ask refuse as any status they do not read.
+// that follows no redirect (redirects.Refused), made once here.
 func NewDispatch(baseURL string, account ciphertoken.Account, client *http.Client) Dispatch {
 	return Dispatch{baseURL: baseURL, account: account, http: redirects.Refused(cmp.Or(client, http.DefaultClient))}
 }

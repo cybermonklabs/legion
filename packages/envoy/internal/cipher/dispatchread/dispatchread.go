@@ -20,11 +20,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -67,7 +67,7 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client, t
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return Reader{base: strings.TrimRight(baseURL, "/"), account: account, http: redirects.Refused(httpClient), timeout: timeout, limit: limit}
+	return Reader{base: baseURL, account: account, http: redirects.Refused(httpClient), timeout: timeout, limit: limit}
 }
 
 // Answer is what Dispatch answered one call: its status, and its whole body, held with the record
@@ -88,6 +88,14 @@ type Answer struct {
 // body it could not read are ErrNoAnswer, but for a certificate that does not verify and a name
 // that does not resolve (transportAnswers), each an error of its own; a body past the limit is an
 // error of its own too, an answer too long rather than none.
+//
+// path, with query after whatever BROKER_PROJECT_ACCESS_URL carries, is joined onto that URL's
+// path (urljoin.Join), its query kept and its fragment, which no request sends, dropped: path
+// appended to the URL's text would sit inside a query or a fragment and Dispatch would be asked
+// another path. A BROKER_PROJECT_ACCESS_URL that does not parse or names no host, and a joined URL
+// that does not parse again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone
+// escape), are refused in this package's own words: url.Parse's error, which http.NewRequest's
+// carries, quotes the URL whole, user information and query included.
 func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer, error) {
 	bearer, err := r.account.Read()
 	if err != nil {
@@ -95,13 +103,17 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	}
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-	target := r.base + path
+	ref := path
 	if len(query) > 0 {
-		target += "?" + query.Encode()
+		ref += "?" + query.Encode()
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	target, err := urljoin.Join(r.base, ref)
 	if err != nil {
-		return Answer{}, fmt.Errorf("dispatchread: build the request: %w", err)
+		return Answer{}, errors.New("dispatchread: BROKER_PROJECT_ACCESS_URL is not an absolute URL with a host")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return Answer{}, errors.New("dispatchread: the URL joined from BROKER_PROJECT_ACCESS_URL does not parse")
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.Header.Set("Accept", "application/json")
@@ -115,7 +127,7 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, int64(r.limit))
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, Clip(RefusalCode(answer).String()))
+		return Answer{}, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, Quoted(RefusalCode(answer)))
 	}
 	if errors.Is(err, redact.ErrAnswerTooLarge) {
 		return Answer{}, fmt.Errorf("dispatchread: dispatch's answer to %s is over %d bytes", path, r.limit)
@@ -163,10 +175,17 @@ func RefusalCode(answer redact.Answer) redact.RemoteText {
 const MaxQuoted = 64
 
 // Clip is text, or its first MaxQuoted bytes when it is longer: the most of a string from
-// Dispatch's answer that an error of the broker's quotes.
+// Dispatch's answer that an error of the broker's quotes. Quoted is how a caller names such a
+// string; this is for text that is no box already.
 func Clip(text string) string {
 	if len(text) > MaxQuoted {
 		return text[:MaxQuoted]
 	}
 	return text
 }
+
+// Quoted is what an error of the broker's quotes of a string Dispatch's answer named — a refusal's
+// code (RefusalCode), or a key or a value of a body the caller reads itself (redact.Answer.Said):
+// the rule's reading of it, cut to MaxQuoted bytes. Every caller of this package names such a
+// string through this one function, so that no site of its own decides the bound or the reading.
+func Quoted(text redact.RemoteText) string { return Clip(text.String()) }

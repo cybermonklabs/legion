@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/urljoin"
 )
 
 // DeviceLoginFunc opens a device login's record from the device authorization request's form and
@@ -674,12 +675,34 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 	return caller{service: account}, true
 }
 
+// publicURL is ref joined onto the broker's own address, Deps.PublicURL (BROKER_PUBLIC_URL as the
+// broker resolved it at boot): ref's path onto that URL's path, the configured query kept ahead of
+// ref's own and the fragment, which no request sends, dropped (urljoin.Join). It is how every
+// absolute URL the broker writes about itself is built, so that ref appended to the URL's text
+// never sits inside a query or a fragment a deployment set and names another path. The error
+// names the setting and never the URL, which can carry a credential: config.Load holds
+// BROKER_PUBLIC_URL to an absolute URL with a host and no path, so only a Deps built in code
+// reaches it.
+func (s *server) publicURL(ref string) (string, error) {
+	joined, err := urljoin.Join(s.deps.PublicURL, ref)
+	if err != nil {
+		return "", errors.New("the broker's own URL is not an absolute URL with a host")
+	}
+	return joined.String(), nil
+}
+
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher
 // and authProof each translate a failure into their own vocabulary (LAUNCHER_INVALID vs
 // PROOF_INVALID), so this reports
-// only the raw error.
+// only the raw error. The htu it checks the proof against is the request's path joined onto the
+// broker's own URL (publicURL), the same join the client makes when it signs the proof
+// (cmd/cipher's doProof signs that URL less any query the path carries).
 func (s *server) proofSubject(r *http.Request) (proof.Subject, error) {
-	return s.deps.Proof.Verify(r.Context(), r.Header.Get("Proof"), r.Method, s.deps.PublicURL+r.URL.Path, time.Now())
+	target, err := s.publicURL(r.URL.Path)
+	if err != nil {
+		return proof.Subject{}, err
+	}
+	return s.deps.Proof.Verify(r.Context(), r.Header.Get("Proof"), r.Method, target, time.Now())
 }
 
 func bearer(r *http.Request) string {
@@ -790,7 +813,12 @@ func (s *server) approveURL(recordID string) string {
 	if s.deps.Approval == nil {
 		return ""
 	}
-	return s.deps.PublicURL + "/approve/" + recordID
+	link, err := s.publicURL("/approve/" + url.PathEscape(recordID))
+	if err != nil {
+		slog.Error("broker: the record's approval page could not be named", "error", err)
+		return ""
+	}
+	return link
 }
 
 // pendingApproveURL is approveURL for a request's record while the request waits on a person, and

@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 )
@@ -26,4 +27,22 @@ func DecodeError(err error, data []byte, into any) error {
 		t = t.Elem()
 	}
 	return errors.New(decodeText(err, data, t))
+}
+
+// Unmarshal fills into from a's body as JSON, read as the answer's data and never as its words:
+// the one read of an answer a caller decodes by encoding/json itself, for a destination
+// Answer.Decode refuses because it takes the answer's text as it came — a json.RawMessage handed
+// back to whoever knows what it means, a map of them a proxy forwards. Its error is DecodeError's
+// fixed text, which quotes no value of the body. It reads the bytes where they are: a caller that
+// wrote them to a buffer of its own (Answer.StreamTo) held the answer a second time.
+//
+// Nothing it fills carries the record of the answer's request, which Answer.Decode gives every
+// RemoteText it decodes, so nothing it fills may print: a caller whose destination holds another
+// party's words that print decodes through Answer.Decode instead.
+func Unmarshal(a Answer, into any) error {
+	data := a.bytes()
+	if err := json.Unmarshal(data, into); err != nil {
+		return DecodeError(err, data, into)
+	}
+	return nil
 }

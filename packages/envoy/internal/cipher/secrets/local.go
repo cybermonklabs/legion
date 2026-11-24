@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,21 +116,27 @@ func LocalFromFile(path string) (*Local, error) {
 	return l, nil
 }
 
-// parseLocalFile reads data, the content of path, as BROKER_FAKE_SECRETS_FILE's shape.
+// parseLocalFile reads data, the content of path, as BROKER_FAKE_SECRETS_FILE's shape: one JSON
+// object, {"secrets": [LocalSecret, ...]}, decoded with encoding/json/v2 under encoding/json's own
+// options, so every file the broker served before is read as it was, and with a member the file
+// does not name refused, as DisallowUnknownFields refused one. Each fault is read from the error's
+// own type (policy's decodeProfiles reads a profiles file the same way): encoding/json's v1
+// decoder gives an unknown member as text alone, with no type to read and nothing wrapped, which
+// left this one fault read by the words of a message. No refusal quotes the file, whose every
+// value can be a secret.
 func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var f localFile
-	if err := dec.Decode(&f); err != nil {
-		var syntax *json.SyntaxError
-		var typeErr *json.UnmarshalTypeError
+	if err := jsonv2.Unmarshal(data, &f, json.DefaultOptionsV1(), jsonv2.RejectUnknownMembers(true),
+		json.ReportErrorsWithLegacySemantics(false)); err != nil {
+		var semantic *jsonv2.SemanticError
+		var syntactic *jsontext.SyntacticError
 		switch {
-		case errors.As(err, &syntax):
-			return nil, fmt.Errorf("%s: not JSON (at byte %d)", path, syntax.Offset)
-		case errors.As(err, &typeErr):
-			return nil, fmt.Errorf("%s: %s is not a %s (at byte %d)", path, typeErr.Field, typeErr.Type, typeErr.Offset)
-		case strings.HasPrefix(err.Error(), "json: unknown field "):
-			return nil, fmt.Errorf("%s: %s", path, strings.TrimPrefix(err.Error(), "json: "))
+		case errors.As(err, &semantic) && errors.Is(err, jsonv2.ErrUnknownName):
+			return nil, fmt.Errorf("%s: unknown field %q (at byte %d)", path, semantic.JSONPointer.LastToken(), semantic.ByteOffset)
+		case errors.As(err, &semantic):
+			return nil, fmt.Errorf("%s: %s is not a %s (at byte %d)", path, dottedMember(semantic.JSONPointer), semantic.GoType, semantic.ByteOffset)
+		case errors.As(err, &syntactic):
+			return nil, fmt.Errorf("%s: not JSON (at byte %d)", path, syntactic.ByteOffset)
 		default:
 			return nil, fmt.Errorf("%s: not a fake secrets file", path)
 		}
@@ -138,6 +147,15 @@ func parseLocalFile(path string, data []byte) ([]LocalSecret, error) {
 		}
 	}
 	return f.Secrets, nil
+}
+
+// dottedMember is pointer as a refusal of the fake secrets file names a member, secrets.1.value,
+// and "the file" for the pointer to the file's own value.
+func dottedMember(pointer jsontext.Pointer) string {
+	if pointer == "" {
+		return "the file"
+	}
+	return strings.Join(slices.Collect(pointer.Tokens()), ".")
 }
 
 // follow reads a LocalFromFile Local's file again and, when its bytes have changed since they were
