@@ -503,7 +503,10 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // (store.IssueSandboxHome) for good. The child stays where it is until a person labels it, which
 // admits it as an orphan. A message row Dispatch refused tells the architect that owns the issue
 // (noticeArchitect) what was not posted and Dispatch's own refusal (messagePostRefused), since
-// nothing else would: the message is the daemon's only word on the issue for what it carries.
+// nothing else would: the message is the daemon's only word on the issue for what it carries. A
+// row that closes pull requests of tasks, which GitHub refused for good to close some of, tells the
+// architect which stay open, the comment and GitHub's answer to each
+// (pullRequestsCloseRefused.notice), since no try again would close them.
 // Each of those notice rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, store.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
@@ -592,6 +595,22 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
 		// on without it, and the line is what says Dispatch does not hold it.
 		told = r.recordDropped(row, "plan", value.ID, cause)
+	case record.TaskPullRequestsClose:
+		// GitHub refused for good the close of each pull request the refusal names, so each stays
+		// open and no try again closes it: the architect is told once, in the finish's transaction,
+		// so the notice is written once, as the row ends with it. permanentRefusal ended the row
+		// only on a *pullRequestsCloseRefused, so refused is set.
+		var refused *pullRequestsCloseRefused
+		errors.As(cause, &refused)
+		notice, err := record.NewOutboxRow(row.Issue, refused.notice(), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		follow = func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
+		told = func() {
+			r.log.Error("outbox close of task pull requests refused by GitHub for good and ended; each named stays open, and its architect is told",
+				"row", row.ID, "issue", row.Issue, "pullRequests", refused.numbers(), "error", kept)
+		}
 	}
 	finish := func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 		return store.Transact(ctx, r.pool, write)
@@ -855,6 +874,12 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
 	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
 		return recordRefused(err)
+	case record.OutboxKindTaskPullRequestsClose:
+		// Permanent where GitHub refused for good the close of a pull request the row names, the
+		// rest closed (closeTaskPullRequests): a try again would meet the same answer, and its
+		// finish tells the architect which pull requests stay open.
+		var refused *pullRequestsCloseRefused
+		return errors.As(err, &refused)
 	default:
 		return false
 	}
@@ -4596,14 +4621,15 @@ func (r *outbox) enqueueNotice(ctx context.Context, issue string, kind record.No
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
-// none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
-// at the look the row names, with that look open, and the issue out of the workflow. A check closed
-// since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
-// queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
-// at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
+// none: the check of its issue the row names (record.SuperviseRequest.CheckOpenedAt; a row naming
+// none reads the issue's newest), open, at the look the row names, with that look open, and the
+// issue out of the workflow. No such check, a check closed since (a report, its last look, a later
+// run's merge), a look its bound or a hold ended, a later look's start, or an issue running again
+// (reopened inside its linger since the row was queued: a look would resume the check's own role
+// and relaunch the Sandbox under the run; the look ends at its own bound) leave the row nothing to
+// start, and it finishes without acting, logged with why.
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
-	check, err := r.productionCheck(ctx, row.Issue)
+	check, err := r.productionCheck(ctx, row.Issue, payload.CheckOpenedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -4615,8 +4641,6 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.CheckOpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
 	case check.Looks != payload.CheckLook:
 		why = fmt.Sprintf("the check is at look %d", check.Looks)
 	case !check.LookOpen:
@@ -4648,14 +4672,14 @@ func (r *outbox) checkLookHeld(ctx context.Context, row record.OutboxRow, payloa
 // checkLook is a look's bound coming due (record.CheckLook): the look it names ends as one nobody
 // reported (intake.CheckLookEnded, cause `look bound`), which the workflow applies only while the
 // check is open at that look with the look open, so a look reported in time changes nothing. The
-// check is read first: a row of no open check, or of a check a later merge replaced (NamedBy),
-// finishes without acting, and the event is the issue, the check read (record.ProductionCheck.ID)
-// and the look, so the row run again is a duplicate and a later check's look 1 is a fact of its
-// own rather than the replaced check's. A look that began before the end of the project's latest
-// pause has its bound counted from the time its role could take a turn again, and the row waits
-// until then (lookBoundAfterPause).
+// check the row names (its OpenedAt; a row naming none reads the issue's newest) is read first: a
+// row of no such check, or of one closed since, finishes without acting, and the event is the
+// issue, the check read (record.ProductionCheck.ID) and the look, so the row run again is a
+// duplicate and one check's look 1 is another fact than another check's. A look that began before
+// the end of the project's latest pause has its bound counted from the time its role could take a
+// turn again, and the row waits until then (lookBoundAfterPause).
 func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload record.CheckLook) error {
-	check, err := r.productionCheck(ctx, row.Issue)
+	check, err := r.productionCheck(ctx, row.Issue, payload.OpenedAt)
 	if err != nil {
 		return err
 	}
@@ -4665,8 +4689,6 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 		why = "the issue has no production check"
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.OpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
 	}
 	if why != "" {
 		r.log.Info("outbox check look bound finished without acting", "row", row.ID, "issue", row.Issue, "look", payload.Look, "why", why)
@@ -4758,10 +4780,10 @@ func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload re
 	return nil
 }
 
-// checkBound is the whole check's bound coming due (record.CheckBound): intake.CheckBound, under
-// an event of this row's own rather than the check's, since a bound the workflow defers — a look
-// open at the bound, an earlier check's bound — is queued again as a new row, whose apply must be
-// fresh rather than a duplicate of this one's.
+// checkBound is a check's bound coming due (record.CheckBound, which names no check):
+// intake.CheckBound, under an event of this row's own rather than a check's, since the workflow
+// acts on each open check whose bound came due and queues a bound it defers — a look open at the
+// bound — again as a new row, whose apply must be fresh rather than a duplicate of this one's.
 func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-bound:%s:%d", row.Issue, row.ID),
 		intake.CheckBound{Issue: row.Issue}, r.handlers...); err != nil {
@@ -4770,13 +4792,13 @@ func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 	return nil
 }
 
-// productionCheck is issue's production check as recorded, nil for none, read in a transaction of
-// its own just before the executor acts on a row.
-func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.ProductionCheck, error) {
+// productionCheck is issue's production check opened at openedAt as recorded, its newest for the
+// zero time, nil for none, read in a transaction of its own just before the executor acts on a row.
+func (r *outbox) productionCheck(ctx context.Context, issue string, openedAt time.Time) (*record.ProductionCheck, error) {
 	var check *record.ProductionCheck
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		check, err = r.records.ProductionCheck(ctx, tx, issue)
+		check, err = r.records.ProductionCheckOf(ctx, tx, issue, openedAt)
 		return err
 	}); err != nil {
 		return nil, fmt.Errorf("read the production check of %s: %w", issue, err)

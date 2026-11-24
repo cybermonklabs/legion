@@ -1189,6 +1189,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
   kind: "kind",
+  /** Whether the work of a plan task merges by itself, "true" or "false". */
+  merges: "merges",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",

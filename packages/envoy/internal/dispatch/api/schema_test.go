@@ -34,13 +34,16 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 5 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 5 and callout, ask, requirement, plan_task, check", schema.Version, names)
+	if schema.Version != 11 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
+		t.Fatalf("schema = version %d, types %v; want version 11 and callout, ask, requirement, plan_task, check", schema.Version, names)
 	}
 	if ciCheck, declared := schema.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
 	}
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
+	}
+	if merges, declared := schema.Types[3].Attributes.Lookup("merges"); !declared || merges.Kind != pmdoc.BlockAttributeEnum || !slices.Equal(merges.Choices, []string{"true", "false"}) || merges.Since != 11 || merges.CreatableSince != 11 {
+		t.Fatalf("plan_task attribute merges = %+v (declared %v), want an enum of true and false read and created from version 11", merges, declared)
 	}
 }

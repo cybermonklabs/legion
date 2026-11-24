@@ -155,7 +155,7 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	}
 	assertSlots(t, pool, nil)
 	inTx(t, pool, func(tx pgx.Tx) {
-		check, err := record.NewStore().ProductionCheck(context.Background(), tx, finishedRoot)
+		check, err := record.NewStore().ProductionCheckOf(context.Background(), tx, finishedRoot, time.Time{})
 		if err != nil || check == nil || !check.Open() || check.Number != 1 || check.MergeSHA != "merge-1" {
 			t.Fatalf("the root's production check = %+v, %v, want it open on pull request #1 at merge-1", check, err)
 		}

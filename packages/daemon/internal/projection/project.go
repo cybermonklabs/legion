@@ -143,15 +143,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	// The open production checks, by issue: the check is read once for the whole state, since a
-	// closed check shows nothing and the open ones are few.
+	// The open production checks, by issue, each issue's oldest first as the store lists them: the
+	// checks are read once for the whole state, since a closed check shows nothing and the open ones
+	// are few. An issue whose tasks merged one after another holds a check of each merge.
 	openChecks, err := in.Store.OpenProductionChecks(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
-	checks := make(map[string]record.ProductionCheck, len(openChecks))
+	checks := make(map[string][]record.ProductionCheck, len(openChecks))
 	for _, check := range openChecks {
-		checks[check.Issue] = check
+		checks[check.Issue] = append(checks[check.Issue], check)
 	}
 	// Every issue's pull request, the pull request of its merge, by issue key, in two statements for
 	// the whole state rather than a read an issue (record.Store.PullRequestsOf). It loads none of
@@ -411,8 +412,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		if issue.Key == issue.Tree {
 			view.GatedSteps = api.GatedStepViewsOf(record.TreeSteps(in.Steps, gates), gates)
 		}
-		if check, ok := checks[issue.Key]; ok {
-			view.Check = checkView(check)
+		// Each open check of the issue, oldest first, and the newest of them alone as `check`.
+		for _, check := range checks[issue.Key] {
+			view.Checks = append(view.Checks, *checkView(check))
+		}
+		if n := len(view.Checks); n > 0 {
+			newest := view.Checks[n-1]
+			view.Check = &newest
 		}
 		projected.Issues[issue.Key] = view
 	}

@@ -405,27 +405,12 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int, fo
 	panic(fmt.Sprintf("plan: task %d leads back to itself by no need inside its component", task))
 }
 
-// Supported is what this release does not carry out yet: more than one task that no task needs
-// (Sinks, over the task ids FromBlocks reads), whose work would each merge by itself where this
-// release merges an issue's work as one change, a role block, and, for each task, `owner`,
-// `part_of` and `merges`, the key owner on a role but acceptance, acceptance with a key but owner
-// or with none, a role named at two steps, no implementer, and each step of a role that reads the
-// implementer's pull request with no implementer step before it. A step after the implementer's
-// of a role the deployment gives the type implementation is not carried out yet either, and
-// Validate refuses it, since it alone reads the deployment. A plan of several tasks, and a task's
-// `needs`, are taken: each task runs once the tasks it needs are done. Any other key is taken: it
-// names the agent of its steps (AgentOf). Its steps stand in any other order: the planner at any
-// place, the tester, the reviewer and the acceptance in any order after the implementer, and a
-// role of the deployment at any place. A task that names no steps runs the project's default
-// steps, which the configuration loader holds to these same checks, so none of its step causes
-// apply. Its reasons are bounded as reasons bounds each kind.
+// Supported is what this release does not carry out yet: a role block, unsupported task
+// ownership, invalid step order or duplicate step roles. It takes several tasks, their needs,
+// and a separate merge for each task that names merges or that no task needs. Validate reads
+// deployment-specific roles. Its reasons are bounded as reasons bounds each kind.
 func Supported(p Plan) []Refusal {
 	var found reasons
-	if sinks := Sinks(p.Tasks); len(sinks) > 1 {
-		found.yet(manySinks, "", func() string {
-			return fmt.Sprintf("the plan has %d tasks that no task needs (%s), and the work of each would merge by itself.", len(sinks), listed(sinks))
-		})
-	}
 	for _, role := range p.RoleBlocks {
 		found.yet(roleBlock, "", func() string { return "the plan defines the role " + quoted(role) + "." })
 	}
@@ -443,9 +428,6 @@ func taskReasons(t Task, found *reasons) {
 	}
 	if t.PartOf != "" {
 		found.yet(taskPartOf, t.ID, func() string { return fmt.Sprintf("task %s names part_of.", t.ID) })
-	}
-	if t.Merges {
-		found.yet(taskMerges, t.ID, func() string { return fmt.Sprintf("task %s names merges.", t.ID) })
 	}
 	if t.NamesSteps() {
 		stepReasons(t, found)

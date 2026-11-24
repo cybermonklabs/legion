@@ -1,0 +1,5 @@
+kind: Changed
+body: "The `legion` tool's description of `register_plan` and `sign_off` says which tasks of a plan merge by themselves and how a task block says so (`merges=\"true\"`). The plugin declares the daemon API contract that serves each open production check of an issue (`checks`)."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168

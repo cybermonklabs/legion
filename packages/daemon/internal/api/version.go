@@ -3767,6 +3767,21 @@ package api
 // says of its own kind; the way back of this change's migration
 // (`store/migrations/20261121165047_task_copies.up.sql`) deletes those rows before a rollback. No
 // shape of `GET /legion/v1/state` moves with it.
+// 260: an issue whose plan merges the work of several tasks merges more than once in one run, and
+// each merge opens a production check of its own, so an issue can hold several open checks at
+// once. Each issue of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gains
+// `checks`: each open check (`api.CheckView`), oldest first, absent while none is open. `check`
+// stays, the newest open check, so a reader of one check reads what it read before. A plugin below
+// 260 is served each issue with no `checks` and with its `check` (shaping.go's band,
+// `withoutChecks`); a check's own fields and values are those `check` carries, so no value strip
+// is owed.
+// The same change adds the notice kind `pull-request-close-refused`, to the issue's architect, for
+// the pull requests of tasks whose close GitHub refused as it would refuse it again, so each stays
+// open (`record.validNoticeKinds`). An outbox payload is decoded strictly, so no daemon of an
+// earlier release decodes such a row, as the `task-join-failed` entry above says of its own kind;
+// the way back of this change's migration (`store/migrations/20261123221142_task_base.up.sql`)
+// deletes those rows before a rollback. No shape of `GET /legion/v1/state` moves with it.
+// This entry used 237 during development; the owner allocated release contract 260.
 // (This unreleased entry used 224 while the work was built. Its release number is 263, allocated
 // above the merged base's 256 and independently checked against each open head before the push.)
 const DaemonAPIVersion = 263

@@ -534,7 +534,7 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 	if !awaitsMerge(view) {
 		return true, nil
 	}
-	canLand, err := e.mergeCanLand(ctx, tx, runs, view, *root)
+	canLand, err := e.mergeCanLand(ctx, tx, runs, s, *root)
 	return !canLand, err
 }
 
@@ -590,24 +590,22 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 	return !record.AwaitsPromotion(*root, lifecycle, gate, holds), nil
 }
 
-// mergeCanLand says whether member's merge, which awaits its landing in the tree root lingers, can
-// still land there: while the linger runs and no fact has closed it, while its pull request is open,
-// or where the close of root's linger handed it over, whose re-admission ends the merge's run
-// instead. The pull request's state is all it reads, so it reads the row alone
-// (record.Store.MergePullRequestRow), with none of what the pull request remembers of its settled
-// heads.
-func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, member, root record.Issue) (bool, error) {
+// mergeCanLand says whether the merge of s's task, which awaits its landing in the tree root
+// lingers, can still land there: while the linger runs and no fact has closed it, while the pull
+// request of s's task is open (taskPullRequest), or where the close of root's linger handed s's
+// issue over, whose re-admission ends the merge's run instead.
+func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, s TaskScope, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.store.MergePullRequestRow(ctx, tx, member.Key)
+	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}
 	if pr != nil && pr.State == record.PullRequestOpen {
 		return true, nil
 	}
-	handover, err := e.store.Handover(ctx, tx, member.Key)
+	handover, err := e.store.Handover(ctx, tx, s.issue.Key)
 	if err != nil {
 		return false, err
 	}

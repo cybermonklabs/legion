@@ -104,23 +104,25 @@ type Task struct {
 // NamesSteps says whether t's block names a step at all.
 func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
 
-// Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
-// ends the plan, where it merges. A need is a task id (FromBlocks).
-func Sinks(tasks []Task) []string {
+// Merging is the ids of the tasks of tasks whose work merges by itself, in id order: each task
+// whose block says merges (Merges), and each task of the top level (PartOf "") that no task of
+// tasks needs, whatever its block says. A part of another task merges only where its block says
+// merges. A need is a task id (FromBlocks). It is the one statement of which tasks merge.
+func Merging(tasks []Task) []string {
 	needed := map[string]bool{}
 	for _, task := range tasks {
 		for _, id := range task.Needs {
 			needed[id] = true
 		}
 	}
-	var sinks []string
+	var merging []string
 	for _, task := range tasks {
-		if !needed[task.ID] {
-			sinks = append(sinks, task.ID)
+		if task.Merges || (task.PartOf == "" && !needed[task.ID]) {
+			merging = append(merging, task.ID)
 		}
 	}
-	slices.Sort(sinks)
-	return sinks
+	slices.Sort(merging)
+	return merging
 }
 
 // RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
@@ -225,9 +227,8 @@ func StepsOf(t Task, defaults []Step) []Step {
 }
 
 // Line is the phases a task walks: the phase each step runs as (RunsAs), in the steps' order, then
-// Legion's own retro and merge where the task merges, which no plan names. The work of an issue
-// merges once, at the end of the one task no task needs (Sinks), so that task alone has a retro
-// and a merge, and a task another task needs is done at its last step.
+// Legion's own retro and merge where the task's work merges by itself (Merging), which no plan
+// names. Each such task has its own retro and merge, and any other task is done at its last step.
 func Line(steps []Step, merges bool) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)
 	for _, step := range steps {

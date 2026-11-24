@@ -1,0 +1,5 @@
+kind: Changed
+body: "`register_plan` now takes a plan with two or more tasks that no task needs, where the release before refused it: each such task merges by itself. Legion keeps a production check for each merge, not one for each issue: the store keys each check by its issue and the moment it opened, with its run and its task, and a later merge no longer replaces an earlier merge's check. Each merge opens its own check, and a check of the run that holds the issue looks while the issue runs. The check goes to the task's last agent of the checking role, else to a fresh agent of the task (`check-<task>`), and the issue's close keeps the claim of each open check. State serves `checks`, each open check of an issue, and `legion state` counts each. The boot's fill of a record with no repository is left where any pull request of the issue's tasks is on another repository."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168

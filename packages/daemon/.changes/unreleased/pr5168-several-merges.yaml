@@ -1,0 +1,5 @@
+kind: Added
+body: "A plan's task can say whether its work merges by itself (`merges=\"true\"` on its `plan_task` block), and `register_plan` takes a plan in which several tasks merge: each task that names `merges`, and each task of the top level that no task needs. Each task that merges walks to its own retro and its own merge, and is done when its merge is on main; the issue is done when each of its tasks is done. Only the merge, and the retro, of the task that ends the issue wait for the issues beneath it. A task whose need merged starts from main, and the base of a task's pull request stays as its start fixed it until its merge starts, when Legion moves it to main. Each merge closes the open pull requests whose work it holds, with `Merged in #<n>.`, and the merge that ends the issue closes the rest."
+time: 2026-11-24T17:43:24.000000000Z
+custom:
+    Issue: pr5168

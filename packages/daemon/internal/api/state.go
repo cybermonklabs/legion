@@ -851,9 +851,15 @@ type Issue struct {
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
-	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
-	// present only while the check is open, and absent once it closed or while none was opened.
+	// Check is the issue's newest open production check, the work after a merge
+	// (record.ProductionCheck): present only while a check is open, and absent once each closed or
+	// while none was opened.
 	Check *CheckView `json:"check,omitempty"`
+	// Checks is each open production check of the issue, oldest first: one for each merge whose
+	// check is still open, so an issue whose tasks merged one after another can hold several, the
+	// last of them the one Check shows. Absent while none is open. A caller below the contract that
+	// added it (shaping.go's checksContract) is served no `checks` and reads Check alone.
+	Checks []CheckView `json:"checks,omitempty"`
 	// MergeWait is what the issue's review round waits on from GitHub, present only while it
 	// waits on GitHub's merge state for the pull request's head and absent for every other
 	// round (MergeWaitView).

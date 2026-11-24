@@ -29,6 +29,53 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
   Each agent is named for the role of its first step, so a later version that needs a fresh agent of a role whose name another agent of the plan holds is refused (`PLAN_REFUSED`).
 
+## Several tasks
+
+A task's `needs` names each task it needs, separated by spaces, each as a reference to that task's block: `dispatch://<KEY>/artifact/plan-md#b-<id>`.
+A need that names another issue is refused (`PLAN_REFUSED`): a task needs only tasks of its own plan, and an issue waits on another issue by its `blocked_by` list (`skill://legion-architect/references/decomposition.md`, "Recording a wait on other work").
+Legion starts each task with no `needs` when the issue's work starts, and each other task once every task it needs is done, from their joined work.
+A task's work merges into the repository's default branch by itself when its block says `merges="true"` or when no task needs it.
+Each such task gets Legion's retro and merge after its last step, and is done when its merge is on the default branch.
+A task that needs such a task starts from the default branch.
+Every other task is done when its last step passes, and its work merges with the task that needs it.
+The issue is done when each of its tasks is done.
+This release runs one agent of each role for an issue, so give the steps of one role in several tasks the same key.
+That agent works one step at a time, and a step of another task that it works waits for it.
+
+An example with five tasks:
+
+| Task | Needs | Steps |
+| --- | --- | --- |
+| a | | `implementer:i reviewer:r` |
+| b | | `implementer:i reviewer:r` |
+| c | b | `implementer:i reviewer:r` |
+| d | a, c | `implementer:i reviewer:r` |
+| e | d | `implementer:i tester` |
+
+a and b start at once, and one implementer and one reviewer work the steps of all five tasks, one step at a time.
+e is the one task that no task needs: its tester tests the joined work of every task, and the whole issue merges as one change after e's retro.
+If c's block said `merges="true"`, c would merge by itself, with its own retro, before d starts.
+
+Task d as its block:
+
+```markdown
+:::plan_task{#d needs="dispatch://<KEY>/artifact/plan-md#b-a dispatch://<KEY>/artifact/plan-md#b-c" steps="implementer:i reviewer:r"}
+What task d must deliver, on the joined work of tasks a and c.
+:::
+```
+
+## The base of each task's pull request
+
+Legion sets the base of each task's pull request, and a plan names no other.
+The pull request of each task whose work merges by itself, and of each task with no `needs`, is against the repository's default branch.
+So a plan of one task, the project's default steps included, has its pull request against the default branch.
+Any other task with one need has its pull request against that need's branch, and a task with several against its join branch.
+Legion joins their work there.
+Needs whose work merged count together as one need, on the default branch.
+The implementer's completion is refused (`HANDOFF_PULL_REQUEST_BASE`) while its pull request is against any other base, so never ask for another base in a task's text.
+Work that must build on unmerged work of the same issue is a task that `needs` the task that does it.
+Work that must build on another issue's unmerged branch goes in an issue whose `blocked_by` list names that issue, and Legion starts it once that issue is `done`.
+
 ## The roles and their order
 
 Name the steps in `steps` in the order they run.
@@ -41,7 +88,7 @@ The table lists the steps in the order of the default steps:
 | `implementer` | implementation | `implementing` | Required. It also works the retro, and a failed step returns to it unless the failed step names an earlier one. |
 | `tester` | testing | `testing` | Only the implementer records results against the checks, and no other step runs them again, except where a parent's pull request merged before its last round: you, or a subagent you dispatch, then run and record them (`skill://legion-architect/references/acceptance.md`, *The last round*). |
 | `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. |
-| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
+| `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro of a task that merges, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.

@@ -10,12 +10,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// The task that merges is one rule (StoredPlan.MergingTask): the one task no task needs, whatever
-// the plan's count of tasks, and none where no task, or more than one, is such a task. A task is
-// read by its id through one lookup (StoredPlan.TaskOf), which a plan that is not there answers
-// with no task.
+// The one task that merges, which a fact no row ties to a task is of, is one rule
+// (StoredPlan.OnlyTaskThatMerges): the one task that has a merge (TasksThatMerge), whatever the
+// plan's count of tasks, and none where no task, or more than one, has one. A task is read by its
+// id through one lookup (StoredPlan.TaskOf), which a plan that is not there answers with no task.
 func TestTheTaskThatMergesAndATaskByItsIdAreOneRuleEach(t *testing.T) {
 	task := func(id string, needs ...string) PlanTask { return PlanTask{Task: id, Needs: needs} }
+	says := PlanTask{Task: "a", Merges: true}
 	for _, tc := range []struct {
 		name  string
 		tasks []PlanTask
@@ -27,12 +28,14 @@ func TestTheTaskThatMergesAndATaskByItsIdAreOneRuleEach(t *testing.T) {
 		{"b needs a", []PlanTask{task("a"), task("b", "a")}, "b", true},
 		{"c needs a and b", []PlanTask{task("a"), task("b"), task("c", "a", "b")}, "c", true},
 		{"two tasks no task needs", []PlanTask{task("a"), task("b")}, "", false},
+		{"b needs a, which says merges", []PlanTask{says, task("b", "a")}, "", false},
+		{"b needs a, which merged", []PlanTask{{Task: "a", State: TaskDone, Place: TaskPlace{Kind: PlaceMerge}}, task("b", "a")}, "", false},
 		{"no task", nil, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := (&StoredPlan{Tasks: tc.tasks}).MergingTask()
+			got, ok := (&StoredPlan{Tasks: tc.tasks}).OnlyTaskThatMerges()
 			if got != tc.want || ok != tc.ok {
-				t.Fatalf("MergingTask = %q, %v, want %q, %v", got, ok, tc.want, tc.ok)
+				t.Fatalf("OnlyTaskThatMerges = %q, %v, want %q, %v", got, ok, tc.want, tc.ok)
 			}
 		})
 	}
@@ -73,11 +76,12 @@ func TestATaskStandsAtItsPlaceOrHeldFromIt(t *testing.T) {
 	}
 }
 
-// A plan whose tasks hold no one task that merges (two tasks no task needs, which plan.Supported
-// refuses at register_plan) has no pull request of its merge: the read of it answers none, and the
-// read of the merges of several issues answers the others' and none of its, rather than failing for
-// every issue it was asked with (the one rule, StoredPlan.MergingTask).
-func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
+// An issue whose merge has no pull request yet has no pull request of its merge: of a, running with
+// its pull request #41, and b, which needs a and so is the task that merges, waiting with no branch,
+// the read of the merge answers none, not a's, and the read of the merges of several issues
+// answers the others' and none of its, rather than failing for every issue it was asked with (the
+// one rule, StoredPlan.TasksThatMerge).
+func TestAnIssueWhoseMergeHasNoPullRequestHasNoMergePullRequest(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -91,7 +95,8 @@ func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
 			GivenBy: planOwner, GivenAt: planGivenAt}
 		putPlan(t, tx, v, []PlanTask{
 			{Issue: planIssue, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: TaskRunning},
-			{Issue: planIssue, Generation: issue.Generation, Task: "b", PlanVersion: 1, BlockText: "Build the gadget.", State: TaskWaiting},
+			{Issue: planIssue, Generation: issue.Generation, Task: "b", PlanVersion: 1, BlockText: "Build the gadget.", Needs: []string{"a"},
+				State: TaskWaiting},
 		}, nil)
 		if _, err := records.AssignTaskBranch(ctx, tx, planIssue, issue.Generation, "a"); err != nil {
 			t.Fatalf("give task a its branch: %v", err)
@@ -102,7 +107,7 @@ func TestAPlanWithNoTaskThatMergesHasNoMergePullRequest(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := records.MergePullRequest(ctx, tx, planIssue)
 		if err != nil || got != nil {
-			t.Fatalf("the merge pull request of %s, whose plan has two tasks no task needs = %+v, %v, want none", planIssue, got, err)
+			t.Fatalf("the merge pull request of %s, whose merge is b's, which has none = %+v, %v, want none", planIssue, got, err)
 		}
 		merges, err := records.PullRequestsOf(ctx, tx, []string{planIssue, noPlan.Key})
 		if err != nil || len(merges) != 1 || merges[noPlan.Key].Number != alone.Number {

@@ -1,6 +1,8 @@
 package record
 
 import (
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -94,6 +96,120 @@ func TestTheBaseOfATaskOrANeedThePlanDoesNotHoldIsAnError(t *testing.T) {
 		base, join, err := stored.BaseOf(issue, tc.task)
 		if err == nil || !strings.Contains(err.Error(), tc.names) {
 			t.Errorf("BaseOf(%s) = %q, %t, %v, want an error naming %q", tc.task, base, join, err, tc.names)
+		}
+	}
+}
+
+// The branches each task's work starts from, and the base of its pull request, read a need whose
+// work merged as the default branch, which holds that work. b and h are done at their merge, so
+// GitHub can have deleted each one's branch then; c, d and g, which need b, came in a later
+// version, so b is in no Merging. a is done at its last step, and its work did not merge. c needs
+// b, d needs a and b, e needs a, g needs b and h, and z, which needs c, d, e and g, is the task that
+// merges; each has an implementer. c starts from main alone, which holds b's work, and is based on
+// main. d starts from a's branch and then main, and is based on its join branch, where the two are
+// joined. g, both of whose needs merged, starts from main once, and is based on it. e starts from
+// a's branch and is based on it. BaseOf answers what PlannedBase answers. Where d's block says
+// merges, d is based on main, and it starts from the same branches.
+//
+// The fault it catches is a task that starts from a merged need's branch (its controls: PlannedBase
+// as BaseOf was before, under which c is based on b's branch; a need read as merged where it is in
+// Merging and done, under which c starts from b's branch).
+func TestTheBaseOfATaskReadsAMergedNeedAsTheDefaultBranch(t *testing.T) {
+	issue := Issue{Key: planIssue, DefaultBranch: "main"}
+	implementer := []string{"implementer"}
+	stored := basePlan(
+		baseTask{"a", nil, "legion/LEGION-208.a", []string{"implementer", "reviewer"}},
+		baseTask{"b", nil, "legion/LEGION-208.b", implementer},
+		baseTask{"c", []string{"b"}, "legion/LEGION-208.c", implementer},
+		baseTask{"d", []string{"a", "b"}, "legion/LEGION-208.d", implementer},
+		baseTask{"e", []string{"a"}, "legion/LEGION-208.e", implementer},
+		baseTask{"g", []string{"b", "h"}, "legion/LEGION-208.g", implementer},
+		baseTask{"h", nil, "legion/LEGION-208.h", implementer},
+		baseTask{"z", []string{"c", "d", "e", "g"}, "legion/LEGION-208.z", implementer})
+	for i, row := range stored.Tasks {
+		switch row.Task {
+		case "a":
+			stored.Tasks[i].State, stored.Tasks[i].Place = TaskDone, TaskPlace{Kind: PlaceStep, Position: 2}
+		case "b", "h":
+			stored.Tasks[i].State, stored.Tasks[i].Place = TaskDone, TaskPlace{Kind: PlaceMerge}
+		}
+	}
+	if merging := stored.Merging(); !slices.Equal(merging, []string{"z"}) {
+		t.Fatalf("Merging = %q, want z alone: c, d and g need b", merging)
+	}
+	a := StartBranch{Branch: "legion/LEGION-208.a", Needs: []string{"a"}}
+	main := func(needs ...string) StartBranch { return StartBranch{Branch: "main", Needs: needs} }
+	type want struct {
+		task   string
+		starts []StartBranch
+		base   string
+		join   bool
+	}
+	check := func(t *testing.T, stored StoredPlan, tc want) {
+		t.Helper()
+		if starts, err := stored.StartsFrom(issue, tc.task); err != nil || !reflect.DeepEqual(starts, tc.starts) {
+			t.Errorf("StartsFrom(%s) = %v, %v, want %v", tc.task, starts, err, tc.starts)
+		}
+		if base, join, err := stored.PlannedBase(issue, tc.task); err != nil || base != tc.base || join != tc.join {
+			t.Errorf("PlannedBase(%s) = %s, %t, %v, want %s, %t", tc.task, base, join, err, tc.base, tc.join)
+		}
+		if base, join, err := stored.BaseOf(issue, tc.task); err != nil || base != tc.base || join != tc.join {
+			t.Errorf("BaseOf(%s) = %s, %t, %v, want %s, %t", tc.task, base, join, err, tc.base, tc.join)
+		}
+	}
+	for _, tc := range []want{
+		{"c", []StartBranch{main("b")}, "main", false},
+		{"d", []StartBranch{a, main("b")}, "legion/LEGION-208.d.join", true},
+		{"g", []StartBranch{main("b", "h")}, "main", false},
+		{"e", []StartBranch{a}, "legion/LEGION-208.a", false},
+	} {
+		check(t, stored, tc)
+	}
+
+	for i, row := range stored.Tasks {
+		if row.Task == "d" {
+			stored.Tasks[i].Merges = true
+		}
+	}
+	check(t, stored, want{"d", []StartBranch{a, main("b")}, "main", false})
+}
+
+// The base of a task that has started is the base its start fixed (PlanTask.Base), whether or not
+// the plan in force merges it: of d, which needs a and c, holding the base legion/LEGION-208.d.join,
+// BaseOf answers that, join true, with d needed by e and with no task needing it, where the plan
+// alone gives main. With no base fixed, a task that has not started or that a release before
+// started, it answers the plan's base (PlannedBase).
+//
+// The fault it catches is a base that a later version moves within a task's run (its control: BaseOf
+// as PlannedBase alone, the revision before, under which d without e reads main).
+func TestTheBaseOfAStartedTaskIsTheBaseItsStartFixed(t *testing.T) {
+	issue := Issue{Key: planIssue, DefaultBranch: "main"}
+	for _, withE := range []bool{true, false} {
+		tasks := []baseTask{{"a", nil, "", []string{"implementer"}}, {"c", nil, "legion/LEGION-208.c", []string{"implementer"}},
+			{"d", []string{"a", "c"}, "legion/LEGION-208.d", []string{"implementer", "reviewer"}}}
+		if withE {
+			tasks = append(tasks, baseTask{"e", []string{"d"}, "legion/LEGION-208.e", []string{"implementer"}})
+		}
+		stored := basePlan(tasks...)
+		planned, _, err := stored.PlannedBase(issue, "d")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, row := range stored.Tasks {
+			if row.Task == "d" {
+				stored.Tasks[i].Base = "legion/LEGION-208.d.join"
+			}
+		}
+		if base, join, err := stored.BaseOf(issue, "d"); err != nil || base != "legion/LEGION-208.d.join" || !join {
+			t.Errorf("BaseOf(d) with e %t and the base its start fixed = %s, %t, %v, want legion/LEGION-208.d.join, true", withE, base, join, err)
+		}
+		for i, row := range stored.Tasks {
+			if row.Task == "d" {
+				stored.Tasks[i].Base = ""
+			}
+		}
+		if base, _, err := stored.BaseOf(issue, "d"); err != nil || base != planned {
+			t.Errorf("BaseOf(d) with e %t and no base fixed = %s, %v, want the plan's base %s", withE, base, err, planned)
 		}
 	}
 }

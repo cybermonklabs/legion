@@ -125,8 +125,13 @@ func (g *branchGitHub) answerWith(answer func() (int, string)) {
 	g.answer = answer
 }
 
-// roleTokens mints a token named for the App it is minted as, so a request shows which App made it.
+// roleTokens mints a token named for the App it is minted as, so a request shows which App made it,
+// and answers each App's bot login as `<role>[bot]`.
 type roleTokens struct{}
+
+func (roleTokens) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
+	return string(role) + "[bot]", nil
+}
 
 func (roleTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil

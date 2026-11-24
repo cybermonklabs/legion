@@ -87,7 +87,7 @@ func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, lo
 // mergedCloseBehindATestingTurn drives the reviewer's trace as far as the close. A child's pull
 // request merges while the child is still in testing, before it reaches merging, and a person
 // sets the issue done from Dispatch while the tester's testing turn is still running: the close
-// spares the check's role (workflow's linger.go, `except = e.checkRole()`), opens the tester's
+// keeps the claim of the check it opens (workflow's linger.go, keptClaims), opens the tester's
 // production check and starts look 1 behind that running turn. It answers the harness, its
 // record of every fact the routes applied, and the tester's claim with the machine that holds it.
 func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveClaim, *supervise.Machine) {
@@ -340,15 +340,15 @@ func TestACheckReportCarriesTheLookTheClaimWasGivenNotTheChecksCurrentOne(t *tes
 	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 1)
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}))
-	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pass", Summary: "looked"}
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pass", Summary: "looked", OpenedAt: checkOpenedAt}
 	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 		t.Fatalf("check report = %+v, want %+v: the record is at look 2, and this worker's look is 1", got, want)
 	}
 }
 
-// A look of a production check a later merge of the same issue replaced is no look of the check
-// the issue holds now, whose looks count from one again: its report is refused CHECK_NOT_OPEN,
-// with nothing recorded, rather than taken for the new check's look of the same number.
+// A look of a production check the issue no longer holds open — one opened a day before the check
+// the issue holds now — is a look of no open check: its report is refused CHECK_NOT_OPEN, with
+// nothing recorded, rather than taken for the open check's look of the same number.
 func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
@@ -358,10 +358,52 @@ func TestACheckReportOfAReplacedChecksLookIsRefused(t *testing.T) {
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}),
 		http.StatusConflict, "CHECK_NOT_OPEN")
-	if !strings.Contains(message, "replaced") {
-		t.Fatalf("the refusal is %q, want it to say a later merge replaced the check this look belongs to", message)
+	if !strings.Contains(message, "has no open production check") {
+		t.Fatalf("the refusal is %q, want it to say the look's check is not open", message)
 	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
+	}
+}
+
+// Of two open production checks of one issue, a report on the first check's look closes the first:
+// the route reads the check of the caller's live look, by the moment that check opened, and the
+// engine applies the report to it, so the second check stays open.
+func TestAReportOfTheFirstOfTwoOpenChecksClosesTheFirst(t *testing.T) {
+	h, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ProductionCheckRole: claim.RoleImplementer, ProductionCheckBound: 336 * time.Hour,
+		Clock: func() time.Time { return checkOpenedAt.Add(2 * time.Hour) }})
+	seedIssueAt(t, h, "LEGION-208", phase.Done)
+	first, second := checkOpenedAt, checkOpenedAt.Add(time.Hour)
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		for i, opened := range []time.Time{first, second} {
+			if err := record.NewStore().PutProductionCheck(context.Background(), tx, record.ProductionCheck{
+				Issue: "LEGION-208", Project: testProject, Tree: "LEGION-208", Repo: "acme/widgets", Number: 42 + i, Role: claim.RoleImplementer,
+				OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, LookWakeAt: &opened,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the two checks of LEGION-208: %v", err)
+	}
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	implementer.worksLook(t, 1, first)
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "driven in production", Verdict: "pass"}))
+	var checks []record.ProductionCheck
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		var err error
+		checks, err = record.NewStore().ProductionChecksOf(context.Background(), tx, "LEGION-208")
+		return err
+	}); err != nil {
+		t.Fatalf("read the checks of LEGION-208: %v", err)
+	}
+	if len(checks) != 2 || !checks[1].OpenedAt.Equal(first) || checks[1].Open() || checks[1].Outcome != record.CheckRecorded {
+		t.Fatalf("the checks after the first check's pass = %+v, want the first closed as recorded", checks)
+	}
+	if !checks[0].Open() || !checks[0].LookOpen {
+		t.Fatalf("the second check after the first check's pass = %+v, want it open at look 1", checks[0])
 	}
 }

@@ -112,7 +112,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"), taskBlock("b", "implementer reviewer"))
 	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer prober"))
-	statuses.givePlan(planDoc, 3, taskBlock("a", "implementer reviewer"), taskBlock("b", "implementer prober"))
+	statuses.givePlan(planDoc, 3, taskBlock("a", "implementer reviewer reviewer"), taskBlock("b", "implementer prober"))
 	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
 	statuses.givePlan(planDoc, 5, taskBlock("a", ""))
 	statuses.givePlan(planDoc, 6, taskBlock(plan.DefaultTask, ""), taskBlock("a", "implementer reviewer"))
@@ -120,17 +120,11 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	refused(t, registerPlan(h, worker.grant(t), "LEGION-208", planDoc, 4), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
-	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoSinks)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoSinks,
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3),
+		PlanReason{Task: "a", Reason: "task a names the role reviewer at steps 2 and 3. This release of Legion does not carry it out yet."},
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
-	// A version that keeps the task of the default steps and adds a second that neither needs is a
-	// plan of two tasks whose work would each merge, like any other: the route refuses it, so the
-	// workflow never takes it.
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
-		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, default), and the work of each would merge by itself. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
 	}
@@ -147,10 +141,24 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		strings.TrimSpace(bare.Body.String()) != `{"plan":{"version":5,"added":[],"tasks":[{"id":"a","steps":[],"needs":[]}]}}` {
 		t.Fatalf("register version 5 = %d %s, want 200 with task a naming no step", bare.Code, bare.Body)
 	}
+	// A plan of two tasks that no task needs is taken: the work of each merges by itself. So is a
+	// version that keeps the task of the default steps and adds a second that neither needs.
+	for _, version := range []int{1, 6} {
+		if taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, version); taken.Code != http.StatusOK {
+			t.Fatalf("register version %d = %d %s, want 200: the work of each of its two tasks merges by itself", version, taken.Code, taken.Body)
+		}
+	}
+	task := func(id string, steps ...plan.Step) plan.Task {
+		return plan.Task{ID: id, Steps: steps, Text: "Do the change."}
+	}
 	want := []intake.Fact{
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 5),
+		intake.PlanGiven{Issue: "LEGION-208", Generation: 1, GivenBy: architect.token, Plan: plan.Plan{ArtifactID: planDoc, Version: 1,
+			Tasks: []plan.Task{task("a", implementerReviewer...), task("b", implementerReviewer...)}}},
+		intake.PlanGiven{Issue: "LEGION-208", Generation: 1, GivenBy: architect.token, Plan: plan.Plan{ArtifactID: planDoc, Version: 6,
+			Tasks: []plan.Task{task(plan.DefaultTask), task("a", implementerReviewer...)}}},
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts = %#v, want %#v: one for each registration taken, the store holding no version of version 4 when it is given again", got, want)
@@ -263,10 +271,9 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 // register_plan reads each need as the task it names (plan.FromBlocks) before either check, so a
 // task a reference names is needed and the plan recorded names it by its id: the first plan, b
 // needing a by a reference, is taken, and its fact's b needs ["a"], b alone ending it. A word that
-// names no task gets the reason no release lifts, beside a and b as two tasks that no task needs,
-// and records nothing. The fault is a route that checks, and records, the words as the blocks
-// write them; the control is a FromBlocks that keeps each word whole, under which b's need is
-// recorded as the reference and the second plan is taken.
+// names no task gets the reason no release lifts, and records nothing. The fault is a route that
+// checks, and records, the words as the blocks write them; the control is a FromBlocks that keeps
+// each word whole, under which b's need is recorded as the reference and the second plan is taken.
 func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -278,7 +285,6 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 		t.Fatalf("register version 1 = %d %s, want 200: b needs a, and b alone ends the plan", taken.Code, taken.Body)
 	}
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
-		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
 		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
 	got := facts.recorded()
 	if len(got) != 1 {
@@ -293,10 +299,9 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 // register_plan reads each need against the issue it registers (plan.FromBlocks), so a need
 // written as a reference into another issue, here d's of task a of the plan of LEGION-209, is no
 // need of this plan's task a: it is refused with a reason of its own, naming the reference and that
-// issue, and nothing is recorded. Since d needs nothing of this plan, a and d are two tasks that no
-// task needs, the reason of this release beside it. The fault is the reference read as this plan's
-// task a, under which the plan is taken; the control is plan.FromBlocks without the check of the
-// issue, under which the route answers 200.
+// issue, and nothing is recorded. The fault is the reference read as this plan's task a, under
+// which the plan is taken; the control is plan.FromBlocks without the check of the issue, under
+// which the route answers 200.
 func TestRegisterPlanRefusesANeedIntoAnotherIssue(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -304,7 +309,6 @@ func TestRegisterPlanRefusesANeedIntoAnotherIssue(t *testing.T) {
 		needing(taskBlock("d", "implementer reviewer"), "dispatch://LEGION-209/artifact/plan-md#b-a"))
 
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1),
-		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, d), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
 		PlanReason{Task: "d", Reason: "task d needs dispatch://LEGION-209/artifact/plan-md#b-a, which names another issue, LEGION-209: " +
 			"a task can need only a task of this plan, and an issue waits for another issue by a blocked_by link between the two."})
 	if got := facts.recorded(); len(got) != 0 {

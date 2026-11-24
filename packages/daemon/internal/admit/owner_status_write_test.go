@@ -238,13 +238,13 @@ func (r *ownerRig) merge(key string, number int) {
 	}
 }
 
-// check is key's production check, nil for none.
+// check is key's newest production check, nil for none.
 func (r *ownerRig) check(key string) *record.ProductionCheck {
 	r.t.Helper()
 	var check *record.ProductionCheck
 	inTx(r.t, r.pool, func(tx pgx.Tx) {
 		var err error
-		if check, err = record.NewStore().ProductionCheck(context.Background(), tx, key); err != nil {
+		if check, err = record.NewStore().ProductionCheckOf(context.Background(), tx, key, time.Time{}); err != nil {
 			r.t.Fatalf("read the production check of %s: %v", key, err)
 		}
 	})

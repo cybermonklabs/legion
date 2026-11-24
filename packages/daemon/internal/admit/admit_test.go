@@ -419,7 +419,7 @@ func TestAMergeWhileTheTreeLingersClosesTheChildAndWakesItsCheck(t *testing.T) {
 		var got *record.ProductionCheck
 		inTx(t, pool, func(tx pgx.Tx) {
 			var err error
-			if got, err = record.NewStore().ProductionCheck(context.Background(), tx, "LEGION-209"); err != nil {
+			if got, err = record.NewStore().ProductionCheckOf(context.Background(), tx, "LEGION-209", time.Time{}); err != nil {
 				t.Fatalf("read the child's production check: %v", err)
 			}
 		})

@@ -268,6 +268,18 @@ func populatedState(t *testing.T) State {
 	// queued to its claim, and a turn of it confirmed that task.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
+	// LEGION-207's one open production check, which the issue shows under `check` and `checks`.
+	goldenCheck := CheckView{
+		Repo:        "acme/widgets",
+		PullRequest: 1239,
+		MergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
+		OpenedAt:    time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC),
+		Role:        string(claim.RoleImplementer),
+		Looks:       2,
+		LookOpen:    true,
+		LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
+		NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
+	}
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
@@ -918,18 +930,10 @@ func populatedState(t *testing.T) State {
 				// A check of this release records the project's `production_check` role, the tester;
 				// this one opened before it and keeps the implementer, which is the migrated case
 				// the release must keep working. Look 2 is open, so no agent's wake stands and the
-				// next look is the check's bound.
-				Check: &CheckView{
-					Repo:        "acme/widgets",
-					PullRequest: 1239,
-					MergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
-					OpenedAt:    time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC),
-					Role:        string(claim.RoleImplementer),
-					Looks:       2,
-					LookOpen:    true,
-					LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
-					NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
-				},
+				// next look is the check's bound. It is the issue's one open check, so `checks`
+				// holds it alone and `check` is it.
+				Check:  &goldenCheck,
+				Checks: []CheckView{goldenCheck},
 				DesignGate: &GateView{
 					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
 					CurrentVersion:  4,

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 11,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -129,6 +129,12 @@
           "kind": "string",
           "since": 5,
           "creatable_since": 5
+        },
+        "merges": {
+          "kind": "enum",
+          "choices": ["true", "false"],
+          "since": 11,
+          "creatable_since": 11
         }
       },
       "since": 3,

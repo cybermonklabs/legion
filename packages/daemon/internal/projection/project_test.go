@@ -525,6 +525,47 @@ func TestProjectShowsTheOpenProductionCheckOnItsIssue(t *testing.T) {
 	}
 }
 
+// An issue whose tasks merged twice has two open production checks, and its record shows each
+// under `checks`, oldest first, as the store lists them; `check` stays the newest of them, the
+// one a reader of one check reads. An issue with one open check shows it under both.
+func TestTheStateServesEachOpenCheckOfAnIssue(t *testing.T) {
+	first := projectedAt.Add(-3 * time.Hour)
+	second := projectedAt.Add(-time.Hour)
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing},
+			{Key: "LEGION-209", Project: "LEGION", Tree: "LEGION-209", Status: "done", Phase: phase.Done},
+		},
+		checks: []record.ProductionCheck{
+			{Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, MergeSHA: "merge-a", OpenedAt: first, BoundAt: first.Add(336 * time.Hour),
+				Role: claim.RoleTester, Looks: 1, LookOpen: true, Generation: 1, Task: "a"},
+			{Issue: "LEGION-209", Repo: "acme/widgets", Number: 50, MergeSHA: "merge-209", OpenedAt: first, BoundAt: first.Add(336 * time.Hour),
+				Role: claim.RoleTester},
+			{Issue: "LEGION-208", Repo: "acme/widgets", Number: 43, MergeSHA: "merge-b", OpenedAt: second, BoundAt: second.Add(336 * time.Hour),
+				Role: claim.RoleTester, Generation: 1, Task: "b"},
+		},
+	}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	view := got.Issues["LEGION-208"]
+	var numbers []int
+	for _, check := range view.Checks {
+		numbers = append(numbers, check.PullRequest)
+	}
+	if !slices.Equal(numbers, []int{42, 43}) {
+		t.Fatalf("LEGION-208's checks = %+v, want the check of #42 then the check of #43", view.Checks)
+	}
+	if view.Check == nil || view.Check.PullRequest != 43 || !reflect.DeepEqual(*view.Check, view.Checks[1]) {
+		t.Fatalf("LEGION-208's check = %+v, want the newest open check, #43's, as `checks` shows it", view.Check)
+	}
+	one := got.Issues["LEGION-209"]
+	if len(one.Checks) != 1 || one.Check == nil || !reflect.DeepEqual(one.Checks[0], *one.Check) || one.Check.PullRequest != 50 {
+		t.Fatalf("LEGION-209's checks = %+v and check = %+v, want its one open check under both", one.Checks, one.Check)
+	}
+}
+
 // A claim's capability report (LEGION-663) shows on its view, whatever process reported it — the
 // view carries that process's incarnation for the reader to compare — and a claim no session has
 // reported for shows no capabilities rather than an empty report.

@@ -617,7 +617,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 		if theirs, err = raw.Issue(ctx, tx, theirIssue.Key); err != nil {
 			return err
 		}
-		if check, err = raw.ProductionCheck(ctx, tx, theirIssue.Key); err != nil {
+		if check, err = raw.ProductionCheckOf(ctx, tx, theirIssue.Key, time.Time{}); err != nil {
 			return err
 		}
 		return tx.QueryRow(ctx, `select count(*) from outbox where issue = $1`, theirIssue.Key).Scan(&rows)

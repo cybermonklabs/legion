@@ -623,15 +623,14 @@ export function createLegionTool(deps: {
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
-        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
-        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
-        "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
+        "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Each `plan_task` block is one task. Its " +
+        "`steps` names the steps the task runs, in the order they run, with `implementer` among them. A task that names none runs " +
+        "the project's default steps. A task's `needs` names the tasks it needs, and it starts once they are done. A task's work " +
+        'merges into the default branch by itself when its block says `merges="true"` or no task needs it. Legion runs the retro ' +
+        "and the merge itself after such a task's last step. Every other task's work merges with the task that needs it. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-        "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first " +
-        "version. Legion records nothing when it refuses a plan it does not carry out, with a reason for each cause, " +
-        "the first reasons of each kind and one more that counts the rest of that kind " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task or moves the base of a started task's pull request: " +
+        "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first version. Legion records nothing when it refuses a plan it does not carry out, with the first reasons of each kind and one more that counts the rest of that kind " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task: " +
         "stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +

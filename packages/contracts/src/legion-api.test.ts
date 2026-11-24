@@ -1306,6 +1306,34 @@ test("the state golden carries a done issue's open production check", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
+// Contract 237: an issue whose tasks merged one after another holds an open production check of
+// each merge, served oldest first under `checks`, with the newest also under `check`. The state
+// golden's LEGION-207 holds its one open check under both. A served issue with two checks parses
+// and keeps each check's own `openedAt`, and a check under `checks` is held to the same schema as
+// `check`, so one with no role is refused there too.
+test("an issue's checks carry each of its open production checks", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { check?: Record<string, unknown>; checks?: Record<string, unknown>[] }>;
+  };
+  const closed = state.issues["LEGION-207"];
+  if (closed === undefined || closed.check === undefined) {
+    throw new Error("state fixture lacks LEGION-207 or its check");
+  }
+  expect(closed.checks).toEqual([closed.check]);
+
+  const older = { ...closed.check, pullRequest: 1238, openedAt: "2026-09-22T07:40:12Z" };
+  closed.checks = [older, closed.check];
+  const parsed = LegionStateResponse.safeParse(state);
+  expect(parsed.error?.issues ?? []).toEqual([]);
+  expect(parsed.data?.issues["LEGION-207"]?.checks?.map((check) => check.openedAt)).toEqual([
+    "2026-09-22T07:40:12Z",
+    "2026-09-22T08:40:12Z",
+  ]);
+
+  closed.checks = [{ ...older, role: "" }, closed.check];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
 // their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
 // moved that head and no settled check run on it yet, with no state read and no told marks — and
@@ -3031,7 +3059,10 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     ...below,
     capabilities: withoutCachesSource,
     issues: Object.fromEntries(
-      Object.entries(issues).map(([key, { tasks: _tasks, ...issue }]) => [key, issue])
+      Object.entries(issues).map(([key, { tasks: _tasks, checks: _checks, ...issue }]) => [
+        key,
+        issue,
+      ])
     ),
     ...(stranded === undefined
       ? {}
