@@ -90,7 +90,7 @@ package supervise
 // re-enters the pacing asking this gate nothing (relaunchRefused, retryHolding). The second is
 // the retry of a launch whose write of StateLaunching failed: the credit went back at the end
 // of the decision that launch ran in, whether it waited a turn or ran where it was raised, and
-// the retry re-enters the gate asking it nothing in just the same way (launchNow,
+// the retry re-enters the gate asking it nothing in just the same way (launchTries,
 // relaunchLater).
 //
 // The bound a reader derives from this gate counts both: the lane can hold one wake over the

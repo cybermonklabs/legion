@@ -511,7 +511,14 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
-// A second pair touches one block, and one band of it writes that block in an older shape
+// A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
+// whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
+// caller below both is served no `assignments` whichever runs first. The second reads what the
+// first left only to know whether it took anything: run after it, as this table runs them, it
+// finds no row and writes no line, so a caller below assignmentsContract is told of the
+// assignments and not of their `plan` (narrowingsExpected holds that line back).
+//
+// A third pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
 // contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
 // block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
@@ -567,6 +574,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1014,6 +1022,18 @@ const repositoriesLiveContract = 202
 // constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
+// assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
+// experiment's arm set at the issue's draw (version.go's 220). A plugin before it is served every
+// assignment without the key (withoutAssignmentPlans): its reader strips a key it does not name,
+// so the band is what keeps the group from a caller that did not ask for it rather than what keeps
+// such a caller reading. The rest of each row stays as assignmentsContract serves it.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, and it is the last number of answers.go's SupportedContracts, which names
+// the constant rather than its number for that reason.
+const assignmentPlanContract = 220
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
@@ -1070,6 +1090,22 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 	return issue, moved
+}
+
+// withoutAssignmentPlans is the issue with no assignment carrying `plan`, the one key
+// assignmentPlanContract added to the state; every other key of each row stays. The key is
+// `omitempty` and absent from a row whose arm named no group, so the band reports a move only for
+// an issue one of whose rows carries one. The list is copied before a row is changed, so the state
+// the source answered is left as it was.
+func withoutAssignmentPlans(issue Issue) (Issue, bool) {
+	if !slices.ContainsFunc(issue.Assignments, func(row AssignmentView) bool { return row.Plan != "" }) {
+		return issue, false
+	}
+	issue.Assignments = slices.Clone(issue.Assignments)
+	for i := range issue.Assignments {
+		issue.Assignments[i].Plan = ""
+	}
+	return issue, true
 }
 
 // withoutRepositoryApps is state whose `repositories` block carries no `apps` on any entry of

@@ -53,7 +53,7 @@ type FailureCause string
 
 const (
 	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out, or
-	// refused it in a way no try changes, a system prompt past the start frame (launchNow,
+	// refused it in a way no try changes, a system prompt past the start frame (launchTries,
 	// promptRefused), with no other cause pending for the relaunch it refused.
 	CauseLaunchRefused FailureCause = "launch_refused"
 	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
@@ -109,7 +109,7 @@ var FailureCauses = []FailureCause{
 //
 // cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
 // recorded on the claim before the charge: it is what the claim fails under when this budget runs
-// out, and what a launch the runtime refuses on the way fails under too (launchNow,
+// out, and what a launch the runtime refuses on the way fails under too (launchTries,
 // Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
 // cause, which is why it is handed over in a closure rather than as the method value.
 //
@@ -127,7 +127,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, ending)
+	return m.launchAfter(ctx, true, false, false, ending)
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and

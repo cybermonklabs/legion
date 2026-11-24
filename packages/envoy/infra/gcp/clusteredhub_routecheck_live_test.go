@@ -322,10 +322,17 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		for _, s := range h.servers {
 			names[s.name] = true
 		}
+		// envoy-nats-1 dials the impostor, whose route port refuses each dial for the duplicate
+		// name, and dials again, so its /routez can list a route it is closing, with no ip
+		// (routes.go's closedRoute). Such a route has no address to judge here; Check judges its
+		// remote_id.
 		for _, s := range h.servers {
 			routez, err := routezOf(s.host, s.monitor)
 			require.NoError(t, err)
 			for _, route := range routez.Routes {
+				if route.IP == "" {
+					continue
+				}
 				require.True(t, route.IP == "127.0.0.1" && names[route.RemoteName],
 					"control: %s's route to %s (%s at %s) has an address or a name that is no hub server's, so a check by ip and name would catch it",
 					s.name, route.RemoteID, route.RemoteName, route.IP)
@@ -335,8 +342,12 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
 		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", `remote_id "`+impostor+`"`), "findings: %v", report.Findings)
+		// A closing route of envoy-nats-1's to the impostor is judged by its remote_id, as every
+		// other route of the impostor's is: never as a route from an address outside the hub, and
+		// never left unjudged for want of an address.
 		for _, f := range report.Findings {
 			require.NotContains(t, f.Detail, "no pod of the hub", "only remote_id tells the impostor apart: %v", f)
+			require.NotContains(t, f.Detail, "a route with no address", "the check judges a closing route by its remote_id: %v", f)
 		}
 	})
 
