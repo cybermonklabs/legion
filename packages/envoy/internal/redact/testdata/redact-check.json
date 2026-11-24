@@ -3693,6 +3693,12 @@
         "base": "0efde14fe0c8f103fa85e3b8730a2b44465fcc14",
         "files": ["packages/envoy/internal/mcpbridge/sse_url_test.go"],
         "capture": "mcpbridge.sse-url/reparsed"
+      },
+      {
+        "row": "workspace-unanswered-name-fragment",
+        "base": "77f8b4b97a502984724ccf3f6118ca0e50d4a34b",
+        "files": ["packages/daemon/internal/workspace/cache_unanswered_name_test.go"],
+        "capture": "workspace.unanswered-name/fragment"
       }
     ],
     "boundary_fields": {
@@ -12616,22 +12622,22 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
       "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/query",
-      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a query in LEGION_DAEMON_URL, which takes the route into it and which net/http's own error quotes, prints nowhere",
-      "capture": "claudebridge.unanswered-name/query"
-    },
-    {
-      "id": "claudebridge-unanswered-name-fragment",
-      "requirement": "r3-each-site",
-      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
-      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/fragment",
-      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a fragment in LEGION_DAEMON_URL, which takes the route into it, which net/http's own error quotes and which the daemon's URL rule (redact.URLCredentials) kept, prints nowhere",
-      "capture": "claudebridge.unanswered-name/fragment",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a query in LEGION_DAEMON_URL, which the report's URL keeps after the route joined onto the URL's path and which net/http's own error quotes, prints nowhere",
+      "capture": "claudebridge.unanswered-name/query",
       "function": "(*github.com/sjawhar/legion/daemon/internal/claudebridge.turnReports).post",
       "mutation": {
         "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
         "preimage": "oauth2call.Unanswered(err, post, \"\")",
         "replacement": "oauth2call.Unanswered(err, post, post.URL.String())"
       }
+    },
+    {
+      "id": "claudebridge-unanswered-name-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportThatGotNoAnswerNamesTheDaemonsURLByItsSchemeHostAndPath/fragment",
+      "production": "claudebridge turnReports.post: a turn report the daemon never answered logs the failure through oauth2call.Unanswered with shown \"\", which names the URL the report asked by its scheme, host and path: a fragment in LEGION_DAEMON_URL, which net/http's own error of a post to the URL as the pane names it quotes and which the daemon's URL rule (redact.URLCredentials) kept, prints nowhere",
+      "capture": "claudebridge.unanswered-name/fragment"
     },
     {
       "id": "githubapp-unanswered-name-deliveries",
@@ -13316,6 +13322,83 @@
         "preimage": "redirects.Refused(client)",
         "replacement": "func() *http.Client { _ = redirects.Refused; return client }()"
       }
+    },
+    {
+      "id": "workspace-unanswered-name-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAskThatGotNoAnswerNamesTheCacheByItsSchemeHostAndPath/fragment",
+      "production": "workspace askCache: the tar's ask of a cache that never answered fails in unpackCache's error with the failure named through oauth2call.Unanswered with shown \"\", which names the URL the ask asked by its scheme, host and path: a fragment in --cache-url, which net/http's own error quotes and which the daemon's URL rule (redact.URLCredentials) kept, prints nowhere",
+      "capture": "workspace.unanswered-name/fragment",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.Unanswered(err, ask, \"\")",
+        "replacement": "oauth2call.Unanswered(err, ask, ask.URL.String())"
+      }
+    },
+    {
+      "id": "claudebridge-turn-report-url-no-path",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/no-path",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with no path (http://host) sends each report to /legion/v1/claims/turn-outcome, as before the join"
+    },
+    {
+      "id": "claudebridge-turn-report-url-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/trailing-slash",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL whose path is a slash (http://host/) sends each report to /legion/v1/claims/turn-outcome, as before the join"
+    },
+    {
+      "id": "claudebridge-turn-report-url-path",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/path",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with a path and no query (http://host/daemon) sends each report to /daemon/legion/v1/claims/turn-outcome, as before the join"
+    },
+    {
+      "id": "claudebridge-turn-report-url-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/query",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with a query (http://host/daemon?sig=...) sends each report to its path joined with the turn-outcome route, the query kept (url.URL.JoinPath: /daemon/legion/v1/claims/turn-outcome?sig=...), where the route appended to the URL's text sat inside the query (/daemon?sig=.../legion/v1/claims/turn-outcome) and the daemon was asked /daemon"
+    },
+    {
+      "id": "claudebridge-turn-report-url-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/query-trailing-slash",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL whose path ends in a slash and that has a query (http://host/daemon/?sig=...) sends each report to /daemon/legion/v1/claims/turn-outcome?sig=..., where the route appended to the URL's text sat inside the query and the daemon was asked /daemon/"
+    },
+    {
+      "id": "claudebridge-turn-report-url-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestATurnReportGoesToTheRouteJoinedOntoTheDaemonsPath/fragment",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL with a fragment (http://host#...) sends each report to /legion/v1/claims/turn-outcome and the report's URL holds no fragment, which no request sends, where the route appended to the URL's text sat inside the fragment and the daemon was asked /"
+    },
+    {
+      "id": "claudebridge-daemon-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestALegionDaemonURLThatDoesNotParseIsNotPrinted/unparsed",
+      "production": "claudebridge startTurnReports: a LEGION_DAEMON_URL that url.Parse refuses starts no reporter, said once in the bridge's own words, never url.Parse's error, which quotes the URL whole, its query included",
+      "capture": "claudebridge.daemon-url/unparsed",
+      "function": "github.com/sjawhar/legion/daemon/internal/claudebridge.startTurnReports",
+      "mutation": {
+        "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
+        "preimage": "logger.Printf(\"reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL (its value is not printed)\")",
+        "replacement": "logger.Printf(\"reporting no turn outcomes: LEGION_DAEMON_URL does not parse as a URL: %v\", err)"
+      }
+    },
+    {
+      "id": "claudebridge-daemon-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestALegionDaemonURLThatDoesNotParseIsNotPrinted/twin",
+      "production": "the probe of the unparsed LEGION_DAEMON_URL row: url.Parse's error for that URL quotes its query's token, so the row can see one printed"
     }
   ],
   "bun": [
@@ -15964,6 +16047,16 @@
       "source": "the round-9 decisions of #4368",
       "guard": "judge-redirect-followed-default",
       "note": "not a leak: a client copy per call; NewDispatch now makes it once, and the row's mutation names that call"
+    },
+    {
+      "site": "workspace askCache: passed redact.URLCredentials of the ask's URL as oauth2call.Unanswered's shown, which keeps a fragment, so a credential in --cache-url's fragment printed in unpackCache's error and in cacheNotReady's reason",
+      "source": "the round-9 decisions of #4368",
+      "guard": "workspace-unanswered-name-fragment"
+    },
+    {
+      "site": "claudebridge startTurnReports: appended the turn-outcome route to LEGION_DAEMON_URL's text, so a URL with a query or a fragment took the route into it and each report went to a path the daemon does not serve",
+      "source": "the round-9 decisions of #4368",
+      "guard": "claudebridge-turn-report-url-query"
     }
   ]
 }
