@@ -195,6 +195,7 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "HandedOver", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "TakenBack", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DispatchStatus", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Priority", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Repo", Column: ColumnAgents, Keys: []string{"repo"},
 		Reason: "the repository the issue's work is done in, which every role's own commands address"},
 	{Field: "DefaultBranch", Column: ColumnAgents, Keys: []string{"defaultBranch"},
