@@ -82,6 +82,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 // The count is read a second time with every claim brought onto this contract, because 0 is the
 // answer an operator reads a drained wave by and a count that can only rise says nothing.
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	stale := api.DaemonAPIVersion - 1
 
@@ -164,6 +165,7 @@ func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T)
 // TestAKubernetesDaemonWithNoPluginSourceRelaunchesNothing is: a real Kubernetes runtime needs a
 // cluster this pod has none of.
 func TestTheStateCountsWhatADegradedDaemonCannotRefresh(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	no := false
 	rt := fake.NewRuntime()

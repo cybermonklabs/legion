@@ -229,14 +229,14 @@ func TestTheMachineCacheKeyIsNamedByTheCacheNeverItsPath(t *testing.T) {
 		if err := writeMachineCache(machineCacheDir(), key, "enr-machine"); err != nil {
 			t.Fatal(err)
 		}
+		meter := startStallMeter(t)
 		started := time.Now()
 		stdout, stderr, code := runIn(signArgs...)
+		// A cached session signs with no network call, so the sign waits for nothing: it is timed
+		// against no deadline, allowing for the time this process was held up (requireOnTime).
+		requireOnTime(t, meter, "the sign of a cached session, which makes no network call", started, 0)
 		if code != 0 || strings.Count(strings.TrimSpace(stdout), ".") != 2 {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and a compact JWS", code, stdout, stderr)
-		}
-		// A cached session signs with no network call, so the sign is quick.
-		if took := time.Since(started); took > 10*time.Second {
-			t.Fatalf("the sign took %s, more than the 10 s bound a cached session's sign, which makes no network call, is held to", took)
 		}
 	})
 }

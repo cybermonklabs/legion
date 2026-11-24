@@ -29,6 +29,7 @@ import (
 // and its SQL differ, the exact age they compare is within a slot of the lease, which the slot
 // cannot tell apart; and each rule is true and false on some claims.
 func TestTheClaimModelsRulesAreTheSQLsRules(t *testing.T) {
+	t.Parallel()
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	ctx := context.Background()
 	database := storetest.Open(t)

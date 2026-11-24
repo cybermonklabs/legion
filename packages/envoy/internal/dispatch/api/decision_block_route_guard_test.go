@@ -96,6 +96,7 @@ var decisionBlockGuardSees = []string{
 // a condition passes here, as it does in the other static guards of this package
 // (keyed_write_guard_test.go), and the route's own tests hold the branch.
 func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	for _, function := range []string{sharedBodyCheck, sharedBodyRefusal} {
 		if graph.named[function] == nil {
@@ -146,6 +147,7 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 // as a server that checks everything: the three writes the issue exists for are in its inventory,
 // each taking a body and each reaching the check.
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	graph := copyLockGraph(t)
 	routes := decisionBlockRouteHandlers(t, graph)
 	for _, name := range decisionBlockGuardSees {
@@ -169,6 +171,7 @@ func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 // is renamed, or whose body stops being a string, drops its route out of the inventory and takes
 // the rule off it in silence.
 func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
+	t.Parallel()
 	type embedded struct {
 		Body string `json:"body"`
 	}

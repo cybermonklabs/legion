@@ -61,6 +61,7 @@ var queryKeysReadThroughAHelper = []string{
 }
 
 func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {
+	t.Parallel()
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	namedByFile, namedAnywhere := queryKeysNamedByShapes(t, routes)
 

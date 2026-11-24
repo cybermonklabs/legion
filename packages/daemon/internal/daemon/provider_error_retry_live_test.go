@@ -294,7 +294,7 @@ func (r *providerErrorLive) seed() {
 	for _, seeded := range r.issues() {
 		r.board.show(seeded.key, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.issues() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.key,

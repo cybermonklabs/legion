@@ -312,7 +312,7 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)

@@ -15,6 +15,7 @@ import (
 // App's own reviews can carry the Legion footer the workflow reads (byReviewer): any other
 // author's review passes through unchanged, with no GitHub call made.
 func TestReviewBodyRestoresATruncatedReviewAppReview(t *testing.T) {
+	t.Parallel()
 	var gotPath string
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +49,7 @@ func TestReviewBodyRestoresATruncatedReviewAppReview(t *testing.T) {
 // Any author but the review App's own has nothing to restore: no footer but the review App's own
 // session could ever decide a round, so its capped body is returned unchanged with no call made.
 func TestReviewBodyLeavesAnotherAuthorsReviewUnchanged(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -75,6 +77,7 @@ func TestReviewBodyLeavesAnotherAuthorsReviewUnchanged(t *testing.T) {
 // A review-App review on a pull request the daemon does not record is dropped unread, as the
 // workflow drops it: its capped body is returned unchanged with no GitHub call made.
 func TestReviewBodyLeavesAnUnrecordedPullRequestsReviewUnchanged(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -102,6 +105,7 @@ func TestReviewBodyLeavesAnUnrecordedPullRequestsReviewUnchanged(t *testing.T) {
 // While GitHub's rate limit stands, a review's body is answered with the wait left and no call is
 // made, as reviewerCanWrite's permission read is.
 func TestReviewBodyWithRateLimitHeldMakesNoRequest(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -128,6 +132,7 @@ func TestReviewBodyWithRateLimitHeldMakesNoRequest(t *testing.T) {
 // A rate-limited read is returned as an intake.RetryLater naming GitHub's wait, so intake waits it
 // out before the review's delivery is tried again, the same as a rate-limited permission read.
 func TestReviewBodyRateLimitedReadRetriesLater(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -168,6 +173,7 @@ func TestReviewBodyRateLimitedReadRetriesLater(t *testing.T) {
 // A 401 for the review App's token on the body read decides nothing and holds no rate limit: an
 // old token is dropped and the delivery retried, and the retried read restores the full body.
 func TestReviewBodyA401IsRetriedWithAFreshToken(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++

@@ -12,6 +12,7 @@ import (
 // on GET …/versions/{number}, GET …/changes and the read mark (artifacts.go fitsIntegerColumn).
 // The control is the largest number the column holds, which the route already answers 404.
 func TestAnAttemptNumberAboveTheColumnsRangeIsNotFoundNotAFault(t *testing.T) {
+	t.Parallel()
 	handler, _, root, _, _ := directConversationFrom(t, "alice")
 
 	for _, attempt := range []int{2147483648, 3000000000, 2147483647} {

@@ -63,8 +63,10 @@ const (
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
 	// (cmd/listener/brokerauth.go). Its records are the only ones Envoy keeps on a bucket TTL
-	// alone: nothing reads a record back, and a key that has outlived the window its proof could
-	// be presented in says nothing, so each key expires rather than being deleted.
+	// alone: nothing but a create of the same key reads a record back, and a key that has outlived
+	// the window its proof could be presented in says nothing, so each key expires rather than being
+	// deleted, except the record an edge listener deletes to give a proof back after a 503 it
+	// answered before serving anything (proofSpend.release in cmd/listener).
 	DPoPProofBucket = "envoy_dpop_proofs"
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
@@ -173,12 +175,16 @@ const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 // replies alone (SessionReplies) and the relay can refuse a reply that names another session
 // than its frame's; the token is random so that no session can guess the subject of a request
 // made of another, since it is derived from nothing a session can see, and a session's grant
-// reads no other session's relay or control subject. So once natsgrant.Session publishes
-// SessionReplies in place of every _INBOX. subject, a session on that grant can neither answer a
-// request made of another session nor guess the subject of one. A holder of the shared session
-// user or of a host user reads every session's relay subject and may publish to every _INBOX.
-// subject, so none of this holds against it. sessionID is one subject token, as every session
-// with a consumer's is (SessionConsumerName).
+// reads no other session's relay or control subject. A session's own grant, the one the NATS auth
+// service gives it (natsgrant.Session), publishes SessionReplies in place of every _INBOX.
+// subject, so a session on that grant can neither answer a request made of another session nor
+// guess the subject of one. The relay moves a frame only on a reply whose subject names the
+// session the frame was sent to (sessionRelays.onReply), and logs the first reply that names
+// another at WARN, then at most one a minute. A holder of the shared session user or of a host
+// user reads every session's relay subject and may publish to every _INBOX. subject, so none of
+// this holds against it: the relay reads the session a reply subject names, not who published the
+// reply. sessionID is one subject token, as every session with a consumer's is
+// (SessionConsumerName).
 func SessionReplySubject(inbox, sessionID string) string {
 	return inbox + "." + sessionID + "." + rand.Text()
 }
@@ -192,7 +198,9 @@ func SessionReplySubject(inbox, sessionID string) string {
 // must: an id of * admits every session's replies, and since the entry ends in >, the entry of an
 // id also admits the replies of every id that extends it by a dot (a's entry admits a.b's, and
 // a.b's admits a.b.c's), so no session id may hold a dot. An id such as a* is one plain token and
-// admits nothing extra.
+// admits nothing extra. The one builder of a session grant checks it first: natsgrant.Session
+// calls natsgrant.SessionToken before it calls SessionReplies, and the NATS auth service refuses
+// such an id as bad_session_id (natscallout's decideSession).
 func SessionReplies(sessionID string) string {
 	return nats.InboxPrefix + "*." + sessionID + ".>"
 }
@@ -392,6 +400,26 @@ func ControllerNoticeRole(topic string) (string, bool) {
 	return contracts.ControllerRoleToken(project), true
 }
 
+// ControllerNoticeLane is ControllerNoticeRole read backwards: the notice lane whose holder role
+// is, and whether role is a Legion project's controller role at all. The project is read out of
+// role by the shape contracts.ControllerRoleToken gives it, taken from that func itself, and the
+// lane built from it must name role again, so a role token of any other shape names no lane.
+func ControllerNoticeLane(role string) (string, bool) {
+	prefix, suffix, _ := strings.Cut(contracts.ControllerRoleToken("\x00"), "\x00")
+	project, found := strings.CutPrefix(role, prefix)
+	if !found {
+		return "", false
+	}
+	if project, found = strings.CutSuffix(project, suffix); !found {
+		return "", false
+	}
+	lane := contracts.LegionNoticeTopicPrefix + project + contracts.ControllerNoticeSuffix
+	if named, isLane := ControllerNoticeRole(lane); !isLane || named != role {
+		return "", false
+	}
+	return lane, true
+}
+
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
 // (ControllerNoticeRole). It is the one question a caller asks before reading a controller role's
 // claim: that lane is the only private stream subject whose owner ReachesPrivateStreamSubject
@@ -421,7 +449,7 @@ func NamesControllerNoticeLane(topics []string) bool {
 // holding `*` or `>` makes a wildcard of its "own" agent subject, which is no session's alone and
 // counts too.
 func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
-	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
+	if !OverlapsPrivateStreamSubject(topic) {
 		return false
 	}
 	if role, lane := ControllerNoticeRole(topic); lane {
@@ -430,6 +458,14 @@ func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	own := contracts.LegacyAgentSubject(sessionID)
 	twin, _ := contracts.LegacyTwin(topic)
 	return (topic != own && twin != own) || strings.ContainsAny(sessionID, "*>")
+}
+
+// OverlapsPrivateStreamSubject reports whether topic overlaps a private stream subject
+// (privateStreamSubjects) under NATS wildcard rules, whoever's that subject is: the first question
+// ReachesPrivateStreamSubject asks, so a topic it answers false for reaches no session's private
+// subject, whatever session or roles a caller would weigh it for.
+func OverlapsPrivateStreamSubject(topic string) bool {
+	return slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) })
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes

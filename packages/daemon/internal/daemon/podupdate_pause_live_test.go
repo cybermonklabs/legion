@@ -32,6 +32,7 @@ import (
 // No read of the workspace is made either, since the round passed over no claim with a session
 // (passedOverClaims), so the issue is not told what the implementer left on the disk.
 func TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSession(t *testing.T) {
+	t.Parallel()
 	const stopped = pauseStoppedRole
 	for _, forgot := range []bool{false, true} {
 		name := "with its session"

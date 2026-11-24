@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -482,6 +483,178 @@ func TestAClaimsTurnTimesRoundTrip(t *testing.T) {
 	got := onlyClaim(t, store)
 	if !got.LastTurnStart.Equal(at(3)) || !got.LastTurnEnd.Equal(at(9)) {
 		t.Fatalf("turn times read back = %v and %v, want %v and %v", got.LastTurnStart, got.LastTurnEnd, at(3), at(9))
+	}
+}
+
+// A claim's two causes and the time the daemon recorded each are columns of their own, so a
+// restarted daemon reads each cause back beside its time, to the microsecond
+// (#5349). A claim that holds no cause reads back with no time; a cause recorded
+// again with the same text reads back with its new time; and a cause the daemon dropped, as it
+// drops a start failure at its agent's ready, reads back with no time. So does a time the row
+// holds beside an empty cause, which a daemon of the release before the columns leaves when it
+// drops the start failure and not the column it never names.
+func TestClaimCauseTimesSurviveAReload(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	put := func(what string) supervise.Claim {
+		t.Helper()
+		if err := store.PutClaim(ctx, c); err != nil {
+			t.Fatalf("put the claim %s: %v", what, err)
+		}
+		return onlyClaim(t, store)
+	}
+	want := func(got supervise.Claim, what string, death, startFailure time.Time) {
+		t.Helper()
+		if got.LastDeathCause != c.LastDeathCause || !got.LastDeathAt.Equal(death) {
+			t.Errorf("the claim %s read back the death %q at %v, want %q at %v", what, got.LastDeathCause, got.LastDeathAt, c.LastDeathCause, death)
+		}
+		if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.Equal(startFailure) {
+			t.Errorf("the claim %s read back the start failure %q at %v, want %q at %v",
+				what, got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, startFailure)
+		}
+	}
+
+	want(put("that holds no cause"), "that holds no cause", time.Time{}, time.Time{})
+
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "init container workspace-init failed: exit 1", at(9)
+	want(put("with both causes"), "with both causes", at(3), at(9))
+
+	c.LastDeathAt = at(21)
+	want(put("whose death was recorded again with the same text"), "whose death was recorded again with the same text", at(21), at(9))
+
+	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
+	want(put("whose start failure was dropped"), "whose start failure was dropped", at(21), time.Time{})
+
+	if _, err := store.Pool().Exec(ctx, `update claims set last_start_failure_at = $1 where token = $2`, at(30), string(c.Token)); err != nil {
+		t.Fatalf("leave a start failure's time beside no start failure: %v", err)
+	}
+	want(onlyClaim(t, store), "holding a time beside no start failure", at(21), time.Time{})
+}
+
+// After a rollback and a roll-forward, a row can hold a start failure beside an older failure's
+// time: the release before 20261124073512 names neither last_start_failure_at nor its digest, so a
+// start failure it drops at its agent's ready leaves that failure's time and digest standing, and
+// a failure of the same text it records later is written beside them, where the digest matches.
+// This release drops the start failure, with its time, at every ready (supervise's ready), so a
+// start failure's time before last_ready is never the time of the failure the row holds: the claim
+// reads that start failure back with no time, and its death's time, which no ready clears, as it
+// stands (#5349).
+func TestAStartFailureTimeBeforeTheReadyIsReadAsNone(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.State = supervise.StateLaunching
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 ended: OOMKilled", at(2)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	c.LastReady = at(10)
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the rolled-back claim: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.IsZero() {
+		t.Errorf("the rolled-back claim read back its start failure %q at %v, want %q with no time: a time before its ready %v dates an older failure",
+			got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, c.LastReady)
+	}
+	if !got.LastDeathAt.Equal(at(2)) {
+		t.Errorf("the rolled-back claim read back its death at %v, want %v: a death before the ready is one the agent survived", got.LastDeathAt, at(2))
+	}
+
+	c.LastStartFailureAt = at(12)
+	if got := putAndRead(t, store, c); !got.LastStartFailureAt.Equal(at(12)) {
+		t.Errorf("a start failure recorded after the ready read back at %v, want %v", got.LastStartFailureAt, at(12))
+	}
+}
+
+// A daemon of the release before 20261124073512 rewrites a claim's two causes and names none of
+// the columns that date them (that release's upsertClaim), so after a rollback and a roll-forward
+// a row can hold a cause beside the time this release gave the cause before it. A cause that
+// release wrote with text other than the cause the time dates reads back with no time. One it
+// wrote with the same text, a death or a start failure with no ready between, reads back with the
+// older time, which no read can tell from its own (#5349).
+func TestACauseAnEarlierReleaseWroteIsReadWithNoTime(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.State = supervise.StateLaunching
+	c.LastDeathCause, c.LastDeathAt = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled", at(3)
+	c.LastStartFailure, c.LastStartFailureAt = "the launcher refused the start: the pod was not ready", at(5)
+	if got := putAndRead(t, store, c); !got.LastDeathAt.Equal(at(3)) || !got.LastStartFailureAt.Equal(at(5)) {
+		t.Fatalf("the claim read back its death at %v and its start failure at %v, want %v and %v",
+			got.LastDeathAt, got.LastStartFailureAt, at(3), at(5))
+	}
+	// earlierWrite is that release's write of the two causes: their text, and neither column
+	// this release dates them with.
+	earlierWrite := func(death, startFailure string) supervise.Claim {
+		t.Helper()
+		if _, err := store.Pool().Exec(ctx, `update claims set last_death_cause = $1, last_start_failure = $2 where token = $3`,
+			death, startFailure, string(c.Token)); err != nil {
+			t.Fatalf("write the two causes as the earlier release does: %v", err)
+		}
+		return onlyClaim(t, store)
+	}
+
+	got := earlierWrite(c.LastDeathCause, c.LastStartFailure)
+	if got.LastDeathCause != c.LastDeathCause || !got.LastDeathAt.Equal(at(3)) {
+		t.Errorf("the death the earlier release wrote again with the same text read back as %q at %v, want %q at the older time %v",
+			got.LastDeathCause, got.LastDeathAt, c.LastDeathCause, at(3))
+	}
+	if got.LastStartFailure != c.LastStartFailure || !got.LastStartFailureAt.Equal(at(5)) {
+		t.Errorf("the start failure the earlier release wrote again with the same text read back as %q at %v, want %q at the older time %v",
+			got.LastStartFailure, got.LastStartFailureAt, c.LastStartFailure, at(5))
+	}
+
+	const death, startFailure = "gone: pod legion-legion-209 (uid 0b1e44a7) ended: Evicted", "init container workspace-init failed: exit 1"
+	got = earlierWrite(death, startFailure)
+	if got.LastDeathCause != death || !got.LastDeathAt.IsZero() {
+		t.Errorf("the death the earlier release wrote with other text read back as %q at %v, want %q with no time: %v dates the death before it",
+			got.LastDeathCause, got.LastDeathAt, death, at(3))
+	}
+	if got.LastStartFailure != startFailure || !got.LastStartFailureAt.IsZero() {
+		t.Errorf("the start failure the earlier release wrote with other text read back as %q at %v, want %q with no time: %v dates the failure before it",
+			got.LastStartFailure, got.LastStartFailureAt, startFailure, at(5))
+	}
+}
+
+// putAndRead writes c and reads it back as the only claim.
+func putAndRead(t *testing.T, store *Store, c supervise.Claim) supervise.Claim {
+	t.Helper()
+	if err := store.PutClaim(context.Background(), c); err != nil {
+		t.Fatalf("put claim %s: %v", c.Token, err)
+	}
+	return onlyClaim(t, store)
+}
+
+// The digest the store writes beside a cause's time is the 64-bit FNV-1a of the cause's UTF-8
+// bytes, in 8 big-endian bytes, and none where there is no time (causeDigest). The read serves a
+// time only while those 8 bytes match the cause the row holds, so a digest that changed between
+// releases would drop every stored time at the next read. The answers are written out, not
+// computed by causeDigest: the first three are the FNV reference's published 64-bit FNV-1a
+// values, and the last, a cause of two lines with text outside ASCII, was computed by a separate
+// implementation of the algorithm.
+func TestTheCauseDigestIsTheFNV1a64OfTheCausesBytes(t *testing.T) {
+	const twoLines = "gone: pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled\n" +
+		"init container workspace-init: «HEAD.lock» — prise, réessai ✓\n"
+	if len(twoLines) != 129 {
+		t.Fatalf("the two-line cause is %d bytes, want 129: the text the answer below was computed for changed", len(twoLines))
+	}
+	for _, tc := range []struct {
+		cause string
+		want  []byte
+	}{
+		{"", []byte{0xcb, 0xf2, 0x9c, 0xe4, 0x84, 0x22, 0x23, 0x25}},
+		{"a", []byte{0xaf, 0x63, 0xdc, 0x4c, 0x86, 0x01, 0xec, 0x8c}},
+		{"foobar", []byte{0x85, 0x94, 0x41, 0x71, 0xf7, 0x39, 0x67, 0xe8}},
+		{twoLines, []byte{0x43, 0x5e, 0x4c, 0xc1, 0xfb, 0x38, 0x8a, 0x5d}},
+	} {
+		if got := causeDigest(tc.cause, at(1)); !bytes.Equal(got, tc.want) {
+			t.Errorf("causeDigest(%q) = %x, want %x, the 64-bit FNV-1a of its bytes", tc.cause, got, tc.want)
+		}
+	}
+	if got := causeDigest(twoLines, time.Time{}); got != nil {
+		t.Errorf("causeDigest of a cause with no time = %x, want none: a row with no time holds no digest", got)
 	}
 }
 
@@ -1129,7 +1302,7 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 			read: func(t *testing.T) activityReport {
 				t.Helper()
 				var held *record.RoleClaim
-				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
 					held = claims[token]
 					return err

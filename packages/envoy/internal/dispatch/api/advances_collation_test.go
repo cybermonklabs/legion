@@ -76,6 +76,7 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 // and a merge that trusted that order met `ci-fixes` twice and listed it twice. The issue is
 // parked, so the parked fault of GET /api/v1/priorities reads it as well.
 func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	collatePriorityIDsAsADeploymentDoes(t, database)
 	createTestProject(t, handler, "COLL")
