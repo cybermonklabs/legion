@@ -241,11 +241,10 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
-	// The priorities the line placed its two members at, as record.PriorityOf gives them:
-	// LEGION-212 is P0 of its own and waits at it; LEGION-211 is its own tree root and has none,
-	// so it waits in the band after P3 and its line carries null. Every other recorded issue has
-	// none of its own (the loop at the end of this function).
-	p0, noPriority := PriorityView(record.P0), PriorityView(record.NoPriority)
+	// The two line members' own Dispatch priorities: LEGION-212 is P0 and LEGION-211 is P1, each
+	// its own tree root. Every other recorded issue has none of its own, and each member's line
+	// priority is the one record.PriorityOf gives it (both set at the end of this function).
+	p0, p1, noPriority := PriorityView(record.P0), PriorityView(record.P1), PriorityView(record.NoPriority)
 	// LEGION-208's architect's handshake, which is the pair of times a tree's own root carries in
 	// every phase it stands in (internal/projection): the task of the architect's last entry was
 	// queued to its claim, and a turn of it confirmed that task.
@@ -625,20 +624,19 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &lineApproval,
 					Status:          GatedStepApproved,
 				}},
-				// The line's last member, in the band after P3: it has no priority of its own
-				// and is its own tree root, so it waits after LEGION-212's P0 band. Within its
-				// band it is the only member of the part that has not started, and its band has
+				// The line's last member, P1 of its own and so behind LEGION-212's P0 band. Within
+				// its band it is the only member of the part that has not started, and its band has
 				// no member whose work came back, so its sentence names nothing ahead of it. It
-				// carries the ranks that placed it within its band and no `since` at all, since
-				// its work never started.
-				Priority: &noPriority,
+				// carries the ranks that placed it within its band and no `since` at all, since its
+				// work never started.
+				Priority: &p1,
 				WaitingLine: &WaitingLineView{
 					Place: 2, Length: 2,
 					Part: record.PartStarting.String(), Kind: record.LineQueuedRoot.String(),
-					PartPlace: 1, PartLength: 1, HoldsSlot: &noSlot, Priority: &noPriority,
+					PartPlace: 1, PartLength: 1, HoldsSlot: &noSlot,
 					RootRank: "00011", OwnRank: "00011", RootKey: "LEGION-211",
-					Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
-						"It is 1st of 1 issue with no priority that has not started, by its own Dispatch rank.",
+					Reason: "It has not started. It waits at P1, its own priority. " +
+						"It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank.",
 				},
 				// A release suspended its implementer and the wake never brought that pod back,
 				// and a stopped claim is read before the line is: the one answer it carries is
@@ -672,7 +670,7 @@ func populatedState(t *testing.T) State {
 				WaitingLine: &WaitingLineView{
 					Place: 1, Length: 2,
 					Part: record.PartReturned.String(), Kind: record.LineAnswered.String(),
-					PartPlace: 1, PartLength: 1, HoldsSlot: &heldSlot, Since: &answeredAt, Priority: &p0,
+					PartPlace: 1, PartLength: 1, HoldsSlot: &heldSlot, Since: &answeredAt,
 					Reason: "A person answered it, and its work came back at 2026-09-22T09:21:00Z. " +
 						"It waits at P0, its own priority. It is 1st of 1 issue at P0 whose work came back. " +
 						"It already holds its admission slot, so it resumes at the next pass whatever the cap says.",
@@ -1121,8 +1119,8 @@ func populatedState(t *testing.T) State {
 	}
 	// Every issue the workflow records carries its own Dispatch priority, null for none: the line's
 	// two members carry theirs where they are written above, and every other recorded issue has
-	// none. A member's line priority is the one record.PriorityOf gives it from its own and its
-	// tree root's, so the fixture holds no pair the daemon could not serve.
+	// none. A member's line priority is then the one the projection gives it, record.PriorityOf of
+	// its own and its tree root's, so the fixture holds no pair the daemon could not serve.
 	for key, issue := range state.Issues {
 		if issue.Phase == Unrecorded || issue.Priority != nil {
 			continue
@@ -1135,13 +1133,15 @@ func populatedState(t *testing.T) State {
 			continue
 		}
 		root := state.Issues[issue.Tree]
-		if issue.Priority == nil || root.Priority == nil || issue.WaitingLine.Priority == nil {
-			t.Fatalf("%s waits in the line without its own, its tree root's or its line's priority", key)
+		if issue.Priority == nil || root.Priority == nil {
+			t.Fatalf("%s waits in the line without its own or its tree root's priority", key)
 		}
-		own := record.Issue{Priority: record.Priority(*issue.Priority)}
-		if placed := record.PriorityOf(own, record.Issue{Priority: record.Priority(*root.Priority)}); PriorityView(placed) != *issue.WaitingLine.Priority {
-			t.Fatalf("%s's line priority is %v, want %v, the one record.PriorityOf gives from its own and its tree root's", key, *issue.WaitingLine.Priority, placed)
-		}
+		placed := PriorityView(record.PriorityOf(record.Issue{Priority: record.Priority(*issue.Priority)},
+			record.Issue{Priority: record.Priority(*root.Priority)}))
+		line := *issue.WaitingLine
+		line.Priority = &placed
+		issue.WaitingLine = &line
+		state.Issues[key] = issue
 	}
 	// The intake's open give-ups (contract 228): the Dispatch consumer has two, a decoded event
 	// given up at its bound and a newer message that did not decode, which carries no event id;
