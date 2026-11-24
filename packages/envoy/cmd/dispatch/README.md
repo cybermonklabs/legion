@@ -4522,7 +4522,7 @@ Each item below names a path with its method and identity, then its purpose.
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
   A `legion_issue` view, `{kind: "legion_issue", issue}`, names one issue and nothing else, and its snapshot and deltas carry the body of `GET /api/v1/issues/{key}/legion`, as a `legion` view's carry the body of its project's board.
   A frame that names a project, a window, an `at` or a `query` beside the issue, or names no issue, is `INVALID_FRAME`.
-  The view moves when the sampler reads the daemon of the issue's project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that daemon, and when a write of one of the issue's runs commits (`dispatch_workflow_runs`).
+  The view moves when the sampler reads the daemon of the issue's project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that daemon, and when a write of one of the issue's runs that stores something new commits (`dispatch_workflow_runs`).
   At each connection of the hub's listener to Postgres, the hub reads every `legion` and `legion_issue` view again, so a notification sent while the listener was down leaves no view stale.
   Dispatch never refuses a `legion_issue` view for a project that names no daemon: its body then says `configured` `false`.
   A well-formed view has one refusal, an `error` frame with the route's code `NOT_FOUND`, for a key that names no issue.

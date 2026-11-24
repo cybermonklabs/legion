@@ -122,6 +122,29 @@ func (p *legionIssuePage) runsRise(t *testing.T, deadline time.Time, body legion
 	}
 }
 
+// mark settles the page's hub, so nothing a store before it left owed is still to run, and
+// answers how many notes the hub has made, which unread counts from.
+func (p *legionIssuePage) mark(t *testing.T) int {
+	t.Helper()
+	p.rig.settle(t)
+	return p.rig.mark()
+}
+
+// unread requires that the page's hub began no recompute of the page's view since start, the
+// page's mark before row's store. A store that moves nothing the view shows sends the page
+// nothing even where the hub marks the view for it, since the recompute finds no change; so the
+// page's silence alone cannot tell a hub that filtered the store's signal from one that did not,
+// and the hub's own notes can.
+func (p *legionIssuePage) unread(t *testing.T, start int, row string) {
+	t.Helper()
+	view := issueLegionKind + "|" + p.key + "|"
+	if n := p.rig.count(start, func(note deliveryHubNote) bool {
+		return note.what == "recompute begin" && note.view == view
+	}); n != 0 {
+		t.Fatalf("%s: hub %s began %d recomputes of %s's view (%s) since its mark, want 0", row, p.hub, n, p.key, view)
+	}
+}
+
 // announce sends the notification one read of project's daemon sends (legion.StateChannel), as the
 // sampler does after it records the read, and answers the moment a delta of it is due by.
 func announce(t *testing.T, rig *hubRig, project string) time.Time {
@@ -287,18 +310,33 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 		page.runsRise(t, deadline, body, "L-9, a rating write that makes a retro's record")
 	}
 
-	// L-10: a stored change of another project, and its notify.
+	// L-10: a stored change of another project, and its notify. Each hub settles first, and
+	// neither may read LIVE-1's view again for it (unread), which its page's silence alone does
+	// not show.
+	marks := map[*legionIssuePage]int{}
+	for _, page := range pages {
+		marks[page] = page.mark(t)
+	}
 	observe("OTHER", "OTHER-1", legion.FieldPhase, `"testing"`, tick())
 	seedLegionRead(t, rig.database, "OTHER", tick(), "")
 	announce(t, rig, "OTHER")
 	for _, page := range pages {
 		page.conn.none(t, time.Second, "L-10, a notify of another project, at "+page.what())
 	}
+	for _, page := range pages {
+		page.unread(t, marks[page], "L-10, a notify of another project")
+	}
 
-	// L-11: a run of another issue of the same project.
+	// L-11: a run of another issue of the same project, counted as L-10 is.
+	for _, page := range pages {
+		marks[page] = page.mark(t)
+	}
 	putStepOK(t, rig.handler, "LIVE-2", uuid.NewString(), implementerStart(daemonSessionOf("LIVE")))
 	for _, page := range pages {
 		page.conn.none(t, time.Second, "L-11, a run of another issue, at "+page.what())
+	}
+	for _, page := range pages {
+		page.unread(t, marks[page], "L-11, a run of another issue")
 	}
 
 	// L-12: two run writes of the issue that overlap. Run A's write is made the way the route

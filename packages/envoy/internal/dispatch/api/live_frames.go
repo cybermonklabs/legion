@@ -58,7 +58,8 @@ type DeliveryLiveView struct {
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
 	// Issue is the one issue a legion_issue view names, the key GET /api/v1/issues/{key}/legion
-	// reads (dispatch://INFRA-4869); every other kind names none.
+	// reads (dispatch://INFRA-4869). Every other kind ignores it, as it did before any kind read
+	// it (parseDeliveryLiveView).
 	Issue *string `json:"issue,omitempty"`
 }
 
@@ -279,23 +280,13 @@ func (r viewReads) refusal(err error) (code, message string, refused bool) {
 	return "", "", false
 }
 
-// viewNames is the member of a DeliveryLiveView, beside its kind, that says which of the kind's
-// views it is where those views differ by more than a window (deliveryLiveClasses.names). A
-// delivery view's is the zero value: its window, at and query are all it names.
-type viewNames int
-
-const (
-	// viewNamesProject is the Legion board's: the project whose board it shows (Project).
-	viewNamesProject viewNames = iota + 1
-	// viewNamesIssue is one issue's Legion state's: that issue (Issue).
-	viewNamesIssue
-)
-
 // deliveryLiveClasses is everything the hub knows of one view kind: how a delta sends its body's
-// fields, and what the hub does differently for it — what it reads, which member names one of its
-// views, and the two functions that read a subscription and an answer. A kind's behaviour is
-// declared here and nowhere else, so the hub's shared code branches on no kind's name and a new
-// kind is one entry rather than a line in each of its files.
+// fields, and what the hub does differently for it — what it reads, and the two functions that
+// read a subscription and an answer. A kind's behaviour is declared here and nowhere else, so the
+// hub's shared code branches on no kind's name and a new kind is one entry rather than a line in
+// each of its files. What a view names beside its kind is its parse's to read and refuse: an
+// existing kind's parse ignores an `issue` member, as it always did, and only legion_issue's
+// reads one.
 type deliveryLiveClasses struct {
 	// body is the response struct the matching GET route writes.
 	body reflect.Type
@@ -316,10 +307,6 @@ type deliveryLiveClasses struct {
 
 	// reads is what the view's answer is read from (viewReads).
 	reads viewReads
-	// names is the member that says which of the kind's views a view is (viewNames).
-	// parseDeliveryLiveView refuses a project or an issue on every kind that does not name it, so
-	// a frame of another kind's shape is refused before the kind's own parse reads it.
-	names viewNames
 	// unownedP0 is whether the view shows the unowned P0 list, so a write of a P0 issue moves it
 	// even where its own population does not name the issue.
 	unownedP0 bool
@@ -381,7 +368,6 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		},
 		out:   []string{"computed_at"},
 		reads: viewReadsLegion,
-		names: viewNamesProject,
 		parse: parseLegionLiveView,
 		read:  (*deliveryHub).readLegionBoardView,
 	},
@@ -397,7 +383,6 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 			"issue": nil, "project": nil, "configured": nil, "state": nil, "read": nil, "runs_revision": nil,
 		},
 		reads: viewReadsLegion,
-		names: viewNamesIssue,
 		parse: parseLegionIssueLiveView,
 		read:  (*deliveryHub).readLegionIssueView,
 	},

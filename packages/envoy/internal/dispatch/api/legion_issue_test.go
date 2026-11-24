@@ -661,9 +661,11 @@ func TestAnIssuesLegionReadCountsTheRunsRevision(t *testing.T) {
 }
 
 // TestALegionIssueViewNamesItsIssueAndNothingElse: the live kind of one issue's state names its
-// issue and nothing else, and no other kind names an issue (the plan's decision 7). Each shape it
-// refuses is refused INVALID_FRAME before anything is subscribed, and a view of INFRA-7 is held
-// under its issue, the project its key names and a key of its own.
+// issue and nothing else (the plan's decision 7). Each shape it refuses is refused INVALID_FRAME
+// before anything is subscribed, and a view of INFRA-7 is held under its issue, the project its
+// key names and a key of its own. Every kind before it ignores an `issue` member, as it did before
+// any kind read one: a frame a deployed page sends with one is read as the same view without it,
+// never refused.
 func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 	t.Parallel()
 	window := DeliveryLiveWindow{Preset: new(7)}
@@ -678,8 +680,6 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 		{"a legion_issue view with a window", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, Window: &window}},
 		{"a legion_issue view with an at", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, At: &at}},
 		{"a legion_issue view with a query", DeliveryLiveView{Kind: issueLegionKind, Issue: &issue, Query: &query}},
-		{"a legion view with an issue", DeliveryLiveView{Kind: legionBoardView, Project: &project, Issue: &issue}},
-		{"a timeline view with an issue", DeliveryLiveView{Kind: deliveryLiveTimeline, Window: &window, Query: &query, Issue: &issue}},
 	} {
 		t.Run(refused.what, func(t *testing.T) {
 			if _, refusal := parseDeliveryLiveView(refused.view); refusal == nil || refusal.Code != "INVALID_FRAME" {
@@ -705,6 +705,30 @@ func TestALegionIssueViewNamesItsIssueAndNothingElse(t *testing.T) {
 		}
 		if spec.kind != issueLegionKind || spec.issue != "INFRA-7" || spec.project != "INFRA" || spec.key != "legion_issue|INFRA-7|" {
 			t.Fatalf("the spec = %+v, want kind legion_issue, issue INFRA-7, project INFRA and key legion_issue|INFRA-7|", spec)
+		}
+	})
+	t.Run("a timeline, measures, pipeline or legion view with an issue is that view without one", func(t *testing.T) {
+		facets := "search=widgets&status=open"
+		for _, view := range []DeliveryLiveView{
+			{Kind: deliveryLiveTimeline, Window: &window, Query: &facets},
+			{Kind: deliveryLiveMeasures, Window: &window, Query: &facets},
+			{Kind: deliveryLivePipeline, At: &at},
+			{Kind: legionBoardView, Project: &project},
+		} {
+			want, refusal := parseDeliveryLiveView(view)
+			if refusal != nil {
+				t.Fatalf("a %s view with no issue: refusal = %+v, want none", view.Kind, refusal)
+			}
+			named := view
+			named.Issue = &issue
+			got, refusal := parseDeliveryLiveView(named)
+			if refusal != nil {
+				t.Errorf("a %s view with an issue: refusal = %+v, want it read as the same view without one", view.Kind, refusal)
+				continue
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("a %s view with an issue is %+v, want %+v, the same view without one", view.Kind, got, want)
+			}
 		}
 	})
 }
