@@ -254,10 +254,9 @@ declare -A agent=()
 # row's control (run_controls) sent and keeps for its read, keyed `<store>:<row>.<field>`.
 declare -A rows_ran=()
 declare -A control=()
-# What the last read said (each row's read sets it, `<row>_read`), and what a control's reads said
-# together (read_failed).
+# What the last read said (each row's read sets it, `<row>_read`); what a control's reads said is
+# control[<store>:<row>.said] (read_failed).
 read_said=
-control_said=
 # The one wait of the controls of a pass: the longest a row's own read waits for its answer (A12's,
 # A17's, A18's and A20's 300 s), after every control's message is sent and before any is read.
 control_wait=300
@@ -896,13 +895,16 @@ start_proxy() {
 # (register_asker). The inbox answers each frame `done` once it has recorded it, and the
 # listener's connection probe on the subject `done` too (lib/envoy-inbox.ts). It subscribes before
 # the first registration, so the relay of a consumer that registration creates finds it there.
+# The inbox also watches the first holder's session (holder_session), which A21's last leg registers
+# to claim a role that nobody holds.
 start_inbox() {
   local offset
   offset=$(log_size inbox)
   start_process inbox "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/envoy-inbox.ts" \
     --nats "nats://127.0.0.1:$port_nats" --record "$evidence/inbox.jsonl" \
     --watch "$asker_session=notifications.envoy.deliver.$asker_session" \
-    --watch "$controller_session=notifications.envoy.deliver.$controller_session"
+    --watch "$controller_session=notifications.envoy.deliver.$controller_session" \
+    --watch "$holder_session=notifications.envoy.deliver.$holder_session"
   await_start inbox "$inbox_pid" 30 "the Envoy inbox" \
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/inbox.log' | grep -q 'envoy-inbox listening'"
 }
@@ -1077,7 +1079,7 @@ start_daemon() {
 config_check_tools() {
   local out
   out=$(env -i "${daemon_env[@]}" "$work/branch/legion" config check --config "$1" 2>&1) ||
-    note "legion config check --config $1 refused it: $(tail -3 <<<"$out" | tr '\n' ' ')"
+    note "legion config check --config $1 refused it: $(tail -3 <<<"$out" | tr '\n' ' ')" >&2
   check_tools_line "$out"
 }
 stop_daemon() {
@@ -1130,6 +1132,7 @@ more_than() {
 # delivery on the session's relay subject with every topic it registered (consumer_registration).
 asker_session=legion-e2eal-asker-$$
 controller_session=legion-e2eal-controller-$$
+holder_session=legion-e2eal-holder-$$
 stand_in_instance=legion-e2eal-$$-$run_tag
 controller_lanes=("notifications.legion.alf$run_tag.controller" "notifications.legion.alp$run_tag.controller")
 # register_stand_in SESSION TITLE [TOPIC...] registers SESSION with a consumer of its own and every
@@ -2044,7 +2047,7 @@ a3_read() {
   reply=$(comment_reply_by "$1" "$2" "$3" 2>/dev/null) || reply=
   [ -n "$reply" ] && answer_holds tester-closed-thread "$reply" >/dev/null && thread=yes
   comment_delivered_to "$2" "$3" && delivered=yes
-  record_reply=$(record_reply_by "$(message_record "$3" "$4" 2>/dev/null || printf '{}')" "$3")
+  record_reply=$(message_reply_by "$3" "$4" 2>/dev/null) || record_reply=
   [ -n "$record_reply" ] && answer_holds tester-conversation-page "$record_reply" >/dev/null && record=yes
   read_said="the tester's reply to comment ${2:-(none)} holding its keys: $thread ($(said_text "$reply")); its one delivery sent to $3: $delivered ($(comment_delivery_records "$2")); its reply in the page's record holding its keys: $record ($(said_text "$record_reply"))"
   [ "$thread$delivered$record" = yesyesyes ]
@@ -2160,19 +2163,22 @@ a20_nobody='a reply in a comment thread whose root and newest comment before the
 # a20_skipped SESSION: how many hand-offs of SESSION this boot took for no question for the reason a
 # reply following a person's own in a person's thread is given (a20_nobody).
 a20_skipped() { answers_lines "answers: hand-off is no question; not answered" "$1" "" "$a20_nobody"; }
-# a20_nothing_posted HEAD CONTROL is A20's last sentence: in the thread of comment HEAD the tester
-# wrote no reply under CONTROL, the person's reply that follows their own. A CONTROL Dispatch took
-# none of shows nothing.
+# a20_nothing_posted HEAD CONTROL [REPLIES] is A20's last sentence: in the thread of comment HEAD the
+# tester wrote no reply under CONTROL, the person's reply that follows their own. REPLIES are the
+# tester's replies in that thread, read now where not given. A CONTROL Dispatch took none of shows
+# nothing.
 a20_nothing_posted() {
-  local replies under
-  replies=$(thread_replies_by "$1" "${agent[$store:tester.session]}")
+  local replies=${3:-$(thread_replies_by "$1" "${agent[$store:tester.session]}")} under
   under=$(reply_answering "$replies" "${2:-}") || under=
   read_said="the tester's reply under ${2:-(no reply)} in the thread of $1: $(said_text "$under")"
   [ -n "${2:-}" ] && [ -z "$under" ]
 }
-# a20_read HEAD REPLY CONTROL SKIPPED PANES is A20's read: in the thread of comment HEAD the tester
-# wrote a reply under the person's REPLY holding tester-thread-reply's keys and no other since A3's
-# answer, two replies in all; nothing under CONTROL (a20_nothing_posted); its daemon took more than
+# a20_answer is the tester's answer under the person's reply, as a20_read last read it.
+a20_answer=
+# a20_read HEAD REPLY CONTROL SKIPPED PANES COUNT is A20's read: in the thread of comment HEAD the
+# tester wrote a reply under the person's REPLY holding tester-thread-reply's keys, and COUNT replies
+# in all (the row's two: A3's answer and this one; its control's, the replies it found and the one
+# its answer would add); nothing under CONTROL (a20_nothing_posted); its daemon took more than
 # SKIPPED hand-offs for no question for the reason CONTROL is none (a20_skipped); its claim is
 # suspended; and the daemon's tmux server holds no more than PANES panes.
 a20_read() {
@@ -2180,21 +2186,22 @@ a20_read() {
   replies=$(thread_replies_by "$1" "$session")
   thread=$(jq -c 'map({id, answers})' <<<"$replies") || thread=$replies
   answer=$(reply_answering "$replies" "$2") || answer=
+  a20_answer=$answer
   if [ -n "$answer" ]; then
     missing=$(answer_holds tester-thread-reply "$answer") && held=yes
   fi
-  a20_nothing_posted "$1" "$3" && nothing=yes
+  a20_nothing_posted "$1" "$3" "$replies" && nothing=yes
   skipped=$(($(a20_skipped "$session") - $4))
   state=$(claim_json "${agent[$store:tester.token]}" | jq -r .state) || state=unread
   panes=$(pane_count)
-  read_said="tester $session's replies in the thread of $1: $(reply_count "$replies") ($thread); its answer under the person's reply $2 $(if [ -z "$answer" ]; then printf none; elif [ "$held" = yes ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); nothing under ${3:-(no reply)}: $nothing; taken for no question as \"$a20_nobody\" $skipped time(s); the tester's claim $state; panes $5 → $panes"
-  [ "$held" = yes ] && [ "$(reply_count "$replies")" = 2 ] && [ "$nothing" = yes ] && [ "$skipped" -gt 0 ] &&
+  read_said="tester $session's replies in the thread of $1: $(reply_count "$replies") (want $6) ($thread); its answer under the person's reply $2 $(if [ -z "$answer" ]; then printf none; elif [ "$held" = yes ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); nothing under ${3:-(no reply)}: $nothing; taken for no question as \"$a20_nobody\" $skipped time(s); the tester's claim $state; panes $5 → $panes"
+  [ "$held" = yes ] && [ "$(reply_count "$replies")" = "$6" ] && [ "$nothing" = yes ] && [ "$skipped" -gt 0 ] &&
     [ "$state" = suspended ] && [ "$panes" -le "$5" ]
 }
 check_a20() {
   criterion A20 "a person's reply that mentions nobody, under the loop's own answer in a closed issue's thread, is answered there by the stopped tester, nothing of it starting; a reply that follows the person's own is no agent's to answer" infra448 || return 0
   local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]}
-  local head=${agent[$store:a3.comment]:-} replies first reply_id control_id skipped_before panes_before before deadline answer
+  local head=${agent[$store:a3.comment]:-} replies first reply_id control_id skipped_before panes_before before deadline ok=0
   if [ -z "$head" ]; then
     record_result A20 FAIL "A3 posted no comment on $issue whose thread this row replies in"
     return 0
@@ -2225,9 +2232,9 @@ check_a20() {
   soft_wait $((deadline - SECONDS)) "tester $session's answer under reply $reply_id in the thread of $head" a20_answered || true
   a20_control_skipped() { more_than "$skipped_before" a20_skipped "$session"; }
   [ -z "$control_id" ] || soft_wait $((deadline - SECONDS)) "the tester's daemon to take the control $control_id for no question" a20_control_skipped || true
-  answer=$(reply_answering "$(thread_replies_by "$head" "$session")" "$reply_id") || answer=
-  [ -z "$answer" ] || note "answered within $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$answer" | tr '\n' ' ')"
-  if a20_read "$head" "$reply_id" "$control_id" "$skipped_before" "$panes_before"; then
+  a20_read "$head" "$reply_id" "$control_id" "$skipped_before" "$panes_before" 2 && ok=1
+  [ -z "$a20_answer" ] || note "answered within $(($(date +%s) - before)) s as $session: $(head -c 400 <<<"$a20_answer" | tr '\n' ' ')"
+  if [ "$ok" = 1 ]; then
     note "$read_said"
     record_result A20 PASS "tester $session answered the person's reply $reply_id, which mentions nobody, under its own answer in the thread of A3's comment $head, with the question's keys; the control under the person's own reply was taken for no question (\"$a20_nobody\") and answered by nobody; the tester's claim stayed suspended and no pane started"
   else
@@ -2249,11 +2256,11 @@ passed_on_read() {
   kind=$(jq -r '.kind // empty' <<<"${line:-null}")
   state=$(claim_json "${agent[$store:planner.token]}" | jq -r .state) || state=unread
   reason=$(legion_cmd state --json 2>/dev/null | jq -r --arg q "${2:-(no event)}" '[.questionsForController[]? | select((((.id // "") + " " + (.ref // "")) | contains($q))) | .reason] | if length == 0 then "none" else join(",") end') || reason=unread
-  read_said="the planner's reply to ${2:-(no event)}: $(said_text "$reply"); kind ${kind:-none} (want $expect), fault $(jq -r '(.fault // "") | if . == "" then "none" else . end' <<<"${line:-null}")$(jq -r 'if (.detail // "") == "" then "" else " (" + .detail + ")" end' <<<"${line:-null}"), controller reason $reason, claim $state"
+  read_said="the planner's reply to ${2:-(no event)}: $(said_text "$reply"); its answered line ${line:-none}; kind ${kind:-none} (want $expect), fault $(jq -r '(.fault // "") | if . == "" then "none" else . end' <<<"${line:-null}")$(jq -r 'if (.detail // "") == "" then "" else " (" + .detail + ")" end' <<<"${line:-null}"), controller reason $reason, claim $state"
   [ -n "$reply" ] && [ "$kind" = "$expect" ] && passed_to_controller "$2" "$expect" && [ "$state" = retired ]
 }
 check_passed_on() {
-  local id=$1 crit=$2 expect sent code event
+  local id=$1 crit=$2 expect sent code event reply line
   expect=$(question "$id" | jq -r .expect_kind)
   criterion "$crit" "$(question_text "$id")" || return 0
   sent=$(envoy_ask session "${agent[$store:planner.session]}" "$id")
@@ -2263,9 +2270,12 @@ check_passed_on() {
     record_result "$crit" FAIL "the listener answered $code, or no reply reached the asker"
     return 0
   fi
-  note "answered line: $(answered_line "$(answer_question_id "$(inbox_reply "$event")")" || true)"
-  note "questionsForController: $(legion_cmd state --json | jq -c '.questionsForController')"
-  soft_wait 60 "the question in questionsForController" passed_to_controller "$event" "$expect" || true
+  # The controller's notice follows only an answer of the kind the question expects, so a minute is
+  # waited for it only then; passed_on_read says what the answered line and the state hold.
+  reply=$(inbox_reply "$event")
+  line=$(answered_line "$(answer_question_id "$reply")") || line=
+  [ "$(jq -r '.kind // empty' <<<"${line:-null}")" != "$expect" ] ||
+    soft_wait 60 "the question in questionsForController" passed_to_controller "$event" "$expect" || true
   if passed_on_read "$id" "$event"; then
     note "$read_said"
     record_result "$crit" PASS "replied as $expect, passed to the controller with the asker; the planner's claim stayed retired"
@@ -2474,16 +2484,30 @@ settled_pr_comments() {
 
 # answers_line_count prints how many lines of this boot's daemon log are the loop's (`answers:`).
 answers_line_count() { boot_log | jq -s '[.[] | select((.msg // "") | startswith("answers:"))] | length'; }
+# a7_loop_posted_nothing REPLY is the part of A7's running-agent leg that says the loop posted
+# nothing: REPLY, what stands in the thread where the loop's answer would be, carries no mark of the
+# loop's (`legion-answer:<id>`, which every answer the loop posts carries). The leg reads the asker's
+# reply to its question; A7's control reads row A1's thread, the architect's reply on the ask, which
+# the loop posted with its mark.
+a7_loop_posted_nothing() {
+  local mark
+  mark=$(answer_question_id "${1:-}")
+  read_said="the loop's mark in what the thread holds: ${mark:-none} ($(said_text "${1:-}"))"
+  [ -z "$mark" ]
+}
 # a7_alone_read SENT NEEDLE LINES is the read of A7's first leg: the listener answered the send
 # SENT (`<status> <event>`) 200, the architect's conversation holds NEEDLE, the question's own
-# suffix, and this boot logged no `answers:` line beyond LINES: the question reached the running
-# agent alone, and the loop took nothing of it.
+# suffix, this boot logged no `answers:` line beyond LINES, and the asker's reply to the send's event
+# holds no mark of the loop's (a7_loop_posted_nothing): the question reached the running agent alone,
+# and the loop took nothing of it.
 a7_alone_read() {
-  local lines held=no
+  local lines held=no quiet=no reply
   lines=$(answers_line_count)
   conversation_holds architect "$2" && held=yes
-  read_said="to the architect: listener $1; the daemon's answers lines $3 → $lines; its conversation holds the question: $held"
-  [ "$lines" = "$3" ] && [ "${1%% *}" = 200 ] && [ "$held" = yes ]
+  reply=$(inbox_reply "${1#* }" 2>/dev/null) || reply=
+  a7_loop_posted_nothing "$reply" && quiet=yes
+  read_said="to the architect: listener $1; the daemon's answers lines $3 → $lines; its conversation holds the question: $held; the loop's mark in a reply on the asker's topic: $([ "$quiet" = yes ] && printf none || printf found)"
+  [ "$lines" = "$3" ] && [ "${1%% *}" = 200 ] && [ "$held" = yes ] && [ "$quiet" = yes ]
 }
 # a7_nothing_posted EVENT is the read of A7's part that the loop posts nothing: no reply to EVENT
 # reached the asker (no_reply_to), the question the loop dropped its answer to and forwarded.
@@ -2630,6 +2654,12 @@ a8_edit_unanswered_read() {
   read_said="questions for the architect $1 → $questions"
   [ "$questions" = "$1" ]
 }
+# a8_own_send TEXT sends TEXT to the planner as the replaced tester's session, as the planner's
+# answer to that tester is what A8's third leg hands the daemon, and prints the listener's status.
+a8_own_send() {
+  envoy -o /dev/null -w '%{http_code}' --data "$(jq -cn --arg s "${agent[$store:planner.session]}" --arg from "${agent[$store:tester_old.session]}" --arg m "$1" \
+    '{target_session: $s, source: "agent", source_session: $from, message: $m}')" "$(listener_url /v1/messages/send)"
+}
 check_a8() {
   criterion A8 "one question delivered twice, across a restart and across a kill just after its answer posted, gets one answer; the loop's own answer is delivered into its asker's conversation unanswered, and an edit is not answered" || return 0
   local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent resend resent event event3 stored_before posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0 said=''
@@ -2687,8 +2717,7 @@ check_a8() {
   appended_before=$(appended_exchanges tester_old)
   calls_before=$(proxy_count "daemon-$store")
   refused_before=$(controller_questions post_refused)
-  envoy -o /dev/null --data "$(jq -cn --arg s "$planner" --arg from "$tester_old" --arg m "$(question_text repository-file) (question own-answer of run $run_tag)" \
-    '{target_session: $s, source: "agent", source_session: $from, message: $m}')" "$(listener_url /v1/messages/send)"
+  a8_own_send "$(question_text repository-file) (question own-answer of run $run_tag)" >/dev/null
   soft_wait 300 "the planner's answer to the tester's session to post" more_than "$posted_before" answers_lines "answers: question" "$planner" posted || true
   own_qid=$(newest_question "$planner" posted)
   own_delivered() { [ "$(answers_lines "$a8_delivered_msg" "$tester_old")" -ge 1 ]; }
@@ -2818,7 +2847,7 @@ check_a9() {
 # a10_gpt's and the judging a10_gpt_read's, which A10's control runs over a question of its own.
 a10_gpt() {
   local session=${agent[$store:gpt.session]:-} token=${agent[$store:gpt.token]:-}
-  local id s e n m reply calls pair
+  local id s e n m calls
   local -a ids=(gpt-repository-module gpt-repository-go) pairs=() carries=()
   if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "$session" ]; then
     record_result A10 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
@@ -2951,16 +2980,20 @@ a10_gpt_read() {
   [ "$ok_tools$ok_model$ok_effort$ok_replay$ok_carried$ok_cache$ok_keys$ok_resume" = 11111111 ]
 }
 
-# a10_claude_read E1 E2 MARK1 MARK2 LINE M is the read of A10's Claude Code leg: the pre-change
-# reviewer's answers to E1 and E2, its questions asked under MARK1 and MARK2 (question_suffix), hold
-# pre-change-scan's keys; the loop's first request for MARK1 carries the effort the transcript
-# last ran at and every thinking signature it holds, byte for byte; LINE, the cost line of the
-# answer one organization served after another, read the conversation from cache; and the
+# a10_claude_read E1 E2 MARK1 MARK2 LINE M TRANSCRIPT is the read of A10's Claude Code leg: the
+# pre-change reviewer's answers to E1 and E2, its questions asked under MARK1 and MARK2
+# (question_suffix), hold pre-change-scan's keys; the loop's first request for MARK1 carries the
+# effort TRANSCRIPT last ran at and every thinking signature it holds, byte for byte; LINE, the cost
+# line of the answer one organization served after another, read the conversation from cache; and the
 # resumed reviewer's first request after its first M model calls (claude-<store>) holds the two
-# questions once each.
+# questions once each. TRANSCRIPT is the file the conversation was kept in just before MARK1's
+# question (sessions/<store>/pre_change-before-<MARK1>.jsonl), never the conversation as it stands:
+# the answers the loop gave since, and the resumed reviewer's turn, write thinking signatures into
+# it (conversation/claude's AppendFile) that no request of the first answer could hold. It sets
+# read_pass_said to the row's PASS words for what it judged.
 a10_claude_read() {
-  local transcript want sigs request effort missing=0 sig resumed counts keys=no
-  transcript=$(conversation_text pre_change 2>/dev/null) || transcript=
+  local transcript='' want sigs request effort missing=0 sig resumed counts keys=no
+  [ ! -f "$7" ] || transcript=$(<"$7")
   want=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
   request=$(daemon_request_for "$3)")
@@ -2973,6 +3006,7 @@ a10_claude_read() {
   answer_holds pre-change-scan "$(inbox_reply "$1" 2>/dev/null || true)" >/dev/null &&
     answer_holds pre-change-scan "$(inbox_reply "$2" 2>/dev/null || true)" >/dev/null && keys=yes
   read_said="Claude Code: both answers hold their keys: $keys; the transcript's last effort \"$want\", the request effort of the answer to $3) \"$effort\"; its thinking signatures $(grep -c . <<<"$sigs" || true), missing from that request $missing; the cache line read $(cache_read_tokens "$5") tokens; the resumed reviewer's first request (claude-$store, after its first $6 model calls) holds the two questions: $counts"
+  read_pass_said="Claude Code: effort \"$effort\" and each of the transcript's $(grep -c . <<<"$sigs" || true) thinking signatures replayed"
   [ "$keys" = yes ] && [ -n "$want" ] && [ "$effort" = "$want" ] && [ -n "$sigs" ] && [ "$missing" = 0 ] &&
     [ "$(cache_read_tokens "$5")" -gt 0 ] && [ "$counts" = "1 1" ]
 }
@@ -3005,10 +3039,15 @@ check_a10() {
     a10_gpt
   fi
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
-  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line transcript effort sigs thinking unexercised='' m ok_claude=0 ok_compact=0 t3 s3 e3 compaction said1 said2
+  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line transcript sigs thinking unexercised='' m ok_claude=0 ok_compact=0 t3 s3 e3 compaction said1 said2 claude_said
+  local before=$evidence/sessions/$store/pre_change-before-A10-1.jsonl
   local asked_at k marker again pair='' pairs='' cache_why='' found judged=''
   local -a markers events organizations
-  transcript=$(conversation_text pre_change)
+  # The conversation as it stands before the first question, kept as A10's GPT-6.1 clause keeps its own:
+  # the first request must carry the signatures this holds, and not those the answers below add to it.
+  mkdir -p "$evidence/sessions/$store"
+  conversation_text pre_change >"$before"
+  transcript=$(<"$before")
   sigs=$(transcript_signatures "$transcript")
   thinking=$(transcript_thinking "$transcript")
   if [ -z "$sigs" ]; then
@@ -3089,13 +3128,15 @@ check_a10() {
     note "the cache-read clause has no pair to read: $cache_why"
   fi
   note "answers: $(head -c 200 <<<"$(inbox_reply "$e1")" | tr '\n' ' ') | $(head -c 200 <<<"$(inbox_reply "$e2")" | tr '\n' ' ')"
-  effort=$(request_effort "$(daemon_request_for "A10-1)")")
+  # The first request's effort and every thinking signature are judged by a10_claude_read, from the
+  # conversation kept above.
   m=$(proxy_count "claude-$store")
   resume_agent pre_change || true
   deliver_task "$token" "While you were stopped you were asked what blocked the release. How many times were you asked, and what did you answer?"
   soft_wait 300 "the resumed Claude Code reviewer's first model call" more_than "$m" proxy_count "claude-$store" || true
   soft_wait 600 "the resumed reviewer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
-  a10_claude_read "$e1" "$e2" A10-1 A10-2 "$line" "$m" && ok_claude=1
+  a10_claude_read "$e1" "$e2" A10-1 A10-2 "$line" "$m" "$before" && ok_claude=1
+  claude_said=$read_pass_said
   said1=$read_said
   note "$said1"
   suspend_agent pre_change || true
@@ -3126,7 +3167,7 @@ check_a10() {
   note "$said2"
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
-    record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[judged]}, the later of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
+    record_result A10 PASS "$claude_said, the answer to ${markers[judged]}, the later of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
   else
     record_result A10 FAIL "Claude Code leg $ok_claude ($said1), compaction leg $ok_compact ($said2) (1 = shown)${unexercised:+; $unexercised}${cache_why:+; $cache_why}"
   fi
@@ -3388,28 +3429,29 @@ message_reply_by() {
   [ -n "$reply" ] && printf '%s\n' "$reply"
 }
 
-# a17_impl_read BODY MARKER is the read of A17's first leg: the implementer answered the proof
-# person's message BODY; its pull request's comments holding MARKER are one, the implement App's,
-# footed with its session; and one `answers: gh` line of the answer's question is the implement
-# App's call on sjawhar that exited 0.
+# a17_impl_read BODY MARKER [COMMENTS] is the read of A17's first leg: the implementer answered the
+# proof person's message BODY; its pull request's comments holding MARKER (COMMENTS, read now where
+# not given) are one, the implement App's, footed with its session; and one `answers: gh` line of
+# the answer's question is the implement App's call on sjawhar that exited 0.
 a17_impl_read() {
   local session=${agent[$store:implementer.session]} reply comments lines
   reply=$(message_reply_by "$session" "$1" 2>/dev/null) || reply=
-  comments=$(pr_comments "${agent[$store:implementer.pr]}" "$2")
+  comments=${3:-$(pr_comments "${agent[$store:implementer.pr]}" "$2")}
   lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
   read_said="the implementer's reply: $(said_text "$reply"); comments holding $2: $(jq -c 'map({id, user, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)})' <<<"$comments" 2>/dev/null || printf '%s' "$comments"); its answer's gh lines: $lines"
   [ -n "$reply" ] && one_comment_by "$comments" "$implement_app_login" "$session" &&
     first_line_where "$lines" gh_line_is implement sjawhar 0 >/dev/null
 }
-# a17_leak_read BODY MARKER is the read of A17's leak-guard leg: the implementer answered the
-# message BODY; GitHub's listing of its pull request's comments holds the comment carrying MARKER,
+# a17_leak_read BODY MARKER [LISTING] is the read of A17's leak-guard leg: the implementer answered
+# the message BODY; GitHub's listing of its pull request's comments (LISTING, read now where not
+# given) holds the comment carrying MARKER,
 # the first leg's, and none carrying the run's refusal marker; the reply quotes the check's own
 # reason; and one of the answer's leak-guard refusals names the issue, the role, the repository and
 # that reason.
 a17_leak_read() {
   local session=${agent[$store:implementer.session]} reply listing lines
   reply=$(message_reply_by "$session" "$1" 2>/dev/null) || reply=
-  listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
+  listing=${3:-$(pr_comment_listing "${agent[$store:implementer.pr]}")}
   lines=$(question_leak_refusals "$(answer_question_id "$reply")") || lines='[]'
   read_said="the implementer's reply: $(said_text "$reply"); comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $2: $(jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' <<<"$listing"); holding $leak_marker: $(jq -c --arg m "$leak_marker" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' <<<"$listing"); the guard's refusals of the answer: $lines"
   [ -n "$reply" ] && refused_write_absent "$listing" "$2" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
@@ -3451,7 +3493,7 @@ check_a17() {
     soft_wait 300 "the implementer's reply to the proof person's message" impl_reply; then
     comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
-    a17_impl_read "$impl_body" "$marker" && ok_impl=1
+    a17_impl_read "$impl_body" "$marker" "$comments" && ok_impl=1
     note "$read_said"
     said+="the control's comment: $read_said; "
   fi
@@ -3472,7 +3514,7 @@ check_a17() {
     for id in $(jq -r --arg m "$leak_marker" '(if type == "array" then . else [] end) | .[] | select((.body // "") | contains($m)) | .id' <<<"$listing"); do
       github_writes+=("comment:$id")
     done
-    a17_leak_read "$impl_body" "$marker" && ok_leak=1
+    a17_leak_read "$impl_body" "$marker" "$listing" && ok_leak=1
     note "$read_said"
     said+="the leak guard's refusal: $read_said; "
   fi
@@ -3519,21 +3561,23 @@ hold_after_tool() {
   note "the proxy holds the loop's model call after its gh call at $1 ordinal $(held_since "$1" "$(($2 + 1))")"
 }
 
-# a18_restart_read MARKER EVENT is the read of A18's restart leg: the pull request's comments
-# holding MARKER are one, and one reply to EVENT reached the asker.
+# a18_restart_read MARKER EVENT [COMMENTS] is the read of A18's restart leg: the pull request's
+# comments holding MARKER (COMMENTS, read now where not given) are one, and one reply to EVENT
+# reached the asker.
 a18_restart_read() {
   local comments replies
-  comments=$(pr_comments "${agent[$store:implementer.pr]}" "$1")
+  comments=${3:-$(pr_comments "${agent[$store:implementer.pr]}" "$1")}
   replies=$(inbox_replies "${2:-}")
   read_said="comments holding $1: $(jq length <<<"$comments"); replies to ${2:-(no event)}: $replies; gh lookups this boot $(boot_log | jq -s -c '[.[] | select(.msg == "answers: gh lookup")] | length')"
   [ "$(jq length <<<"$comments")" = 1 ] && [ -n "${2:-}" ] && [ "$replies" = 1 ]
 }
-# a18_resume_read MARKER EVENT is the read of A18's resume leg: the pull request's comments holding
-# MARKER are one, this boot forwarded the implementer's question with its call, and nothing was
-# posted to the asker in reply to EVENT (no_reply_to).
+# a18_resume_read MARKER EVENT [COMMENTS] is the read of A18's resume leg: the pull request's
+# comments holding MARKER (COMMENTS, read now where not given) are one, this boot forwarded the
+# implementer's question with its call, and nothing was posted to the asker in reply to EVENT
+# (no_reply_to).
 a18_resume_read() {
   local comments forwarded=no
-  comments=$(pr_comments "${agent[$store:implementer.pr]}" "$1")
+  comments=${3:-$(pr_comments "${agent[$store:implementer.pr]}" "$1")}
   question_forwarded implementer && forwarded=yes
   read_said="comments holding $1: $(jq length <<<"$comments"); the question forwarded to the implementer: $forwarded; replies to ${2:-(no event)}: $(inbox_replies "${2:-}"); the running implementer's conversation names the gh call: $(conversation_text implementer 2>/dev/null | grep -c -- "$1" || true)"
   [ "$(jq length <<<"$comments")" = 1 ] && [ "$forwarded" = yes ] && no_reply_to "${2:-}"
@@ -3560,7 +3604,7 @@ check_a18() {
     soft_wait 300 "the answer after the restart" inbox_reply "$event" || true
     comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker-restart")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
-    a18_restart_read "$marker-restart" "$event" && ok_restart=1
+    a18_restart_read "$marker-restart" "$event" "$comments" && ok_restart=1
     note "after the restart: $read_said"
     said+="the restart: $read_said; "
   fi
@@ -3579,7 +3623,7 @@ check_a18() {
     soft_wait 600 "the running implementer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
     comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker-resume")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
-    a18_resume_read "$marker-resume" "$event" && ok_resume=1
+    a18_resume_read "$marker-resume" "$event" "$comments" && ok_resume=1
     note "after the resume: $read_said"
     said+="the resume: $read_said"
     claims_cmd suspend --claim "$token" >/dev/null || true
@@ -3636,6 +3680,16 @@ a19_pr_mergeable() {
     sleep 10
   done
 }
+# a19_seed_round ISSUE BRANCH NUMBER HEAD TOKEN writes the review round's two rows as the workflow
+# writes them when a reviewer completes undecided: the reviewer's `phases` row naming its claim
+# TOKEN, its handoff commit HEAD and its completion time, and the `pull_requests` row of the smoke
+# pull request NUMBER on BRANCH at HEAD. check_a19 writes them once and A19's control writes them
+# again (control_prepare_a19); the issue's own row is the caller's, and the daemon must be stopped.
+a19_seed_round() {
+  pg_sql "$daemon_db" "insert into phases (issue, role, claim, handoff_commit, rounds, verdict, completed_at) values ('$1', 'reviewer', '$5', '$4', 1, '', now() - interval '2 minutes')" >/dev/null &&
+    pg_sql "$daemon_db" "insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_counted, state)
+      values ('$1', '$repo', $3, '$2', '$4', now(), '[]', '[]', 0, 0, '[]', 0, '', '[]', '', 'open')" >/dev/null
+}
 
 # check_a19: a review round the daemon's record holds open on a pull request of the smoke
 # repository, with its reviewer's completion recorded and the reviewer stopped. The record is
@@ -3658,7 +3712,7 @@ a19_pr_mergeable() {
 # would.
 check_a19() {
   criterion A19 "the stopped reviewer's approval with its recorded session ends the round; another session's footer ends nothing" || return 0
-  local issue branch pr number head token session control control_after control_delivery='' sent event reply after review approval_delivery='' ok_control=0 ok_reviewer=0
+  local issue branch pr number head token session control control_after control_delivery='' sent event reply review approval_delivery='' ok_control=0 ok_reviewer=0
   issue=$(new_rig_issue "Answer loop proof: the review round ($store)")
   branch=legion-e2eal/${issue,,}
   if ! pr=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" open "$work/github-apps.yaml" "$repo" "$branch" "Answer loop proof $issue (closed by the run)"); then
@@ -3689,9 +3743,7 @@ check_a19() {
   stop_daemon
   record_tree_issue "$issue" "$issue" "" reviewing "Answer loop proof: the review round ($store)"
   open_tree_lifecycle "$issue"
-  pg_sql "$daemon_db" "insert into phases (issue, role, claim, handoff_commit, rounds, verdict, completed_at) values ('$issue', 'reviewer', '$token', '$head', 1, '', now() - interval '2 minutes')" >/dev/null
-  pg_sql "$daemon_db" "insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_counted, state)
-    values ('$issue', '$repo', $number, '$branch', '$head', now(), '[]', '[]', 0, 0, '[]', 0, '', '[]', '', 'open')" >/dev/null
+  a19_seed_round "$issue" "$branch" "$number" "$head" "$token"
   note "recorded $issue's review round open on #$number at $head, the reviewer $token (session $session) completed undecided: $(review_record "$issue")"
   # A review round whose pull request GitHub cannot merge waits on its merge state (the workflow's
   # classify.RoundWaitsOnMergeState), and in this rig no check webhook reaches the listener to have
@@ -3764,43 +3816,51 @@ a19_read() {
 }
 
 # check_a21: a person's picker mention of a failed agent's role, on an issue the daemon records in
-# implementing, is answered in the issue's thread from that agent's own conversation. The issue is
-# a tree of its own, as A19's is, with an architect spawned with no task (an operator's spawn opens
-# a tree's lifecycle only for its root's architect) and an Oh My Pi implementer whose task is the
-# answer to question failed-implementer-role. Both are suspended, the implementer until its
-# session has left the listener's registry (suspend_agent), since the listener hands off no
-# message for a session it still holds; an implementer that is not suspended ends the row there,
-# its architect suspended and its FAIL recorded, with nothing seeded. Then, with the daemon
-# stopped, the issue is written into the daemon's record in implementing with its tree's lifecycle
-# open under the workflow, as A6 writes its running tree (record_tree_issue, open_tree_lifecycle),
-# and the implementer's claim is written failed as the supervisor fails a claim whose deaths ran
-# out (supervise's fail: the state, the cause `died` with its sentence and its time, no locator,
-# nothing that suspended it), since no `legion claims` command fails a claim. The daemon boots on
-# that record: nothing relaunches a failed claim, and an operator's suspension holds against the
-# boot's resume of a phase's owner. The mention is asked only once the daemon's own state keeps the
-# tree live in implementing, the claim still stands failed, and the listener's registry entry for
-# the implementer's session, the role's one and so its newest, reads under the role's token
+# implementing, and a message to that role's topic are each answered from that agent's own
+# conversation. The issue is a tree of its own, as A19's is, with an architect spawned with no task
+# (an operator's spawn opens a tree's lifecycle only for its root's architect) and an Oh My Pi
+# implementer whose task is the answer to question failed-implementer-role. Both are suspended, the
+# implementer until its session has left the listener's registry (suspend_agent), since the
+# listener hands off no message for a session it still holds; an implementer that is not suspended
+# ends the row there, its architect suspended and its FAIL recorded, with nothing seeded. Then, with
+# the daemon stopped, the issue is written into the daemon's record in implementing with its tree's
+# lifecycle open under the workflow, as A6 writes its running tree (record_tree_issue,
+# open_tree_lifecycle), and the implementer's claim is written failed as the supervisor fails a claim
+# whose deaths ran out (supervise's fail: the state, the cause `died` with its sentence and its
+# time, no locator, nothing that suspended it), since no `legion claims` command fails a claim. The
+# daemon boots on that record: nothing relaunches a failed claim, and an operator's suspension holds
+# against the boot's resume of a phase's owner. It also holds the issue, as it holds any issue whose
+# worker failed with work outstanding (api.Issue.HeldFrom names the phase it was held from), and a
+# held issue is still in the workflow and in its tree. The mention is asked only once the daemon's
+# own state keeps the tree live with the issue in implementing or held from implementing
+# (tree_is_live ... held), the claim still stands failed, and the listener's registry entry for the
+# implementer's session, the role's one and so its newest, reads under the role's token
 # (registry_entry_of): the daemon's state is what makes this an issue that has not left the
-# workflow, and that entry what makes it a role with no live holder whose newest entry the
-# listener hands to its daemon. Then the proof person comments on the issue with a picker
-# mention of the role (`role:<token>`), as A3 does. A resolution that names a role's newest entry
-# only once that entry's issue has left the workflow settles this mention's delivery `failed` with
-# `no holder for role <token>`, pins no session, and nobody answers, which is what this row's FAIL
-# then reads out (the delivery's state and error). Control: once the implementer's answer is waited
-# for, the proof person comments on the same issue with a picker mention of the issue's reviewer
-# role (claim_token), which no session of the run ever took, so the registry holds no entry for it.
-# Under the run's answering project Dispatch keeps that mention for the role's first holder: its
-# one delivery settles `queued` naming no session, read again for up to 60 s until it does, and no
-# session replies to it. PASS when the mention's one delivery is `sent` to the implementer's
-# session, that session's reply to the comment holds the question's keys, the control's one
-# delivery is `queued` naming no session and the implementer's session wrote no reply to it, every
-# claim of the issue still stands failed or suspended (tree_claims_in: every claim of the row is
-# spawned on the issue's own tree), the implementer's claim stands failed, and no pane started. The
-# verdict judges the deliveries and the claims listing the row read and printed, and the FAIL
+# workflow, and that entry what makes it a role with no live holder whose newest entry the listener
+# hands to its daemon. Then the proof person comments on the issue with a picker mention of the role
+# (`role:<token>`), as A3 does. A resolution that names a role's newest entry only once that entry's
+# issue has left the workflow settles this mention's delivery `failed` with `no holder for role
+# <token>`, pins no session, and nobody answers, which is what this row's FAIL then reads out (the
+# delivery's state and error). Then the rig's asker sends question failed-implementer-role to the
+# role's topic, `notifications.role.<token>`, under a marker of its own, and its answer is the one
+# reply on the asker's topic. Control: once the implementer's answer is waited for, the proof person
+# comments on the same issue with a picker mention of the issue's reviewer role (claim_token), which
+# no session of the run ever took, so the registry holds no entry for it. Under the run's answering
+# project Dispatch keeps that mention for the role's first holder: its one delivery settles `queued`
+# naming no session, read again for up to 60 s until it does, and no session replies to it. PASS
+# when the mention's one delivery is `sent` to the implementer's session, that session's reply to
+# the comment holds the question's keys, the control's one delivery is `queued` naming no session
+# and the implementer's session wrote no reply to it, the role topic's message was answered by one
+# reply holding the same keys from that session, every claim of the issue still stands failed or
+# suspended (tree_claims_in: every claim of the row is spawned on the issue's own tree), the
+# implementer's claim stands failed, and no pane started across both legs (a21_read, which A21's
+# control runs too); and a message kept for a role nobody holds reaches the first session to hold it
+# (a21_first_holder, apart from that read, from the pane baseline and from the control). The verdict
+# judges the deliveries, the replies and the claims listing the row read and printed, and the FAIL
 # prints the control's deliveries beside the mention's.
 check_a21() {
-  criterion A21 "a picker mention of a failed implementer's role, on an issue still in implementing, is answered in the issue's thread from its conversation, nothing of the issue starting" infra448 || return 0
-  local issue token architect reviewer session title comment id reply='' deliveries control_id control control_replied=no claims roles missing='' held=0 panes_before panes_after before why=''
+  criterion A21 "a picker mention of a failed implementer's role and a message to its role topic, on an issue still in the workflow (implementing, or held from it), are answered from its conversation, nothing of the issue starting; a message kept for a role nobody holds reaches its first holder" infra448 || return 0
+  local issue token architect reviewer session title comment id control_id before why='' panes_before role_sent role_event
   title="Answer loop proof: an issue in implementing whose implementer failed ($store)"
   issue=$(new_rig_issue "$title")
   token=$(claim_token "$issue" implementer)
@@ -3830,8 +3890,8 @@ check_a21() {
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   a21_entry() { envoy "$(listener_url "/v1/legion/agents/sessions/$session")" 2>/dev/null || true; }
   a21_registered() { registry_entry_of "$(a21_entry)" "$session" "$token"; }
-  if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing" tree_is_live "$issue" implementing; then
-    why="the seeded tree $issue was not live in implementing in the daemon's own state ($(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}' || true))"
+  if ! soft_wait 300 "the daemon to keep the seeded tree $issue live in implementing, or held from it" tree_is_live "$issue" implementing held; then
+    why="the seeded tree $issue was not live in implementing, nor held from it, in the daemon's own state ($(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase, heldFrom: .issues[$i].heldFrom}' || true))"
   fi
   if [ -z "$why" ] && ! claim_is "$token" '.state == "failed"'; then
     why="the implementer's claim $token did not stand failed after the boot: $(claim_json "$token" | jq -c '{state, session}' || true)"
@@ -3844,9 +3904,8 @@ check_a21() {
     record_result A21 FAIL "$why"
     return 0
   fi
-  note "the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, live}' || true); the claims of $issue: $(issue_claim_roles "$(claims_cmd list --json)" "$issue")"
+  note "the daemon's state of $issue: $(legion_cmd state --json | jq -c --arg i "$issue" '{phase: .issues[$i].phase, heldFrom: .issues[$i].heldFrom}' || true); the registry's entry for $session: $(a21_entry | jq -c '(.agent // .) | {session_id, role_token, issue, live}' || true); the claims of $issue: $(issue_claim_roles "$(claims_cmd list --json)" "$issue")"
   panes_before=$(pane_count)
-  agent[$store:a21.panes]=$panes_before
   before=$(date +%s)
   comment=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@implementer $(question_text failed-implementer-role) (question failed-implementer-role of run $run_tag)" \
     --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')") || comment='{}'
@@ -3855,27 +3914,43 @@ check_a21() {
   if [ -n "$id" ] && soft_wait 240 "the failed implementer's reply to comment $id" comment_reply_by "$issue" "$id" "$session"; then
     note "answered after $(($(date +%s) - before)) s as $session: $(said_text "$(comment_reply_by "$issue" "$id" "$session" || true)")"
   fi
+  # The same role by its topic: the failed implementer's role, which the registry resolves to its
+  # session, answers the asker's message there, under a marker of its own.
+  role_sent=$(envoy_ask_text role "$token" "$(question_text failed-implementer-role) (question failed-implementer-role of run $run_tag, role topic)" "a21-role-$run_tag-$store")
+  role_event=${role_sent#* }
+  note "the message to the role topic of $token: listener $role_sent"
+  [ -z "$role_event" ] || soft_wait 240 "the failed implementer's reply to the role topic message" inbox_reply "$role_event" || true
   control_id=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@reviewer $(question_text failed-implementer-role) (control: a role of this issue no session of the run took, run $run_tag)" \
     --arg t "role:$reviewer" '{body: $body, mentions: [{target: $t}]}')" | jq -r '.id // empty') || control_id=
   note "the control: the person's comment ${control_id:-(not taken)} on $issue mentions role:$reviewer, which no session of the run took"
   [ -z "$id" ] || soft_wait 60 "comment $id's mention to be delivered to implementer $session" comment_delivered_to "$id" "$session" || true
   a21_control_kept() { one_delivery_for "$(comment_delivery_records "$control_id")" queued ''; }
   [ -z "$control_id" ] || soft_wait 60 "the control's mention of role:$reviewer to settle queued, naming no session" a21_control_kept || true
-  if a21_read "$issue" "$id" "$control_id" "$panes_before"; then
+  if a21_read "$issue" "$id" "$control_id" "$panes_before" "$role_event"; then
     note "$read_said"
-    record_result A21 PASS "the role mention of the failed implementer on $issue, still in implementing, was sent to its session $session, which answered in the thread from its conversation with the question's keys; the control's mention of role:$reviewer, a role of $issue no session took, settled queued naming no session, kept for the role's first holder, and $session wrote no reply to it; every claim of $issue stayed failed or suspended and no pane started"
+    if a21_first_holder "$issue"; then
+      note "$read_said"
+      record_result A21 PASS "the role mention of the failed implementer on $issue, in the workflow, was sent to its session $session, which answered in the thread from its conversation with the question's keys; the message to its role topic was answered once, by $session, with the same keys; the control's mention of role:$reviewer, a role of $issue no session took, settled queued naming no session, kept for the role's first holder, and $session wrote no reply to it; every claim of $issue stayed failed or suspended and no pane started across both legs; $read_said"
+    else
+      note "$read_said"
+      record_result A21 FAIL "the picker mention and the role topic's message were answered as required, but the first holder's leg did not hold: $read_said"
+    fi
   else
     note "$read_said"
     record_result A21 FAIL "$read_said"
   fi
 }
-# a21_read ISSUE COMMENT CONTROL PANES is A21's read: the failed implementer's reply to the role
-# mention COMMENT on ISSUE holds failed-implementer-role's keys and the mention's one delivery is
+# a21_read ISSUE COMMENT CONTROL PANES ROLE_EVENT is A21's read: the failed implementer's reply to the
+# role mention COMMENT on ISSUE holds failed-implementer-role's keys and the mention's one delivery is
 # sent to its session; the mention CONTROL of a role no session took settled queued naming no
-# session, and the implementer wrote no reply to it; every claim of ISSUE stands failed, suspended
-# or retired, the implementer's failed; and the daemon's tmux server holds no more than PANES panes.
+# session, and the implementer wrote no reply to it; the message to the failed role's topic, sent as
+# ROLE_EVENT, was answered by one reply on the asker's topic that holds the same keys and whose
+# answer's log line names the implementer's session; every claim of ISSUE stands failed, suspended
+# or retired, the implementer's failed; and the daemon's tmux server holds no more than PANES
+# panes: nothing started across the two legs.
 a21_read() {
   local session=${agent[$store:failed_implementer.session]} token=${agent[$store:failed_implementer.token]} reply missing='' held=no deliveries control replied=no claims panes
+  local role_reply role_replies role_keys=no role_by=no
   reply=$(comment_reply_by "$1" "$2" "$session" 2>/dev/null) || reply=
   if [ -n "$reply" ]; then
     missing=$(answer_holds failed-implementer-role "$reply") && held=yes
@@ -3883,13 +3958,42 @@ a21_read() {
   deliveries=$(comment_delivery_records "$2")
   control=$(comment_delivery_records "$3")
   comment_reply_by "$1" "$3" "$session" >/dev/null 2>&1 && replied=yes
+  role_reply=$(inbox_reply "$5" 2>/dev/null) || role_reply=
+  role_replies=$(inbox_replies "$5")
+  [ -n "$role_reply" ] && answer_holds failed-implementer-role "$role_reply" >/dev/null && role_keys=yes
+  answered_by "$(answered_line "$(answer_question_id "$role_reply")" || true)" "$session" && role_by=yes
   claims=$(claims_cmd list --json 2>/dev/null) || claims='{}'
   panes=$(pane_count)
-  read_said="the role mention ${2:-(not taken by Dispatch)}: deliveries $deliveries (want one sent to $session); the implementer's reply to it $(if [ -z "$reply" ]; then printf none; elif [ "$held" = yes ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the control ${3:-(not taken by Dispatch)}: deliveries $control (want one queued naming no session), a reply of $session to it $replied; the claims of $1 $(issue_claim_roles "$claims" "$1"); panes $4 → $panes"
+  read_said="the role mention ${2:-(not taken by Dispatch)}: deliveries $deliveries (want one sent to $session); the implementer's reply to it $(if [ -z "$reply" ]; then printf none; elif [ "$held" = yes ]; then printf 'holds the keys'; else printf 'lacks "%s"' "$missing"; fi); the control ${3:-(not taken by Dispatch)}: deliveries $control (want one queued naming no session), a reply of $session to it $replied; the message to the role's topic ${5:-(not sent)}: $role_replies reply (want one), holding the keys: $role_keys, answered as $session: $role_by ($(said_text "$role_reply")); the claims of $1 $(issue_claim_roles "$claims" "$1"); panes $4 → $panes"
   [ "$held" = yes ] && one_delivery_for "$deliveries" sent "$session" &&
     one_delivery_for "$control" queued '' && [ "$replied" = no ] &&
+    [ "$role_keys" = yes ] && [ "$role_replies" = 1 ] && [ "$role_by" = yes ] &&
     tree_claims_in "$claims" "$1" suspended failed retired && listed_claim_is "$claims" "$token" failed &&
     [ "$panes" -le "$4" ]
+}
+# a21_first_holder ISSUE is A21's last leg, apart from its read, the pane baseline and the control: a
+# message kept for a role nobody holds reaches the first session to hold it. The proof person
+# mentions, on ISSUE, a role of ISSUE no session of the run took, its tester, with a marker of its own;
+# Dispatch keeps that mention for the role's first holder, its one delivery settling `queued` naming
+# no session; then the rig's third stand-in session, the first holder, registers with a consumer of
+# its own, claims the role, and the marker must reach that session's inbox, which the listener
+# relays from the role's kept lane within the hour it keeps a copy for. This rig waits 180 s.
+a21_first_holder() {
+  local role marker=answer-loop-a21-holder-$run_tag-$store comment id claim='' queued=no reached=no
+  role=$(claim_token "$1" tester)
+  comment=$(dispatch_human POST "issues/$1/comments" "$(jq -cn --arg body "@tester A message for the role's first holder ($marker)" --arg t "role:$role" \
+    '{body: $body, mentions: [{target: $t}]}')") || comment='{}'
+  id=$(jq -r '.id // empty' <<<"$comment")
+  a21_holder_kept() { one_delivery_for "$(comment_delivery_records "$id")" queued ''; }
+  if [ -n "$id" ] && soft_wait 60 "the mention of the unclaimed role:$role to settle queued, naming no session" a21_holder_kept; then queued=yes; fi
+  if [ "$queued" = yes ] && register_stand_in "$holder_session" "answer-loop rig first holder"; then
+    claim=$(envoy --data "$(jq -cn --arg s "$holder_session" --arg role "$role" --arg instance "$stand_in_instance" \
+      '{session_id: $s, role: $role, soft: true, client_instance_id: $instance}')" "$(listener_url /v1/roles/set)") || claim=
+    soft_wait 180 "the mention kept for role:$role to reach its first holder $holder_session" inbox_holds "$holder_session" "$marker" || true
+  fi
+  inbox_holds "$holder_session" "$marker" && reached=yes
+  read_said="a mention of role:$role, which no session of the run took (comment ${id:-(not taken)}), settled queued naming no session: $queued; the first holder $holder_session claimed the role ($(said_text "$claim")); its inbox holds $marker: $reached"
+  [ "$queued$reached" = yesyes ]
 }
 
 # ---- A22: the loop's dispatch tool -----------------------------------------------------------------
@@ -3948,13 +4052,14 @@ a22_read_leg() {
 # than SKIPPED hand-offs for no question as the loop's own answer, and that session wrote no reply
 # to the comment.
 a22_post_leg() {
-  local session=${agent[$store:planner.session]} reply lines comments posted skipped replied=no
+  local session=${agent[$store:planner.session]} reply lines comments all posted skipped replied=no
   reply=$(message_reply_by "$session" "$1" 2>/dev/null) || reply=
   lines=$(question_dispatch_lines "$(answer_question_id "$reply")") || lines='[]'
-  comments=$(issue_comments_holding "$2" "$3")
+  all=$(dispatch_get "issues/$2/comments" 2>/dev/null) || all=
+  comments=$(issue_comments_in "$all" "$3")
   posted=$(jq -r '.[0].id // empty' <<<"$comments" 2>/dev/null) || posted=
   skipped=$(($(a22_own_skipped "$4") - $5))
-  [ -z "$posted" ] || ! comment_reply_by "$2" "$posted" "$4" >/dev/null 2>&1 || replied=yes
+  [ -z "$posted" ] || ! comment_reply_in "$all" "$posted" "$4" >/dev/null 2>&1 || replied=yes
   read_said="the planner's reply: $(said_text "$reply"); comments on $2 holding $3: $(jq -c 'map({id, author, mark: (.body | test("legion-answer:[0-9a-f]+\\.[0-9]+ -->"))})' <<<"$comments" 2>/dev/null || printf '%s' "$comments"); the dispatch lines of the answer: $(jq -c 'map({seq, session, command, exit, ran})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"); hand-offs of $4 taken for no question as the loop's own answer since: $skipped; a reply of $4 to the comment: $replied"
   [ -n "$reply" ] && one_tool_marked_comment_by "$comments" "$session" && lines_all_as "$lines" "$session" &&
     [ "$skipped" -gt 0 ] && [ "$replied" = no ]
@@ -3979,15 +4084,17 @@ a22_refusal_leg() {
   [ "$said" = yes ] && [ "$refused" = "issue-update claim doc-edit" ] && lines_all_as "$lines" "$session" &&
     standing_unchanged "$3" "$now"
 }
-# a22_tools_leg TOOLS CHECK ABSENT_TOOLS ABSENT_CHECK is the read of A22's configuration legs: the
-# daemon's boot line TOOLS and `legion config check`'s line CHECK list the dispatch tool, and those
-# of a daemon with no dispatch command, ABSENT_TOOLS and ABSENT_CHECK, list none and say why.
-a22_tools_leg() {
-  local why='no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch'
-  read_said="the boot's tools line: ${1:-none}; config check: ${2:-none}; with no dispatch command, the boot's tools line: ${3:-none}; config check: ${4:-none}"
-  tools_line_offers "$1" dispatch && check_tools_lists "$2" dispatch && tools_line_absent "$3" dispatch "$why" &&
-    check_tools_absent "$4" dispatch "$why"
+# tools_leg TOOL WHY WITHOUT TOOLS CHECK ABSENT_TOOLS ABSENT_CHECK is the read of a configuration leg
+# (A22's, A23's): the daemon's boot line TOOLS and `legion config check`'s line CHECK list TOOL, and
+# those of a daemon with no WITHOUT, ABSENT_TOOLS and ABSENT_CHECK, list none and say WHY.
+tools_leg() {
+  read_said="the boot's tools line: ${4:-none}; config check: ${5:-none}; with no $3, the boot's tools line: ${6:-none}; config check: ${7:-none}"
+  tools_line_offers "$4" "$1" && check_tools_lists "$5" "$1" && tools_line_absent "$6" "$1" "$2" &&
+    check_tools_absent "$7" "$1" "$2"
 }
+# a22_tools_leg TOOLS CHECK ABSENT_TOOLS ABSENT_CHECK is A22's: the dispatch tool, absent from the
+# daemon with no dispatch command.
+a22_tools_leg() { tools_leg dispatch 'no dispatch command on PATH or at /opt/legion/pi-envoy/bin/dispatch' 'dispatch command' "$@"; }
 # host_dispatch prints the dispatch command a daemon of this run would find with no
 # LEGION_DISPATCH_PATH, on its PATH or at the worker image's install, and nothing where it finds
 # none (daemon.answersDispatch's search).
@@ -4017,9 +4124,8 @@ check_a22() {
     jq -r '.id // empty') || comment=
   note "the proof person's comment ${comment:-(not taken)} on $issue, written after the planner $planner stopped"
   read_body="$(question_text a22-late-comment) (question a22-late-comment of run $run_tag)"
-  a22_replied() { message_reply_by "$planner" "$1"; }
   if person_message "$issue" "$planner" "$read_body"; then
-    soft_wait 300 "the planner's answer from the comment" a22_replied "$read_body" || true
+    soft_wait 300 "the planner's answer from the comment" message_reply_by "$planner" "$read_body" || true
   fi
   a22_read_leg "$read_body" && ok_read=1
   note "$read_said"
@@ -4027,9 +4133,8 @@ check_a22() {
   skipped=$(a22_own_skipped "$mentioned")
   post_body="$(a22_post_request "$target" "$marker" "$mentioned") (run $run_tag, $store)"
   if person_message "$issue" "$planner" "$post_body"; then
-    soft_wait 300 "the planner's answer about the comment it posted" a22_replied "$post_body" || true
-    a22_skipped_more() { more_than "$skipped" a22_own_skipped "$mentioned"; }
-    soft_wait 120 "the mention of $mentioned in the posted comment to be taken for no question" a22_skipped_more || true
+    soft_wait 300 "the planner's answer about the comment it posted" message_reply_by "$planner" "$post_body" || true
+    soft_wait 120 "the mention of $mentioned in the posted comment to be taken for no question" more_than "$skipped" a22_own_skipped "$mentioned" || true
   fi
   a22_post_leg "$post_body" "$target" "$marker" "$mentioned" "$skipped" && ok_post=1
   note "$read_said"
@@ -4037,7 +4142,7 @@ check_a22() {
   standing=$(issue_standing "$target")
   refuse_body="$(a22_refusal_request "$target") (run $run_tag, $store)"
   if person_message "$issue" "$planner" "$refuse_body"; then
-    soft_wait 300 "the planner's answer about the writes its tool refused" a22_replied "$refuse_body" || true
+    soft_wait 300 "the planner's answer about the writes its tool refused" message_reply_by "$planner" "$refuse_body" || true
   fi
   a22_refusal_leg "$refuse_body" "$target" "$standing" && ok_refuse=1
   note "$read_said"
@@ -4054,6 +4159,8 @@ check_a22() {
     start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
     absent_tools=$(boot_tools_line)
     absent_check=$(config_check_tools "$work/answers-$store.yaml")
+    agent[$store:a22.absent_tools]=$absent_tools
+    agent[$store:a22.absent_check]=$absent_check
     stop_daemon
     daemon_dispatch=$keep
     start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
@@ -4071,35 +4178,43 @@ check_a22() {
 # ---- A23: the loop's web_search tool ---------------------------------------------------------------
 # check_a23: a stopped agent answers with its web_search tool (answers.web_search, which
 # write_legion_config names: web_search_model at web_search_fee a search). The architect is asked
-# for a fact a web search finds (questions.json's a23-web-search). The row judges that a search ran
-# and that the address the answer cites is among that search's results, not whether the fact is
-# right: an `answers: web_search` line of the answer made a search; the recording proxy holds the
-# Messages call that search made, to answers.providers.anthropic under the daemon's own label,
-# offering Anthropic's web search server tool (`web_search_20250305`) and answered 200; the
-# answer names an address among that call's results; each search line's cost is its call's
-# tokens at the search model's price plus the fee for each search it ran, and the answer's cost
-# line counts those searches and their cost (search_line_recomputes, search_fee_carried); and the
-# architect, resumed, holds each search's call and result: its first request holds each search's
-# query and an address it returned (request_holds_search), as A9 reads a resumed agent. Then a
-# fourth search in one answer is refused: the daemon boots with model_calls 2 and the proxy's
-# stand-in step calls web_search four times (a12_stand_in four_searches), as A12 drives a reply no
-# model gives on demand; one `answers: web_search` line of that answer is the refusal. Then the
-# daemon boots once with no answers.web_search, and its boot line and `legion config check` list
-# no web_search and say why; the boot line and the check of the daemon as it was list it. The same
-# search leg runs for the GPT-6.1 merger where the route serves GPT-6.1, a row of its own as A10's
-# GPT-6.1 clause is.
+# for a fact a web search finds (questions.json's a23-web-search), on a public page that is not on
+# GitHub, and to cite the address of the search result it used. The row judges that a search ran and
+# that every address the answer cites came out of its searches, none reached with a tool, not
+# whether the fact is right: an `answers: web_search` line of the answer made a search; the
+# recording proxy holds the Messages call that search made, to answers.providers.anthropic under
+# the daemon's own label, offering Anthropic's web search server tool (`web_search_20250305`) and
+# answered 200; every address the answer names is among the results of the searches that ran, taken
+# together, and no `answers: gh` or `answers: dispatch` call of the answer names one in its
+# arguments (citation_faults); each search line's cost is its call's tokens at the search model's
+# price plus the fee for each search it ran, and the answer's cost line counts those searches and
+# their cost (search_line_recomputes, search_fee_carried); and the architect, resumed, holds each
+# search's call and result: its first request holds a call of web_search with each search's query
+# and an address it returned (request_holds_search), as A9 reads a resumed agent, so an answer whose
+# transcript holds no web_search call fails. Then a fourth search in one answer is refused: the
+# daemon boots with model_calls 2 and the proxy's stand-in step calls web_search four times
+# (a12_stand_in four_searches), as A12 drives a reply no model gives on demand; one `answers:
+# web_search` line of that answer is the refusal. Then the daemon boots once with no
+# answers.web_search, and its boot line and `legion config check` list no web_search and say why; the
+# boot line and the check of the daemon as it was list it. The same search leg runs for the GPT-6.1
+# merger where the route serves GPT-6.1, a row of its own as A10's GPT-6.1 clause is.
 # a23_search_read EVENT M LABEL NAME is the read of a search leg of A23: the reply to EVENT, NAME's
 # answer, made at least one search; each search line that ran has its call at the proxy, answered
-# 200 with the server tool offered, and recomputes from it; the reply cites an address among the
-# results of one of those calls; the answer's cost line carries the searches' cost; and NAME's first
-# request after its first M model calls on LABEL holds each search's query and an address its
-# result returned.
+# 200 with the server tool offered, and recomputes from it; every address the reply cites is among
+# the results of the answer's searches that ran, all together, and none is named by a gh or dispatch
+# call line of the answer (citation_faults, which names the address and the way it broke); the
+# answer's cost line carries the searches' cost; and NAME's first request after its first M model
+# calls on LABEL holds a web_search call with each search's query and an address its result
+# returned.
 a23_search_read() {
-  local reply message question lines calls line call query url cited='' ran=0 recomputed=yes resumed=yes request
+  local reply message question lines answered calls line call query url faults results='[]' ran=0 recomputed=yes resumed=yes request gh dispatch
   reply=$(inbox_reply "$1" 2>/dev/null) || reply=
-  message=$(inbox_message "$1" 2>/dev/null) || message=
+  message=$(reply_message "$reply")
   question=$(answer_question_id "$reply")
   lines=$(question_search_lines "$question") || lines='[]'
+  gh=$(question_gh_lines "$question") || gh='[]'
+  dispatch=$(question_dispatch_lines "$question") || dispatch='[]'
+  answered=$(answered_line "$question" || true)
   calls=$(search_calls "daemon-$store")
   request=$(first_request_after "$3" "$2")
   while IFS= read -r line; do
@@ -4109,15 +4224,16 @@ a23_search_read() {
     if [ "$(jq -r '(.searches // 0) > 0 and (.error // "") == ""' <<<"$line")" = true ]; then
       ran=$((ran + 1))
       [ "$(jq -r '.status // 0' <<<"$call")" = 200 ] || recomputed=no
-      [ -n "$cited" ] || cited=$(cited_among "$message" "$call") || cited=
+      results=$(jq -c --argjson c "$call" '. + ($c.urls // []) | unique' <<<"$results")
       url=$(jq -r '.urls[0] // ""' <<<"$call")
       request_holds_search "$request" "$query" "$url" || resumed=no
     fi
     [ "$call" = null ] || search_line_recomputes "$line" "$call" "$web_search_fee" || recomputed=no
   done < <(jq -c '.[]?' <<<"$lines" 2>/dev/null)
-  read_said="$4's reply to ${1:-(no event)}: $(said_text "$message"); the web_search lines of its answer ${question:-(none)}: $(jq -c 'map({seq, query, searches, costUSD, error})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"), $ran of them a search that ran; each with its call answered 200 and its cost its call's tokens and its fee: $recomputed; the address the reply cites among a search's results: ${cited:-none}; the cost line: $(jq -c '{webSearches, webSearchUSD, costUSD}' <<<"$(answered_line "$question" || true)" 2>/dev/null || printf none); $4's first request on $3 after $2 holds each search's call and result: $resumed"
-  [ "$ran" -gt 0 ] && [ "$recomputed" = yes ] && [ -n "$cited" ] && [ "$resumed" = yes ] &&
-    search_fee_carried "$(answered_line "$question" || true)" "$lines" "$web_search_fee"
+  faults=$(citation_faults "$message" "$results" "$gh" "$dispatch")
+  read_said="$4's reply to ${1:-(no event)}: $(said_text "$message"); the web_search lines of its answer ${question:-(none)}: $(jq -c 'map({seq, query, searches, costUSD, error})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"), $ran of them a search that ran; each with its call answered 200 and its cost its call's tokens and its fee: $recomputed; the addresses the searches returned: $results; what is wrong with the addresses the reply cites: ${faults:-nothing}; the cost line: $(jq -c '{webSearches, webSearchUSD, costUSD}' <<<"${answered:-null}" 2>/dev/null || printf none); $4's first request on $3 after $2 holds a web_search call and its result for each search: $resumed"
+  [ "$ran" -gt 0 ] && [ "$recomputed" = yes ] && [ -z "$faults" ] && [ "$resumed" = yes ] &&
+    search_fee_carried "$answered" "$lines" "$web_search_fee"
 }
 # a23_fourth_read EVENT is the read of A23's fourth search: one `answers: web_search` line of the
 # answer the reply to EVENT names is the tool's refusal of a fourth search in one answer.
@@ -4129,15 +4245,9 @@ a23_fourth_read() {
   read_said="the web_search lines of the answer ${question:-(none)}: $(jq -c 'map({seq, searches, error})' <<<"$lines" 2>/dev/null || printf '%s' "$lines"); the fourth refused: ${refused:-no}"
   [ -n "$refused" ]
 }
-# a23_tools_leg TOOLS CHECK OFF_TOOLS OFF_CHECK is the read of A23's configuration legs: the boot
-# line TOOLS and `legion config check`'s line CHECK list web_search, and those of a daemon whose
-# answers set no web_search, OFF_TOOLS and OFF_CHECK, list none and say why.
-a23_tools_leg() {
-  local why='no answers.web_search block'
-  read_said="the boot's tools line: ${1:-none}; config check: ${2:-none}; with no answers.web_search, the boot's tools line: ${3:-none}; config check: ${4:-none}"
-  tools_line_offers "$1" web_search && check_tools_lists "$2" web_search && tools_line_absent "$3" web_search "$why" &&
-    check_tools_absent "$4" web_search "$why"
-}
+# a23_tools_leg TOOLS CHECK OFF_TOOLS OFF_CHECK is A23's: the web_search tool, absent from the daemon
+# whose answers set no web_search.
+a23_tools_leg() { tools_leg web_search 'no answers.web_search block' 'answers.web_search' "$@"; }
 # a23_search_leg NAME ID MARKER LABEL asks NAME the web search question ID under MARKER, waits for
 # the answer, resumes NAME on its own route LABEL with a one-word task, waits for its first model
 # call, reads the leg (a23_search_read) and suspends NAME again. It returns the read's verdict.
@@ -4158,19 +4268,19 @@ a23_search_leg() {
 }
 check_a23() {
   local tools check off_tools off_check sent event ok_search=0 ok_fourth=0 ok_tools=0 said=''
-  if criterion A23 "the GPT-6.1 merger answers with its web_search tool, citing an address among the search's results, the fee in its cost line, and resumes holding the search" openai; then
+  if criterion A23 "the GPT-6.1 merger answers with its web_search tool, every address it cites among its searches' results and none reached with gh or dispatch, the fee in its cost line, and resumes holding the search" openai; then
     if [ -n "${agent[$store:gpt.why]:-}" ] || [ -z "${agent[$store:gpt.session]:-}" ]; then
       record_result A23 FAIL "GPT-6.1: ${agent[$store:gpt.why]:-the merger registered no session}"
     else
       agent[$store:a23.gpt]=1
       if a23_search_leg gpt a23-web-search-gpt A23-gpt agents-gpt; then
-        record_result A23 PASS "GPT-6.1: the merger searched with its web_search tool, its answer cites an address among the search's results, each search's cost line is its tokens and its fee and the answer's cost line carries them, and resumed in Oh My Pi it holds the search's call and result: $read_said"
+        record_result A23 PASS "GPT-6.1: the merger searched with its web_search tool, every address its answer cites is among its searches' results and none is named by a gh or dispatch call, each search's cost line is its tokens and its fee and the answer's cost line carries them, and resumed in Oh My Pi it holds the search's call and result: $read_said"
       else
         record_result A23 FAIL "GPT-6.1: $read_said"
       fi
     fi
   fi
-  criterion A23 "a stopped agent answers with its web_search tool, citing an address among the search's results, the fee in its cost line, a fourth search refused, and resumes holding the search; a daemon whose answers set no web_search offers no web_search tool" || return 0
+  criterion A23 "a stopped agent answers with its web_search tool, every address it cites among its searches' results and none reached with gh or dispatch, the fee in its cost line, a fourth search refused, and resumes holding the search; a daemon whose answers set no web_search offers no web_search tool" || return 0
   tools=$(boot_tools_line)
   check=$(config_check_tools "$daemon_config")
   a23_search_leg architect a23-web-search A23 agents && ok_search=1
@@ -4182,8 +4292,7 @@ check_a23() {
   start_daemon "$work/branch/legion" "$work/a23-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   sent=$(envoy_ask session "${agent[$store:planner.session]}" a23-fourth-search "a23-fourth-$run_tag-$store")
   event=${sent#* }
-  a23_refused() { a23_fourth_read "$event"; }
-  soft_wait 300 "the loop's fourth search to be refused" fault_passed_on model_calls && soft_wait 60 "the daemon's reply" a23_refused || true
+  soft_wait 300 "the loop's fourth search to be refused" fault_passed_on model_calls && soft_wait 60 "the daemon's reply" a23_fourth_read "$event" || true
   a23_fourth_read "$event" && ok_fourth=1
   note "$read_said"
   said+="the fourth search: $read_said; "
@@ -4194,13 +4303,15 @@ check_a23() {
   start_daemon "$work/branch/legion" "$work/a23-off-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   off_tools=$(boot_tools_line)
   off_check=$(config_check_tools "$work/a23-off-$store.yaml")
+  agent[$store:a23.off_tools]=$off_tools
+  agent[$store:a23.off_check]=$off_check
   stop_daemon
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   a23_tools_leg "$tools" "$check" "$off_tools" "$off_check" && ok_tools=1
   note "$read_said"
   said+="the tools: $read_said"
   if [ "$ok_search$ok_fourth$ok_tools" = 111 ]; then
-    record_result A23 PASS "the architect searched with its web_search tool, its answer cites an address among the search's results, each search's cost line is its tokens at $web_search_model's price and its fee of $web_search_fee and the answer's cost line carries them, and resumed it holds each search's call and result; a fourth search in one answer was refused; the boot line and legion config check listed web_search, and with no answers.web_search listed none and said why"
+    record_result A23 PASS "the architect searched with its web_search tool, every address its answer cites is among its searches' results and none is named by a gh or dispatch call, each search's cost line is its tokens at $web_search_model's price and its fee of $web_search_fee and the answer's cost line carries them, and resumed it holds each search's call and result; a fourth search in one answer was refused; the boot line and legion config check listed web_search, and with no answers.web_search listed none and said why"
   else
     record_result A23 FAIL "the search $ok_search, the fourth search refused $ok_fourth, the tool offered and absent $ok_tools (1 = shown): $said"
   fi
@@ -4209,42 +4320,77 @@ check_a23() {
 # ---- the control rows ------------------------------------------------------------------------------
 # Every answering row that ran in a pass (rows_ran) has a control row, `A<n> control`, run in A13's
 # phase with `answers` removed: the branch's daemon on plain-<store>.yaml, after A13's own probes of
-# that store (run_controls). For each such row the control sends a message of its own to that row's
-# stopped agent, of the kind the row sends, under its own question suffix (control_suffix:
-# `(question <id> of run <tag>, control of A<n>)`), and once every control's message is sent and
-# one wait of control_wait has passed, runs the row's own read over what follows that message
-# alone: its event, its comment, its marker. A control row reads PASS when the row's read failed,
-# and its detail quotes what that read said. For a part of a row that says the loop posts nothing
-# the control first places, where the row looks, a post carrying the loop's mark (control_mark):
-# a reply on the asker's topic in reply to the control's own question (A7, A12's out-of-form leg),
-# a reply in the tester's name in A20's thread under the control's reply, and, for A8, whose read
-# of that part is the daemon's log, a JSON line appended to the log naming the session and saying
-# that no daemon wrote it (place_log_line); that part's own read must then fail too. A control
-# whose message was not taken reads FAIL, since a read of nothing shows nothing.
+# that store (run_controls). A control row reads PASS only when its row's own read failed, so a
+# control does every step that read depends on, and a daemon that still answered would make the read
+# hold: a read that fails whatever the daemon does proves nothing. For each row the control sends a
+# message of its own to that row's stopped agent, of the kind the row sends, under its own question
+# suffix (control_suffix: `(question <id> of run <tag>, control of A<n>)`), and once every control's
+# message is sent and one wait of control_wait has passed, runs the row's own read over what follows
+# that message alone: its event, its comment, its marker. A control row's detail quotes what each
+# part of that read said. What a row's read needs besides the message is done for it:
+#   - a stopped agent's first request after a resume (A9, A10, A23's search legs): after every read
+#     that counts claims or panes, each agent is resumed once with the task its row resumes it
+#     with, waited for as the row waits, and every read that needs it is run in that one resume
+#     (control_agents). A10's Claude Code leg reads the conversation as it stood before the
+#     control's first question, kept under its own name, as the row does;
+#   - A7's forwarded leg: the row's hold-then-resume, replayed in the architect's one resume. Its
+#     running-agent leg's read that the loop posted nothing is run over row A1's thread, where the
+#     loop answered a stopped agent, and must fail on that answer (control_read_a7);
+#   - A12's out-of-form leg and A23's fourth search: the proxy's stand-in step the row uses, each in
+#     a window of its own after every other read, since a stand-in answers every call of the
+#     daemon's label (control_window_a12, control_window_a23). A12's four legs that a bound of
+#     `answers.bounds` makes cannot be reproduced where no answers block exists, and are not read;
+#   - A19: the round recorded as reviewing again with the daemon booted on it (control_prepare_a19),
+#     and the approval the reviewer posted delivered as the row delivers it (control_read_a19);
+#   - A21: the row's own role mention of a role no session took, and its message to the failed
+#     role's topic, both of its own (control_send_a21);
+#   - A22 and A23's configuration legs: the row's own absent and off lines, with this daemon's boot
+#     line and `legion config check` line, each read once for the pass.
+# For a part of a row that says the loop posts nothing the control first places, where the row looks,
+# a post carrying the loop's mark (control_mark), after the row's main read: a reply on the asker's
+# topic in reply to the control's own question (A7, A12's out-of-form leg), a reply in the tester's
+# name in A20's thread under the control's reply, and, for A8, whose read of that part is the daemon's
+# log, a JSON line appended to the log naming the session and saying that no daemon wrote it
+# (place_log_line); that part's own read must then fail too. A control whose message was not taken
+# reads FAIL, since a read of nothing shows nothing.
 # control_suffix ID ROW: the suffix of the control of ROW's question ID.
 control_suffix() { question_suffix "$1" "$run_tag" "control of $2"; }
-# control_mark ROW: the loop's marker as a placement of ROW's control carries it, an answer id of
+# control_question ROW: the id of the question a placement of ROW's control names, an answer id of
 # the run's own no answer of the loop's names.
-control_mark() { printf '<!-- legion-answer:c0de%s%s -->' "$run_tag" "${1#A}"; }
-# control_sent ROW WHAT VALUE notes what ROW's control sent, and fails, keeping why, when VALUE,
-# what the send was answered with, is empty: the message was not taken.
-control_sent() {
-  note "$1 control: $2: ${3:-(not taken)}"
-  [ -n "$3" ] && return 0
+control_question() { printf 'c0de%s%s' "$run_tag" "${1#A}"; }
+# control_mark ROW: the loop's marker as a placement of ROW's control carries it.
+control_mark() { printf '<!-- legion-answer:%s -->' "$(control_question "$1")"; }
+# control_not_taken ROW WHAT notes that WHAT of ROW's control was not taken, keeps why and marks the
+# control unsent, so that it reads FAIL. It fails.
+control_not_taken() {
+  note "$1 control: $2: (not taken)"
   control[$store:$1.why]+="${control[$store:$1.why]:+; }$2 was not taken"
+  control[$store:$1.unsent]=1
   return 1
 }
-# read_failed WHAT READ ARG... runs a row's read, READ ARG..., and holds when it failed, adding
-# what the read said under WHAT to control_said either way.
+# control_sent ROW WHAT VALUE notes what ROW's control sent, and is control_not_taken when VALUE,
+# what the send was answered with, is empty: the message was not taken.
+control_sent() {
+  if [ -n "${3:-}" ]; then
+    note "$1 control: $2: $3"
+  else
+    control_not_taken "$1" "$2" || return 1
+  fi
+}
+# read_failed ROW WHAT READ ARG... runs a row's read, READ ARG..., for ROW's control, and adds what
+# the read said under WHAT to what ROW's control says (control[<store>:ROW.said]) either way. A read
+# that holds marks the control held (control[<store>:ROW.held]): the control then reads FAIL. It
+# always succeeds, so that the parts of one control, which may be read in different phases, all run.
 read_failed() {
-  local what=$1
-  shift
+  local row=$1 what=$2
+  shift 2
   read_said=
   if "$@"; then
-    control_said+="${control_said:+; }$what held: $read_said"
-    return 1
+    control[$store:$row.held]=1
+    control[$store:$row.said]+="${control[$store:$row.said]:+; }$what held: $read_said"
+  else
+    control[$store:$row.said]+="${control[$store:$row.said]:+; }$what failed: $read_said"
   fi
-  control_said+="${control_said:+; }$what failed: $read_said"
 }
 # place_inbox_reply EVENT TEXT places TEXT on the asker's topic in reply to EVENT, a send in the
 # controller stand-in's name that names EVENT as the message it answers, as the loop's answer names
@@ -4261,20 +4407,29 @@ place_inbox_reply() {
 # what A8's read of the daemon's log would find had the loop taken a question of SESSION.
 place_log_line() {
   local line
-  line=$(jq -cn --arg s "$1" --arg q "c0de$run_tag${2#A}" --arg r "$2" --arg m "$(control_mark "$2")" --arg t "$(date -u +%FT%T.000Z)" \
+  line=$(jq -cn --arg s "$1" --arg q "$(control_question "$2")" --arg r "$2" --arg m "$(control_mark "$2")" --arg t "$(date -u +%FT%T.000Z)" \
     '{time: $t, level: "INFO", msg: "answers: question", question: $q, session: $s, state: "posted", marker: $m,
       placed_by: ("scripts/e2e/answer-loop.sh, the control of " + $r + "; no daemon wrote this line")}')
   printf '%s\n' "$line" >>"$daemon_log"
   note "placed in the daemon's log $daemon_log: $line"
 }
-# control_ask ROW KIND TARGET ID KEY asks question ID of the agent at TARGET (KIND session or role)
-# under ROW's control suffix, keeps its event as control[<store>:ROW.KEY], and fails when the
-# listener named none.
+# control_ask ROW KIND TARGET ID KEY [IDEMPOTENCY_KEY] asks question ID of the agent at TARGET (KIND
+# session or role) under ROW's control suffix, keeps its event as control[<store>:ROW.KEY], and fails
+# when the listener named none. The sixth argument is the send's idempotency key, which makes the
+# same key the same question (envoy_ask_text): A12's control passes one, the others none.
 control_ask() {
   local sent
   sent=$(envoy_ask_text "$2" "$3" "$(question_text "$4") $(control_suffix "$4" "$1")" "${6:-}")
   control[$store:$1.$5]=${sent#* }
   control_sent "$1" "$4 to $2 $3 (listener ${sent%% *})" "${sent#* }"
+}
+# control_ask_marked ROW KIND TARGET ID MARKER KEY is control_ask with the suffix a row reads by its
+# marker, `(question <id> of run <tag>, MARKER)`.
+control_ask_marked() {
+  local sent
+  sent=$(envoy_ask_text "$2" "$3" "$(question_text "$4") $(question_suffix "$4" "$run_tag" "$5")")
+  control[$store:$1.$6]=${sent#* }
+  control_sent "$1" "$4 to $2 $3 under \"$5\" (listener ${sent%% *})" "${sent#* }"
 }
 # control_comment ROW KEY ISSUE BODY_JSON posts the proof person's comment BODY_JSON on ISSUE, keeps
 # its id as control[<store>:ROW.KEY], and fails when Dispatch took none.
@@ -4291,77 +4446,75 @@ control_send_a1() {
   control[$store:A1.panes]=$(pane_count)
   control_comment A1 comment "${agent[$store:root]}" "$(jq -cn --arg ask "$ask" --arg body "$(question_text architect-decision) $(control_suffix architect-decision A1)" '{body: $body, ask_id: $ask}')"
 }
-control_read_a1() { read_failed "A1's read" a1_read "${agent[$store:a1.ask]}" "${control[$store:A1.comment]}" "${control[$store:A1.panes]}"; }
+control_read_a1() { read_failed A1 "A1's read" a1_read "${agent[$store:a1.ask]}" "${control[$store:A1.comment]}" "${control[$store:A1.panes]}"; }
 
 control_send_a2() {
-  local ok=0
-  control_ask A2 role "${agent[$store:tester.token]}" tester-role role || ok=1
-  control_ask A2 session "${agent[$store:tester_old.session]}" tester-old-session old || ok=1
-  control_ask A2 session "${agent[$store:pre_change.session]}" pre-change-scan pre || ok=1
+  control_ask A2 role "${agent[$store:tester.token]}" tester-role role || true
+  control_ask A2 session "${agent[$store:tester_old.session]}" tester-old-session old || true
+  control_ask A2 session "${agent[$store:pre_change.session]}" pre-change-scan pre || true
   control[$store:A2.code]=$(a2_unregistered_send)
-  return "$ok"
 }
 control_read_a2() {
-  read_failed "A2's read" a2_read "${control[$store:A2.role]}" "${control[$store:A2.old]}" "${control[$store:A2.pre]}" "${control[$store:A2.code]}"
+  read_failed A2 "A2's read" a2_read "${control[$store:A2.role]}" "${control[$store:A2.old]}" "${control[$store:A2.pre]}" "${control[$store:A2.code]}"
 }
 
 control_send_a3() {
-  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} token=${agent[$store:a3.token]:-} body ok=0
+  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} token=${agent[$store:a3.token]:-} body
   control_sent A3 "A3's role token" "$token" || return 1
   control_comment A3 comment "$issue" "$(jq -cn --arg body "@tester $(question_text tester-closed-thread) $(control_suffix tester-closed-thread A3)" \
-    --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')" || ok=1
+    --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')" || true
   # The conversation page's message, sent as the page sends it to a stopped agent (Aside).
   body="$(question_text tester-conversation-page) $(control_suffix tester-conversation-page A3)"
   control[$store:A3.body]=$body
   if dispatch_human POST "agents/$session/messages" "$(jq -cn --arg b "$body" '{body: $b, delivery: "aside"}')" >/dev/null; then
     note "A3 control: the person's message to $session as its conversation page sends one (aside)"
   else
-    control_sent A3 "the person's message to $session" "" || ok=1
+    control_not_taken A3 "the person's message to $session" || true
   fi
-  return "$ok"
 }
 control_read_a3() {
-  read_failed "A3's read" a3_read "${agent[$store:tester.issue]}" "${control[$store:A3.comment]}" "${agent[$store:tester.session]}" "${control[$store:A3.body]}"
+  read_failed A3 "A3's read" a3_read "${agent[$store:tester.issue]}" "${control[$store:A3.comment]}" "${agent[$store:tester.session]}" "${control[$store:A3.body]}"
 }
 
+# A20's control: the person's reply under the tester's answer, and a second reply under that one,
+# which follows a person's own. With answers the thread would hold the one reply more, the tester's
+# answer to the first (control[<store>:A20.count], the tester's replies it holds now, and one).
 control_send_a20() {
-  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} first=${agent[$store:a20.first]:-} placed ok=0
-  local dispatch_agent_session=$session
+  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} first=${agent[$store:a20.first]:-} head=${agent[$store:a3.comment]:-}
   control_sent A20 "A20's reply under the tester's answer" "$first" || return 1
   control[$store:A20.skipped]=$(a20_skipped "$session")
   control[$store:A20.panes]=$(pane_count)
-  control_comment A20 reply "$issue" "$(jq -cn --arg to "$first" --arg body "$(question_text tester-thread-reply) $(control_suffix tester-thread-reply A20)" '{body: $body, reply_to: $to}')" || ok=1
+  control[$store:A20.count]=$(reply_count "$(thread_replies_by "$head" "$session")")
+  control_comment A20 reply "$issue" "$(jq -cn --arg to "$first" --arg body "$(question_text tester-thread-reply) $(control_suffix tester-thread-reply A20)" '{body: $body, reply_to: $to}')" || true
   control_comment A20 control "$issue" "$(jq -cn --arg to "${control[$store:A20.reply]}" \
-    --arg body "And how many runs did that rerun pass? (a reply under the person's own reply, control of A20, run $run_tag)" '{body: $body, reply_to: $to}')" || ok=1
-  # Where A20's last sentence looks, a reply in the tester's own name under that reply, carrying
-  # the loop's mark: the read that the tester posted nothing there must see it.
-  placed=$(dispatch_agent POST "issues/$issue/comments" "$(jq -cn --arg to "${control[$store:A20.control]}" \
+    --arg body "And how many runs did that rerun pass? (a reply under the person's own reply, control of A20, run $run_tag)" '{body: $body, reply_to: $to}')" || true
+}
+# control_read_a20 runs A20's read, then, where its last sentence looks, places a reply in the
+# tester's own name under the control's reply, carrying the loop's mark, and the read that the tester
+# posted nothing there must see it. The mark is placed after the main read, which holds that part too.
+control_read_a20() {
+  local head=${agent[$store:a3.comment]} count=${control[$store:A20.count]:-0} placed
+  local session=${agent[$store:tester.session]} dispatch_agent_session=${agent[$store:tester.session]}
+  read_failed A20 "A20's read" a20_read "$head" "${control[$store:A20.reply]}" "${control[$store:A20.control]}" "${control[$store:A20.skipped]}" "${control[$store:A20.panes]}" "$((count + 1))"
+  placed=$(dispatch_agent POST "issues/${agent[$store:tester.issue]}/comments" "$(jq -cn --arg to "${control[$store:A20.control]}" \
     --arg body "Placed by the control of A20 in the tester's name, as a reply of the loop's would stand: $(control_mark A20)" '{body: $body, reply_to: $to}')" |
     jq -r '.id // empty') || placed=
-  control_sent A20 "the reply carrying the loop's mark placed in $session's name under ${control[$store:A20.control]}" "$placed" || ok=1
-  return "$ok"
-}
-control_read_a20() {
-  local ok=0 head=${agent[$store:a3.comment]}
-  read_failed "A20's read" a20_read "$head" "${control[$store:A20.reply]}" "${control[$store:A20.control]}" "${control[$store:A20.skipped]}" "${control[$store:A20.panes]}" || ok=1
-  read_failed "with a reply carrying the loop's mark placed in the tester's name under ${control[$store:A20.control]}, its read that the tester posts nothing there" \
-    a20_nothing_posted "$head" "${control[$store:A20.control]}" || ok=1
-  return "$ok"
+  control_sent A20 "the reply carrying the loop's mark placed in $session's name under ${control[$store:A20.control]}" "$placed" || true
+  read_failed A20 "with a reply carrying the loop's mark placed in the tester's name under ${control[$store:A20.control]}, its read that the tester posts nothing there" \
+    a20_nothing_posted "$head" "${control[$store:A20.control]}"
 }
 
-control_send_a4() { control_ask A4 session "${agent[$store:planner.session]}" unanswerable event; }
-control_read_a4() { read_failed "A4's read" passed_on_read unanswerable "${control[$store:A4.event]}"; }
-control_send_a5() { control_ask A5 session "${agent[$store:planner.session]}" working-copy event; }
-control_read_a5() { read_failed "A5's read" passed_on_read working-copy "${control[$store:A5.event]}"; }
+control_send_a4() { control_ask A4 session "${agent[$store:planner.session]}" unanswerable event || true; }
+control_read_a4() { read_failed A4 "A4's read" passed_on_read unanswerable "${control[$store:A4.event]}"; }
+control_send_a5() { control_ask A5 session "${agent[$store:planner.session]}" working-copy event || true; }
+control_read_a5() { read_failed A5 "A5's read" passed_on_read working-copy "${control[$store:A5.event]}"; }
 
 control_send_a15() {
-  local ok=0
-  control_ask A15 session "${agent[$store:planner.session]}" repository-file planner || ok=1
-  control_ask A15 session "${agent[$store:pre_change.session]}" repository-file reviewer || ok=1
-  return "$ok"
+  control_ask A15 session "${agent[$store:planner.session]}" repository-file planner || true
+  control_ask A15 session "${agent[$store:pre_change.session]}" repository-file reviewer || true
 }
 control_read_a15() {
-  read_failed "A15's read" a15_read "${control[$store:A15.planner]}" "${control[$store:A15.reviewer]}" "$(control_suffix repository-file A15)"
+  read_failed A15 "A15's read" a15_read "${control[$store:A15.planner]}" "${control[$store:A15.reviewer]}" "$(control_suffix repository-file A15)"
 }
 
 # a6_control_leg NAME ID N replies, as A6's leg N does, on the ask agent NAME opened, with question
@@ -4374,168 +4527,217 @@ a6_control_leg() {
   control_comment A6 "comment$3" "${agent[$store:$1.issue]}" "$(jq -cn --arg ask "$ask" --arg body "$(question_text "$2") $(control_suffix "$2" A6)" '{body: $body, ask_id: $ask}')"
 }
 control_send_a6() {
-  local ok=0
-  a6_control_leg tester a6-tester-decision 1 || ok=1
-  [ -z "${agent[$store:a6.leg2]:-}" ] || a6_control_leg a6_child a6-child-decision 2 || ok=1
-  return "$ok"
+  a6_control_leg tester a6-tester-decision 1 || true
+  [ -z "${agent[$store:a6.leg2]:-}" ] || a6_control_leg a6_child a6-child-decision 2 || true
 }
 control_read_a6() {
-  local ok=0
-  read_failed "A6's first leg" decide_and_ask_read tester a6-tester-decision "the controller" "${control[$store:A6.ask1]}" "${control[$store:A6.comment1]}" || ok=1
+  read_failed A6 "A6's first leg" decide_and_ask_read tester a6-tester-decision "the controller" "${control[$store:A6.ask1]}" "${control[$store:A6.comment1]}"
   if [ -n "${agent[$store:a6.leg2]:-}" ]; then
-    read_failed "A6's second leg" decide_and_ask_read a6_child a6-child-decision a6_architect "${control[$store:A6.ask2]}" "${control[$store:A6.comment2]}" || ok=1
+    read_failed A6 "A6's second leg" decide_and_ask_read a6_child a6-child-decision a6_architect "${control[$store:A6.ask2]}" "${control[$store:A6.comment2]}"
   fi
-  return "$ok"
 }
 
+# A7's control has two parts. (a) With answers removed A7's forwarded leg is replayed: the row's
+# hold-then-resume, in the architect's one resume (control_replay_a7), and the read of that leg
+# must fail. (b) The running-agent leg's read that the loop posted nothing (a7_loop_posted_nothing)
+# is run over row A1's thread, where the loop answered a stopped agent: the architect's reply on
+# A1's ask, which the loop posted with its mark, so the read finds the loop's answer there and reads
+# as failed. (b) makes no model call.
 control_send_a7() {
-  local ok=0 sent
-  control[$store:A7.lines]=$(answers_line_count)
-  control[$store:A7.appended]=$(appended_exchanges architect)
-  sent=$(envoy_ask_text session "${agent[$store:architect.session]}" "$(question_text in-order-1) $(control_suffix in-order-1 A7)")
-  control[$store:A7.sent1]=$sent
-  control_sent A7 "in-order-1 to the stopped architect (listener ${sent%% *})" "${sent#* }" || ok=1
-  control_ask A7 session "${agent[$store:architect.session]}" in-order-2 event2 || ok=1
-  place_inbox_reply "${control[$store:A7.event2]}" "Placed by the control of A7, a reply to the question as the loop's would stand. $(control_mark A7)" ||
-    control_sent A7 "the reply carrying the loop's mark placed on the asker's topic" "" || ok=1
-  return "$ok"
+  control_sent A7 "A1's ask, whose thread the running-agent leg's read is run over" "${agent[$store:a1.ask]:-}" || true
 }
 control_read_a7() {
-  local ok=0
-  read_failed "A7's first leg" a7_alone_read "${control[$store:A7.sent1]}" "question in-order-1 of run $run_tag, control of A7" "${control[$store:A7.lines]}" || ok=1
-  read_failed "A7's second leg" a7_forwarded_read "${control[$store:A7.event2]}" "question in-order-2 of run $run_tag, control of A7" "${control[$store:A7.appended]}" || ok=1
-  read_failed "with a reply carrying the loop's mark placed on the asker's topic in reply to it, A7's read that the loop posts nothing" \
-    a7_nothing_posted "${control[$store:A7.event2]}" || ok=1
-  return "$ok"
+  local ask=${agent[$store:a1.ask]:-} comment=${agent[$store:a1.comment]:-} reply
+  reply=$(ask_reply_after "$ask" "$comment" "${agent[$store:architect.session]}" 2>/dev/null) || reply=
+  read_failed A7 "A7's running-agent leg's read that the loop posted nothing, run over row A1's thread (the architect's reply on ask $ask after the person's reply $comment, which the loop posted)" \
+    a7_loop_posted_nothing "$reply"
+}
+# control_replay_a7 replays A7's second leg with answers removed, as the first part of the one resume
+# of the architect: the proxy's hold on the loop's label placed, control of A7's in-order-2 sent to
+# the stopped architect, the claim resumed while the loop's model call would be held (with no
+# answers there is none, and the wait for it is the row's own, 240 s), the hold released and, where a
+# call was held, the drop and the forward waited for as the row waits, and A7's read of the leg made.
+# Then a reply carrying the loop's mark is placed on the asker's topic in reply to the question, and
+# A7's read that the loop posts nothing must fail on it.
+control_replay_a7() {
+  local label=daemon-$store token=${agent[$store:architect.token]} session=${agent[$store:architect.session]} n k held=no event appended
+  local needle="question in-order-2 of run $run_tag, control of A7"
+  appended=$(appended_exchanges architect)
+  n=$(proxy_ordinal "$label")
+  k=$(held_count "$label")
+  hold_at "$label" "$n"
+  control_ask A7 session "$session" in-order-2 event || true
+  event=${control[$store:A7.event]:-}
+  if soft_wait 240 "the loop's model call to be held at the proxy" held_since "$label" "$k"; then held=yes; fi
+  claims_cmd resume --claim "$token" >/dev/null || true
+  soft_wait 300 "the architect to start" claim_is "$token" '.state | IN("launching", "shim_connected", "registered", "ready", "working", "idle")' || true
+  release "$label"
+  dropped() { answer_dropped "$session"; }
+  delivered() { conversation_holds architect "$needle"; }
+  if [ "$held" = yes ]; then
+    soft_wait 300 "the answer to be dropped and the question forwarded" dropped || true
+    soft_wait 300 "the running architect to receive the forwarded question" delivered || true
+  fi
+  soft_wait 300 "the architect to run again" claim_is "$token" '.state | IN("ready", "idle")' || true
+  soft_wait 120 "the architect's session to be live in the listener" session_live "$session" || true
+  read_failed A7 "A7's forwarded leg, replayed (the loop's model call held: $held)" a7_forwarded_read "$event" "$needle" "$appended"
+  place_inbox_reply "$event" "Placed by the control of A7, a reply to the question as the loop's would stand. $(control_mark A7)" ||
+    control_not_taken A7 "the reply carrying the loop's mark placed on the asker's topic" || true
+  read_failed A7 "with a reply carrying the loop's mark placed on the asker's topic in reply to it, A7's read that the loop posts nothing" a7_nothing_posted "$event"
 }
 
 control_send_a8() {
-  local planner=${agent[$store:planner.session]} tester_old=${agent[$store:tester_old.session]} sent ok=0
+  local planner=${agent[$store:planner.session]} tester_old=${agent[$store:tester_old.session]} sent code
   control[$store:A8.stored]=$(listener_stored_handoffs_to "$planner")
   sent=$(envoy_ask_text session "$planner" "$(question_text unanswerable) $(control_suffix unanswerable A8)" "a8-control-$run_tag-$store")
   control[$store:A8.sent]=$sent
-  control_sent A8 "unanswerable to the planner (listener ${sent%% *})" "${sent#* }" || ok=1
+  control_sent A8 "unanswerable to the planner (listener ${sent%% *})" "${sent#* }" || true
   control[$store:A8.posted]=$(answers_lines "answers: question" "$planner" posted)
   control[$store:A8.own]=$(answers_lines "answers: question" "$tester_old")
   control[$store:A8.handed]=$(listener_handoffs_to "$tester_old")
   control[$store:A8.appended]=$(appended_exchanges tester_old)
   control[$store:A8.refused]=$(controller_questions post_refused)
-  envoy -o /dev/null --data "$(jq -cn --arg s "$planner" --arg from "$tester_old" --arg m "$(question_text repository-file) $(control_suffix own-answer A8)" \
-    '{target_session: $s, source: "agent", source_session: $from, message: $m}')" "$(listener_url /v1/messages/send)" || ok=1
+  code=$(a8_own_send "$(question_text repository-file) $(control_suffix own-answer A8)")
+  if [ "$code" = 200 ]; then
+    note "A8 control: the planner's question sent as the replaced tester: listener $code"
+  else
+    control_not_taken A8 "the planner's question sent as the replaced tester (listener $code)" || true
+  fi
   control[$store:A8.edit]=$(answers_lines "answers: question" "${agent[$store:architect.session]}")
   if [ -n "${agent[$store:a1.comment]:-}" ]; then
-    dispatch_human PATCH "comments/${agent[$store:a1.comment]}" "$(jq -cn --arg b "$(question_text architect-decision) (edited, control of A8)" '{body: $b}')" >/dev/null || ok=1
+    dispatch_human PATCH "comments/${agent[$store:a1.comment]}" "$(jq -cn --arg b "$(question_text architect-decision) (edited, control of A8)" '{body: $b}')" >/dev/null ||
+      control_not_taken A8 "the person's edit of comment ${agent[$store:a1.comment]}" || true
   fi
   # A8's read of the parts that say the loop answers nothing is the daemon's log, so that is where
   # the control places what a loop that answered would have written.
   place_log_line "$tester_old" A8
   place_log_line "${agent[$store:architect.session]}" A8
-  return "$ok"
 }
 control_read_a8() {
-  local ok=0
-  read_failed "A8's first leg" a8_once_read "${control[$store:A8.stored]}" "${control[$store:A8.sent]}" || ok=1
-  read_failed "A8's second leg" a8_kill_read "${control[$store:A8.sent]#* }" || ok=1
-  read_failed "A8's third leg's delivery" a8_own_delivered_read "${control[$store:A8.posted]}" "${control[$store:A8.handed]}" "${control[$store:A8.appended]}" \
-    "$(newest_question "${agent[$store:planner.session]}" posted)" || ok=1
-  read_failed "with a line carrying the loop's mark placed in the daemon's log for the replaced tester (placed by the control, no daemon wrote it), A8's read that the loop answers nothing of its own answer" \
-    a8_own_unanswered_read "${control[$store:A8.own]}" "${control[$store:A8.refused]}" "c0de${run_tag}8" || ok=1
-  read_failed "with such a line placed for the architect, A8's read that the loop answers no edit" a8_edit_unanswered_read "${control[$store:A8.edit]}" || ok=1
-  return "$ok"
+  read_failed A8 "A8's first leg" a8_once_read "${control[$store:A8.stored]}" "${control[$store:A8.sent]}"
+  read_failed A8 "A8's second leg" a8_kill_read "${control[$store:A8.sent]#* }"
+  read_failed A8 "A8's third leg's delivery" a8_own_delivered_read "${control[$store:A8.posted]}" "${control[$store:A8.handed]}" "${control[$store:A8.appended]}" \
+    "$(newest_question "${agent[$store:planner.session]}" posted)"
+  read_failed A8 "with a line carrying the loop's mark placed in the daemon's log for the replaced tester (placed by the control, no daemon wrote it), A8's read that the loop answers nothing of its own answer" \
+    a8_own_unanswered_read "${control[$store:A8.own]}" "${control[$store:A8.refused]}" "$(control_question A8)"
+  read_failed A8 "with such a line placed for the architect, A8's read that the loop answers no edit" a8_edit_unanswered_read "${control[$store:A8.edit]}"
 }
 
+# A9's control asks the two questions of the stopped architect; the architect's one resume
+# (control_agents) is the row's, its task the row's after-resume question, and the row's read is run
+# over the first request after the resume's mark.
 control_send_a9() {
-  local ok=0 sent n
-  control[$store:A9.m]=$(proxy_count agents)
+  local n
   for n in 1 2; do
-    sent=$(envoy_ask_text session "${agent[$store:architect.session]}" "$(question_text "in-order-$n") $(control_suffix "in-order-$n" A9)")
-    control[$store:A9.e$n]=${sent#* }
-    control_sent A9 "in-order-$n to the stopped architect (listener ${sent%% *})" "${sent#* }" || ok=1
+    control_ask A9 session "${agent[$store:architect.session]}" "in-order-$n" "e$n" || true
   done
-  return "$ok"
 }
-control_read_a9() {
-  read_failed "A9's read" a9_read "${control[$store:A9.e1]}" "${control[$store:A9.e2]}" "control of A9" "${control[$store:A9.m]}" "$(control_suffix in-order-1 A9)"
+control_resumed_a9() {
+  read_failed A9 "A9's read" a9_read "${control[$store:A9.e1]}" "${control[$store:A9.e2]}" "control of A9" "${control[$store:architect.m]}" "$(question_text after-resume)"
 }
 
-# control_ask_marked ROW KIND TARGET ID MARKER KEY is control_ask with the suffix a row reads by its
-# marker, `(question <id> of run <tag>, MARKER)`.
-control_ask_marked() {
-  local sent
-  sent=$(envoy_ask_text "$2" "$3" "$(question_text "$4") $(question_suffix "$4" "$run_tag" "$5")")
-  control[$store:$1.$6]=${sent#* }
-  control_sent "$1" "$4 to $2 $3 under \"$5\" (listener ${sent%% *})" "${sent#* }"
-}
+# A10's control asks what the row asks: the pre-change reviewer both questions of the Claude Code leg,
+# ten seconds apart, its conversation first kept as the row keeps it before its first question
+# (sessions/<store>/pre_change-before-control-of-A10-1.jsonl); the architect the question after the
+# compaction the row made; and, where the row ran the GPT-6.1 clause, the merger the two cache
+# questions and the first of the questions file's a10.reasoning list, its conversation kept before the
+# first and before the second (sessions/<store>/gpt-before-control-of-A10-gpt-{1,2}.jsonl), that
+# first reasoning question being what makes an answer of the loop owe the read a carried item
+# (control[<store>:A10.gpt], `id=event` of each). Each agent is resumed once (control_agents) and
+# the row's read of it is run there.
 control_send_a10() {
-  local ok=0
-  control[$store:A10.mc]=$(proxy_count "claude-$store")
-  control_ask_marked A10 session "${agent[$store:pre_change.session]}" pre-change-scan "control of A10-1" e1 || ok=1
-  control_ask_marked A10 session "${agent[$store:pre_change.session]}" pre-change-scan "control of A10-2" e2 || ok=1
-  control[$store:A10.ma]=$(proxy_count agents)
-  control_ask_marked A10 session "${agent[$store:architect.session]}" in-order-2 "control of A10 after compaction" e3 || ok=1
-  if [ -n "${agent[$store:a10.gpt]:-}" ]; then
-    control[$store:A10.mg]=$(proxy_count agents-gpt)
-    control_ask_marked A10 session "${agent[$store:gpt.session]}" gpt-repository-module "control of A10-gpt-1" g1 || ok=1
-  fi
-  return "$ok"
+  local dir=$evidence/sessions/$store reasoning id n
+  mkdir -p "$dir"
+  conversation_text pre_change >"$dir/pre_change-before-control-of-A10-1.jsonl" 2>/dev/null || true
+  control_ask_marked A10 session "${agent[$store:pre_change.session]}" pre-change-scan "control of A10-1" e1 || true
+  sleep 10
+  control_ask_marked A10 session "${agent[$store:pre_change.session]}" pre-change-scan "control of A10-2" e2 || true
+  control_ask_marked A10 session "${agent[$store:architect.session]}" in-order-2 "control of A10 after compaction" e3 || true
+  [ -n "${agent[$store:a10.gpt]:-}" ] || return 0
+  reasoning=$(jq -r '.a10.reasoning[0] // empty' "$questions_file")
+  n=0
+  control[$store:A10.gpt]=
+  for id in gpt-repository-module gpt-repository-go $reasoning; do
+    n=$((n + 1))
+    [ "$n" != 3 ] || sleep 10
+    [ "$n" -gt 2 ] || conversation_text gpt >"$dir/gpt-before-control-of-A10-gpt-$n.jsonl" 2>/dev/null || true
+    control_ask_marked A10 session "${agent[$store:gpt.session]}" "$id" "control of A10-gpt-$n" "g$n" || true
+    control[$store:A10.gpt]+="${control[$store:A10.gpt]:+ }$id=${control[$store:A10.g$n]}"
+    [ "$n" != 1 ] || sleep 10
+  done
 }
-control_read_a10() {
-  local ok=0 line
-  line=$(answered_line "$(answer_question_id "$(inbox_reply "${control[$store:A10.e2]}" || true)")") || line=
-  read_failed "A10's Claude Code leg" a10_claude_read "${control[$store:A10.e1]}" "${control[$store:A10.e2]}" "control of A10-1" "control of A10-2" "$line" "${control[$store:A10.mc]}" || ok=1
-  read_failed "A10's compaction leg" a10_compaction_read "${control[$store:A10.e3]}" "control of A10 after compaction" "${control[$store:A10.ma]}" || ok=1
-  if [ -n "${agent[$store:a10.gpt]:-}" ]; then
-    read_failed "A10's GPT-6.1 clause" a10_gpt_read "control of A10-gpt" "${control[$store:A10.mg]}" "gpt-repository-module=${control[$store:A10.g1]}" || ok=1
-  fi
-  return "$ok"
+control_resumed_a10() {
+  local line
+  case "$1" in
+    pre_change)
+      line=$(answered_line "$(answer_question_id "$(inbox_reply "${control[$store:A10.e2]}" 2>/dev/null || true)")") || line=
+      read_failed A10 "A10's Claude Code leg" a10_claude_read "${control[$store:A10.e1]}" "${control[$store:A10.e2]}" "control of A10-1" "control of A10-2" "$line" \
+        "${control[$store:pre_change.m]}" "$evidence/sessions/$store/pre_change-before-control-of-A10-1.jsonl"
+      ;;
+    architect)
+      read_failed A10 "A10's compaction leg" a10_compaction_read "${control[$store:A10.e3]}" "control of A10 after compaction" "${control[$store:architect.m]}"
+      ;;
+    gpt)
+      # shellcheck disable=SC2086 # each id=event is a word of its own
+      read_failed A10 "A10's GPT-6.1 clause" a10_gpt_read "control of A10-gpt" "${control[$store:gpt.m]}" ${control[$store:A10.gpt]}
+      ;;
+  esac
 }
 
-control_send_a12() {
-  control_ask A12 session "${agent[$store:planner.session]}" repository-file event "a12-control-$run_tag-$store" || return 1
-  place_inbox_reply "${control[$store:A12.event]}" "not the reply form (placed by the control of A12, a reply out of form as it would stand had the loop posted it) $(control_mark A12)" ||
-    control_sent A12 "the out-of-form reply placed on the asker's topic" ""
+# A12's control keeps the one leg a daemon with no answers block can be driven through, the reply
+# out of form (malformed), which the proxy's stand-in step makes with no bound set: a daemon that
+# still answered would pass that fault on. The four legs a bound of `answers.bounds` makes
+# (model_calls, answer_seconds, length, over_limit) and the model_calls leg's answered line can only
+# be driven by an answers block, which this daemon does not have, so they are not read. The stand-in
+# answers every call of the daemon's label, so the leg is a window of its own, after every other
+# read; the row's wait for the fault is its own, control_wait.
+control_window_a12() {
+  local event
+  a12_stand_in malformed
+  control_ask A12 session "${agent[$store:planner.session]}" repository-file event "a12-control-$run_tag-$store" || true
+  event=${control[$store:A12.event]:-}
+  soft_wait "$control_wait" "the malformed fault to be passed on" fault_passed_on malformed || true
+  read_failed A12 "A12's malformed leg" a12_leg_read malformed "$event"
+  a12_stand_in none
+  # Where A12's last sentence looks, a reply out of form carrying the loop's mark, placed after the
+  # leg's read, which holds that part too: the read that such a reply is not posted must fail on it.
+  place_inbox_reply "$event" "not the reply form (placed by the control of A12, a reply out of form as it would stand had the loop posted it) $(control_mark A12)" ||
+    control_not_taken A12 "the out-of-form reply placed on the asker's topic" || true
+  read_failed A12 "with a reply out of form carrying the loop's mark placed in reply to it, A12's read that such a reply is not posted" a12_not_posted_read "$event"
 }
 # a12_not_posted_read EVENT is a12_not_posted as a read of its own, saying what it read.
 a12_not_posted_read() {
   read_said="the reply to ${1:-(no event)} on the asker's topic: $(said_text "$(inbox_reply "${1:-}" 2>/dev/null || true)")"
   a12_not_posted "${1:-}"
 }
-control_read_a12() {
-  local ok=0 fault
-  for fault in model_calls answer_seconds length malformed over_limit; do
-    read_failed "A12's $fault leg" a12_leg_read "$fault" "${control[$store:A12.event]}" || ok=1
-  done
-  read_failed "A12's model_calls answered line" a12_calls_read "${control[$store:A12.event]}" || ok=1
-  read_failed "with a reply out of form carrying the loop's mark placed in reply to it, A12's read that such a reply is not posted" \
-    a12_not_posted_read "${control[$store:A12.event]}" || ok=1
-  return "$ok"
-}
 
-control_send_a14() { control_ask A14 session "${agent[$store:planner.session]}" repository-file event; }
+control_send_a14() { control_ask A14 session "${agent[$store:planner.session]}" repository-file event || true; }
 control_read_a14() {
-  read_failed "A14's read of the cost lines since the control's question" a14_read "$(boot_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')"
+  read_failed A14 "A14's read of the cost lines since the control's question" a14_read "$(boot_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')"
 }
 
 control_send_a17() {
-  local marker=answer-loop-a17-control-$run_tag-$store issue=${agent[$store:implementer.issue]} session=${agent[$store:implementer.session]} ok=0
+  local marker=answer-loop-a17-control-$run_tag-$store issue=${agent[$store:implementer.issue]} session=${agent[$store:implementer.session]}
   control[$store:A17.marker]=$marker
   control[$store:A17.impl]="$(comment_request "$marker") (control of A17, run $run_tag, $store)"
   control[$store:A17.leak]="$(comment_request "$leak_marker") If a tool refuses the call, quote what it answered word for word. (control of A17, run $run_tag, $store)"
   control[$store:A17.review]="$(a17_review_body "$marker") (control of A17)"
-  person_message "$issue" "$session" "${control[$store:A17.impl]}" || control_sent A17 "the comment request to $session" "" || ok=1
-  person_message "$issue" "$session" "${control[$store:A17.leak]}" || control_sent A17 "the refused comment's request to $session" "" || ok=1
+  person_message "$issue" "$session" "${control[$store:A17.impl]}" || control_not_taken A17 "the comment request to $session" || true
+  person_message "$issue" "$session" "${control[$store:A17.leak]}" || control_not_taken A17 "the refused comment's request to $session" || true
   person_message "${agent[$store:pre_change.issue]}" "${agent[$store:pre_change.session]}" "${control[$store:A17.review]}" ||
-    control_sent A17 "the second owner's write request to ${agent[$store:pre_change.session]}" "" || ok=1
-  return "$ok"
+    control_not_taken A17 "the second owner's write request to ${agent[$store:pre_change.session]}" || true
 }
+# The pull request's comments are listed once: the first leg reads the comments holding the
+# control's marker, the leak-guard leg the listing, and whatever a control that failed made on GitHub
+# goes on exit, as A17's own writes do.
 control_read_a17() {
-  local ok=0 id
-  read_failed "A17's first leg" a17_impl_read "${control[$store:A17.impl]}" "${control[$store:A17.marker]}" || ok=1
-  read_failed "A17's leak-guard leg" a17_leak_read "${control[$store:A17.leak]}" "${control[$store:A17.marker]}" || ok=1
-  read_failed "A17's reviewer leg" a17_review_read "${control[$store:A17.review]}" || ok=1
-  # Whatever a control that failed made on GitHub goes on exit, as A17's own writes do.
-  for id in $(pr_comments "${agent[$store:implementer.pr]}" "${control[$store:A17.marker]}" | jq -r '.[].id'); do github_writes+=("comment:$id"); done
-  return "$ok"
+  local listing comments id
+  listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
+  comments=$(pr_comments_holding "$listing" "${control[$store:A17.marker]}")
+  read_failed A17 "A17's first leg" a17_impl_read "${control[$store:A17.impl]}" "${control[$store:A17.marker]}" "$comments"
+  read_failed A17 "A17's leak-guard leg" a17_leak_read "${control[$store:A17.leak]}" "${control[$store:A17.marker]}" "$listing"
+  read_failed A17 "A17's reviewer leg" a17_review_read "${control[$store:A17.review]}"
+  for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
 }
 
 control_send_a18() {
@@ -4543,40 +4745,82 @@ control_send_a18() {
   control[$store:A18.marker]=$marker
   sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker") (control of A18, run $run_tag)" "a18-control-$run_tag-$store")
   control[$store:A18.event]=${sent#* }
-  control_sent A18 "the comment request to the implementer (listener ${sent%% *})" "${sent#* }"
+  control_sent A18 "the comment request to the implementer (listener ${sent%% *})" "${sent#* }" || true
 }
 control_read_a18() {
-  local ok=0 id
-  read_failed "A18's restart leg" a18_restart_read "${control[$store:A18.marker]}" "${control[$store:A18.event]}" || ok=1
-  read_failed "A18's resume leg" a18_resume_read "${control[$store:A18.marker]}" "${control[$store:A18.event]}" || ok=1
-  for id in $(pr_comments "${agent[$store:implementer.pr]}" "${control[$store:A18.marker]}" | jq -r '.[].id'); do github_writes+=("comment:$id"); done
-  return "$ok"
+  local comments id
+  comments=$(pr_comments "${agent[$store:implementer.pr]}" "${control[$store:A18.marker]}")
+  read_failed A18 "A18's restart leg" a18_restart_read "${control[$store:A18.marker]}" "${control[$store:A18.event]}" "$comments"
+  read_failed A18 "A18's resume leg" a18_resume_read "${control[$store:A18.marker]}" "${control[$store:A18.event]}" "$comments"
+  for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
 }
 
+# A19's read needs the round open in `reviewing` on this boot, which only the approval's delivery
+# moves on, and A19 itself moved the issue on. So before the controls' messages the daemon is
+# stopped, the round written again as check_a19 writes it (a19_seed_round) and the daemon booted on
+# it, on the plain configuration, once GitHub reads the pull request mergeable. The control asks
+# the reviewer for an approval, and delivers the one the reviewer posted since, as the row does.
+control_prepare_a19() {
+  local issue=${agent[$store:a19.issue]:-} number=${agent[$store:a19.number]:-} head=${agent[$store:a19.head]:-} token
+  if [ -z "$issue" ] || [ -z "$number" ]; then
+    control_not_taken A19 "A19's review round" || true
+    return 0
+  fi
+  token=$(claim_token "$issue" reviewer)
+  a19_pr_mergeable "$number" 120 || control_not_taken A19 "GitHub reading $repo#$number as mergeable (it read ${a19_merge_state:-never})" || true
+  stop_daemon
+  if pg_sql "$daemon_db" "update issues set phase = 'reviewing', held_from = null where key = '$issue'" >/dev/null &&
+    pg_sql "$daemon_db" "delete from phases where issue = '$issue'" >/dev/null &&
+    pg_sql "$daemon_db" "delete from pull_requests where issue = '$issue'" >/dev/null &&
+    a19_seed_round "$issue" "legion-e2eal/${issue,,}" "$number" "$head" "$token"; then
+    note "recorded $issue's review round open again on #$number at $head: $(review_record "$issue")"
+  else
+    control_not_taken A19 "the review round of $issue written again" || true
+  fi
+  start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
+}
 control_send_a19() {
   local number=${agent[$store:a19.number]:-} head=${agent[$store:a19.head]:-} sent
   control_sent A19 "A19's pull request" "$number" || return 1
   control[$store:A19.since]=$(date -u +%FT%TZ)
   sent=$(envoy_ask_text session "${agent[$store:reviewer.session]}" "Please approve your pull request #$number on $repo at its head $head now, with your gh tool: gh pr review $number -R $repo --approve --body 'Approved: nothing to change.' Then tell me what you did. (control of A19, run $run_tag)")
-  control_sent A19 "the approval request to the reviewer (listener ${sent%% *})" "${sent#* }"
+  control_sent A19 "the approval request to the reviewer (listener ${sent%% *})" "${sent#* }" || true
 }
 control_read_a19() {
-  read_failed "A19's read" a19_read "${agent[$store:a19.number]}" "${agent[$store:reviewer.session]}" "${agent[$store:a19.head]}" "${agent[$store:a19.issue]}" "${control[$store:A19.since]}"
+  local number=${agent[$store:a19.number]} session=${agent[$store:reviewer.session]} head=${agent[$store:a19.head]} issue=${agent[$store:a19.issue]} since=${control[$store:A19.since]} review delivery
+  approved() { approval_by "$(reviewer_approvals "$number" "$session" "$since")" "$review_app_login" "$head"; }
+  accepted() { phase_changed "$issue" reviewing accepting; }
+  soft_wait 60 "the reviewer's approval of $head on GitHub since $since" approved || true
+  review=$(reviewer_approvals "$number" "$session" "$since")
+  if approval_by "$review" "$review_app_login" "$head"; then
+    delivery=$(deliver_review "$number" "$(approval_id "$review")" control-approval) || true
+    note "A19 control: the approval delivered to the listener's /webhook/github as GitHub delivers it: $delivery"
+    soft_wait 120 "the daemon to move $issue from reviewing to accepting" accepted || true
+  fi
+  read_failed A19 "A19's read" a19_read "$number" "$session" "$head" "$issue" "$since"
 }
 
+# A21's control sends what the row sends: the person's picker mention of the failed implementer's
+# role, the person's mention of the reviewer's role, which no session of the run took (its id is
+# control[<store>:A21.control], the row's own control mention), and a message to the failed role's
+# topic under a marker of its own. The row's read is run over them.
 control_send_a21() {
-  local issue=${agent[$store:failed_implementer.issue]:-} token=${agent[$store:failed_implementer.token]:-}
+  local issue=${agent[$store:failed_implementer.issue]:-} token=${agent[$store:failed_implementer.token]:-} reviewer
   control_sent A21 "A21's issue" "$issue" || return 1
+  reviewer=$(claim_token "$issue" reviewer)
   control[$store:A21.panes]=$(pane_count)
   control_comment A21 comment "$issue" "$(jq -cn --arg body "@implementer $(question_text failed-implementer-role) $(control_suffix failed-implementer-role A21)" \
-    --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')"
+    --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')" || true
+  control_comment A21 control "$issue" "$(jq -cn --arg body "@reviewer $(question_text failed-implementer-role) (control of A21: a role of this issue no session of the run took, run $run_tag)" \
+    --arg t "role:$reviewer" '{body: $body, mentions: [{target: $t}]}')" || true
+  control_ask_marked A21 role "$token" failed-implementer-role "control of A21, role topic" role_event || true
 }
 control_read_a21() {
-  read_failed "A21's read" a21_read "${agent[$store:failed_implementer.issue]}" "${control[$store:A21.comment]}" "" "${control[$store:A21.panes]}"
+  read_failed A21 "A21's read" a21_read "${agent[$store:failed_implementer.issue]}" "${control[$store:A21.comment]}" "${control[$store:A21.control]}" "${control[$store:A21.panes]}" "${control[$store:A21.role_event]}"
 }
 
 control_send_a22() {
-  local planner=${agent[$store:planner.session]} issue=${agent[$store:planner.issue]} target=${agent[$store:a22.target]:-} mentioned=${agent[$store:tester_old.session]} ok=0
+  local planner=${agent[$store:planner.session]} issue=${agent[$store:planner.issue]} target=${agent[$store:a22.target]:-} mentioned=${agent[$store:tester_old.session]}
   control_sent A22 "A22's target issue" "$target" || return 1
   control[$store:A22.marker]=answer-loop-a22-control-$run_tag-$store
   control[$store:A22.read]="$(question_text a22-late-comment) $(control_suffix a22-late-comment A22)"
@@ -4584,46 +4828,121 @@ control_send_a22() {
   control[$store:A22.refuse]="$(a22_refusal_request "$target") (control of A22, run $run_tag, $store)"
   control[$store:A22.skipped]=$(a22_own_skipped "$mentioned")
   control[$store:A22.standing]=$(issue_standing "$target")
-  person_message "$issue" "$planner" "${control[$store:A22.read]}" || control_sent A22 "the question about the late comment" "" || ok=1
-  person_message "$issue" "$planner" "${control[$store:A22.post]}" || control_sent A22 "the comment request" "" || ok=1
-  person_message "$issue" "$planner" "${control[$store:A22.refuse]}" || control_sent A22 "the refused writes' request" "" || ok=1
-  return "$ok"
+  person_message "$issue" "$planner" "${control[$store:A22.read]}" || control_not_taken A22 "the question about the late comment" || true
+  person_message "$issue" "$planner" "${control[$store:A22.post]}" || control_not_taken A22 "the comment request" || true
+  person_message "$issue" "$planner" "${control[$store:A22.refuse]}" || control_not_taken A22 "the refused writes' request" || true
 }
+# A22's configuration legs are read of this daemon's own boot line and `legion config check` line,
+# computed once for the pass (run_controls), and of the row's own absent lines, which the row kept.
 control_read_a22() {
-  local ok=0 target=${agent[$store:a22.target]}
-  read_failed "A22's first leg" a22_read_leg "${control[$store:A22.read]}" || ok=1
-  read_failed "A22's second leg" a22_post_leg "${control[$store:A22.post]}" "$target" "${control[$store:A22.marker]}" "${agent[$store:tester_old.session]}" "${control[$store:A22.skipped]}" || ok=1
-  read_failed "A22's third leg" a22_refusal_leg "${control[$store:A22.refuse]}" "$target" "${control[$store:A22.standing]}" || ok=1
-  read_failed "A22's configuration legs, read of this daemon's own boot and of its configuration" a22_tools_leg "$(boot_tools_line)" "$(config_check_tools "$daemon_config")" "" "" || ok=1
-  return "$ok"
+  local target=${agent[$store:a22.target]}
+  read_failed A22 "A22's first leg" a22_read_leg "${control[$store:A22.read]}"
+  read_failed A22 "A22's second leg" a22_post_leg "${control[$store:A22.post]}" "$target" "${control[$store:A22.marker]}" "${agent[$store:tester_old.session]}" "${control[$store:A22.skipped]}"
+  read_failed A22 "A22's third leg" a22_refusal_leg "${control[$store:A22.refuse]}" "$target" "${control[$store:A22.standing]}"
+  read_failed A22 "A22's configuration legs, read of this daemon's own boot and of its configuration, and of the row's own daemon with no dispatch command" \
+    a22_tools_leg "${control[$store:tools]}" "${control[$store:check]}" "${agent[$store:a22.absent_tools]:-}" "${agent[$store:a22.absent_check]:-}"
 }
 
+# A23's control asks the architect (and the merger where the row ran its GPT-6.1 leg) what the row
+# asks; each is resumed once (control_agents) and the row's search read is run there. Its fourth
+# search is a window of its own (control_window_a23).
 control_send_a23() {
-  local ok=0
-  control[$store:A23.m]=$(proxy_count agents)
-  control_ask_marked A23 session "${agent[$store:architect.session]}" a23-web-search "control of A23" event || ok=1
+  control_ask_marked A23 session "${agent[$store:architect.session]}" a23-web-search "control of A23" event || true
   if [ -n "${agent[$store:a23.gpt]:-}" ]; then
-    control[$store:A23.mg]=$(proxy_count agents-gpt)
-    control_ask_marked A23 session "${agent[$store:gpt.session]}" a23-web-search-gpt "control of A23-gpt" gpt || ok=1
+    control_ask_marked A23 session "${agent[$store:gpt.session]}" a23-web-search-gpt "control of A23-gpt" gpt || true
   fi
-  control_ask A23 session "${agent[$store:planner.session]}" a23-fourth-search fourth || ok=1
-  return "$ok"
 }
 control_read_a23() {
-  local ok=0
-  read_failed "A23's search leg" a23_search_read "${control[$store:A23.event]}" "${control[$store:A23.m]}" agents architect || ok=1
-  if [ -n "${agent[$store:a23.gpt]:-}" ]; then
-    read_failed "A23's GPT-6.1 search leg" a23_search_read "${control[$store:A23.gpt]}" "${control[$store:A23.mg]}" agents-gpt gpt || ok=1
+  read_failed A23 "A23's configuration legs, read of this daemon's own boot and of its configuration, and of the row's own daemon with no answers.web_search" \
+    a23_tools_leg "${control[$store:tools]}" "${control[$store:check]}" "${agent[$store:a23.off_tools]:-}" "${agent[$store:a23.off_check]:-}"
+}
+control_resumed_a23() {
+  case "$1" in
+    architect) read_failed A23 "A23's search leg" a23_search_read "${control[$store:A23.event]}" "${control[$store:architect.m]}" agents architect ;;
+    gpt) read_failed A23 "A23's GPT-6.1 search leg" a23_search_read "${control[$store:A23.gpt]}" "${control[$store:gpt.m]}" agents-gpt gpt ;;
+  esac
+}
+# control_window_a23 is A23's fourth search with answers removed: under the stand-in step that calls
+# web_search four times, as the row runs it, in a window of its own after every other read, since
+# the stand-in answers every call of the daemon's label. The daemon has no answers block to hold the
+# row's `model_calls: 2`; the answer is waited for as it is posted, up to control_wait.
+control_window_a23() {
+  a12_stand_in four_searches
+  control_ask A23 session "${agent[$store:planner.session]}" a23-fourth-search fourth || true
+  soft_wait "$control_wait" "the reply to the fourth search's question" inbox_reply "${control[$store:A23.fourth]:-}" || true
+  read_failed A23 "A23's fourth search" a23_fourth_read "${control[$store:A23.fourth]:-}"
+  a12_stand_in none
+}
+
+# control_ran ROW: ROW ran in this pass (rows_ran) and every message of its control was sent.
+control_ran() { [[ " ${rows_ran[$store]:-} " == *" $1 "* ]] && [ -z "${control[$store:$1.unsent]:-}" ]; }
+# control_turn NAME LABEL TASK: NAME's task is delivered once its claim holds none, its first model
+# call after the mark control[<store>:NAME.m] on LABEL waited for, and its turn's end, as the rows wait.
+control_turn() {
+  local token=${agent[$store:$1.token]}
+  deliver_task "$token" "$3" || true
+  soft_wait 300 "the resumed $1's first model call" more_than "${control[$store:$1.m]}" proxy_count "$2" || true
+  soft_wait 600 "the resumed $1's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
+}
+# control_park NAME suspends NAME's claim and waits for it; control_agents waits for each session to
+# leave the listener's registry once for all of them, since the lapses run side by side.
+control_park() {
+  claims_cmd suspend --claim "${agent[$store:$1.token]}" >/dev/null || true
+  soft_wait 300 "$1 to be suspended" claim_is "${agent[$store:$1.token]}" '.state == "suspended"' || true
+}
+# control_agents runs what needs a stopped agent running, after every read that counts claims or
+# panes: the architect's one resume (A7's replay, A9's read, A10's compaction leg, A23's search leg),
+# the pre-change reviewer's (A10's Claude Code leg) and the merger's (A10's GPT-6.1 clause and A23's
+# GPT-6.1 search leg), each with the task its row resumes it with. Each agent is suspended again, as
+# A13's own probes need it stopped.
+control_agents() {
+  local task name token
+  local -a resumed=()
+  if control_ran A7 || control_ran A9 || control_ran A10 || control_ran A23; then
+    task="Reply with one word: ready."
+    ! control_ran A9 || task=$(question_text after-resume)
+    control[$store:architect.m]=$(proxy_count agents)
+    if control_ran A7; then control_replay_a7; else resume_agent architect || true; fi
+    control_turn architect agents "$task"
+    if control_ran A9; then control_resumed_a9; fi
+    if control_ran A10; then control_resumed_a10 architect; fi
+    if control_ran A23; then control_resumed_a23 architect; fi
+    control_park architect
+    resumed+=(architect)
   fi
-  read_failed "A23's fourth search" a23_fourth_read "${control[$store:A23.fourth]}" || ok=1
-  read_failed "A23's configuration legs, read of this daemon's own boot and of its configuration" a23_tools_leg "$(boot_tools_line)" "$(config_check_tools "$daemon_config")" "" "" || ok=1
-  return "$ok"
+  if control_ran A10; then
+    control[$store:pre_change.m]=$(proxy_count "claude-$store")
+    resume_agent pre_change || true
+    control_turn pre_change "claude-$store" "While you were stopped you were asked what blocked the release. How many times were you asked, and what did you answer?"
+    control_resumed_a10 pre_change
+    control_park pre_change
+    resumed+=(pre_change)
+  fi
+  if { control_ran A10 && [ -n "${control[$store:A10.gpt]:-}" ]; } || { control_ran A23 && [ -n "${control[$store:A23.gpt]:-}" ]; }; then
+    task="Reply with one word: ready."
+    # shellcheck disable=SC2086 # each id=event is a word of its own
+    ! control_ran A10 || [ -z "${control[$store:A10.gpt]:-}" ] || task=$(set -- ${control[$store:A10.gpt]} && printf 'While you were stopped you were asked %s questions about go.mod. What did you answer each time?' "$#")
+    control[$store:gpt.m]=$(proxy_count agents-gpt)
+    resume_agent gpt || true
+    control_turn gpt agents-gpt "$task"
+    if control_ran A10 && [ -n "${control[$store:A10.gpt]:-}" ]; then control_resumed_a10 gpt; fi
+    if control_ran A23 && [ -n "${control[$store:A23.gpt]:-}" ]; then control_resumed_a23 gpt; fi
+    control_park gpt
+    resumed+=(gpt)
+  fi
+  for name in ${resumed[@]+"${resumed[@]}"}; do
+    soft_wait "$session_ttl_wait" "$name's session to leave the listener's registry" session_gone "${agent[$store:$name.session]}" || true
+  done
 }
 
 # run_controls runs the control row of every answering row that ran in the current store's pass
-# (rows_ran), against the daemon running now, the branch's with `answers` removed: every control's
-# message first, then one wait of control_wait, then each row's own read, recorded as
-# `A<n> control`.
+# (rows_ran), against the daemon running now, the branch's with `answers` removed. A row's control
+# may have a preparation (control_prepare_<row>), run first, its messages (control_send_<row>), sent
+# before any wait, then one wait of control_wait, then its reads (control_read_<row>) over what
+# follows its messages, then the reads that need a stopped agent running (control_agents) and the
+# windows that need a stand-in step or a hold of their own (control_window_<row>). Each is recorded as
+# `A<n> control`: PASS when no part of its row's read held, FAIL when one did, or a message was not
+# taken, or no read ran.
 run_controls() {
   local row rows=${rows_ran[$store]:-}
   printf "== controls (%s): each answering row's own read over a message of its own, with answers removed\n" "$store"
@@ -4635,18 +4954,39 @@ run_controls() {
   for row in $rows; do
     control[$store:$row.why]=
     control[$store:$row.unsent]=
-    "control_send_${row,,}" || control[$store:$row.unsent]=1
+    control[$store:$row.said]=
+    control[$store:$row.held]=
+  done
+  for row in $rows; do
+    if declare -F "control_prepare_${row,,}" >/dev/null; then "control_prepare_${row,,}" || true; fi
+  done
+  # This daemon's own boot line and `legion config check` line, read once for A22's and A23's
+  # configuration legs.
+  if [[ " $rows " == *" A22 "* || " $rows " == *" A23 "* ]]; then
+    control[$store:tools]=$(boot_tools_line)
+    control[$store:check]=$(config_check_tools "$daemon_config")
+  fi
+  for row in $rows; do
+    if declare -F "control_send_${row,,}" >/dev/null; then "control_send_${row,,}" || true; fi
   done
   note "every control's message is sent; one wait of ${control_wait}s, the longest a row's own read waits, before any is read"
   sleep "$control_wait"
   for row in $rows; do
-    control_said=
+    if declare -F "control_read_${row,,}" >/dev/null && [ -z "${control[$store:$row.unsent]}" ]; then "control_read_${row,,}" || true; fi
+  done
+  control_agents
+  for row in $rows; do
+    if declare -F "control_window_${row,,}" >/dev/null && [ -z "${control[$store:$row.unsent]}" ]; then "control_window_${row,,}" || true; fi
+  done
+  for row in $rows; do
     if [ -n "${control[$store:$row.unsent]}" ]; then
       record_result "$row control" FAIL "with answers removed, the control's message was not all sent, so its read shows nothing: ${control[$store:$row.why]:-see the notes}"
-    elif "control_read_${row,,}"; then
-      record_result "$row control" PASS "with answers removed, $control_said"
+    elif [ -z "${control[$store:$row.said]}" ]; then
+      record_result "$row control" FAIL "with answers removed, none of the row's reads ran"
+    elif [ -n "${control[$store:$row.held]}" ]; then
+      record_result "$row control" FAIL "with answers removed, ${control[$store:$row.said]}"
     else
-      record_result "$row control" FAIL "with answers removed, $control_said"
+      record_result "$row control" PASS "with answers removed, ${control[$store:$row.said]}"
     fi
   done
 }
@@ -4821,9 +5161,7 @@ run_a13() {
   for probe_store in $stores; do a13_probe base "$probe_store"; done
   stop_daemon
   for store in $stores; do
-    differs=$(for f in send.status send.body publish.status publish.body dispatch-session.json dispatch-role.json; do
-      a13_same "$f" || printf '%s ' "$f"
-    done)
+    differs=$(a13_differs)
     printf '== A13 (%s): with answers removed, a stopped agent is refused exactly as the base commit refuses it\n' "$store"
     note "branch vs base ($base_commit): $(cd "$evidence/a13" && for f in send.body publish.body; do printf '%s %s ' "$f" "$(sha256sum "branch/$store/$f" | cut -c1-12)/$(sha256sum "base/$store/$f" | cut -c1-12)"; done)"
     # Beside the comparison, what both commits answer today: the send is stored for the stopped
@@ -4843,9 +5181,7 @@ run_a13() {
     # A13's control: the same probe of the branch's daemon with `answers` on. Its comparison with
     # the base commit must fail, a missing capture being no difference (a13_captured).
     printf '== A13 control (%s): with answers on, the branch answers a stopped agent unlike the base commit\n' "$store"
-    control_differs=$(for f in send.status send.body publish.status publish.body dispatch-session.json dispatch-role.json; do
-      a13_same "$f" control || printf '%s ' "$f"
-    done)
+    control_differs=$(a13_differs control)
     branch=$evidence/a13/control/$store
     if ! a13_captured control; then
       record_result "A13 control" FAIL "the probe of the branch with answers on, or the base commit's, captured nothing to compare under $evidence/a13"

@@ -1531,11 +1531,12 @@ CI does not run it.
   The loop's `web_search` tool posts each search to `answers.providers.anthropic`, so every search is a record of the daemon's own label too, a Messages call offering the `web_search_20250305` server tool (`search_calls`).
 
 - [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts):
-  the inbox of the run's two stand-in sessions, a core NATS subscriber of each one's relay subject (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
+  the inbox of the run's three stand-in sessions, a core NATS subscriber of each one's relay subject (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each).
   Both stand-ins register as every session registers since main's #2603, each asking for a consumer of its own (`delivery.consumer`), which the listener relays on `notifications.envoy.deliver.<session>`:
   the listener refuses a registration that asks for none (`409 not_requested`), and no session receives from a plain NATS subscription ("Session consumers" in `packages/envoy/AGENTS.md`).
   The asker's consumer carries the answers to its questions.
   The controller stand-in holds both passes' controller roles, `legion-<project token>-controller`, since the listener stores a project's controller lane, `notifications.legion.<project token>.controller`, only for the session holding that role, so its consumer carries the notices the daemons publish there.
+  The third stand-in, A21's first holder, registers only for that row's last leg: it claims a role nobody holds, and its consumer carries what the listener kept for that role.
   The inbox writes each envelope it is relayed as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the payload, `Topic: …`), the same dedupe key never twice on one topic — and then answers the frame `done`, which acknowledges it to the consumer.
   A dedupe key names one envelope on one topic and not one across the run: each daemon keys its controller notices by its own outbox row, so the second pass's daemon repeats the first one's keys on its own lane, and each of those notices is recorded.
   It answers the listener's connection probe on the same subject (`Envoy-Probe: 1`) `done` too, and records nothing of it.
@@ -1544,7 +1545,7 @@ CI does not run it.
   The daemon's `PATH` starts with the run's tmux and the first compiled `gh` on the host's `PATH` (a pane's first `gh` is the `legion
   gh` wrapper script, which the daemon refuses).
   Each branch daemon also boots with `LEGION_DISPATCH_PATH` naming the branch's own pi-envoy pack's `bin/dispatch`, the shim the worker image installs at `/opt/legion/pi-envoy/bin/dispatch`, which the answer loop's `dispatch` tool runs as the stopped agent's session.
-  Before A22 the rig's daemons had no dispatch command at all: their `PATH` holds none and a runner has no worker image's install, so the loop offered no `dispatch` tool.
+  Without `LEGION_DISPATCH_PATH` a daemon of the rig finds no dispatch command, since its `PATH` holds none and a runner has no worker image's install, and the loop then offers no `dispatch` tool, which is how A22's absence leg boots one.
   The listener, the branch's and the base commit's alike, also serves GitHub's webhook route, `/webhook/github` (`ENVOY_WEBHOOKS=github`), as a deployment's does, so A19 can deliver its reviews there:
   its secret is the run's own random value, written `0600` as `$work/github-webhook-secret` and printed nowhere, and `ENVOY_REVIEWER_APP_ID` is the review App's id, without which the route refuses to start.
   That id only tells the reviewer's verdict check runs from another App's, and the run delivers no check run, so a run that read no review App gives [`lib/github-apps.sh`](lib/github-apps.sh)'s default.
@@ -1653,7 +1654,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   The second leg runs only once `legion state` shows the root under `admission.trees` and still at `implementing`, with its architect holding its role again after the restart;
   otherwise A6 is a FAIL naming the tree that was not live.
 
-- A7: a question to the resumed, running architect reaches its conversation and the daemon logs no `answers:` line;
+- A7: a question to the resumed, running architect reaches its conversation, the daemon logs no `answers:` line, and no reply carrying the loop's mark reaches the asker (`a7_loop_posted_nothing`, which A7's control runs over A1's thread);
   then, suspended again, a question whose loop model call the proxy holds while the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
   forwarded`, started), reaches the running architect, and nothing is appended or posted.
   Appended is counted as a delta over the architect's conversation
@@ -1685,6 +1686,8 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
 - A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime, and asked again while no two of its answers came from one Anthropic organization:
   the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the cost line of the first answer that an earlier answer's organization also served reads `cacheReadTokens > 0`, and the resumed reviewer's first model call holds the first two questions' exchanges once each
   — its first call, not its first proxied request, which is the reachability preflight Claude Code sends as it starts and which holds nothing.
+  The signatures are those of the conversation as it stood before the first question, kept as `sessions/<store>/pre_change-before-A10-1.jsonl` (`a10_claude_read`): the answers the loop gives, and the resumed reviewer's turn, write thinking signatures into the live conversation (`AppendFile`) that no request of the first answer could hold, so the live conversation read after them fails a correct loop.
+  The row's PASS counts the signatures and the effort that read judged.
   The byte-for-byte clause needs thinking to replay, and at Claude Code's default on the run's model, `medium`, the reviewer once restated its finding with no thinking at all:
   on that model thinking is adaptive and takes no budget, so effort decides how readily it thinks and the task whether there is anything to think about.
   The pre-change reviewer runs at effort `xhigh`, set as `CLAUDE_CODE_EFFORT_LEVEL` in its claim's `settings.json`, and its task has it weigh, in one sentence and with no tool, whether the missing SBOM alone blocks the release before it restates the blocker and its marker, the two facts A2's and A10's question reads.
@@ -1755,16 +1758,18 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   A host holding a dispatch command where the daemon looks cannot show that, and the row fails naming it.
 
 - A23 (after A22, before A14): the loop's `web_search` tool.
-  The architect is asked for a fact a web search finds (`a23-web-search`, the newest release on a public project's releases page).
-  The row judges that a search ran and that the address the answer cites is among that search's results, not whether the fact is right:
+  The architect is asked about a public news article that is not on GitHub (`a23-web-search`: what a TechCrunch article on Threads coming to the iPad says Threads takes up from X), and told to cite the address of the search result it used.
+  `questions.json` records, before the run, the fact each page holds, its address and the time it says it was published (`expected`, `url`, `published`).
+  Both questions are about articles of 24 November 2026, after the training cutoffs of Claude Sonnet 5.5 and GPT-6.1, one article for each model, so that the two legs never share a search query, which `search_call_for` takes the first call of.
+  The row judges that a search ran and that the addresses the answer cites came out of its searches, not whether the fact is right:
   an `answers: web_search` line of the answer made a search;
   the recording proxy holds that search's Messages call on the daemon's label, offering `web_search_20250305` and answered 200 (`search_calls`);
-  the answer names an address among that call's result and citation addresses, a trailing slash aside (`cited_among`);
+  every address the answer names is among the result and citation addresses of the answer's searches that ran, all of them together, a trailing slash aside, and no `answers: gh` or `answers: dispatch` line of the answer names one in its arguments (`citation_faults`: the detail names the address and which of the two it broke, and an answer that cites no address fails);
   each search line's `costUSD` is its call's tokens at Claude Sonnet 5.5's prices plus 0.01 for each search it ran (`search_line_recomputes`), and the answer's `answers: answered` line counts those searches as `webSearches` and their cost as `webSearchUSD` (`search_fee_carried`);
-  and the architect, resumed with a one-word task, holds each search's call and result: its first request holds each search's query as a call's input and an address the search returned (`request_holds_search`).
+  and the architect, resumed with a one-word task, holds each search's call and result: its first request holds a call of the `web_search` tool with each search's query as its input, and an address the search returned (`request_holds_search`), so an answer whose transcript holds no `web_search` call fails.
   Then a fourth search in one answer is refused: the daemon boots with `model_calls: 2` and the proxy's stand-in step calls `web_search` four times, and one `answers: web_search` line of that answer is the refusal of the fourth (`search_refused`).
   Then the daemon boots once with no `answers.web_search`, and its boot line and `legion config check` list no `web_search` and say `no answers.web_search block`, where the daemon as it was lists it.
-  The same search leg runs for the GPT-6.1 merger (`a23-web-search-gpt`, resumed on `agents-gpt`), a row of its own that waits, as A10's GPT-6.1 clause does, where the model route does not serve GPT-6.1.
+  The same search leg runs for the GPT-6.1 merger (`a23-web-search-gpt`, a TechCrunch article on Walmart and Meta, resumed on `agents-gpt`), a row of its own that waits, as A10's GPT-6.1 clause does, where the model route does not serve GPT-6.1.
 
 - A14: every `answers: answered` line of the run
   — every boot of it, since A12 restarts the daemon five times before this check and its own boot has answered nothing
@@ -1837,15 +1842,22 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   An implementer that is not suspended ends the row there: its architect is suspended and its FAIL recorded, with nothing seeded.
   **Departure:** with the daemon stopped the run writes the issue into the daemon's record in `implementing`, its tree's lifecycle open under the workflow as A6's is, and writes the implementer's claim `failed` as the supervisor fails a claim whose deaths ran out (cause `died` with its sentence and time, no locator, `suspended_by` empty), since no `legion claims` command fails a claim.
   The daemon boots on that record and relaunches nothing of it: a failed claim waits for an operator, and an operator's suspension holds against the boot's resume.
-  The question is asked only once `legion state` keeps the tree live in `implementing`, the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token:
+  It also holds the issue, as it holds any issue whose worker failed with work outstanding (`phase` `held`, `heldFrom` the phase it was held from, `api.Issue.HeldFrom`), and a held issue is still in the workflow and in its tree.
+  The question is asked only once `legion state` keeps the tree live with the issue in `implementing` or held from `implementing` (`tree_is_live … held`), the claim still stands `failed`, and the listener's registry entry for the implementer's session (`GET /v1/legion/agents/sessions/<session>`), the role's newest, reads under the role's token:
   the case of a role with no live holder whose issue has not left the workflow.
   Then a person's comment on the issue mentions `role:<token>`, as A3's does;
-  its one delivery must be `sent` to the implementer's session, that session's reply to the comment must hold the question's keys, every claim of the issue must still stand `failed` or `suspended`, the implementer's `failed`, and no pane may start.
-  A resolution that names a role's newest entry only once that entry's issue has left the workflow settles this mention `failed` with `no holder for role <token>`, pins no session and answers nothing, and the row's FAIL reads out the delivery's state and error.
+  its one delivery must be `sent` to the implementer's session, and that session's reply to the comment must hold the question's keys.
+  The rig's asker then sends the same question to the role's topic, `notifications.role.<token>`, under a marker of its own and an event of its own:
+  one reply on the asker's topic must hold the same two keys, and the `answers: answered` line of the reply's question must name the implementer's session.
+  Every claim of the issue must still stand `failed` or `suspended`, the implementer's `failed`, and no pane may start, across both legs (`a21_read`, which the control runs too).
+  A resolution that names a role's newest entry only once that entry's issue has left the workflow settles the mention `failed` with `no holder for role <token>`, pins no session and answers nothing, and the row's FAIL reads out the delivery's state and error.
   Control: once the implementer's answer is waited for, the person comments on the same issue with a picker mention of the issue's `reviewer` role, which no session of the run ever took, so the registry holds no entry for it.
   Under the run's answering project Dispatch keeps that mention for the role's first holder:
   its one delivery must settle `queued` naming no session (read again for up to 60 s) and the implementer's session must write no reply to it, and the row's FAIL reads out the control's deliveries beside the mention's.
-  The verdict judges the deliveries and the claims listing the row read and printed.
+  The verdict judges the deliveries, the replies and the claims listing the row read and printed.
+  A last leg, apart from that read, from the pane baseline and from the control, shows that a message kept for a role nobody holds reaches the first session to hold it (`a21_first_holder`):
+  the person mentions the issue's `tester` role, which no session of the run took, with a marker of its own, and Dispatch keeps the mention, its one delivery settling `queued` naming no session;
+  then the run's third stand-in session, the first holder (`legion-e2eal-holder-<pid>`, which the inbox watches beside the asker and the controller), registers with a consumer of its own and claims the role (`POST /v1/roles/set`), and the marker must reach its inbox within 180 s, the listener forwarding what it kept for the role to the first live session that holds it.
 
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it;
   the branch's listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to its role topic;
@@ -1873,12 +1885,45 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
 **The control rows.**
 Every answering row that ran in a pass (A1-A10, A12, A14, A15 and A17-A23, each as its `criterion` let it run) has a control row of its own, `A<n> control` under the same store, its negative control.
 They run in A13's phase, against the branch's daemon on `plain-<store>.yaml`, with `answers` removed, after A13's own probes of that store.
+A control row reads PASS only when its row's own read failed, so each control does every step that read depends on, and a daemon that still answered would make the read hold:
+a read that fails whatever the daemon does proves nothing.
 For each row the control sends a message of its own to that row's stopped agent, of the kind the row sends (an Envoy question, a reply on an ask, a role mention, a reply in a thread, a Dispatch message), under its own suffix, `(question <id> of run <tag>, control of A<n>)`.
-Every control's message is sent first; then one wait of 300 s, the longest a row's own read waits for its answer, and no wait per row; then each row's own read runs, the very function the row calls, over what follows the control's message alone: its event, its comment, its question's marker.
+Every control's message is sent first; then one wait of 300 s, the longest a row's own read waits, and no wait per row; then each row's own read runs, the very function the row calls, over what follows the control's message alone: its event, its comment, its marker.
 Rows whose read is of a conversation (A9, A10, A15, A23) read only what follows the control's own question, since the conversation still holds the answers the loop gave with `answers` on.
-A control row reads PASS only when the row's read failed, and its detail quotes what that read said, part by part.
+A control row reads PASS only when no part of the row's read held, and its detail quotes what each part said.
 A control whose message was not taken reads FAIL, since a read of nothing shows nothing.
-For a part of a row that says the loop posts nothing, the control first places, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`), and that part's read must then fail too:
+
+What a row's read needs besides the message, the control does as the row does:
+
+- A9, A10 and A23's search legs read a resumed agent's first request after its first model calls.
+  After every read that counts claims or panes (A1, A20, A21), the architect, the pre-change reviewer and the GPT-6.1 merger are each resumed once, with the task their row resumes them with, and waited for as the row waits (the first model call after the mark taken before the resume, and the turn's end);
+  every read that needs that agent is run in that one resume.
+  That is A7's replay, A9, A10's compaction leg and A23's search leg on the architect, A10's Claude Code leg on the reviewer, and A10's GPT-6.1 clause and A23's GPT-6.1 search leg on the merger.
+  Each agent is suspended again, as A13's own probes need it stopped, and the control waits once for the sessions to leave the listener's registry.
+  A10's Claude Code leg reads the conversation as it stood before the control's first question (`sessions/<store>/pre_change-before-control-of-A10-1.jsonl`), as the row reads `pre_change-before-A10-1.jsonl`, never the live conversation, whose signatures the answers since have added.
+  A10's GPT-6.1 clause reads the two it keeps before its first and its second question (`gpt-before-control-of-A10-gpt-{1,2}.jsonl`).
+  The control asks the merger the two cache questions and the first question of the `a10.reasoning` list, since that question is what makes an answer owe the read a reasoning item to carry.
+
+- A7's control has two parts, and reads PASS only when both failed.
+  (a) A7's forwarded leg is replayed in the architect's resume: the proxy's hold on the loop's label, the question sent to the stopped architect, the claim resumed while the loop's model call would be held (with no answers there is none, and the wait for it is the row's own, 240 s), the hold released, and the row's read of the leg made.
+  (b) The running-agent leg's read that the loop posted nothing (`a7_loop_posted_nothing`), which the row's first leg ends in, is run over row A1's thread: the architect's reply on A1's ask, which the loop posted with its mark.
+  The read finds the loop's answer there and reads as failed; it makes no model call, and the control's detail says what it read.
+
+- A12's out-of-form leg and A23's fourth search run the proxy's stand-in step the row uses, each in a window of its own after every other read, since a stand-in answers every call of the daemon's label.
+  A12's four legs that a bound of `answers.bounds` makes (`model_calls`, `answer_seconds`, `length`, `over_limit`) and its `model_calls` answered line cannot be reproduced where the daemon has no `answers` block to hold the bound, so the control does not read them.
+  A23's fourth search runs on the daemon's default bounds for the same reason, where the row sets `model_calls: 2`.
+
+- A19: before the controls' messages the daemon is stopped, the round is written as `reviewing` again as `check_a19` writes it (`a19_seed_round`), and the daemon boots on it, once GitHub reads the pull request mergeable.
+  The control asks the reviewer for an approval and, when one was posted since, delivers it as the row delivers its own (`deliver_review`), so that the daemon's move from `reviewing` to `accepting` can hold.
+
+- A20: the control's read takes the reply count it needs, the tester's replies the thread holds before the control's own post and the one its answer would add, where the row's read wants two.
+  Its placed reply, in the tester's name under the control's reply, is placed after that read, which holds the nothing-posted part too, and the read of that part alone must then fail.
+
+- A21: the control sends what the row sends: the person's mention of the failed implementer's role, the mention of the reviewer's role that no session of the run took (its id is the one the read takes), and a message to the failed role's topic under a marker of its own.
+
+- A22's and A23's configuration legs read this daemon's own boot line and `legion config check` line, read once for the pass, with the row's own absent and off lines, which the row kept.
+
+For a part of a row that says the loop posts nothing, the control places, after the row's main read, where the row looks, a post carrying the loop's mark (`<!-- legion-answer:c0de<tag><n> -->`), and that part's read must then fail too:
 A7's forwarded question and A12's reply out of form get a reply on the asker's topic in reply to the control's own question (`place_inbox_reply`), and A20's last sentence a reply in the tester's own name under the control's reply in A3's thread.
 A8's read of the parts that say the loop answers nothing, its own answer and an edit, is the daemon's log, so its control appends a JSON line to that log, an `answers: question` line naming the replaced tester's session and one naming the architect's, each with the marker and `placed_by` saying the control placed it and no daemon wrote it (`place_log_line`), and the control row's detail says so.
 The asker's inbox is started again on A13's restarted NATS, since the controls read it.

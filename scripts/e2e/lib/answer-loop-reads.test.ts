@@ -2,7 +2,12 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { expectNoMissingHelpers, nameMissingHelpers } from "./script-functions";
+import {
+  expectNoMissingHelpers,
+  nameMissingHelpers,
+  scriptAssignments,
+  scriptFunctions,
+} from "./script-functions";
 
 // Every read the answer loop's live proof judges a criterion by (lib/answer-loop-reads.sh, which
 // scripts/e2e/answer-loop.sh sources), run here as the rig runs it — the same functions, under the
@@ -27,6 +32,10 @@ const data = join(lib, "testdata", "answer-loop");
 // defines nor stubs is named rather than left as a bare exit 127.
 const guard = nameMissingHelpers(join(e2e, "answer-loop.sh"));
 const dir = temporaryDirectory("answer-loop-reads-test");
+/** The rig's own functions and variables the reads below call or judge: the rows' reads that live in
+ * answer-loop.sh itself, run here as the rig runs them. */
+const rig = scriptFunctions(join(e2e, "answer-loop.sh"));
+const rigVariable = scriptAssignments(join(e2e, "answer-loop.sh"));
 
 /** The daemon log of a run: every boot appended to one file, this one two boots long. */
 const bootOne = readFileSync(join(data, "daemon-boot-one.log.txt"), "utf8");
@@ -82,6 +91,9 @@ type QuestionsFile = {
     expect_kind?: string;
     must_contain?: string[];
     comment?: string;
+    expected?: string;
+    url?: string;
+    published?: string;
   }[];
 };
 
@@ -1745,24 +1757,104 @@ describe("the recording proxy's records", () => {
     expect(read(`reply_urls ''`)).toEqual({ code: 0, text: "" });
   });
 
-  // A23 judges that the address the answer cites came out of the search, not that its fact is
-  // right: an address the search never returned fails, whatever the fact.
-  test("cited_among reads a cited address among the search's results", () => {
-    const call =
-      "evidence=$web_search_evidence; call=$(search_call_for \"$(search_calls daemon-files)\" 'newest jq release')";
+  // A23 judges that every address the answer cites came out of its searches, none reached with a
+  // tool, not that its fact is right: an address the searches never returned fails, whatever the
+  // fact, and so does one the answer's own gh or dispatch call names.
+  test("url_among reads an address among a list of addresses, a trailing slash aside", () => {
+    const urls = `'["https://jqlang.org/download/","https://jqlang.org/news"]'`;
+    expect(run(`url_among https://jqlang.org/download ${urls}`).code).toBe(0);
+    expect(run(`url_among https://jqlang.org/news/ ${urls}`).code).toBe(0);
+    expect(run(`url_among https://example.com/jq ${urls}`).code).toBe(1);
+    expect(run(`url_among https://jqlang.org/download '[]'`).code).toBe(1);
+    expect(run(`url_among https://jqlang.org/download null`).code).toBe(1);
+    expect(run(`url_among https://jqlang.org/download ''`).code).toBe(1);
+  });
+
+  test("tool_names_url reads an address named in an argument of a gh or dispatch call", () => {
+    const lines = `'[{"msg":"answers: gh","args":["api","https://jqlang.org/news/"]},{"msg":"answers: gh","args":["release","view","1.8.1"]}]'`;
+    expect(run(`tool_names_url https://jqlang.org/news ${lines}`).code).toBe(0);
+    expect(run(`tool_names_url https://jqlang.org/news/ ${lines}`).code).toBe(0);
+    expect(run(`tool_names_url https://jqlang.org/download ${lines}`).code).toBe(1);
+    expect(run(`tool_names_url https://jqlang.org/news '[]'`).code).toBe(1);
+    expect(run(`tool_names_url https://jqlang.org/news '[{"msg":"answers: gh"}]'`).code).toBe(1);
+    expect(run(`tool_names_url https://jqlang.org/news ''`).code).toBe(1);
+  });
+
+  test("citation_faults names each address an answer cites that no search returned, or that a tool reached", () => {
+    const results = `'["https://github.com/jqlang/jq/releases","https://jqlang.org/news/"]'`;
+    const none = "'[]'";
+    const faults = (reply: string, gh = none, dispatch = none) =>
+      read(`citation_faults ${shq(reply)} ${results} ${gh} ${dispatch}`);
+    // Every address cited is among the results of the searches, taken together, a slash aside.
+    expect(faults("jq 1.8.1, per https://jqlang.org/news.")).toEqual({ code: 0, text: "" });
     expect(
-      read(`${call}; cited_among 'jq 1.8.1, per https://jqlang.org/download.' "$call"`)
-    ).toEqual({
-      code: 0,
-      text: "https://jqlang.org/download",
-    });
-    // A citation of the search's own reply is among its addresses.
-    expect(run(`${call}; cited_among 'See https://jqlang.org/news/' "$call"`).code).toBe(0);
-    expect(run(`${call}; cited_among 'per https://example.com/jq' "$call"`).code).toBe(1);
-    expect(run(`${call}; cited_among 'jq 1.8.1, no address' "$call"`).code).toBe(1);
-    expect(run(`${call}; cited_among '' "$call"`).code).toBe(1);
-    expect(run(`cited_among 'https://jqlang.org/news/' null`).code).toBe(1);
-    expect(run(`cited_among 'https://jqlang.org/news/' ''`).code).toBe(1);
+      faults("See https://github.com/jqlang/jq/releases and https://jqlang.org/news/")
+    ).toEqual({ code: 0, text: "" });
+    // A second address outside the results fails, naming it.
+    expect(faults("See https://jqlang.org/news/ and https://example.com/jq").text).toBe(
+      "https://example.com/jq is not among the results of the answer's searches"
+    );
+    // An address among the results that a gh call of the answer, or a dispatch call, names in an
+    // argument: the agent reached it with a tool.
+    const gh = `'[{"args":["api","https://jqlang.org/news/"]}]'`;
+    expect(faults("per https://jqlang.org/news/", gh).text).toBe(
+      "https://jqlang.org/news/ is named by an answers: gh call of the answer"
+    );
+    const dispatch = `'[{"args":["read","--issue","ALX-1","https://jqlang.org/news/"]}]'`;
+    expect(faults("per https://jqlang.org/news/", none, dispatch).text).toBe(
+      "https://jqlang.org/news/ is named by an answers: dispatch call of the answer"
+    );
+    // An address outside the results that a tool also names breaks both, one a line.
+    expect(
+      read(
+        `citation_faults 'per https://example.com/jq' ${results} '[{"args":["api","https://example.com/jq"]}]' ${none}`
+      ).text
+    ).toBe(
+      "https://example.com/jq is not among the results of the answer's searches\nhttps://example.com/jq is named by an answers: gh call of the answer"
+    );
+    // A reply that cites no address, and searches that returned none, are at fault too.
+    expect(faults("jq 1.8.1, no address").text).toBe("the reply cites no address");
+    expect(faults("").text).toBe("the reply cites no address");
+    expect(read(`citation_faults 'per https://jqlang.org/news/' '[]' ${none} ${none}`).text).toBe(
+      "https://jqlang.org/news/ is not among the results of the answer's searches"
+    );
+  });
+
+  // A23: the resumed agent's transcript holds each search's call. Any object holding the query is no
+  // call: it is the web_search tool's, as Anthropic's tool_use and OpenAI's function_call carry it.
+  test("request_holds_search needs a call of web_search, and not any object that holds the query", () => {
+    const call = { type: "tool_use", id: "t1", name: "web_search", input: { query: "q" } };
+    const request = (blocks: unknown[]) =>
+      shq(
+        JSON.stringify({
+          messages: [
+            { role: "assistant", content: blocks },
+            {
+              role: "user",
+              content: [{ type: "tool_result", content: "Sources: https://x.example/a" }],
+            },
+          ],
+        })
+      );
+    const holds = (blocks: unknown[]) =>
+      run(`request_holds_search ${request(blocks)} q https://x.example/a`).code;
+    expect(holds([call])).toBe(0);
+    // The same query as another tool's input, a bare object and a text, are no call of web_search,
+    // however well the address is held.
+    expect(holds([{ ...call, name: "gh" }])).toBe(1);
+    expect(holds([{ query: "q" }])).toBe(1);
+    expect(holds([{ type: "text", text: "I searched for q" }])).toBe(1);
+    expect(holds([])).toBe(1);
+    // OpenAI's call carries its arguments as a string of JSON.
+    const function_call = {
+      type: "function_call",
+      name: "web_search",
+      arguments: JSON.stringify({ query: "q" }),
+    };
+    expect(holds([function_call])).toBe(0);
+    expect(holds([{ ...function_call, name: "gh" }])).toBe(1);
+    expect(holds([{ ...function_call, arguments: JSON.stringify({ query: "another" }) }])).toBe(1);
+    expect(holds([{ ...function_call, arguments: "not json" }])).toBe(1);
   });
 
   // A23: a search's cost line is its call's tokens at the search model's price plus the fee for
@@ -1944,8 +2036,10 @@ describe("the questions file", () => {
   // A22's answer is in a comment the proof person writes on the agent's issue after the agent
   // stopped, and in nothing the agent was ever told: the comment holds every key, and neither the
   // question nor any task of the agent holds one. A23's questions ask for a web search and name no
-  // key, since the row judges that a search ran and that the address cited is among its results,
-  // not the fact.
+  // key, since the row judges that a search ran, that every address cited is among its searches'
+  // results and that none was reached with gh or dispatch, not the fact. Each is about one public
+  // news page that is not on GitHub, and its fact, address and published time are written down in
+  // the file before the run.
   test("the live file holds A22's keys in its comment alone, and A23's questions ask for a search", () => {
     const file = JSON.parse(readFileSync(liveQuestions, "utf8")) as QuestionsFile;
     const late = file.questions.find((q) => q.id === "a22-late-comment");
@@ -1965,9 +2059,20 @@ describe("the questions file", () => {
       expect(question?.criteria).toEqual(["A23"]);
       expect(question?.must_contain ?? []).toEqual([]);
     }
-    for (const id of ["a23-web-search", "a23-web-search-gpt"]) {
-      expect(file.questions.find((q) => q.id === id)?.text).toContain("web_search");
-    }
+    // A23's two legs ask about two different news pages, neither on GitHub, published after the
+    // models' training cutoffs, and no question names its page's address or its answer.
+    const pages = ["a23-web-search", "a23-web-search-gpt"].map((id) => {
+      const question = file.questions.find((q) => q.id === id);
+      expect(question?.text).toContain("web_search");
+      expect(question?.text).toContain("cite the address of the search result you used");
+      expect(question?.url).toMatch(/^https:\/\/techcrunch\.com\/2026\/11\/\d\d\//);
+      expect(new URL(question?.url ?? "").hostname).not.toContain("github");
+      expect(question?.published).toMatch(/^2026-11-\d\dT\d\d:\d\d:\d\dZ$/);
+      expect(question?.expected?.length).toBeGreaterThan(0);
+      expect(question?.text).not.toContain(question?.url ?? "");
+      return question?.url;
+    });
+    expect(new Set(pages).size).toBe(2);
   });
 
   test("recorded_hit reads the hits the file records as not about the loop", () => {
@@ -2078,8 +2183,9 @@ describe("Dispatch", () => {
   // A22: the comment the stopped agent's dispatch tool posted where it was asked is the one
   // comment carrying the run's marker, in the agent's own name, its body carrying the tool's mark,
   // `<!-- legion-answer:<question>.<seq> -->`; the loop's own reply carries no seq.
-  test("issue_comments_holding and one_tool_marked_comment_by read the comment the dispatch tool posted", () => {
-    const held = (marker: string) => `comments=$(issue_comments_holding ALX-22 ${marker})`;
+  test("issue_comments_in and one_tool_marked_comment_by read the comment the dispatch tool posted", () => {
+    const held = (marker: string) =>
+      `comments=$(issue_comments_in "$(dispatch_get issues/ALX-22/comments)" ${marker})`;
     expect(
       read(`${held("answer-loop-a22-4242-files")}; jq -c 'map(.id)' <<<"$comments"`).text
     ).toBe('["comment-220"]');
@@ -2103,11 +2209,19 @@ describe("Dispatch", () => {
         `${held("answer-loop-a22-4242-other")}; one_tool_marked_comment_by "$comments" session-tester`
       ).code
     ).toBe(0);
-    expect(read("issue_comments_holding ALX-22 answer-loop-a22-never")).toEqual({
+    expect(
+      read('issue_comments_in "$(dispatch_get issues/ALX-22/comments)" answer-loop-a22-never')
+    ).toEqual({
       code: 0,
       text: "[]",
     });
-    expect(read("issue_comments_holding ALX-404 answer-loop-a22-4242-files")).toEqual({
+    expect(
+      read('issue_comments_in "$(dispatch_get issues/ALX-404/comments)" answer-loop-a22-4242-files')
+    ).toEqual({
+      code: 0,
+      text: "[]",
+    });
+    expect(read("issue_comments_in '' answer-loop-a22-4242-files")).toEqual({
       code: 0,
       text: "[]",
     });
@@ -2741,5 +2855,553 @@ describe("A13: the branch's answer against the base commit's", () => {
     expect(run("evidence=$branch_only_evidence; a13_captured branch").code).toBe(1);
     expect(run("evidence=$empty_evidence; a13_captured branch").code).toBe(1);
     expect(run("evidence=$bare_evidence; a13_captured branch").code).toBe(1);
+  });
+});
+
+// A23's search read judges one answer: the proxy's records of the architect's search and of its
+// resumed request (the web-search fixture), the daemon's log of that answer (daemon-tools.log.txt:
+// two search lines and the cost line of question f1f1f1f1) and an inbox holding the reply to
+// event-ws. A case may add call lines of the answer's own gh or dispatch tool to the log, and may
+// take the web_search call out of the resumed request.
+type ProxyRecord = { label: string; request_body: { messages?: { content: unknown }[] } };
+
+function answerOf(
+  name: string,
+  reply: string,
+  options: { toolLines?: object[]; withoutSearchCall?: boolean } = {}
+): { evidence: string; log: string } {
+  const evidenceDir = join(dir, `answer-${name}`);
+  mkdirSync(evidenceDir, { recursive: true });
+  const records = readFileSync(join(data, "model-calls-web-search.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as ProxyRecord);
+  for (const record of records) {
+    if (!options.withoutSearchCall || record.label !== "agents") continue;
+    for (const message of record.request_body.messages ?? []) {
+      if (!Array.isArray(message.content)) continue;
+      message.content = message.content.filter(
+        (block: { type?: string }) => block.type !== "tool_use"
+      );
+    }
+  }
+  writeFileSync(
+    join(evidenceDir, "model-calls.jsonl"),
+    `${records.map((record) => JSON.stringify(record)).join("\n")}\n`
+  );
+  writeFileSync(
+    join(evidenceDir, "inbox.jsonl"),
+    `${JSON.stringify({
+      at: "2026-11-24T12:04:20.000Z",
+      session: "asker-session",
+      text: `In Reply To: event-ws\nMessage:\n${reply}\n\n<!-- legion-answer:f1f1f1f1 -->\n\nTopic: notifications.agent.asker-session`,
+    })}\n`
+  );
+  const log = join(dir, `answer-${name}.log`);
+  writeFileSync(
+    log,
+    `${readFileSync(join(data, "daemon-tools.log.txt"), "utf8")}\n${(options.toolLines ?? []).map((line) => JSON.stringify(line)).join("\n")}\n`
+  );
+  return { evidence: evidenceDir, log };
+}
+
+function searchRead(answer: { evidence: string; log: string }): { held: boolean; said: string } {
+  const result = run(`${rig("said_text")}
+${rig("a23_search_read")}
+evidence=${shq(answer.evidence)}
+daemon_log=${shq(answer.log)}
+boot_offset=0
+web_search_fee=0.01
+verdict=failed
+a23_search_read event-ws 0 agents architect && verdict=held
+printf '%s\\n%s\\n' "$verdict" "$read_said"`);
+  const [verdict, ...said] = result.out.trimEnd().split("\n");
+  return { held: verdict === "held", said: said.join("\n") };
+}
+
+const toolLine = (msg: string, args: string[]) => ({
+  time: "2026-11-24T12:04:06.000Z",
+  level: "INFO",
+  msg,
+  question: "f1f1f1f1",
+  seq: 1,
+  session: "session-architect",
+  args,
+  exit: 0,
+  ran: true,
+});
+
+describe("A23's search read, over one answer", () => {
+  test("an answer that cites only what its search returned, with a web_search call in the resumed transcript, holds", () => {
+    const held = searchRead(
+      answerOf("held", "jq 1.8.1, per https://github.com/jqlang/jq/releases.")
+    );
+    expect(held.held).toBe(true);
+    expect(held.said).toContain("what is wrong with the addresses the reply cites: nothing");
+    // Every address the reply names, not one: two cited, both among the results.
+    expect(
+      searchRead(
+        answerOf("both", "See https://github.com/jqlang/jq/releases and https://jqlang.org/news/")
+      ).held
+    ).toBe(true);
+  });
+
+  test("a reply that cites a second address outside the results fails, naming the address", () => {
+    const outside = searchRead(
+      answerOf("outside", "per https://github.com/jqlang/jq/releases and https://example.com/jq")
+    );
+    expect(outside.held).toBe(false);
+    expect(outside.said).toContain(
+      "https://example.com/jq is not among the results of the answer's searches"
+    );
+    const none = searchRead(answerOf("none", "jq 1.8.1, from memory"));
+    expect(none.held).toBe(false);
+    expect(none.said).toContain("the reply cites no address");
+  });
+
+  test("a reply that cites an address a gh or dispatch call line of the answer names fails, naming the tool", () => {
+    const url = "https://jqlang.org/news/";
+    const gh = searchRead(
+      answerOf("gh", `per ${url}`, { toolLines: [toolLine("answers: gh", ["api", url])] })
+    );
+    expect(gh.held).toBe(false);
+    expect(gh.said).toContain(`${url} is named by an answers: gh call of the answer`);
+    const dispatch = searchRead(
+      answerOf("dispatch", `per ${url}`, {
+        toolLines: [toolLine("answers: dispatch", ["read", "--issue", "ALX-1", url])],
+      })
+    );
+    expect(dispatch.held).toBe(false);
+    expect(dispatch.said).toContain(`${url} is named by an answers: dispatch call of the answer`);
+    // A gh call of the answer that names no address it cites leaves the answer as it was.
+    expect(
+      searchRead(
+        answerOf("gh-other", `per ${url}`, {
+          toolLines: [toolLine("answers: gh", ["api", "repos/jqlang/jq"])],
+        })
+      ).held
+    ).toBe(true);
+  });
+
+  test("an answer whose resumed transcript holds no web_search call fails", () => {
+    const without = searchRead(
+      answerOf("without", "per https://github.com/jqlang/jq/releases.", {
+        withoutSearchCall: true,
+      })
+    );
+    expect(without.held).toBe(false);
+    expect(without.said).toContain("holds a web_search call and its result for each search: no");
+  });
+
+  test("an answer with no search at all fails", () => {
+    // The log of a question with no web_search line: nothing ran.
+    const answer = answerOf("no-search", "per https://github.com/jqlang/jq/releases.");
+    writeFileSync(
+      answer.log,
+      '{"time":"2026-11-24T12:04:10.000Z","level":"INFO","msg":"answers: answered","question":"f1f1f1f1","session":"session-architect","fault":"","calls":1}\n'
+    );
+    expect(searchRead(answer).held).toBe(false);
+  });
+});
+
+describe("the control rows' reads", () => {
+  // A control's parts are read in different phases: each says what it read under its own words, and
+  // the control is held (it reads FAIL) only when a part's read held.
+  test("read_failed keeps what each part said and marks a control held only when a read held", () => {
+    const control = (body: string) => `declare -A control=()
+${rig("read_failed")}
+r_holds() { read_said='it holds'; return 0; }
+r_fails() { read_said='it fails'; return 1; }
+${body}`;
+    const failed = run(
+      control(`read_failed A9 'the first part' r_fails
+read_failed A9 'the second part' r_fails
+echo "said: \${control[files:A9.said]}"
+echo "held: \${control[files:A9.held]:-no}"`)
+    );
+    expect(failed.code).toBe(0);
+    expect(failed.out).toContain(
+      "said: the first part failed: it fails; the second part failed: it fails"
+    );
+    expect(failed.out).toContain("held: no");
+    const held = run(
+      control(`read_failed A9 'the first part' r_fails
+read_failed A9 'the second part' r_holds
+read_failed A10 'another row' r_fails
+echo "said: \${control[files:A9.said]}"
+echo "held: \${control[files:A9.held]:-no} \${control[files:A10.held]:-no}"`)
+    );
+    expect(held.code).toBe(0);
+    expect(held.out).toContain(
+      "said: the first part failed: it fails; the second part held: it holds"
+    );
+    expect(held.out).toContain("held: 1 no");
+  });
+
+  // A7's control runs the running-agent leg's read that the loop posted nothing over row A1's
+  // thread, where the loop answered a stopped agent: it finds the loop's mark there.
+  test("a7_loop_posted_nothing finds the loop's mark in row A1's thread and none where it posted nothing", () => {
+    const posted = (reply: string) =>
+      run(
+        `${rig("said_text")}\n${rig("a7_loop_posted_nothing")}\na7_loop_posted_nothing ${shq(reply)}`
+      );
+    expect(
+      posted("The architect decided on 7 minutes. <!-- legion-answer:a1a1a1a1b2b2b2b2 -->").code
+    ).toBe(1);
+    expect(posted("No mark in what the thread holds").code).toBe(0);
+    expect(posted("").code).toBe(0);
+    const thread = `${rig("said_text")}\n${rig("a7_loop_posted_nothing")}
+reply=$(ask_reply_after ask-1 reply-person session-architect) || reply=
+a7_loop_posted_nothing "$reply" && echo quiet || echo "loop answered: $read_said"`;
+    expect(run(thread).out).toContain(
+      "loop answered: the loop's mark in what the thread holds: a1a1a1a1b2b2b2b2"
+    );
+  });
+
+  test("a7_alone_read reads the asker's reply to the question beside the log and the conversation", () => {
+    const alone = (sent: string) =>
+      run(`${rig("said_text")}\n${rig("answers_line_count")}\n${rig("a7_loop_posted_nothing")}\n${rig("a7_alone_read")}
+daemon_log=$empty_log; boot_offset=0
+a7_alone_read ${shq(sent)} VIOLET-OTTER-88 0`).code;
+    // The question reached the architect, which holds it; the loop logged and posted nothing.
+    expect(alone("200 event-never")).toBe(0);
+    // A reply of the loop's on the asker's topic, a refused send and a conversation without the
+    // question each fail the leg.
+    expect(alone("200 event-one")).toBe(1);
+    expect(alone("404 event-never")).toBe(1);
+    expect(
+      run(`${rig("said_text")}\n${rig("answers_line_count")}\n${rig("a7_loop_posted_nothing")}\n${rig("a7_alone_read")}
+daemon_log=$empty_log; boot_offset=0
+a7_alone_read '200 event-never' never-said-by-the-architect 0`).code
+    ).toBe(1);
+  });
+
+  // A10's Claude Code leg judges the signatures of the conversation as it stood before its first
+  // question. The answers the loop gave since, and the resumed reviewer's turn, write signatures
+  // into the live conversation that the first request could not hold.
+  describe("a10_claude_read", () => {
+    const assistant = (signature: string) =>
+      JSON.stringify({
+        type: "assistant",
+        effort: "xhigh",
+        message: { content: [{ type: "thinking", thinking: "t", signature }] },
+      });
+    const evidenceDir = join(dir, "a10-claude-evidence");
+    const before = join(dir, "pre_change-before-A10-1.jsonl");
+    const after = join(dir, "pre_change-after-A10.jsonl");
+    const suffix = (n: number) => `(question pre-change-scan of run 4242, A10-${n})`;
+    const reply = (event: string, marker: string) =>
+      JSON.stringify({
+        at: "2026-11-24T12:00:00.000Z",
+        session: "asker-session",
+        text: `In Reply To: ${event}\nMessage:\nThe SBOM is missing, SBOM-ZINC-512. <!-- legion-answer:${marker} -->\n\nTopic: notifications.agent.asker-session`,
+      });
+
+    beforeAll(() => {
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(before, `${assistant("c2lnQQ==")}\n`);
+      // The conversation as it stands after the answers: the loop's appended turn carries a
+      // signature of its own.
+      writeFileSync(after, `${assistant("c2lnQQ==")}\n${assistant("c2lnQg==")}\n`);
+      writeFileSync(
+        join(evidenceDir, "inbox.jsonl"),
+        `${reply("e1", "a1a1a1a1")}\n${reply("e2", "b2b2b2b2")}\n`
+      );
+      writeFileSync(
+        join(evidenceDir, "model-calls.jsonl"),
+        `${JSON.stringify({
+          label: "daemon-files",
+          ordinal: 1,
+          request_body: {
+            output_config: { effort: "xhigh" },
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "thinking", thinking: "t", signature: "c2lnQQ==" }],
+              },
+              { role: "user", content: `What blocked the release? ${suffix(1)}` },
+            ],
+          },
+        })}\n${JSON.stringify({
+          label: "claude-files",
+          ordinal: 2,
+          request_body: {
+            messages: [{ role: "user", content: `${suffix(1)} and ${suffix(2)}` }],
+          },
+        })}\n`
+      );
+    });
+
+    const claude = (transcript: string, line = '{"cacheReadTokens":4961}') =>
+      run(`${rig("a10_claude_read")}
+questions_file=${shq(liveQuestions)}
+evidence=${shq(evidenceDir)}
+verdict=failed
+a10_claude_read e1 e2 A10-1 A10-2 ${shq(line)} 0 ${shq(transcript)} && verdict=held
+printf '%s\\n%s\\n%s\\n' "$verdict" "$read_said" "$read_pass_said"`);
+
+    test("holds over the transcript kept before the first question, and says what it judged", () => {
+      const result = claude(before);
+      const [verdict, said, passSaid] = result.out.trimEnd().split("\n");
+      expect(verdict).toBe("held");
+      expect(said).toContain("its thinking signatures 1, missing from that request 0");
+      expect(passSaid).toBe(
+        'Claude Code: effort "xhigh" and each of the transcript\'s 1 thinking signatures replayed'
+      );
+    });
+
+    test("fails over the conversation as it stands after the answers, which hold a signature no first request could", () => {
+      const [verdict, said] = claude(after).out.trimEnd().split("\n");
+      expect(verdict).toBe("failed");
+      expect(said).toContain("its thinking signatures 2, missing from that request 1");
+    });
+
+    test("fails with no cache read, no transcript and no thinking signature", () => {
+      expect(claude(before, '{"cacheReadTokens":0}').out).toContain("failed");
+      expect(claude(join(dir, "no-such-transcript.jsonl")).out).toContain("failed");
+      const plain = join(dir, "pre_change-plain.jsonl");
+      writeFileSync(
+        plain,
+        `${JSON.stringify({ type: "assistant", effort: "xhigh", message: { content: [] } })}\n`
+      );
+      expect(claude(plain).out).toContain("failed");
+    });
+  });
+
+  // A20's read takes the replies the thread must hold, the row's two and, for the control, the ones
+  // it found and the one its answer would add; the tester's reply under the control's own reply is
+  // read from the replies a20_read holds.
+  describe("a20_read", () => {
+    const a20 = (args: string, body = "") =>
+      run(`${rig("said_text")}
+${rig("a20_skipped")}
+${rig("a20_nothing_posted")}
+${rig("a20_read")}
+${rigVariable("a20_nobody")}
+a20_answer=
+daemon_log=$thread_replies_log; boot_offset=0
+questions_file=${shq(liveQuestions)}
+agent[files:tester.session]=session-tester
+agent[files:tester.token]=legion-alx-alx-3-tester
+claim_json() { printf '{"state":"suspended"}\\n'; }
+pane_count() { printf '0\\n'; }
+${body}
+a20_read ${args} && echo held || echo failed
+echo "$read_said"`);
+    // The tester's two replies in comment-100's thread: A3's answer and the one under comment-102.
+    test("holds with the two replies the row expects, and fails with another count", () => {
+      expect(a20("comment-100 comment-102 comment-103 0 0 2").out).toMatch(/^held/);
+      const three = a20("comment-100 comment-102 comment-103 0 0 3").out;
+      expect(three).toMatch(/^failed/);
+      expect(three).toContain("replies in the thread of comment-100: 2 (want 3)");
+      expect(a20("comment-100 comment-102 comment-103 0 0 1").out).toMatch(/^failed/);
+    });
+
+    test("fails on the part that the tester posted nothing under the control once a reply stands there", () => {
+      // comment-100 is a comment the tester has a reply under, as a placed reply would stand.
+      expect(a20("comment-100 comment-102 comment-100 0 0 2").out).toMatch(/^failed/);
+      const nothing = (control: string, replies = "") =>
+        run(`${rig("said_text")}\n${rig("a20_nothing_posted")}
+agent[files:tester.session]=session-tester
+a20_nothing_posted comment-100 ${control} ${replies} && echo quiet || echo posted`).out.trim();
+      expect(nothing("comment-103")).toBe("quiet");
+      expect(nothing("comment-100")).toBe("posted");
+      // The replies given are the ones read, and no thread is fetched for them.
+      expect(nothing("comment-103", `'[{"id":"x","answers":"comment-103","body":"b"}]'`)).toBe(
+        "posted"
+      );
+      expect(nothing("comment-103", "'[]'")).toBe("quiet");
+      expect(nothing("''")).toBe("posted");
+    });
+  });
+
+  // A21's read: the picker mention and the message to the failed role's topic, each answered by the
+  // failed implementer, and nothing of the issue started across both legs.
+  describe("a21_read", () => {
+    const evidenceDir = join(dir, "a21-evidence");
+    const logFile = join(dir, "a21.log");
+    const inbox = (events: string[]) =>
+      `${events.map((text) => JSON.stringify({ at: "2026-11-24T12:00:00.000Z", session: "asker-session", text: `${text}\n\nTopic: notifications.agent.asker-session` })).join("\n")}\n`;
+    const answerText = (event: string, body: string) =>
+      `In Reply To: ${event}\nMessage:\n${body} <!-- legion-answer:ab12ab12 -->`;
+    const keyed = "The backoff starts at 250 ms, tracked as AMBER-KESTREL-63.";
+    const claims = (implementer: string) =>
+      JSON.stringify({
+        claims: [
+          {
+            token: "legion-alx-alx-11-implementer",
+            tree: "ALX-11",
+            issue: "ALX-11",
+            role: "implementer",
+            state: implementer,
+          },
+          {
+            token: "legion-alx-alx-11-architect",
+            tree: "ALX-11",
+            issue: "ALX-11",
+            role: "architect",
+            state: "suspended",
+          },
+        ],
+      });
+
+    beforeAll(() => {
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(
+        logFile,
+        '{"time":"2026-11-24T12:00:01.000Z","level":"INFO","msg":"answers: answered","question":"ab12ab12","issue":"ALX-11","role":"implementer","session":"session-implementer","fault":"","calls":1}\n'
+      );
+    });
+
+    const a21 = (
+      inboxText: string[],
+      options: { claimState?: string; panes?: number; replied?: boolean; roleEvent?: string } = {}
+    ) => {
+      writeFileSync(join(evidenceDir, "inbox.jsonl"), inbox(inboxText));
+      const result = run(`${rig("said_text")}
+${rig("a21_read")}
+questions_file=${shq(liveQuestions)}
+evidence=${shq(evidenceDir)}
+daemon_log=${shq(logFile)}; boot_offset=0
+agent[files:failed_implementer.session]=session-implementer
+agent[files:failed_implementer.token]=legion-alx-alx-11-implementer
+comment_reply_by() { case "$2" in comment-110) printf '%s\\n' ${shq(keyed)} ;; comment-111) ${options.replied ? `printf 'a reply\\n'` : "return 1"} ;; *) return 1 ;; esac; }
+claims_cmd() { printf '%s\\n' ${shq(claims(options.claimState ?? "failed"))}; }
+pane_count() { printf '${options.panes ?? 1}\\n'; }
+a21_read ALX-11 comment-110 comment-111 1 ${options.roleEvent ?? "event-role"} && echo held || echo failed
+echo "$read_said"`);
+      return result.out;
+    };
+
+    test("holds when both legs were answered once by the failed implementer, its claim still failed and no pane started", () => {
+      const out = a21([answerText("event-role", keyed)]);
+      expect(out).toMatch(/^held/);
+      expect(out).toContain(
+        "the message to the role's topic event-role: 1 reply (want one), holding the keys: yes, answered as session-implementer: yes"
+      );
+    });
+
+    test("fails when the role topic's message was answered twice, without its keys, by another session, or not at all", () => {
+      const once = answerText("event-role", keyed);
+      expect(a21([once, once])).toMatch(/^failed/);
+      expect(a21([answerText("event-role", "It starts at 250 ms.")])).toMatch(/^failed/);
+      expect(a21([])).toMatch(/^failed/);
+      expect(a21([once], { roleEvent: "event-other" })).toMatch(/^failed/);
+      // A reply whose answer the loop logged for another session.
+      writeFileSync(
+        logFile,
+        '{"time":"2026-11-24T12:00:01.000Z","level":"INFO","msg":"answers: answered","question":"ab12ab12","session":"session-planner","fault":"","calls":1}\n'
+      );
+      expect(a21([once])).toMatch(/^failed/);
+      writeFileSync(
+        logFile,
+        '{"time":"2026-11-24T12:00:01.000Z","level":"INFO","msg":"answers: answered","question":"ab12ab12","session":"session-implementer","fault":"","calls":1}\n'
+      );
+      expect(a21([once])).toMatch(/^held/);
+    });
+
+    test("fails when a pane started, the implementer's claim no longer stands failed, or the control was answered", () => {
+      const once = answerText("event-role", keyed);
+      expect(a21([once], { panes: 2 })).toMatch(/^failed/);
+      expect(a21([once], { claimState: "suspended" })).toMatch(/^failed/);
+      expect(a21([once], { replied: true })).toMatch(/^failed/);
+    });
+  });
+
+  test("tree_is_live accepts an issue held from the phase when asked to, and A6's use of it as before", () => {
+    const held = `'{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"held","heldFrom":"implementing"}}}'`;
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing`).code).toBe(1);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 implementing held`).code).toBe(0);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 testing held`).code).toBe(1);
+    expect(run(`legion_state=${held}; tree_is_live ALX-1 done held`).code).toBe(1);
+    // A held issue that is no live root of the daemon's, and a live root still at the phase.
+    const lingering = `'{"admission":{"trees":[]},"issues":{"ALX-1":{"phase":"held","heldFrom":"implementing"}}}'`;
+    expect(run(`legion_state=${lingering}; tree_is_live ALX-1 implementing held`).code).toBe(1);
+    const running = `'{"admission":{"trees":["ALX-1"]},"issues":{"ALX-1":{"phase":"implementing"}}}'`;
+    expect(run(`legion_state=${running}; tree_is_live ALX-1 implementing held`).code).toBe(0);
+    expect(run(`legion_state=${running}; tree_is_live ALX-1 implementing`).code).toBe(0);
+  });
+
+  test("reply_message prints the message of a reply, and nothing for none", () => {
+    const reply = shq(
+      "In Reply To: e1\nMessage:\nThe answer.\n\n<!-- legion-answer:ab12 -->\n\nTopic: notifications.agent.s"
+    );
+    expect(read(`reply_message ${reply}`).text).toBe("The answer.\n\n<!-- legion-answer:ab12 -->");
+    expect(read("reply_message ''")).toEqual({ code: 0, text: "" });
+    expect(read("inbox_message event-never")).toEqual({ code: 0, text: "" });
+  });
+
+  test("inbox_holds reads a marker in what the inbox relayed to one session", () => {
+    expect(run("inbox_holds asker-session VIOLET-OTTER-88").code).toBe(0);
+    // Another session's relay, a marker nobody relayed, no marker and no inbox hold nothing.
+    expect(run("inbox_holds controller-session VIOLET-OTTER-88").code).toBe(1);
+    expect(run("inbox_holds asker-session never-relayed").code).toBe(1);
+    expect(run("inbox_holds asker-session ''").code).toBe(1);
+    expect(run("evidence=$empty_evidence; inbox_holds asker-session VIOLET-OTTER-88").code).toBe(1);
+    expect(run("evidence=$bare_evidence; inbox_holds asker-session VIOLET-OTTER-88").code).toBe(1);
+  });
+
+  test("answered_by reads the session an answer was made in the name of", () => {
+    const line = "daemon_log=$tools_log; boot_offset=0; line=$(answered_line f1f1f1f1)";
+    expect(run(`${line}; answered_by "$line" session-architect`).code).toBe(0);
+    expect(run(`${line}; answered_by "$line" session-planner`).code).toBe(1);
+    for (const none of ["''", "null", "'{}'", "'[]'"]) {
+      expect(run(`answered_by ${none} session-architect`).code).toBe(1);
+    }
+  });
+
+  test("comment_reply_in, issue_comments_in and pr_comments_holding read a list already fetched", () => {
+    const comments = '"$(dispatch_get issues/ALX-3/comments)"';
+    expect(read(`comment_reply_in ${comments} comment-77 session-tester`).text).toBe(
+      read("comment_reply_by ALX-3 comment-77 session-tester").text
+    );
+    expect(read(`comment_reply_in ${comments} comment-77 session-architect`).code).not.toBe(0);
+    expect(read("comment_reply_in '' comment-77 session-tester").code).not.toBe(0);
+    expect(read("comment_reply_in null comment-77 session-tester").code).not.toBe(0);
+    const listing = "listing=$(pr_comment_listing 43)";
+    expect(
+      read(`${listing}; pr_comments_holding "$listing" answer-loop-a17-4242-files | jq length`).text
+    ).toBe("2");
+    expect(read(`${listing}; pr_comments_holding "$listing" never-marked`).text).toBe("[]");
+    expect(read("pr_comments_holding null marker")).toEqual({ code: 0, text: "[]" });
+    expect(read("pr_comments_holding '' marker")).toEqual({ code: 0, text: "[]" });
+  });
+
+  test("a13_differs names the captures that differ from the base commit's, and a13_files lists the six", () => {
+    expect(read(`echo \${#a13_files[@]}`).text).toBe("6");
+    // The files a13_same rejects, in the order of a13_files: what a13_differs prints, each followed
+    // by a space.
+    const files = [
+      "send.status",
+      "send.body",
+      "publish.status",
+      "publish.body",
+      "dispatch-session.json",
+      "dispatch-role.json",
+    ];
+    const rejected = (setup: string, side = "") =>
+      files.filter((file) => run(`${setup}; a13_same ${file} ${side}`).code !== 0);
+    const differs = (setup: string, side = "") => {
+      const printed = read(`${setup}; a13_differs ${side}`);
+      expect(printed.code).toBe(0);
+      return printed.text.split(" ").filter((file) => file !== "");
+    };
+    for (const setup of [
+      "true",
+      "evidence=$presence_evidence",
+      "evidence=$empty_evidence",
+      "evidence=$bare_evidence",
+    ]) {
+      expect(differs(setup)).toEqual(rejected(setup));
+    }
+    expect(differs("evidence=$control_evidence", "control")).toEqual(
+      rejected("evidence=$control_evidence", "control")
+    );
+    for (const file of ["publish.body", "dispatch-session.json"]) {
+      expect(differs("evidence=$presence_evidence")).toContain(file);
+    }
+    expect(differs("evidence=$control_evidence", "control")).toContain("send.body");
+    // A capture that is missing differs: all six of a probe that wrote none.
+    expect(differs("evidence=$bare_evidence")).toEqual(files);
   });
 });

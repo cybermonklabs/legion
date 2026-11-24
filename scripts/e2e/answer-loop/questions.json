@@ -1,5 +1,5 @@
 {
-  "about": "The answer loop's live proof (scripts/e2e/answer-loop.sh) reads this file before any model call. Each agent is given its decision as its first task, so the decision is in its own conversation; each question names the facts its answer must hold (must_contain, every string, case-insensitive) or the reply kind the daemon must log (expect_kind). A22's answer is in a comment the proof person writes on the agent's issue once it stopped (comment), never in its conversation. A23's questions name no key: the row judges that a search ran and that the address the answer cites is among its results, not the fact. Changing a decision or a key is a change to the proof: review it as one.",
+  "about": "The answer loop's live proof (scripts/e2e/answer-loop.sh) reads this file before any model call. Each agent is given its decision as its first task, so the decision is in its own conversation; each question names the facts its answer must hold (must_contain, every string, case-insensitive) or the reply kind the daemon must log (expect_kind). A22's answer is in a comment the proof person writes on the agent's issue once it stopped (comment), never in its conversation. A23's questions name no key: the row judges that a search ran, that every address the answer cites is among its searches' results and that none was reached with gh or dispatch, not the fact. Each A23 question is about one public news article that is not on GitHub, written down before the run beside its text: the fact its page holds (expected), the page's address (url) and the time the page says it was published (published, its article:published_time). Both articles were published on 24 November 2026, after the training cutoffs of Claude Sonnet 5.5 and GPT-6.1, and the two legs never share a search. Changing a decision or a key is a change to the proof: review it as one.",
   "model": "claude-sonnet-5-5",
   "agents": {
     "architect": {
@@ -225,14 +225,20 @@
       "criteria": ["A23"],
       "agent": "architect",
       "to": "session",
-      "text": "Search the web with your web_search tool rather than answer from memory: what is the newest release of jq listed on its GitHub releases page, github.com/jqlang/jq/releases, and when was it published? Name the address of the source you used."
+      "text": "Search the web with your web_search tool rather than answer from memory: TechCrunch reported that Threads is coming to the iPad. Which feature of X's does that article say Threads takes up with it, and when was the article published? Your answer must cite the address of the search result you used, and no other address.",
+      "expected": "Cashtags: live stock quotes and charts in Threads. The article is \"Threads comes to iPad and takes a page from X's playbook with cashtags\".",
+      "url": "https://techcrunch.com/2026/11/24/threads-comes-to-ipad-and-takes-a-page-from-xs-playbook-with-cashtags/",
+      "published": "2026-11-24T17:44:34Z"
     },
     {
       "id": "a23-web-search-gpt",
       "criteria": ["A23"],
       "agent": "gpt",
       "to": "session",
-      "text": "Search the web with your web_search tool rather than answer from memory: what is the newest release of ripgrep listed on its GitHub releases page, github.com/BurntSushi/ripgrep/releases, and when was it published? Name the address of the source you used."
+      "text": "Search the web with your web_search tool rather than answer from memory: TechCrunch reported that Walmart teamed up with Meta to bring Black Friday deals to Meta's AI agent. What is the name of the Walmart system that powers that experience, and when was the article published? Your answer must cite the address of the search result you used, and no other address.",
+      "expected": "Walmart's Agent Gateway, launched in October, which lets outside AI assistants connect to its online store. The article is \"Walmart teams up with Meta to bring Black Friday deals to AI agent Muse\".",
+      "url": "https://techcrunch.com/2026/11/24/walmart-teams-up-with-meta-to-bring-black-friday-deals-to-ai-agent-muse/",
+      "published": "2026-11-24T21:32:38Z"
     },
     {
       "id": "a23-fourth-search",

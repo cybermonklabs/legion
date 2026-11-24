@@ -241,6 +241,10 @@ first_line_where() {
 # for a question this boot answered nothing of. A check asking one agent several questions reads
 # each one's own line this way, where the session's last line is whichever answer was logged last.
 answered_line() { question_log_lines "answers: answered" "$1" | jq -c 'last // empty'; }
+# answered_by LINE SESSION: the `answers: answered` LINE (answered_line) is the answer of SESSION's
+# agent, the session the loop answered in the name of (A21: a message to a failed role's topic,
+# answered as the failed implementer). No line at all is no answer.
+answered_by() { jq -e --arg s "$2" 'type == "object" and .session == $s' <<<"${1:-null}" >/dev/null 2>&1; }
 # gh_line_is LINE APP OWNER EXIT: the `answers: gh` LINE is a call of APP on OWNER that ended as
 # EXIT says — `0`, `nonzero` for a refused call, or `any`. No line at all is no such call.
 gh_line_is() {
@@ -513,10 +517,24 @@ inbox_reply() {
   [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ] || return 1
   jq -s -e -r --arg e "In Reply To: $1" '[.[] | select(.text | contains($e)) | .text] | (.[0] // empty)' "$evidence/inbox.jsonl"
 }
-# inbox_message EVENT prints only the message of that reply: the inbox renders an envelope as a
-# reply header, `Message:`, the message, a blank line and `Topic: …` (lib/envoy-inbox.ts).
+# reply_message TEXT prints only the message of the reply TEXT: the inbox renders an envelope as a
+# reply header, `Message:`, the message, a blank line and `Topic: …` (lib/envoy-inbox.ts). Nothing
+# for no text.
+reply_message() {
+  [ -n "${1:-}" ] || return 0
+  jq -R -s -r 'split("\nMessage:\n") | (.[1] // .[0]) | sub("\n\nTopic: [^\n]*\n?$"; "")' <<<"$1"
+}
+# inbox_message EVENT prints only the message of the reply to EVENT (reply_message), nothing for
+# none.
 inbox_message() {
-  inbox_reply "$1" | jq -R -s -r 'split("\nMessage:\n") | (.[1] // .[0]) | sub("\n\nTopic: [^\n]*\n?$"; "")'
+  reply_message "$(inbox_reply "${1:-}" 2>/dev/null || true)"
+}
+# inbox_holds SESSION MARKER: the inbox recorded an envelope relayed to SESSION whose text holds
+# MARKER (A21's first holder: the message the listener kept for a role reaches the session that
+# claimed it). An empty MARKER is no message, and holds nothing.
+inbox_holds() {
+  [ -n "${2:-}" ] && [ -f "$evidence/inbox.jsonl" ] &&
+    jq -s -e --arg s "$1" --arg m "$2" 'any(.[]; .session == $s and (.text | contains($m)))' "$evidence/inbox.jsonl" >/dev/null
 }
 inbox_replies() {
   if [ -n "${1:-}" ] && [ -f "$evidence/inbox.jsonl" ]; then
@@ -881,19 +899,38 @@ search_call_for() {
 reply_urls() {
   jq -R -s -r '[scan("https?://[^\\s<>\"()\\[\\]`]+") | sub("[.,;:!?\u0027*]+$"; "")] | unique[]' <<<"${1:-}" 2>/dev/null || true
 }
-# cited_among REPLY CALL prints the first address REPLY names (reply_urls) that is among the result
-# addresses of CALL (a record of search_calls), a trailing slash aside, and fails when none is:
-# A23 judges that the address the answer cites came out of the search, not that its fact is right.
-cited_among() {
-  local url
+# url_among URL URLS: URL is among URLS, a JSON array of addresses, a trailing slash aside.
+url_among() {
+  jq -e --arg u "$1" 'type == "array" and any(.[]; rtrimstr("/") == ($u | rtrimstr("/")))' <<<"${2:-null}" >/dev/null 2>&1
+}
+# tool_names_url URL LINES: some line of LINES, a JSON array of the `answers: gh` or `answers:
+# dispatch` lines of an answer, holds URL in an argument of its call (`args`), a trailing slash
+# aside: the agent reached that address with the tool.
+tool_names_url() {
+  jq -e --arg u "$1" '($u | rtrimstr("/")) as $b | type == "array"
+    and any(.[]; any((.args // [])[]?; type == "string" and contains($b)))' <<<"${2:-[]}" >/dev/null 2>&1
+}
+# citation_faults REPLY RESULTS GH DISPATCH prints, one a line, what is wrong with the addresses
+# REPLY, an answer's reply, cites (reply_urls), and nothing when nothing is. A23 judges that the
+# addresses the answer cites came out of its searches, not that its fact is right: every address
+# REPLY names must be among RESULTS, the JSON array of the result addresses of the answer's searches
+# that ran, all of them together (a trailing slash aside), and none may be named by a call of the
+# answer's gh or dispatch tool, GH's and DISPATCH's lines (tool_names_url), since an address the
+# agent read with a tool came from no search. A reply that cites no address is at fault as well. Each
+# fault names the address and which of the two it broke.
+citation_faults() {
+  local url urls
+  urls=$(reply_urls "${1:-}")
+  if [ -z "$urls" ]; then
+    printf 'the reply cites no address\n'
+    return 0
+  fi
   while IFS= read -r url; do
     [ -n "$url" ] || continue
-    if jq -e --arg u "$url" 'any((.urls? // [])[]; rtrimstr("/") == ($u | rtrimstr("/")))' <<<"${2:-null}" >/dev/null 2>&1; then
-      printf '%s\n' "$url"
-      return 0
-    fi
-  done <<<"$(reply_urls "${1:-}")"
-  return 1
+    url_among "$url" "${2:-[]}" || printf '%s is not among the results of the answer'"'"'s searches\n' "$url"
+    ! tool_names_url "$url" "${3:-[]}" || printf '%s is named by an answers: gh call of the answer\n' "$url"
+    ! tool_names_url "$url" "${4:-[]}" || printf '%s is named by an answers: dispatch call of the answer\n' "$url"
+  done <<<"$urls"
 }
 # search_line_recomputes LINE CALL FEE: the `answers: web_search` LINE made the searches its call
 # (CALL, a record of search_calls) ran, and its costUSD is that call's tokens at the price
@@ -910,14 +947,15 @@ search_line_recomputes() {
           + ($call.searches // 0) * $fee - ($line.costUSD // 0)) | fabs) < 0.000001)' >/dev/null 2>&1
 }
 # request_holds_search REQUEST QUERY URL: a model request (first_request_after) holds a web search's
-# call and its result: QUERY as a call's input, an object whose query it is or a string of JSON
-# arguments naming it, as Anthropic's tool_use and OpenAI's function_call carry a call; and URL,
-# the address the result named, in some text of it (A23: the resumed agent's conversation holds
-# each search's call and result). An empty QUERY or URL, and no request, hold nothing.
+# call and its result: QUERY as the input of a call of the web_search tool, as Anthropic's tool_use
+# (an `input` object) and OpenAI's function_call (`arguments`, a string of JSON) carry a call; and
+# URL, the address the result named, in some text of it (A23: the resumed agent's transcript holds
+# each search's call and result). A request that holds no call of web_search, whatever else it
+# holds, holds no search, and so do an empty QUERY or URL and no request.
 request_holds_search() {
   jq -e --arg q "$2" --arg u "$3" '$q != "" and $u != ""
-    and any(..; (type == "object" and .query? == $q)
-      or (type == "string" and ((fromjson? // null) | type == "object" and .query? == $q)))
+    and any(..; type == "object" and .name? == "web_search"
+      and ((((.input? | objects | .query?) // (.arguments? | strings | fromjson? | objects | .query?)) // null) == $q))
     and any(.. | strings; contains($u))' <<<"${1:-null}" >/dev/null 2>&1
 }
 
@@ -1006,28 +1044,29 @@ ask_reply_after() {
     | ([range($r | length) | select($r[.].id == $c)] | first) as $at
     | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | last | .body? // empty) end'
 }
-# comment_reply_by ISSUE COMMENT SESSION prints SESSION's newest reply to COMMENT on ISSUE's own
-# thread, or fails: the answer a role mention of a stopped agent is answered with (A3).
-comment_reply_by() {
-  dispatch_get "issues/$1/comments" |
-    jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (last | .body? // empty)'
+# comment_reply_in COMMENTS COMMENT SESSION prints SESSION's newest reply to COMMENT in COMMENTS, an
+# issue's list of comments (GET issues/<issue>/comments), or fails: the answer a role mention of a
+# stopped agent is answered with (A3).
+comment_reply_in() {
+  jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (last | .body? // empty)' <<<"${1:-null}"
 }
+# comment_reply_by ISSUE COMMENT SESSION is comment_reply_in over the list read from Dispatch now.
+comment_reply_by() { comment_reply_in "$(dispatch_get "issues/$1/comments")" "$2" "$3"; }
 # record_reply_by RECORD SESSION prints SESSION's first reply in the message record a conversation
 # page reads (GET agents/<session>/messages), empty for none.
 record_reply_by() {
   jq -r --arg s "$2" 'first(.replies[]? | select(.author.id == $s) | .body) // empty' <<<"${1:-null}" 2>/dev/null || true
 }
-# issue_comments_holding ISSUE NEEDLE prints ISSUE's comments whose body holds NEEDLE, each as
-# {id, author, reply_to, body}, the author its id: `[]` for none, for Dispatch's error body and for
-# a read that failed (A22: the comment the stopped agent's dispatch tool posted where it was asked).
-issue_comments_holding() {
-  local body
-  body=$(dispatch_get "issues/$1/comments" 2>/dev/null) || body=
+# issue_comments_in COMMENTS NEEDLE prints the comments of COMMENTS, an issue's list of comments,
+# whose body holds NEEDLE, each as {id, author, reply_to, body}, the author its id: `[]` for none,
+# for Dispatch's error body and for a read that failed (A22: the comment the stopped agent's
+# dispatch tool posted where it was asked).
+issue_comments_in() {
   jq -c --arg n "$2" '(if type == "array" then . else [] end)
-    | [.[] | select((.body // "") | contains($n)) | {id, author: .author.id?, reply_to, body}]' <<<"${body:-null}" 2>/dev/null ||
+    | [.[] | select((.body // "") | contains($n)) | {id, author: .author.id?, reply_to, body}]' <<<"${1:-null}" 2>/dev/null ||
     printf '[]\n'
 }
-# one_tool_marked_comment_by COMMENTS SESSION: the comments (issue_comments_holding) are one,
+# one_tool_marked_comment_by COMMENTS SESSION: the comments (issue_comments_in) are one,
 # written as SESSION, its body carrying the mark the dispatch tool adds to what it posts, the
 # loop's marker naming the call, `<!-- legion-answer:<question>.<seq> -->` (dispatchtool's Mark),
 # which the loop answers nothing carrying. The loop's own reply carries `<question>` with no seq,
@@ -1175,14 +1214,18 @@ pr_comment_listing() {
   jq -s -c '(.[0] // null) | if type == "array" then . else null end' <<<"$body" 2>/dev/null ||
     printf 'null\n'
 }
-# pr_comments NUMBER MARKER prints the comments of that listing which hold MARKER, as
-# {id, user, body}: a listing that is none — GitHub's error body, a gh call that printed nothing
-# or failed — holds no comment and prints [].
+# pr_comments_holding LISTING MARKER prints the comments of LISTING (pr_comment_listing) which hold
+# MARKER, as {id, user, body}: a listing that is none — GitHub's error body, a gh call that printed
+# nothing or failed — holds no comment and prints [].
+pr_comments_holding() {
+  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
+    <<<"${1:-null}" 2>/dev/null || printf '[]\n'
+}
+# pr_comments NUMBER MARKER is pr_comments_holding over the listing read from GitHub now.
 pr_comments() {
   local listing
   listing=$(pr_comment_listing "$1") || listing=null
-  jq -c --arg m "$2" '(if type == "array" then . else [] end) | [.[] | select(.body | contains($m)) | {id, user: .user.login, body}]' \
-    <<<"$listing" 2>/dev/null || printf '[]\n'
+  pr_comments_holding "$listing" "$2"
 }
 # one_comment_by COMMENTS LOGIN SESSION: the comments holding the marker are one, posted by LOGIN,
 # and its Legion footer names SESSION.
@@ -1262,13 +1305,16 @@ review_round_undecided() {
 review_round_ended() {
   jq -e --arg id "$2" 'type == "object" and .phase != "reviewing" and ((.review_seen // 0) | tostring) == $id' <<<"${1:-null}" >/dev/null 2>&1
 }
-# tree_is_live ROOT PHASE: the daemon's own state says ROOT's tree is live and does not linger —
-# admission.trees is record.LiveRoots, the very set admission's release pass judges a root against
-# (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would have left
-# at `done`.
+# tree_is_live ROOT PHASE [held]: the daemon's own state says ROOT's tree is live and does not
+# linger — admission.trees is record.LiveRoots, the very set admission's release pass judges a
+# root against (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would
+# have left at `done`. With the third argument `held`, a root the workflow holds out of PHASE stands
+# there too: `phase` held and `heldFrom` PHASE (api.Issue.HeldFrom). The daemon holds an issue whose
+# worker failed with work outstanding, and a held issue is still in the workflow and in its tree.
 tree_is_live() {
   legion_cmd state --json |
-    jq -e --arg root "$1" --arg phase "$2" '(.admission.trees | index($root)) != null and .issues[$root].phase == $phase' >/dev/null
+    jq -e --arg root "$1" --arg phase "$2" --arg held "${3:-}" '(.admission.trees | index($root)) != null
+      and (.issues[$root] | .phase == $phase or ($held == "held" and .phase == "held" and .heldFrom == $phase))' >/dev/null
 }
 # passed_to_controller EVENT REASON: legion state lists a question passed on for REASON whose id or
 # reference names EVENT.
@@ -1363,6 +1409,17 @@ a13_same() {
   left=$(jq -S "$minted" "$branch" 2>/dev/null) && right=$(jq -S "$minted" "$base" 2>/dev/null) || return 1
   [ "$left" = "$right" ]
 }
+# a13_files are the six captures A13 compares, which a13_probe writes under
+# $evidence/a13/<label>/<store>/.
+a13_files=(send.status send.body publish.status publish.body dispatch-session.json dispatch-role.json)
+# a13_differs [SIDE] prints, each followed by a space, the a13_files whose captures of SIDE (branch
+# by default) a13_same finds unlike the base commit's.
+a13_differs() {
+  local file
+  for file in "${a13_files[@]}"; do
+    a13_same "$file" "${1:-branch}" || printf '%s ' "$file"
+  done
+}
 # a13_captured SIDE: SIDE's probe (a13_probe) and the base commit's both captured every one of the
 # six files A13 compares for the current store, each holding bytes. a13_same answers a missing
 # capture as a difference, so A13's control, which passes on a difference, reads this first: a
@@ -1370,7 +1427,7 @@ a13_same() {
 a13_captured() {
   local file side
   for side in "$1" base; do
-    for file in send.status send.body publish.status publish.body dispatch-session.json dispatch-role.json; do
+    for file in "${a13_files[@]}"; do
       [ -s "$evidence/a13/$side/$store/$file" ] || return 1
     done
   done
