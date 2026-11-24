@@ -3051,8 +3051,8 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Compare the 199 caller's other fields with the current state, excluding later
-  // contract additions. These include gate basis (249), priority (250), and convertedAt (278).
+  // Compare the 199 caller's other fields with the current state, excluding later additions.
+  // These include gate basis (249), priority (250), cause times (256) and convertedAt (278).
   // The caller also drops the cache capability's source added in 213.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
@@ -3094,20 +3094,41 @@ test("a reader at contract 152 parses the repositories block served below 202", 
       delete issue.gatedSteps;
     }
   }
+  const withoutCauseTimes = (view: unknown): unknown => {
+    if (!isJsonObject(view)) {
+      return view;
+    }
+    const { lastDeathAt: _deathAt, lastStartFailureAt: _startFailureAt, ...kept } = view;
+    return kept;
+  };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
       if (isJsonObject(line)) {
         const { priority: _placed, ...placed } = line;
-        kept.waitingLine = placed;
+        narrowed.waitingLine = placed;
       }
       if (kept.assignments !== undefined) {
-        kept.assignments = (kept.assignments as Record<string, unknown>[]).map(
+        narrowed.assignments = (kept.assignments as Record<string, unknown>[]).map(
           ({ plan: _plan, ...row }) => row
         );
       }
-      return [key, kept];
+      if (kept.architect !== undefined) {
+        narrowed.architect = withoutCauseTimes(kept.architect);
+      }
+      if (isJsonObject(kept.workers)) {
+        narrowed.workers = Object.fromEntries(
+          Object.entries(kept.workers).map(([role, worker]) => [
+            role,
+            isJsonObject(worker) && worker.claim !== undefined
+              ? { ...worker, claim: withoutCauseTimes(worker.claim) }
+              : worker,
+          ])
+        );
+      }
+      return [key, narrowed];
     })
   );
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);

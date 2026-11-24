@@ -205,9 +205,10 @@ import (
 // 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
 // (migration_20261123212127_test.go reads it).
 // dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
-// (20261123224717) adds issues.members_owed. This release re-admits no tree, so it neither
-// reads nor writes that column. The priority migration (20261124060500) adds issues.priority,
-// null on every existing row. Neither migration touches outbox_kind_check.
+// (20261123224717) adds issues.members_owed, read by this release's first boot conversion
+// and `legion members-back`. The priority migration (20261124060500) adds issues.priority,
+// null on every existing row. #5349 (20261124073512) adds the claim cause times and their
+// digests, also initially null. None of these migrations touches outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -221,6 +222,7 @@ var thisBranchsMigrations = []int{
 	20261117112334, 20261117200337, 20261119003157, 20261119203047, 20261120012547, 20261120042902,
 	20261120055717, 20261120144241, 20261121170714, 20261122154643, 20261122154644, 20261122154645,
 	20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
+	20261124073512,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -246,6 +248,7 @@ var thisBranchsMigrations = []int{
 // 20261123224717. That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
 // The waiting line's issue priority, 20261124060500, stands above them too.
+// #5349's cause times, 20261124073512, stand above every one of them, and the list names them too.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -682,6 +682,63 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 	}
 }
 
+// The pending-basis seed that ends a wait on an ancestor that has left Legion's work since the
+// registration (it closed as done, or went to the backlog and lost the legion label) runs after
+// that ancestor's own leave. The end of the wait is still told to the ancestor's architect as a
+// resting-root notice, which the outbox delivers by the owner walk and finishes undelivered where
+// no architect holds its role; a wait on an ancestor the daemon does not record tells nobody.
+func TestTheEndOfAPendingWaitIsToldToAnAncestorThatLeftLegionsWork(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		leave    func(t *testing.T, pool *pgxpool.Pool)
+		ancestor intake.AncestorRead
+		told     int
+	}{
+		{"the ancestor closed as done", func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Done, Generation: 1, Status: "done", Rank: "T",
+				HandedOver: true, LastDispatchSeq: 2})
+		}, intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, 2},
+		{"the ancestor on the backlog without the legion label", func(t *testing.T, pool *pgxpool.Pool) { seedAncestorOnTheBacklog(t, pool) },
+			intake.AncestorRead{Status: "backlog", HandedOver: false}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			tc.leave(t, pool)
+
+			apply("read", intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc,
+				BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100", Read: intake.BasisRead{Approval: requestOpen(), Ancestor: tc.ancestor}})
+
+			ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
+			if len(ended) != 1 {
+				t.Fatalf("basis-ended notices = %#v, want the one that ended the wait", ended)
+			}
+			resting := noticesOfKind(t, pool, basisAncestor, "resting-root")
+			if len(resting) != tc.told || !strings.HasPrefix(resting[tc.told-1].Reason, ended[0].Reason) {
+				t.Fatalf("resting-root notices = %#v, want the registration's and an end that tells %q", resting, ended[0].Reason)
+			}
+		})
+	}
+
+	t.Run("an ancestor the daemon does not record", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		apply := applyFacts(t, pool, engine)
+		seedGatedTree(t, pool)
+		apply("register-pending", onBasis(pendingBasis(), 6))
+
+		apply("read", intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1, ArtifactID: gateDoc,
+			BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100", Read: intake.BasisRead{Approval: requestClosed(), Ancestor: ancestorAtWork}})
+
+		if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 1 {
+			t.Fatalf("basis-ended notices = %#v, want the one that ended the wait", got)
+		}
+		if got := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(got) != 0 {
+			t.Fatalf("resting-root notices = %#v, want none for an ancestor the daemon does not record", got)
+		}
+	})
+}
+
 // The person's approval of the ancestor's version a step waits on, arriving as its live event
 // with the read its preparation carries, opens no step on an ancestor that has left R1's first
 // condition: as the daemon's own store shows it, recorded in its retro or shown done by the

@@ -955,13 +955,12 @@ connections_needed() {
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
 # only the password out of the URL it gives psql, and every user of this machine can read psql's
 # arguments. Its query is read as safe_url reads it: from the first `?` past the user info, each
-# key percent-decoded. Its URL is read with require_loopback_env (scripts/e2e/lib/loopback-dsn.sh)
+# key percent-decoded. Its URL is read with require_loopback_dsn (scripts/e2e/lib/loopback-dsn.sh)
 # before anything connects to that server or this batch writes the URL anywhere. The guard reads
 # the host with libpq, and pg_sql connects with psql, which is libpq, so the host psql reaches is
-# the host the guard read. run_database_url_env then rebuilds, for a placeholder database, the
+# the host the guard read. run_database_url then rebuilds, for a placeholder database, the
 # connection string each run's Dispatch gets (own_dispatch), and refuses a value that string
-# cannot carry, so such a URL is refused here, before anything starts, and not in every run. Both
-# take the variable's name rather than its value, so their lines put no DSN into a `bash -x` trace.
+# cannot carry, so such a URL is refused here, before anything starts, and not in every run.
 services_up() {
   evidence=$S
   local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host run_url tool rest param key
@@ -986,8 +985,8 @@ services_up() {
       command -v "$tool" >/dev/null ||
         fail "$tool is not on PATH: a batch given SKILL_SCENARIOS_POSTGRES_URL reads that URL with python3 and libpq, and reaches the server with psql"
     done
-    require_loopback_env pg_host SKILL_SCENARIOS_POSTGRES_URL "each run creates a database there" || fail "$pg_host"
-    run_database_url_env run_url SKILL_SCENARIOS_POSTGRES_URL run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
+    run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL

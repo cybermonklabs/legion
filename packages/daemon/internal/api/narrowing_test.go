@@ -312,11 +312,15 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	t.Run("priority and chain narrowings write their own lines for a 249 caller", func(t *testing.T) {
+	t.Run("priority, cause times and chain narrowings write their own lines for a 249 caller", func(t *testing.T) {
 		below := gateBasisContract
 		state := populatedState(t)
 		_, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
-		wantNarrowings(t, narrowings, below, []string{"the issues' priority and their waitingLine's priority", "daemon.convertedAt"})
+		wantNarrowings(t, narrowings, below, []string{
+			"the issues' priority and their waitingLine's priority",
+			"the claim views' lastDeathAt and lastStartFailureAt",
+			"daemon.convertedAt",
+		})
 	})
 
 	t.Run("the repositories narrowing writes its own line", func(t *testing.T) {
@@ -341,8 +345,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 6 {
-			t.Fatalf("a caller at %d expects the lines %v, want plan, give-ups, pod hold, basis, priority and chain alone", below, want)
+		if len(want) != 7 {
+			t.Fatalf("a caller at %d expects the lines %v, want plan, give-ups, pod hold, basis, priority, cause times and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
@@ -357,8 +361,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				podHoldContract, body)
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 4 {
-			t.Fatalf("a caller at %d expects the lines %v, want pod hold, basis, priority and chain alone", below, want)
+		if len(want) != 5 {
+			t.Fatalf("a caller at %d expects the lines %v, want pod hold, basis, priority, cause times and chain alone", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})

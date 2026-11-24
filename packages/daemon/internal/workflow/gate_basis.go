@@ -288,6 +288,9 @@ func restingPending(ask string) restingRootEvent { return "pending:" + restingRo
 // restingEnded is the end, with no opening, of a step's wait on the ancestor's request ask.
 func restingEnded(ask string) restingRootEvent { return "ended:" + restingRootEvent(ask) }
 
+// endsPendingWait says whether event is the end of a pending wait (restingEnded).
+func (e restingRootEvent) endsPendingWait() bool { return strings.HasPrefix(string(e), "ended:") }
+
 // restingClosed is a resting root's close as done, and restingLeft its leave of the workflow any
 // other way: a move to backlog, icebox or triage, or admission's leave of a root it found with
 // neither a slot nor a place in the line (tellRestingLeft). Either ends the wait of the ancestor's
@@ -314,9 +317,15 @@ const restingBasisEnded restingRootEvent = "basis-ended"
 // Where no architect of the ancestor is in Legion's work on its Dispatch chain (ancestorReached)
 // it queues nothing and records nothing as told: no architect of the ancestor would hear it, and
 // the ancestor's start task at its admission names the roots that rest on it. Otherwise each
-// event is told once (restingRootEvent), marked in the notice's own transaction.
+// event is told once (restingRootEvent), marked in the notice's own transaction. The end of a
+// pending wait is the one event told wherever the daemon records the ancestor on a known chain
+// (ancestorRecorded), whether or not it is still in Legion's work: the pending-basis seed that
+// ends a wait on a closed ancestor runs after that ancestor's own leave, and the end is the last
+// the ancestor's architect hears of the root. It goes by the owner walk as any notice keyed by an
+// issue does, so it reaches an architect that still holds its role, and finishes undelivered
+// where none does: nothing wakes or starts an architect that has ended for it.
 func (e *Engine) queueRestingRoot(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, basis record.GateBasis, event restingRootEvent, what string) error {
-	reached, err := e.ancestorReached(ctx, tx, basis.Issue)
+	reached, err := e.restingRootHeard(ctx, tx, basis.Issue, event)
 	if err != nil {
 		return err
 	}
@@ -367,6 +376,30 @@ func (e *Engine) ancestorReached(ctx context.Context, tx pgx.Tx, key string) (bo
 		return false, err
 	}
 	return chains.GateRoot(key) != "", nil
+}
+
+// restingRootHeard says whether a resting-root notice of event, keyed by the ancestor, is queued:
+// ancestorRecorded for the end of a pending wait, ancestorReached for every other event.
+func (e *Engine) restingRootHeard(ctx context.Context, tx pgx.Tx, ancestor string, event restingRootEvent) (bool, error) {
+	if event.endsPendingWait() {
+		return e.ancestorRecorded(ctx, tx, ancestor)
+	}
+	return e.ancestorReached(ctx, tx, ancestor)
+}
+
+// ancestorRecorded says whether the daemon records key and its Dispatch chain is known: the owner
+// walk of a notice keyed by it then names an architect, which the outbox delivers to or, where
+// that architect has ended, finishes the notice without.
+func (e *Engine) ancestorRecorded(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
+	ancestor, err := e.store.Issue(ctx, tx, key)
+	if err != nil || ancestor == nil {
+		return false, err
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, ancestor.Project, []string{key})
+	if err != nil {
+		return false, err
+	}
+	return chains.Chain(key).Known(), nil
 }
 
 // leaveBases is what root's leave of the workflow for status (leave) does to its steps that rest
