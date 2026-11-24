@@ -4,12 +4,11 @@
 // file name - so an entry never goes stale and only ever leaves to make room for another.
 //
 // The bound is on what each entry is charged, and the caller says what that is: Put charges a
-// value its own bytes, which leaves out the value's spare capacity, the key and the entry itself
-// (about 200 to 320 bytes an entry on go1.27, pmdoc's displayCacheEntryBytes), so it suits values
-// that dwarf those (routes' assets); PutSize charges whatever the caller counts - the spare
-// capacity of a buffer handed over, the bytes of a key a request spelled, a fixed cost for the
-// entry itself (pmdoc's display trees, api's list answers). That charge is what each package's
-// own bound promises its reader.
+// value its own bytes, which leaves out the value's spare capacity, the key and the entry itself,
+// so it suits values that dwarf those (routes' assets); PutSize charges whatever the caller
+// counts - the spare capacity of a buffer handed over, the bytes of a key a request spelled, a
+// fixed cost for the entry itself (pmdoc's display trees, api's list answers). That charge is what
+// each package's own bound promises its reader.
 package bytelru
 
 import (
