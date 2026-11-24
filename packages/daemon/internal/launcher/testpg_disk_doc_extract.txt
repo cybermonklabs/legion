@@ -4,7 +4,7 @@
 #
 # The guide still answers for the launcher, in two halves. This package's testpg_disk_doc_test.go
 # reads the region out of this copy through internal/testdoc and holds it to testPGProgram;
-# packages/daemon/internal/textcheck's TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds
+# packages/daemon/internal/textcheck's TestTheKubernetesDocExtractsAreTheGuidesOwnLines holds
 # it to the guide's own lines between the same two markers. Splitting it that way is what lets an
 # edit to the guide alone start the text-check run rather than the daemon's Go lane: the product
 # test does not read the guide.

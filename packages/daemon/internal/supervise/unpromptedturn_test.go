@@ -14,16 +14,10 @@ import (
 // and carries the status the provider refused it with where the provider library gave one
 // (turnOutcome, unpromptedTurnEnded).
 
-// pluginTurn is one such turn as its producer reports it (pluginTurnReport). No prompt result
-// follows it.
+// pluginTurn is one such turn as its producer reports it, at the claim's current generation:
+// refused with status, 0 where the library gave none, or clean. No prompt result follows it.
 func (h *harness) pluginTurn(sequence uint64, refused bool, status int) {
 	h.t.Helper()
-	h.must(h.pluginTurnReport(sequence, refused, status))
-}
-
-// pluginTurnReport is the report of such a turn, at the claim's current generation: refused with
-// status, 0 where the library gave none, or clean.
-func (h *harness) pluginTurnReport(sequence uint64, refused bool, status int) RequestTurnOutcome {
 	r := RequestTurnOutcome{
 		Claim: h.token, Generation: h.generation(), Sequence: sequence, Refused: refused, HTTPStatus: status, Unprompted: true,
 	}
@@ -33,7 +27,7 @@ func (h *harness) pluginTurnReport(sequence uint64, refused bool, status int) Re
 			r.Message = strconv.Itoa(status) + " " + r.Message
 		}
 	}
-	return r
+	h.must(r)
 }
 
 // idleClaim is an implementer that has finished its task's turn and owes nothing, which is where a

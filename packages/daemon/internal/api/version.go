@@ -3542,7 +3542,51 @@ package api
 // main's 228 that no other open pull request declares. Read main's own number and every open head
 // again at the next merge rather than from this line.)
 //
-// 244: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 246: each issue of `GET /legion/v1/state` (and the issue record, which is one issue of that
+// body) carries `podHold`, the standing hold of the issue's pod: why the
+// idle rule keeps that pod past the idle period. It is `{reason, firstAt, at, detail}`: `reason`
+// is the rule's own word for the hold (workflow.IdleHold's String, as the daemon's hold records
+// spell it), `firstAt` the first pass of the hold's streak, `at` its newest pass, and `detail`
+// what that word leaves out, cut to its first 200 characters and absent where the record holds
+// none. The daemon reads it from `pod_holds` in the state's own snapshot, one statement for the
+// whole project (store.StandingPodHoldsTx), and writes the key only for an issue whose pod a hold
+// stands on: a pod the rule has not held, one it released and one whose streak a later pass ended
+// carry none. A plugin below 246 reads each issue with a strict schema that names no `podHold`,
+// so a caller below 246 is served every issue without it (shaping.go's podHoldContract and
+// withoutPodHold, its row of stateNarrowings). The caller is placed as 193 places every caller of
+// the state: a plugin from 228 to 245 states its contract and is served 228's keys. No enumerated
+// field arrives: `reason` is a string a reader takes whole, so a hold a later rule adds is read
+// rather than refused. `packages/contracts/src/legion-api.ts` mirrors the key on its issue and
+// takes each of its four members as optional, since no plugin code reads them
+// (LEGION_ANSWER_READS).
+// (This entry took 221 at first, the lowest number above main's 205 that no open pull request
+// declared at a reading of every open pull request of cybermonklabs/legion that ended at
+// 2026-11-22T04:57Z. 220 to 222 had been named for three changes, #4930 among them, and 223 for
+// #4805, before each of them declared its number, so 221 was taken twice. This entry moved to 224,
+// the lowest number above 223 that no open pull request declares and that no change had been named
+// for. A reading of every open pull request that ended at 2026-11-22T06:08:16Z found 206 (#3712
+// and #4940), 207 (#3993 and #4432), 208 (#4175), 209 (#4049), 210 (#4661), 211 (#2230), 212
+// (#4030, #4392, #4540 and #4580), 213 (#4553), 214 (#4592), 215 (#4065 and #4596), 216 (#4173,
+// #4180, #4182, #4193, #4259 and #4932), 217 (#4273, #4590 and #4771), 218 (#3831), 219 (#4611),
+// 220 (#4930), 221 (this change at its first number) and 223 (#4805) declared, and none above 223.
+// The forward merge of 2026-11-24 that brought in e14345bf brought main's 228 (INFRA-1575's entry,
+// over 213, 217, 219 and 220). A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
+// each open pull request whose files touch this file, made between 2026-11-24T09:38:10Z and
+// 09:42:57Z, found 229 (#2230), 230 (#4580), 231 (#4540), 233 (#4173, #4180, #4182, #4193 and
+// #4932), 234 (#4065), 235 (#5204), 236 (#4984), 237 (#5168 and #5169), 238 (#5285), 239 (#4592),
+// 240 (#3831 and #5271), 241 (#4771 and #5307), 242 (#4596) and 243 (#5349) declared, and 244 had
+// been named for another change before it declared it, so this entry moved to 245, above every
+// number an open pull request declares or a change had been named for. A second reading, between
+// 2026-11-24T11:29:31Z and 11:32:10Z, found 245 declared by #5158 as well, with 244 (#3831 and
+// #5365), 243 (#5349) and 242 (#4596) below it, so this entry moved to 246, above every number an
+// open pull request declares.
+// The forward merge of 2026-11-24 that brought in 3dbaa2b2 brought main's 232 (INFRA-4508's
+// entry, right above this one), and a reading of the open heads that change this file, between
+// 2026-11-24T12:30:11Z and 12:32:24Z, found 246 declared by this change alone (245 by #5158,
+// 251 by #5307), so this entry kept 246. Read the base's own number and every open pull request
+// again at every forward merge rather than from this line.)
+//
+// 253: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -3559,26 +3603,15 @@ package api
 // paired only with an image of this release. An older daemon renders no such flag, and a
 // launcher of this release given none behaves as before: it reads no free bytes and resets
 // nothing. No frame between the daemon and the launcher moves, and no shape the plugin parses.
-// A registration on another plugin contract made while a stop is held over the claim and its last
-// turn's end is still being copied is refused with StalePluginContractUnderStop
-// (internal/claim/wire.go): the same 409 and opening sentence as StalePluginContract, with a
-// remedy that names the held stop rather than a relaunch. A plugin of any release stops on that
-// 409 as on the other, so the second remedy raises nothing.
-// While a stop is held for the copy of a turn's end, an unprompted turn-outcome report refused
-// with a status that cannot clear fails nothing: by 232's rule it fails the claim at once
-// and the answer's `failed` is true, but here supervise's providerErrorTurnEnded leaves that
-// failure to the held stop, and unpromptedTurnEnded answers `failed` false. Its readers,
-// pi-legion's turn-outcome reporter (`turn-outcome.ts`) and the Claude bridge
-// (`claudebridge/turnoutcome.go`), only log it, so that exception raises nothing either.
 // From this entry the last number of answers.go's SupportedContracts is this change's own, after
-// `api.intakeGiveUpsContract` with main's 232 between them (`intakeGiveUpsContract, 232, 244`).
-// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, 480 of them, taken between 2026-11-24T13:09:59Z and 13:24:12Z, after the
-// forward merge of main d2740571, read main's 232 (dispatch://INFRA-4508's turn outcome) and
-// numbers from 233 to 254 declared by other open heads, 240 by #3712, #3993, #4049 and #4771,
-// 242 by #4596, 243 by #5349 and 245 by #5158 among them, and no other head declaring 244. So
-// 244 is still above main's number and free, and this entry keeps it. It stood at 204, 207, 212,
-// 216, 218, 240, 241 and 243 before, each the number it took at an earlier census. Read main's
-// own number and every open pull request's again at the next forward merge rather than from this
-// line.)
-const DaemonAPIVersion = 244
+// `api.podHoldContract` (`podHoldContract, 253`).
+// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of this
+// repository, 476 of them, taken between 2026-11-24T16:08:40Z and 16:15:41Z, before the forward
+// merge of main 1cd586b4, read main's 246 (the pod hold's podHoldContract) and numbers up to 261
+// declared by other open heads: 247 by #5384, 248 by #3993, #4065 and #4392, 250 by #5365, 251 by
+// #5307 and 252 by #4540 among them. #5365's 250 may land first (dispatch://INFRA-3576, the
+// admission fix), so this entry takes 253, the lowest number above 250 that no other open head
+// declares. It stood at 204, 207, 212, 216, 218, 240, 241, 243 and 244 before, each the number it
+// took at an earlier census. Read main's own number and every open pull request's again at the next
+// forward merge rather than from this line.)
+const DaemonAPIVersion = 253

@@ -497,11 +497,10 @@ func TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations(t *t
 }
 
 // The controller's pod carries both stop-eviction annotations whatever its reservation: one pod
-// runs the project's controller, nothing else takes over the turn it is in, and no copy of its
-// work is kept outside it, so a deployment that gives it a request below its limit gets a pod that
-// bursts and keeps its protection from a repacking autoscaler. The issue pod of the same
-// deployment, at the Guaranteed defaults, keeps both too: a controller's reservation decides the
-// controller's pod alone.
+// runs the project's controller and nothing else takes over the turn it is in, so a deployment
+// that gives it a request below its limit gets a pod that bursts and keeps its protection from a
+// repacking autoscaler. The issue pod of the same deployment, at the Guaranteed defaults, keeps
+// both too: a controller's reservation decides the controller's pod alone.
 func TestABurstableControllerPodKeepsBothStopEvictionAnnotations(t *testing.T) {
 	for name, controller := range map[string]config.Reservation{
 		"a cpu request below its limit": {

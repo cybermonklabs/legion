@@ -61,13 +61,8 @@ func promptRetryDelay(attempt int) time.Duration {
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
 // behind and in the controller's notice.
-//
-// A failure decided while a stop is held for the copy its turn's end started is left to that stop
-// (the held-stop rule, stated once at providerErrorTurnEnded's guard): a pause's stop held for
-// this result begins its wait for the copy right after this, at the end of the result's row
-// (stopAfterAnswer).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
-	cause, verdict, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
+	cause, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus, model: r.Model,
 		line:  "supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		attrs: []any{"delivery", r.DeliveryID, "retryable", r.Retryable, "provider", r.Provider},
@@ -77,7 +72,7 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		// (promptResulted), so nothing of the task is left outstanding.
 		before: func(ctx context.Context) error { return m.takeBackPending(ctx, taskRead) },
 	})
-	if err != nil || verdict != providerErrorCanClear {
+	if err != nil || failed {
 		return err
 	}
 	return m.providerErrorClears(ctx, cause)
@@ -93,10 +88,9 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 // clear, or whose report carries no status, is counted and written down and nothing more, and the
 // controller's notice says that nothing is sent again. The cause is built from the status alone,
 // and the notice names no model, since a report carries none. Whether the report failed the claim
-// is what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome): a refusal
-// left to a held stop failed nothing (the held-stop rule at providerErrorTurnEnded's guard).
+// is what the turn-outcome answer says (Machine.turnOutcomeFailed, HandleTurnOutcome).
 func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
-	_, verdict, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
+	_, failed, err := m.providerErrorTurnEnded(ctx, providerErrorTurn{
 		status: r.HTTPStatus,
 		line:   "supervise: a turn that ran no prompt of the daemon's ended in a provider error",
 		attrs:  []any{"generation", r.Generation, "sequence", r.Sequence},
@@ -104,8 +98,8 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 		next: "the last of them ran no prompt of the daemon's (a phase reminder, an Envoy message or a " +
 			"background job's result), so the daemon sends no task again for it",
 	})
-	m.turnOutcomeFailed = verdict == providerErrorFailedTheClaim
-	if err != nil || verdict != providerErrorCanClear {
+	m.turnOutcomeFailed = failed
+	if err != nil || failed {
 		return err
 	}
 	return m.persist(ctx)
@@ -125,57 +119,27 @@ type providerErrorTurn struct {
 	before func(context.Context) error
 }
 
-// providerErrorVerdict is what providerErrorTurnEnded made of a turn that ended in a provider
-// error, which its callers act on: nothing reads it back from the claim's state.
-type providerErrorVerdict int
-
-const (
-	// providerErrorCanClear is an error whose status can clear (holdsTheIssue): what the turn does
-	// next is its caller's. It is the verdict too where providerErrorTurnEnded answers an error from
-	// before the claim was judged (t.before).
-	providerErrorCanClear providerErrorVerdict = iota
-	// providerErrorFailedTheClaim is an error that cannot clear, on which the claim failed under
-	// CauseProviderError.
-	providerErrorFailedTheClaim
-	// providerErrorLeftToStop is an error that cannot clear that came while a stop is held for the
-	// copy of the turn's end: the claim is not failed, and that stop is left to end its process
-	// (the held-stop rule at providerErrorTurnEnded's guard).
-	providerErrorLeftToStop
-)
-
 // providerErrorTurnEnded is what every turn that ended in a provider error does, whatever ran it
 // (providerErrored, unpromptedTurnEnded), so that both kinds make the claim's one run: the cause
 // built from the status alone (providerErrorCause), one more turn in the run, the warning line,
 // the controller's notice at providerErrorRunTold, then t.before, and, for a status that cannot
 // clear (holdsTheIssue), the claim's failure under CauseProviderError, which holds the issue for
-// its architect, unless a stop is held for the copy of the turn's end (the held-stop rule at its
-// guard). It answers the cause and its verdict on the turn (providerErrorVerdict); what a turn
-// whose error can clear does next is its caller's.
-func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, providerErrorVerdict, error) {
+// its architect. It answers the cause, and whether it failed the claim; what a turn whose error
+// can clear does next is its caller's.
+func (m *Machine) providerErrorTurnEnded(ctx context.Context, t providerErrorTurn) (string, bool, error) {
 	cause := providerErrorCause(t.status)
 	m.claim.ProviderErrorRun++
 	m.log.Warn(t.line, append(t.attrs, "httpStatus", t.status, "model", t.model, "providerErrorRun", m.claim.ProviderErrorRun)...)
 	m.tellControllerOfProviderErrors(t.model, cause, t.next)
 	if t.before != nil {
 		if err := t.before(ctx); err != nil {
-			return cause, providerErrorCanClear, err
+			return cause, false, err
 		}
 	}
 	if !holdsTheIssue(t.status) {
-		return cause, providerErrorCanClear, nil
+		return cause, false, nil
 	}
-	// The held-stop rule, stated here once for every turn a provider error ends (providerErrored,
-	// unpromptedTurnEnded, turnOutcome point here): a failure now would stop the claim's process
-	// while the copy its turn's end started still asks it (fail, endProcess). So where a stop is
-	// held for that copy (turnCopyHolds, which says when that hold ends and what runs the stop
-	// then), the claim is not failed: the run, and what t.before wrote, are written, and the stop
-	// is left to what runs it, whose suspension, not this failure, is what the claim ends in.
-	if m.turnCopyHolds() {
-		m.log.Warn("supervise: a provider error that fails the claim came while the held stop waits for the copy of its turn's end; the stop runs once that wait is over",
-			append(t.attrs, "httpStatus", t.status, "copy", m.turnCopy.seq, "by", m.held.By)...)
-		return cause, providerErrorLeftToStop, m.persist(ctx)
-	}
-	return cause, providerErrorFailedTheClaim, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause)
+	return cause, true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended "+t.turn+": "+cause)
 }
 
 // providerErrorRunOver puts the claim's run of provider-error turns back to zero for a turn that

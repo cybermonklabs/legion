@@ -419,29 +419,6 @@ type Options struct {
 	// which is one no live record and no launch since the last read names, once that cache's
 	// retention passes. Required for supervision.
 	CacheRepositories func() []ghrepo.Repository
-	// SavedWorkspaceBundle takes what an issue holds of its workspace for a new pod, and
-	// WorkspaceBundleRestored is the confirmation that keeps whichever copy the new pod's
-	// launcher put back as that pod's own running copy, named by the launcher session's pod uid
-	// (store.KeepRestoredWorkspaceCopy). The pair carries the work a release took off a pod's
-	// disk, or a cadence took off a pod the cluster ended without one, back into the pod that
-	// replaces it: the runtime hands that pod's launcher, before any role of the pod starts, the
-	// one copy the take answers it is sent (launchers.restoreWorkspace), and confirms it on the
-	// launcher's own report. The kept copy is answered nothing to that pod and offered to the
-	// pod after it, so the work outlives a second end of the pod before its first turn. The take
-	// chooses between the issue's two copies, refuses a running copy older than the newest
-	// recorded push of the issue's branch and spends the attempts, in one transaction of the
-	// store's (store.TakeWorkspaceCopyForRestore). The daemon fills both from its store; a
-	// runtime given neither restores nothing, which is what a pod whose issue holds no copy does
-	// anyway.
-	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
-	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
-	// HeldWorkspaceCopies drops each copy of an issue's workspace, the release bundle and the
-	// running copy, that the pod's own kept volume holds already (runtime.HeldWorkspaceCopiesDrop):
-	// the pod's Sandbox owns the issue's kept volume and was created before the copy was taken. At
-	// each role start the runtime asks it before the take, and only for a pod of such a Sandbox
-	// (launchers.restoreWorkspace). When it drops a copy, the runtime sends that pod nothing. A
-	// runtime given none takes the copies for every pod as SavedWorkspaceBundle answers them.
-	HeldWorkspaceCopies runtime.HeldWorkspaceCopiesDrop
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was
 	// (runtime.MemoryGuardKilled): the daemon turns it into the note that tells that role why its

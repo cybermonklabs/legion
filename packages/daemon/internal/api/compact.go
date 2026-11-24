@@ -294,15 +294,16 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactSuspended):
-		// The compaction ran, and the end of it found a suspension held over the claim, which
-		// took the claim in place of its agent. What the hold does then is one of the end's
-		// outcomes, named once on supervise.ErrCompactSuspended with what becomes of the owed
-		// task, and the answer names none of them: the caller is told what it asked for and did
-		// not get rather than a recovery that landed, and the claim's own state says what it is
-		// now (askAgainLater).
+		// The compaction ran, and the end of it found a suspension held over the claim: the
+		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
+		// My Pi started under the compaction and the hold waits for that turn's end. The claim
+		// was given back to neither its agent nor its task, so the caller is told that rather
+		// than a recovery that landed. What becomes of the owed task is the hold's own, written
+		// once on supervise.ErrCompactSuspended, and the answer carries none of it: what the
+		// caller asked for did not happen, and the claim's own state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back to its agent: the task it owes was not sent. %s", token, askAgainLater))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError

@@ -160,9 +160,11 @@ below lists them in the order of the default steps. A role keeps
 its session between its assignments until its issue leaves the workflow, so its next task reaches
 the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
-minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
+minutes and no working copy or bookmark of its workspace holds a commit that origin does not hold,
+nor the working copy a change, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
-head — brings the pod back and resumes the same sessions where they stopped.
+head — brings the pod back and resumes the same sessions where they stopped. A commit that no
+working copy and no bookmark reaches, such as a side head, is not kept.
 
 | Phase | Worker | What it does | GitHub identity |
 | --- | --- | --- | --- |
@@ -737,9 +739,9 @@ still moving, and a call that carries a start and no end is the shape a turn tha
 leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
 turn (`worker_stall_backstop_hours` in
 [legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
-three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
-by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
-last column is that call for each claim, the project controller's — which is on no issue, and so
-on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
-`legion state --json` prints, under `issues.<KEY>.architect.step` and
+three ways: `legion state`'s `agents in a tool call` line, which names each working claim in an
+open call by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims
+list`, whose last column is that call for each claim, the project controller's — which is on no
+issue, and so on no part of the `legion state` line — included; and `GET /legion/v1/state`, the
+bytes `legion state --json` prints, under `issues.<KEY>.architect.step` and
 `issues.<KEY>.workers.<role>.claim.step`.

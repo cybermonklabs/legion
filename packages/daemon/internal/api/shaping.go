@@ -577,6 +577,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: intakeGiveUpsContract, state: withoutIntakeGiveUps, dropped: "intakeGiveUps"},
+	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1053,6 +1054,27 @@ const assignmentPlanContract = 220
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract the key and the two answers arrived at stays where it is.
 const intakeGiveUpsContract = 228
+
+// podHoldContract is the daemon contract that added each issue's `podHold` to the state
+// (version.go's 246): the standing hold of the issue's pod, which the idle rule wrote only to its
+// own table before. A plugin before it reads each issue with a
+// strict schema that names no `podHold` and refuses the whole body for it, so every caller below
+// it is served the issues without the key (withoutPodHold). intakeGiveUpsContract stands below
+// it with no row of stateNarrowings between the two (232, between them, moves a request body and
+// no key of the state), so a caller from that contract to 245 is served 228's keys.
+//
+// It is a literal of its own and never DaemonAPIVersion, for the reason repositoriesLiveContract
+// is, and it is the last number of answers.go's SupportedContracts, which names the constant.
+const podHoldContract = 246
+
+// withoutPodHold is the issue with no `podHold`, the one key podHoldContract added to the state;
+// nothing else of that contract is on the route. The key is written only for an issue whose pod
+// a hold stands on, so the band reports a move only for an issue that carries one.
+func withoutPodHold(issue Issue) (Issue, bool) {
+	moved := issue.PodHold != nil
+	issue.PodHold = nil
+	return issue, moved
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

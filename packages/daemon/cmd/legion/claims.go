@@ -203,7 +203,7 @@ func issuesOrNone(name string, issues []string) string {
 // (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
 // recorded), the update round the claim is in with the head its worker reported when it
 // answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
-// tool call its agent is in (openCallWord), and last the sentence its latest launch try was
+// call its record holds open (openCallWord), and last the sentence its latest launch try was
 // refused with because the shared public leak check could not be installed in its pod, quoted so
 // the line stays one line per claim (`-` for a claim no leak check refused). This listing is
 // where the controller's cause is read, since its claim is on no claim view of the state. A
@@ -216,18 +216,21 @@ func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)), quotedOrNone(c.LeakCheckCause))
 }
 
-// openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call
-// id the stream's start and end frames pair by, and when the daemon received the start. It is
-// empty for a claim in no open call — one whose last call ended, and one whose agent has not
-// stepped at all — which the line prints as `-`.
+// openCallWord is the call a claim's record holds open, whatever the claim's state, as the line
+// prints it: the tool, the call id the stream's start and end frames pair by, and when the daemon
+// received the start. Only a working claim's agent is in that call: a retired or suspended claim
+// keeps the step it was last in on its record. It is empty for a claim whose record holds no open
+// call — one whose last call ended, and one whose agent has not stepped at all — which the line
+// prints as `-`.
 //
 // A call the host backgrounded is an ended call here, and its command may still be running: Oh
 // My Pi backgrounds a plain foreground shell command that has not returned in about a minute, or
 // at once when a steering message reaches the turn, ending the call with no error and handing
 // the job to the agent, which is a `tool_execution_end` on
 // the stream like any other (measured 2026-11-08 in the plugin's own live proof,
-// legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
-// what a stalled turn is read from, and never what is running on the worker's machine.
+// legion-stall-watchdog-omp.test.ts). So for a working claim this column says what the agent is
+// parked in, which is what a stalled turn is read from, and never what is running on the worker's
+// machine.
 //
 // A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is
 // where an operator reads a controller's: internal/projection puts the controller's claim on no
@@ -509,18 +512,12 @@ func (c *claimsCall) retry(ctx context.Context, token string, failed, fresh bool
 // suspendPoll is how often claimsSuspend reads the claims while a suspension is held.
 const suspendPoll = 250 * time.Millisecond
 
-// claimsSuspend suspends --claim. The daemon suspends at once (200) a ready or idle claim whose
-// last turn's end started no copy of the issue's workspace that is still being taken, or whose
-// copy is still being taken but 4 minutes have passed since that turn's end, the copy's
-// budget (supervise's turnCopyInBudget). It holds the suspension of one in a turn (202;
-// supervise's holdSuspension), of one launching or shim_connected until its agent is ready (202;
-// supervise's holdSuspendUntilReady), and of one idle or ready while that copy is still being
-// taken within those 4 minutes (202; supervise's suspend), which the command then waits out
-// (awaitSuspended) inside its --wait. It prints the claim as it ends, suspended. A suspend of a
-// worker whose start is still running is answered 200: the request stops that start before it
-// waits for the claim's decision (supervise's Handle), and the start is charged nothing. A suspend
-// of a launching claim whose paced wake waits over no process is answered 200 as well, decided
-// where it arrives.
+// claimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
+// (200), and holds the suspension of one in a turn (202; supervise's holdSuspension), which the
+// command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,
+// suspended. A suspend of a worker whose start is still running is answered 200: the request
+// stops that start before it waits for the claim's decision (supervise's Handle), and the start
+// is charged nothing.
 func claimsSuspend(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int { return c.suspend(ctx, *token) }
@@ -591,18 +588,8 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 			return nil, false
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
-			// What holds it is read from the state the claim waits in: a claim in a turn waits for
-			// that turn's end, a launching one for its agent's ready, and a ready or idle one for
-			// the copy its last turn's end started.
-			holds := "its agent's turn has not ended"
-			switch supervise.ClaimState(seen.State) {
-			case supervise.StateLaunching, supervise.StateShimConnected:
-				holds = "its launch has not said it is ready"
-			case supervise.StateReady, supervise.StateIdle:
-				holds = "the copy of the issue's workspace that its last turn's end started has not ended"
-			}
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: %s, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait, holds)
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
 			return nil, false
 		}
 		select {

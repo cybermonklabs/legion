@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,8 +88,24 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *fakeClock) At(at time.Time, f func()) Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for at, or for the clock's own time when at has passed: Advance sets the clock
+// to each timer's moment as it fires it, so a timer left at a passed moment would move the clock
+// back. The caller holds mu.
+func (c *fakeClock) armLocked(at time.Time, f func()) Cancel {
+	if at.Before(c.now) {
+		at = c.now
+	}
 	c.armed++
-	timer := &fakeTimer{clock: c, at: c.now.Add(d), order: c.armed, f: f}
+	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -114,13 +131,6 @@ const postsSettleBound = 30 * time.Second
 // what a grant's decision arms is armed before the clock moves, and the move fires it exactly
 // when it is due.
 func (c *fakeClock) Advance(d time.Duration) {
-	c.AdvanceAtMost(d, 0)
-}
-
-// AdvanceAtMost is Advance that fires at most fires timers on the way, none meaning no limit, and
-// reports whether it reached the end of d: a test bounds a move that a timer arming itself again
-// at once would never finish, and fails saying what it waited for rather than hanging.
-func (c *fakeClock) AdvanceAtMost(d time.Duration, fires int) bool {
 	c.mu.Lock()
 	c.settlePosts()
 	until := c.now.Add(d)
@@ -133,7 +143,7 @@ func (c *fakeClock) AdvanceAtMost(d time.Duration, fires int) bool {
 		c.stood.Broadcast()
 		c.mu.Unlock()
 	}()
-	for fired := 0; ; fired++ {
+	for {
 		c.mu.Lock()
 		var next *fakeTimer
 		for _, timer := range c.timers {
@@ -147,11 +157,7 @@ func (c *fakeClock) AdvanceAtMost(d time.Duration, fires int) bool {
 		if next == nil {
 			c.now = until
 			c.mu.Unlock()
-			return true
-		}
-		if fires > 0 && fired == fires {
-			c.mu.Unlock()
-			return false
+			return
 		}
 		next.fired = true
 		c.now = next.at
@@ -247,6 +253,28 @@ func (c *fakeClock) Live() int {
 		}
 	}
 	return live
+}
+
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. A move fires
+// nothing, so the decision that read the clock still runs; a timer that falls due within a move
+// fires at the next Advance at its own moment, which sets the clock back to that moment.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
 }
 
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
@@ -1005,14 +1033,6 @@ func (h *harness) handleWithoutPanic(ev Event) error {
 func (h *harness) advance(d time.Duration) {
 	h.clock.Advance(d)
 	h.m.Wait()
-}
-
-// advanceAtMost is advance bounded to fires timers (fakeClock.AdvanceAtMost), and reports whether
-// it reached the end of d.
-func (h *harness) advanceAtMost(d time.Duration, fires int) bool {
-	done := h.clock.AdvanceAtMost(d, fires)
-	h.m.Wait()
-	return done
 }
 
 func (h *harness) claim() Claim { return h.m.Claim() }

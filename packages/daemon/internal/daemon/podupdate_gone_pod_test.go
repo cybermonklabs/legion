@@ -398,7 +398,7 @@ var podUpdateEndLines = []string{
 	podUpdateReplacedLine,
 	"supervise: the pod this issue's update round was opened over is gone; the round is over",
 	"supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over",
-	"supervise: the pod of an open update round is gone; what the roles that had not answered did not push comes back in the next pod only up to the daemon's last copy of the workspace, and the rest is lost",
+	"supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 }
 
 // endsLogged is how many times the sweep logged the end of round on the rig's issue, by any of

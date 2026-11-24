@@ -150,18 +150,6 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
-	// A stop is held over the claim for the copy of an earlier turn's end (turnCopyHolds, which
-	// states when that hold ends): the agent started this turn after that end. Replacing the
-	// process now would end that hold (replaceNow, endHeld) while the copy still asks the
-	// process's shim. The turn is left alone, as a refused replacement leaves it, and the next
-	// sweep posts it again: the first post after the copy's reported end or its due decides the
-	// turn as any post does. The line names that due as until, whether or not the stop has begun
-	// its wait for the copy, since the hold ends there either way.
-	if m.turnCopyHolds() {
-		m.log.Info(backstopLeftToTheTurnCopy,
-			"copy", m.turnCopy.seq, "until", m.turnCopy.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last, "by", m.held.By)
-		return nil
-	}
 	suspended := m.held != nil
 	// The claim's process is read through a guard, and the two reads this recovery's own other
 	// entries make are too (repoint, displaced, noProcessRecorded). No live path reaches any of
@@ -212,10 +200,6 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 // honest reading of a field that is not there, and the alternative to the panic an unguarded
 // read of it makes.
 const noProcessRecorded = "no process the claim records"
-
-// backstopLeftToTheTurnCopy is the line the stall backstop writes where it leaves a stalled turn
-// alone for the copy a stop is held for (turnCopyHolds), with that copy's due as until.
-const backstopLeftToTheTurnCopy = "supervise: the stall backstop found a stop held over the claim for the copy of an earlier turn's end; the turn is left to the sweep's first post after that copy's end or its due"
 
 // backstopStall is the StallBackstop event's row, for the one state a claim is in a turn in.
 func backstopStall(m *Machine, ctx context.Context, ev Event) error {

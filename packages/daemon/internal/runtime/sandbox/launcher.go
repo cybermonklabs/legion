@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,10 +39,6 @@ type LeakCheckReader interface {
 type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
-	// held is, per issue, the last send of a saved copy of the issue's workspace that the pod's
-	// launcher answered Held (heldCopy), so a later role start of a launcher process that holds
-	// the copy neither takes nor sends it again (restoreWorkspace). Guarded by mu, as sessions is.
-	held map[string]heldCopy
 
 	// leakCheckSetting is the deployment's shared public leak check (Options.LeakCheckSetting);
 	// the zero Setting is a deployment that runs none, whose launchers are pushed nothing.
@@ -51,16 +48,10 @@ type launchers struct {
 	leakCheckSetting leakguard.Setting
 	leakCheck        LeakCheckReader
 	leakCheckHop     time.Duration
-	// saved is the take of whatever an issue holds of its workspace for a new pod, which chooses
-	// between the issue's two copies and spends their attempts in one transaction, and restored
-	// the confirmation that keeps the copy a launcher put back as the running copy of that
-	// launcher's pod: the daemon's store behind both (Options.SavedWorkspaceBundle,
-	// WorkspaceBundleRestored). A launchers built without the pair restores nothing. dropHeld drops
-	// each copy that a pod's own kept volume holds already (Options.HeldWorkspaceCopies). A
-	// launchers built without it takes the copies for every pod.
-	saved    runtime.SavedWorkspaceBundle
-	restored runtime.WorkspaceBundleRestored
-	dropHeld runtime.HeldWorkspaceCopiesDrop
+	// beforeStart is set by tests alone: start runs it between the session serveLeakCheck chose
+	// and the Start's write, the window in which a launcher that reconnects leaves the start on a
+	// closed session (TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts).
+	beforeStart func(ctx context.Context, token claim.Token)
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
@@ -81,16 +72,11 @@ type launcherSession struct {
 	owner *launchers
 	token claim.Token
 	// issue is the exact issue key this launcher's pod is of, as the role Secret's annotation
-	// carried it to the hello's authentication (launcherCredential.issue): the key the release
-	// saved that workspace's bundle under. "" for a pod of no issue, the project controller's.
-	issue string
-	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
-	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
-	// own. A copy of the issue's workspace taken after it came off that volume, so the pod takes
-	// none of it, and the store drops the copy (restoreWorkspace).
-	keptSince time.Time
-	id        string
-	podUID    string
+	// carried it to the hello's authentication (launcherCredential.issue). "" for a pod of no
+	// issue, the project controller's.
+	issue  string
+	id     string
+	podUID string
 	// resumesBySession is whether this launcher's hello said it can look a session up by its id
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
@@ -111,20 +97,17 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
-func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	dropHeld runtime.HeldWorkspaceCopiesDrop, guardKilled runtime.MemoryGuardKilled, controllerKilled runtime.ControllerMemoryGuardKilled,
-	volume runtime.VolumeReported, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, held: map[string]heldCopy{},
-		leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, saved: saved, restored: restored,
-		dropHeld: dropHeld, guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
+func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, guardKilled runtime.MemoryGuardKilled,
+	controllerKilled runtime.ControllerMemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheckSetting: setting, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+		guardKilled: guardKilled, controllerKilled: controllerKilled, volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
-// volume since keptSince (the zero time for a pod on a volume of its own). The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue. The newest authenticated connection
+// for a role wins: a half-open predecessor is closed so its pending requests fail instead of
+// waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
 	d.mu.Lock()
@@ -176,12 +159,10 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.deliver(value.ID, value)
 		case shimwire.LauncherStopResult:
 			s.deliver(value.ID, value)
-		case shimwire.LauncherBundleResult:
-			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherLeakCheckResult:
-			s.deliver(bundleWaiter(value.ID, value.Index), value)
+			s.deliver(sliceWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
-			s.owner.restoreReported(s, value)
+			s.owner.earlierRestoreReport(s, value)
 		case shimwire.LauncherMemoryKill:
 			s.owner.memoryKilled(s, value)
 		case shimwire.LauncherVolumeReport:
@@ -396,23 +377,9 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// serveLeakCheck chose this exact session and installed the check before the command was built.
 	// The start stays on it: a replacement session has not received that push, so this launch
 	// refuses and the supervisor retries from the new hello rather than starting a role without
-	// the checker its environment names. A refused install takes nothing of the issue's saved
-	// copies of its workspace, since a take there would decide them, refusing or closing a copy for
-	// good, for a pod no role of which runs.
-	//
-	// The newer of the two copies of this issue's workspace the daemon holds goes over next: the
-	// launcher holds it and restores it into the workspace before it runs the role's command, so
-	// the restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). A copy owed to the pod that could not be taken
-	// or put in the launcher's hands fails the start before its launcher_start is sent, so no role
-	// starts on what was pushed while the copy waits: a take or a drop the store did not answer
-	// wraps runtime.ErrWorkspaceCopyStore, which the supervisor retries charging nothing, and a
-	// take or a drop the store answered with a definite error, or a copy taken that does not reach
-	// the launcher, is charged. A restore the launcher holds and then fails, and a slice it
-	// refuses, fail nothing here. The hop runs under the start's context, so one slow enough to
-	// reach that context's deadline costs the start as well (bundleRestoreBound).
-	if err := d.restoreWorkspace(ctx, token, podUID); err != nil {
-		return fmt.Errorf("launcher %s start generation %d: %w", token, command.Generation, err)
+	// the checker its environment names.
+	if d.beforeStart != nil {
+		d.beforeStart(ctx, token)
 	}
 	answer, _, err := d.requestSession(ctx, session, command, command.ID)
 	if err != nil {
@@ -436,9 +403,9 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 // leakCheckHopBound is how long the push of the shared public leak check to one launcher may take:
 // its slices and the launcher's answer to the last, which it gives once it has unpacked, verified
 // and installed the check. The daemon already holds the check when the hop begins, so the hop is
-// a few slices of shimwire.LauncherBundlePayloadBytes, the launcher's unpack, its one `--help`
+// a few slices of shimwire.LauncherSlicePayloadBytes, the launcher's unpack, its one `--help`
 // run and its rename, and this is a slow connection's room. It runs under the start's own
-// context, as the bundle's hop does, so the launch's own bound needs no term for it. A hop that
+// context, so the launch's own bound needs no term for it. A hop that
 // outruns it refuses the start; the launcher's install goes on under its own bound, and the next
 // start is answered Installed at once.
 const leakCheckHopBound = 2 * time.Minute
@@ -493,7 +460,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
 	for _, frame := range served.Frames {
-		answer, confirmed, err := d.requestSession(hop, session, frame, bundleWaiter(frame.ID, frame.Index))
+		answer, confirmed, err := d.requestSession(hop, session, frame, sliceWaiter(frame.ID, frame.Index))
 		if err != nil {
 			if hop.Err() != nil && ctx.Err() == nil {
 				return nil, refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
@@ -527,6 +494,24 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	return nil, refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
 }
 
+// earlierRestoreReport reads and drops one launcher_restored frame (shimwire.LauncherRestored).
+// A launcher of an earlier release sends it, unasked, after it restored a released pod's saved
+// work into the pod that replaced it, and again on each later connection until one carries it.
+// Such a launcher is one an earlier daemon started, still running after this daemon took over.
+// This daemon saves no work and restores none, so the report confirms nothing it holds. A frame
+// the loop does not know ends the connection (ServeLauncher's `default: return`), which would cost
+// that launcher a redial and every answer pending on the connection, so the frame is decoded,
+// logged in one line naming the launcher, and dropped: a report of a restore that failed at Warn,
+// since the issue's workspace then holds only what was pushed, and any other at Info.
+func (d *launchers) earlierRestoreReport(s *launcherSession, report shimwire.LauncherRestored) {
+	level := slog.LevelInfo
+	if !report.OK {
+		level = slog.LevelWarn
+	}
+	d.log.Log(context.Background(), level, "launcher: an earlier launcher reported a restore of a released workspace's saved work, which this daemon does not keep; the report is dropped and the connection stays open",
+		"issue", s.issue, "launcher", s.token, "pod", s.podUID, "sequence", report.ID, "release", report.Release, "ok", report.OK, "error", report.Error)
+}
+
 // memoryKilled hands the daemon one process of a role that was stopped because the pod was out
 // of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
 // launcher reported it on the connection of the role whose process it was
@@ -552,10 +537,10 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 // launcher a redial a second later (ServeLauncher's `default: return`) over a frame the daemon
 // could not have used anyway, and the launcher's other frames would go with it.
 //
-// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
-// restoreReported does and under the same bounded context: two reports of one launcher reach the
-// fact path in the order the guard made them, and the cost is the one that precedent already
-// accepts, the launcher's other frames waiting behind one fact's transaction.
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, under a bounded
+// context of its own (apiTimeout): two reports of one launcher reach the fact path in the order
+// the guard made them, and the cost is the launcher's other frames waiting behind one fact's
+// transaction.
 func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMemoryKill) {
 	if err := report.Validate(); err != nil {
 		d.log.Warn("launcher memory guard: the pod's launcher sent a kill report the daemon cannot apply, which is dropped; the connection stays open",
@@ -608,23 +593,21 @@ func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMem
 // the volume again under the same trimmer, and under the same episode unless a recovery or a rise
 // raised it in between, so what a dropped sweep's report would have said reaches the architect
 // from a later one, within the notice bounds. A dropped report of a trimmer that switched itself
-// off is not sent again: that trimmer sends nothing more. That is the same bargain
-// restoreReported makes with its delete, for the same reason.
+// off is not sent again: that trimmer sends nothing more.
 //
 // A report the frame's own rule refuses (LauncherVolumeReport.Validate) — one naming no trimmer,
 // which is the identity the notice bounds count a restarted roles container apart by, one whose
 // episode is below the 1 the trimmer counts from, and one holding more entries in a list than
 // that list's cap, every entry of which the notice would carry — is logged with the reason and
-// dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
-// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second of
+// dropped. The connection is not closed on it: closing costs a redial a second of
 // the one role's connection that carries the pod's reports (ServeLauncher's `default: return`),
 // and it would not have the report sent again: nothing acknowledges this frame, and a launcher
 // holds a report only where its send failed (internal/launcher's deliver).
 //
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, as
-// restoreReported does and under the same bounded context: two reports of one launcher then
+// memoryKilled does and under the same bounded context: two reports of one launcher then
 // reach the fact path in the order the trimmer made them, which is what the notice bounds count
-// episodes by, and the cost is the one the precedent already accepts — the launcher's other
+// episodes by, and the cost is the one memoryKilled already accepts — the launcher's other
 // frames wait behind one row's write.
 func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
 	if err := report.Validate(); err != nil {
@@ -651,6 +634,11 @@ func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherV
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 	}
 }
+
+// sliceWaiter names the request one slice's answer belongs to, of a launcher_leak_check sequence.
+// A sequence is answered slice by slice, so its id alone would name as many answers as it has
+// slices.
+func sliceWaiter(sequence string, index int) string { return sequence + "/" + strconv.Itoa(index) }
 
 func (d *launchers) stop(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStop) error {
 	answer, session, err := d.request(ctx, token, podUID, command, command.ID)

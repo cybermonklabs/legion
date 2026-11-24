@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -104,75 +103,59 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	}
 }
 
-// The view carries two facts beside the rule's own conditions: whether the issue holds a bundle
-// no pod has restored, which keeps the pod from being released over work that never came back,
-// and whether a hold streak of the pod is running, which is what the daemon's pass reads before
-// it ends one. The second is in the view because the pass already takes this read, and ending
-// streaks a pod does not have would cost a write transaction per pod per tick.
-func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T) {
+// The view carries three facts beside the rule's own conditions: the release the daemon last
+// declined for the issue, with its last check's moment, the newest start row of its claims at that
+// check and the pod it read; each claim's newest turn start, which a decline is ended by
+// (pods.IdleDecline.Stands); and whether a hold streak of the pod is running, which is what the
+// daemon's pass reads before it ends one. The last is in the view because the pass already takes
+// this read, and ending streaks a pod does not have would cost a write transaction per pod per
+// tick.
+func TestTheIdleViewReadsTheDeclinedReleaseTheTurnStartAndTheRunningHoldStreak(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
-	now := time.Now().UTC()
-
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored || view.Holding {
-		t.Fatalf("view = %+v, want no stored bundle and no running streak", view)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	turn := now.Add(-2 * time.Hour)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		State: supervise.StateIdle, LastStartRow: 12, LastTurnStart: turn}); err != nil {
+		t.Fatal(err)
 	}
 
-	if err := st.PutWorkspaceBundle(ctx, rootIssue, 7, copyBegun(t, st),
-		runtime.WorkspaceBundle{Bundle: []byte("PACK"), Head: "abc", PodUID: "pod-being-released"}); err != nil {
-		t.Fatalf("save a bundle for %s: %v", rootIssue, err)
+	view := idleViewOf(t, st, rootIssue)
+	if view.Declined != (pods.IdleDecline{}) || view.Holding {
+		t.Fatalf("view = %+v, want no declined release and no running streak", view)
 	}
-	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "image", At: now}); err != nil {
+	if len(view.Claims) != 1 || !view.Claims[0].LastTurnStart.Equal(turn) {
+		t.Fatalf("claims = %+v, want the architect's turn start %s", view.Claims, turn)
+	}
+
+	markRelease(t, st, 18, 20, 22, 12)
+	if declined, err := st.DeclineIssueRelease(ctx, "legion", rootIssue, IdleReleaseDecline{At: now, Role: claim.RoleArchitect,
+		Reason: pods.DeclineUnpushedWork, Head: "abc", Commits: 1, PodUID: "pod-a"}, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: now}); err != nil || !declined.Declined {
+		t.Fatalf("decline the release of %s = %+v, %v; want it declined", rootIssue, declined, err)
+	}
+	if err := st.RecordPodHold(ctx, PodHold{Project: "legion", Issue: rootIssue, Reason: "unpushed_work", At: now}); err != nil {
 		t.Fatalf("record a hold of %s: %v", rootIssue, err)
 	}
-	if view := idleViewOf(t, st, rootIssue); !view.BundleUnrestored || !view.Holding {
-		t.Fatalf("view = %+v, want the unrestored bundle and the running streak", view)
+	view = idleViewOf(t, st, rootIssue)
+	want := pods.IdleDecline{At: now, CheckedAt: now, Reason: pods.DeclineUnpushedWork, StartedRow: 12, PodUID: "pod-a"}
+	if !view.Declined.At.Equal(want.At) || !view.Declined.CheckedAt.Equal(want.CheckedAt) || view.Declined.Reason != want.Reason ||
+		view.Declined.StartedRow != want.StartedRow || view.Declined.PodUID != want.PodUID || view.PodUID != "" || !view.Holding {
+		t.Fatalf("view = %+v, want the decline %+v, no pod of the runtime's (the daemon's pass reads that), and the running streak", view, want)
+	}
+	if view.Releasing {
+		t.Fatal("the view reads a release in progress after its decline deleted the mark")
 	}
 
 	if err := st.EndPodHoldStreaks(ctx, "legion", rootIssue); err != nil {
 		t.Fatalf("end the hold streaks of %s: %v", rootIssue, err)
 	}
-	if err := st.DeleteWorkspaceBundle(ctx, rootIssue); err != nil {
-		t.Fatalf("delete the bundle of %s: %v", rootIssue, err)
+	if err := st.ForgetIdleDecline(ctx, "legion", rootIssue); err != nil {
+		t.Fatalf("forget the declined release of %s: %v", rootIssue, err)
 	}
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored || view.Holding {
-		t.Fatalf("view = %+v, want the restored bundle and the ended streak gone from it", view)
-	}
-}
-
-// A running copy holds no pod, whatever became of its restore attempt. The row that holds a
-// pod is the release bundle's (workspaceBundleUnrestored, workflow.IdleHoldBundleUnrestored),
-// because the work in it is in the database alone: the pod it came off is gone, and a release of
-// the pod that holds it instead would take a disk nothing put the work back on. A running copy is
-// the other way round — the work is on the disk it was copied from, and an idle release of that
-// pod saves it again as a bundle — so an issue whose only copy is a running one is released when
-// it goes idle, and a failed restore of that copy changes nothing: the row stays, its attempt is
-// recorded, and no pod waits on it.
-func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
-	st := migratedStore(t)
-	ctx := context.Background()
-	openRunningTree(t, st)
-
-	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
-		PodUID: "pod-still-running"}
-	if err := st.PutRunningWorkspaceCopy(ctx, "legion", rootIssue, copyBegun(t, st), taken); err != nil {
-		t.Fatalf("take the running copy of %s: %v", rootIssue, err)
-	}
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
-		t.Fatalf("view = %+v, want no hold: a running copy is not a bundle no pod restored", view)
-	}
-
-	// The pod that replaced the one the copy came off was sent it and its restore failed: the
-	// attempt is recorded and the row stays, which is the state a hold would be read from.
-	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-that-replaced-it"); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", restore.Running.Take, err)
-	}
-	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
-		t.Fatal("the failed restore took the running copy, want it kept")
-	}
-	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
-		t.Fatalf("view = %+v, want no hold: the idle rule reads the release bundles alone", view)
+	if view := idleViewOf(t, st, rootIssue); view.Declined != (pods.IdleDecline{}) || view.Holding {
+		t.Fatalf("view = %+v, want the forgotten decline and the ended streak gone from it", view)
 	}
 }
 
@@ -281,7 +264,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	queued.Close()
 	if len(kinds) != 3 || kinds[0] != "issue_bundle" || kinds[1] != "supervise" || kinds[2] != "issue_release" ||
 		ids[1] <= ids[0] || ids[2] <= ids[1] {
-		t.Fatalf("queued rows = %v (%v), want the save, then the role stop, then the teardown", kinds, ids)
+		t.Fatalf("queued rows = %v (%v), want the workspace check, then the role stop, then the teardown", kinds, ids)
 	}
 	var first, boundary, last, generation int64
 	var role string
@@ -289,7 +272,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		where project='legion' and issue=$1`, rootIssue).Scan(&first, &boundary, &last, &generation, &role); err != nil {
 		t.Fatal(err)
 	}
-	// The mark names its own rows: the save, the role stop that is its boundary, and the
+	// The mark names its own rows: the workspace check, the role stop that is its boundary, and the
 	// teardown, which is how a row of this release is told from a row of one that is over.
 	if first != ids[0] || boundary != ids[1] || last != ids[2] || generation != 1 || role != "implementer" {
 		t.Fatalf("mark = rows %d..%d boundary %d, generation %d, role %s; want the rows %v", first, last, boundary, generation, role, ids)
@@ -354,8 +337,8 @@ func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
 	releaseThroughTheStore(t, st, rootIssue)
 }
 
-// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves
-// no bundle, so its mark names no role and records the rule that wrote it instead: every row of
+// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and reads
+// no workspace, so its mark names no role and records the rule that wrote it instead: every row of
 // that release, and the cancel that ends it, read the kind to know what the release did. A mark
 // that names no role and is not that release is the rule's own fault, and is refused before
 // anything is written.
@@ -414,8 +397,8 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 }
 
 // IdlePods is the tick's candidate list: every issue of the project with a live claim, and no
-// issue whose roles have all stopped — there is no role there to ask for a bundle and no claim to
-// suspend.
+// issue whose roles have all stopped — there is no role there to read the workspace through and
+// no claim to suspend.
 func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

@@ -1347,19 +1347,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    the claim at once, rather than waiting out a launch that can take minutes. Every `legion
    claims` subcommand takes a `--wait`, one minute by default, that bounds the whole call: a call
    that reaches it is refused with a line naming the bound, and the daemon goes on with what it
-   began under its own deadlines. An operator's suspension of an idle or ready agent whose last
-   turn's end started a copy of the issue's workspace that is still being taken is held too if it
-   is asked within 4 minutes of that turn's end, the copy's own budget: it is answered 202 and
-   waits for that copy, at most `worker_stop_timeout_seconds` from its arrival and never past
-   those 4 minutes. One asked after them, with the copy still unreported, is suspended at once
-   and answered 200, as where no copy is being taken. Until the stop lands the hold lives only in
-   the daemon's memory, so before restarting the daemon wait until `legion claims list` shows the
-   claim `suspended`, not merely `suspensionHeld`: read it again after a call that ran out of its
-   `--wait`, or give a drain's calls a `--wait` longer than the stop timeout. The resumed agent
-   continues the same conversation in a new pod — and that pod brings a disk of its own, so its
-   workspace is provisioned afresh from the issue's branch, and what the old pod held unpushed
-   comes back only up to the daemon's last copy of that workspace: the work since that copy is
-   gone. Let the agent push before you suspend it.
+   began under its own deadlines. Until the stop lands the hold lives only in the daemon's memory,
+   so before restarting
+   the daemon wait until `legion claims list` shows the claim `suspended`, not merely
+   `suspensionHeld`. The resumed agent continues the same conversation in a new pod — and that
+   pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
+   and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
@@ -1559,15 +1552,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   round read longest ago, although the read is the only moment the line prints — the wait an
   operator acts on is the one a head has sat through.
 
-  The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
-  seen the start of and no end of: how many, and each by issue and role with the tool, the call id
-  the stream's start and end frames pair by, and when the daemon received that start (`none` when
-  no agent is in one). It is the shape a stalled turn leaves behind, which is what
-  `worker_stall_backstop_hours` above acts on, so a call that has been open for hours is the one
-  to look at. The call's arguments are in no column of this surface or any other: the daemon keeps
-  their length and a fingerprint alone, because a shell command routinely holds a credential. The
-  project controller's claim is on no issue and so on no part of this line; `legion claims list`
-  prints each claim's open call in the same shape, in its last column, the controller's included.
+  The `agents in a tool call` line names every working claim whose agent is in a tool call the
+  daemon has seen the start of and no end of: how many, and each by issue and role with the tool,
+  the call id the stream's start and end frames pair by, and when the daemon received that start
+  (`none` when no agent is in one). A retired or suspended claim keeps the call it was last in on
+  its record, and the line leaves it out, since no turn of that claim is in flight. It is the
+  shape a stalled turn leaves behind, which is what `worker_stall_backstop_hours` above acts on,
+  so a call that has been open for hours is the one to look at. The call's arguments are in no
+  column of this surface or any other: the daemon keeps their length and a fingerprint alone,
+  because a shell command routinely holds a credential. The project controller's claim is on no
+  issue and so on no part of this line; `legion claims list` prints each claim's open call in the
+  same shape, in its last column, the controller's included.
   A shell command Oh My Pi backgrounded (a plain one still running after about a minute, or at
   once when a message is steered into the turn) is an ended call here while its process runs on:
   `none` says no agent is parked in a call, not that nothing runs on its machine.

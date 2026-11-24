@@ -302,7 +302,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, 
 	// (markPluginRelaunch, runWake, wake.pluginMark). A launch that runs above leaves it on the
 	// machine, where the launch itself commits it (launchNow, commitPluginRelaunch).
 	return m.parkWake(ctx, &wake{at: at, reserved: now, kind: kind, state: m.claim.State, paid: true, run: run, again: again,
-		pluginMark: m.takePluginRelaunch()}, at.Sub(now))
+		pluginMark: m.takePluginRelaunch()})
 }
 
 // gatePaces is the gate's rule for a launch no request exempts and no project pause holds
@@ -326,9 +326,9 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 	return gatePaces(deps, controller)
 }
 
-// parkWake is the park the gate, the re-park and a wake's turn over a turn's copy share
-// (reserveWake, reparkWake, wakeNow): TimerWake is armed for after — what is left of the wait —
-// and waiting waits on the machine (waitOnMachine), which is what reserveWake states.
+// parkWake is the park the gate, the re-park and the pause's let-out share (reserveWake,
+// reparkWake, letOutHeldLaunch): TimerWake is armed at the wake's turn, waiting.at (armAt), and
+// waiting waits on the machine (waitOnMachine), which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -345,8 +345,8 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 // (refreshPlugin, staleRegistration, judge, probe, backstopStalledTurn, letGo). A path that
 // raises one later is held to the rule by ending its decision, with nothing for this park to
 // remember (endRefreshLane).
-func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Duration) error {
-	m.arm(TimerWake, after, "")
+func (m *Machine) parkWake(ctx context.Context, waiting *wake) error {
+	m.armAt(TimerWake, waiting.at, "")
 	return m.waitOnMachine(ctx, waiting)
 }
 
@@ -375,7 +375,7 @@ func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
 		"due", w.at, "turn", turn)
 	w.at = turn
-	m.arm(TimerWake, max(turn.Sub(now), 0), "")
+	m.armAt(TimerWake, turn, "")
 	return true
 }
 
@@ -421,32 +421,19 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // replaced, and the resume raises a launch of its own (wake.pluginMark, relaunchMarked, revive).
 //
 // Every hold a launch's turn finds here is over a process that still runs: the suspend of a claim
-// in a turn (holdSuspension), the suspend of a launch that did start a process
-// (holdSuspendUntilReady), and the suspend of an idle or ready claim while the copy its last turn's
-// end started is still being taken within its budget (suspend, heldForTurnCopy), which are the
-// only three the machine keeps, and letGo drops a hold with the process it is held for. A suspend
-// of a parked claim that records no process is held no more — it is decided where it arrives,
-// since there is no process to protect and the wake's turn is tens of minutes away over a wave
-// (holdSuspendUntilReady) — and that suspension takes the wake with it, so no turn of such a claim
-// is reached at all.
+// in a turn (holdSuspension) and the suspend of a launch that did start a process
+// (holdSuspendUntilReady), which are the only two the machine keeps, and letGo drops a hold with
+// the process it is held for. A suspend of a parked claim that records no process is held no
+// more — it is decided where it arrives, since there is no process to protect and the wake's turn
+// is tens of minutes away over a wave (holdSuspendUntilReady) — and that suspension takes the wake
+// with it, so no turn of such a claim is reached at all.
 //
-// A stop held for the copy its turn's end started (turnCopyHolds, which states when that hold
-// ends) is not ended here: ending it now would stop the process the copy asks and cut that copy
-// off. The wake is parked again for the copy's due (parkWake). Where the held stop runs before
-// then — its wait for the copy begun and the copy ended — its let-go takes the wake as the launch
-// it met (letGo, launchMet), which is what ending it here would have done. Where it has not run by
-// then, the wake's turn at the due ends the hold (endHeld), as it would have here; a hold dropped
-// meanwhile leaves the wake to run its launch at that turn. That end can be a project pause's stop
-// still waiting for the prompt's answer (stopWaitsForResult), which the wake's turn then ends
-// before the answer has come: it is what a parked wake does to a held stop where no copy is taken,
-// and the copy's due leaves it so.
-//
-// The two ways out of a held suspension that take the wake off the machine leave nothing of this
-// refresh waiting in the pacing, so the end of this decision gives the credit of the refresh gate
-// this machine may hold back (endRefreshLane, dispatch://INFRA-2712 R1): the wake that starts no
-// process is spent where it is read, and the suspension that ends the claim's process lets that
-// process go with the wake it was parked over (endHeld, suspendedFor, letGo). The wake a copy's
-// wait keeps keeps its credit, which goes back with the decision whose let-go takes the wake.
+// Both ways out of a held suspension leave nothing of this refresh waiting in the pacing, so the
+// end of this decision gives the credit of the refresh gate this machine may hold back
+// (endRefreshLane, dispatch://INFRA-2712 R1): the wake that starts no process is spent where it
+// is read, and the suspension that ends the claim's process lets that process go with the wake
+// it was parked over (endHeld, suspendedFor, letGo). The wake is off the machine either way,
+// which is what that end reads.
 //
 // Two things a launch does before it launches, which together close the window over a process
 // the gate left running (reserveWake), and which runWake below takes for this turn and for an
@@ -495,14 +482,6 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 			// The wake is spent and nothing is left of it; the credit goes back with the
 			// decision (endRefreshLane).
 			return nil
-		}
-		// A stop held for a turn's copy: the wake waits for that copy too (the doc above).
-		if m.turnCopyHolds() {
-			c := m.turnCopy
-			m.log.Info("supervise: this claim's wake came due while its held stop waits for the copy of its turn's end; the wake waits for that copy too",
-				"kind", waiting.kind, "copy", c.seq, "until", c.due, "reason", m.held.Reason, "by", m.held.By)
-			waiting.at = c.due
-			return m.parkWake(ctx, waiting, max(0, c.due.Sub(m.deps.Clock.Now())))
 		}
 		return m.endHeld(ctx, true, stopOwed)
 	}
@@ -872,8 +851,8 @@ func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, droppe
 // (Handle, after both the named ignore's refusal and the row that acted): the claim is in the
 // state the gate found, with no process and no wake of its own, which is where a refusal, an
 // ignore and a forget-session each leave it — and the launch the wake holds is still owed. It is
-// parked again by the park the gate itself makes (parkWake), at the same release moment, for
-// whatever is left of the wait: the token was taken once, so this costs nothing and the wakes
+// parked again by the park the gate itself makes (parkWake), at the same release moment, which
+// fires at once if it has passed: the token was taken once, so this costs nothing and the wakes
 // behind it keep their turns.
 //
 // A claim that records a process takes no wake back, which is what the locator in the guard
@@ -897,7 +876,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
 	} else {
-		err = m.parkWake(ctx, dropped, max(dropped.at.Sub(m.deps.Clock.Now()), 0))
+		err = m.parkWake(ctx, dropped)
 	}
 	if err != nil {
 		m.log.Warn("supervise: the wake that keeps its turn could not be written; it waits in memory alone",

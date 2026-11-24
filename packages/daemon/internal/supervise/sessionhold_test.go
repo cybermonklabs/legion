@@ -625,13 +625,11 @@ func TestATmuxResumeByNameIsHeldToItsClaim(t *testing.T) {
 
 // A store that does not answer a resume's hold says nothing about the claim or its session
 // (errHoldUnanswered): the launch starts nothing, is charged to no budget, and is tried again at
-// the probe interval, as a launch whose write the store did not take is; the claim records why it
-// waits as its last start failure, naming the store that did not answer, and the line it logs
-// names that store too; once the store answers, the claim resumes its own session.
+// the probe interval, as a launch whose write the store did not take is; once the store answers,
+// the claim resumes its own session.
 //
-// The controls (the pull request records the runs): the hold's error sent down the launch-failure
-// path, as before this test: one unanswered hold spends the budget of one, and the claim fails; and
-// launchTries setting no LastStartFailure for it, which fails the record of why the claim waits.
+// The control (the pull request records the run): the hold's error sent down the launch-failure
+// path, as before this test: one unanswered hold spends the budget of one, and the claim fails.
 func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -644,13 +642,8 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	if err := h.handle(RequestResume{Claim: h.token}); !errors.Is(err, errHoldUnanswered) {
 		t.Fatalf("resuming with the store not answering the hold = %v, want errHoldUnanswered", err)
 	}
-	c := h.claim()
-	if c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
+	if c := h.claim(); c.State != StateLaunching || c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("the claim is %s with %d launch failures charged, want it launching with none", c.State, c.Budgets.LaunchFailures)
-	}
-	requireStartFailureNames(t, h, c, errHoldUnanswered.Error())
-	if lines := h.logs.lines("the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing"); len(lines) != 1 {
-		t.Fatalf("logged %v, want the session store's hold named once", lines)
 	}
 	if calls := h.calls("Resume")[resumes:]; len(calls) != 0 {
 		t.Fatalf("the runtime was asked to resume before the session was held: %+v", calls)

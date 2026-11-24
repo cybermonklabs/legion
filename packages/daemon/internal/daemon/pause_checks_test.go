@@ -38,17 +38,11 @@ import (
 // admission line; the same database holds a queued row of project Q. The test pauses P, then
 // delivers a listener wake for B, a CI settlement for C, a notice for A, a handoff of A that moves
 // X to implementing and a task for the controller, ends A's turn and D's turn, and advances the
-// clock thirty minutes. A pause saves no workspace, but it leaves the running copy (R1 of
-// dispatch://INFRA-1117) as it is at any time, so A's turn and D's turn, each of which ends into
-// the pause's stop, are copied at their ends while P is paused, and each stop waits for its copy.
+// clock thirty minutes.
 //
 // The negative control is the pause's check taken out of the admission pass
 // (admit.Admission.promoteHolds): Z is then admitted while P is paused, and the test fails at that
-// admission. A second is a pause's check put back at the top of the running copy
-// (workflowRuntime.takeRunningCopyOf taking no copy while the project is paused): the end of A's
-// turn is then in no copy, and the test fails at its check of that copy. A third is the copy of a
-// turn's end taken from the claim going durably idle in place of the turn's end: A's turn ends
-// straight into the pause's stop and never goes idle, so its end is in no copy either.
+// admission.
 func TestPauseHoldsEveryStart(t *testing.T) {
 	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
@@ -96,12 +90,6 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	dShim := r.dialShim(pauseRigBootToken(D))
 	dPrompt := r.startTurn(dShim, "Resume the existing phase work.")
 	r.awaitState(D, supervise.StateWorking, "D's turn has started")
-	// The cadence copies W while D's turn runs, at its first tick that finds W in a turn. W is next
-	// due five minutes on, on the wall clock (runningCopyPeriod), and once D's turn has ended W is
-	// in no turn and owes no retry, so a later copy of W that this test reads is the end of D's turn.
-	testwait.Eventually(t, "the cadence to copy W while D's turn runs", func() bool {
-		return slices.Contains(r.copiedIssues(), W)
-	})
 	r.parkRelaunch(E)
 	if started := r.linesOf(turnStartedLine(), A); len(started) != 0 {
 		t.Fatalf("A's turn started in this daemon's life %d times, want none: A's turn is the one the boot found", len(started))
@@ -155,16 +143,10 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		}
 	}
 
-	// A's turn ends, and its process stops although its session reported background work. The
-	// turn ends straight into the pause's stop, and that stop waits for the copy the turn's end
-	// started, which asks A for X's workspace (supervise's waitForTurnCopy).
-	copiedX := len(r.copiedIssues())
+	// A's turn ends, and its process stops although its session reported background work.
 	r.handle(A, supervise.StreamTurnEnd{Claim: A})
 	if a := r.awaitState(A, supervise.StateSuspended, "A stops when its turn ends"); !a.Released() {
 		t.Fatalf("A after its turn is suspended by %s, want released", a.SuspendedBy)
-	}
-	if !slices.Contains(r.copiedIssues()[copiedX:], X) {
-		t.Fatalf("the running copies since A's turn ended are %v, want X's: the end of A's turn is in no copy", r.copiedIssues()[copiedX:])
 	}
 	if got := r.rt.suspendedOf(A); got != 1 {
 		t.Fatalf("A's process was stopped %d times, want once at its turn's end", got)
@@ -172,21 +154,13 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	if background := r.count(`select count(*) from claims where token = $1 and activity_background`, string(A)); background != 1 {
 		t.Fatalf("A's claim records no background work, want the report its session made")
 	}
-	// D's turn ends in the provider's refusal of its prompt, whose result comes right behind the
-	// end. D stops, and keeps its task. The end of D's turn is copied while P is paused: D's stop
-	// waits for the prompt's result (supervise's stopWaitsForResult) and then for the copy the
-	// turn's end started, which the end handed D's claim, so it asks D for W's workspace whatever
-	// the stop that follows the result does.
-	copied := len(r.copiedIssues())
+	// D's turn ends in the provider's refusal of its prompt. D stops, and keeps its task.
 	r.handle(D, supervise.StreamTurnEnd{Claim: D})
 	// The prompt's request id carries its delivery's id (the worker stream's promptDelivery), which
 	// is what the stream hands the machine.
 	dDelivery, _, _ := strings.Cut(dPrompt.ID, ".")
 	r.handle(D, supervise.StreamPromptResult{Claim: D, DeliveryID: dDelivery, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
 	d := r.awaitState(D, supervise.StateSuspended, "D stops when its turn ends")
-	if !slices.Contains(r.copiedIssues()[copied:], W) {
-		t.Fatalf("the running copies since D's turn ended are %v, want W's: the end of D's turn is in no copy", r.copiedIssues()[copied:])
-	}
 	if !d.Released() || d.Pending == nil || !strings.HasSuffix(d.Pending.Task, "Resume the existing phase work.") {
 		t.Fatalf("D after its turn = %s by %s holding %+v; want released and holding its task", d.State, d.SuspendedBy, d.Pending)
 	}
@@ -208,18 +182,18 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		t.Fatalf("E was launched %d times, want only its boot launch: its parked relaunch does not run", len(launched))
 	}
 
-	// The pods of X and W stay, held by the pause, and no rule deletes them or saves their work.
-	deleted, bundled := r.rt.podReads()
-	if len(deleted) != 0 || len(bundled) != 0 {
-		t.Fatalf("the runtime deleted the pods of %v and bundled %v while the project is paused, want none", deleted, bundled)
+	// The pods of X and W stay, held by the pause, and no rule deletes them or reads their workspace.
+	deleted, read := r.rt.podReads()
+	if len(deleted) != 0 || len(read) != 0 {
+		t.Fatalf("the runtime deleted the pods of %v and read the workspaces of %v while the project is paused, want none", deleted, read)
 	}
 	for _, issue := range []string{X, W} {
 		if !r.openPodHold(issue) {
 			t.Fatalf("no pause holds %s's pod, want the pause's hold over the pod it stopped", issue)
 		}
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 
 	// Z is not admitted.
@@ -776,13 +750,13 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Past the idle period and past the rounds' bound, with the project paused.
 	r.advance(pauseRigPodUpdateGrace + time.Minute)
 	r.advance(pauseRigIdleMinutes * time.Minute)
-	deleted, bundled := r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("while the project is paused the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone",
-			deleted, bundled)
+	deleted, read := r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("while the project is paused the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone",
+			deleted, read)
 	}
-	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
-		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
+	if declined := r.count(`select count(*) from idle_release_declines`); declined != 0 {
+		t.Fatalf("%d releases declined while the project is paused, want none: the pause marks no release", declined)
 	}
 	roundsHeld := 0
 	for _, n := range []int{2, 6} {
@@ -822,10 +796,10 @@ func TestPauseKeepsThePods(t *testing.T) {
 	}
 	r.advance(pauseRigIdleMinutes*time.Minute + time.Minute)
 	r.advance(time.Minute)
-	deleted, bundled = r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
-			deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if !slices.Equal(deleted, []string{pods[4]}) || len(read) != 0 {
+		t.Fatalf("after the resume the runtime deleted the pods of %v and read the workspaces of %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
+			deleted, read)
 	}
 	for _, issue := range []string{pods[0], pods[1], pods[2], pods[3]} {
 		if !r.openPodHold(issue) {
@@ -850,9 +824,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if _, present := r.rt.IssueSandbox(pods[0]); !present {
 		t.Fatal("pod 1's Sandbox is gone at the wake, want the worker launched in the pod that holds its work")
 	}
-	deleted, bundled = r.rt.podReads()
-	if slices.Contains(deleted, pods[0]) || len(bundled) != 0 {
-		t.Fatalf("pod 1 deleted (%v) or a workspace bundled (%v) at the wake, want the disk kept", deleted, bundled)
+	deleted, read = r.rt.podReads()
+	if slices.Contains(deleted, pods[0]) || len(read) != 0 {
+		t.Fatalf("pod 1 deleted (%v) or a workspace read (%v) at the wake, want the disk kept", deleted, read)
 	}
 	r.ready(worker(1))
 	testwait.Eventually(t, "the hold on pod 1 to end at its worker's ready", func() bool {

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -933,6 +934,46 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// PodHold is the standing hold of the issue's pod: why the idle rule keeps that pod running
+	// past the idle period, from when, until which pass, and what holds it (PodHoldView). It is
+	// the streak of store's pod_holds that no pass has ended, read in this state's own snapshot
+	// (store.StandingPodHoldsTx). Absent for an issue whose pod no hold stands on: a pod the rule
+	// has not held, one it released, and one whose streak a later pass ended. Absent from every
+	// issue of the body the route serves a caller below podHoldContract (shapeIssue,
+	// withoutPodHold).
+	PodHold *PodHoldView `json:"podHold,omitempty"`
+}
+
+// PodHoldView is one pod's standing hold as the state shows it (store.PodHold): Reason, the idle
+// rule's own name for what holds the pod (workflow.IdleHold's String, as the daemon's hold
+// records and its per-pass log line spell it); FirstAt, the first pass of the streak; At, its
+// newest pass, so a reader tells a streak the passes still read from one whose passes stopped,
+// since a streak stays standing until the next pass of its pod ends it; and Detail, what that one
+// word leaves out (the kinds a background-work hold's session reported), cut to its first
+// podHoldDetailChars characters, and absent where the record holds none.
+type PodHoldView struct {
+	Reason  string    `json:"reason"`
+	FirstAt time.Time `json:"firstAt"`
+	At      time.Time `json:"at"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// podHoldDetailChars is how many characters of a hold's detail the state shows: enough to name
+// every kind a session reports, and a bound on what one row adds to a body every issue carries.
+const podHoldDetailChars = 200
+
+// PodHoldViewOf is hold as the state shows it, its detail cut to its first podHoldDetailChars
+// characters. A character is a rune, so a cut never splits one.
+func PodHoldViewOf(hold store.PodHold) *PodHoldView {
+	detail, chars := hold.Detail, 0
+	for at := range detail {
+		if chars == podHoldDetailChars {
+			detail = detail[:at]
+			break
+		}
+		chars++
+	}
+	return &PodHoldView{Reason: hold.Reason, FirstAt: hold.FirstAt, At: hold.At, Detail: detail}
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

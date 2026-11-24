@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 244,
-    "caller": 244
+    "daemon": 253,
+    "caller": 253
   },
   "admission": {
     "cap": 5,
@@ -636,7 +636,13 @@
       "phaseEntry": 2,
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
-      "quietHours": 40.583888888888886
+      "quietHours": 40.583888888888886,
+      "podHold": {
+        "reason": "background_work",
+        "firstAt": "2026-09-21T22:04:00Z",
+        "at": "2026-09-22T09:17:00Z",
+        "detail": "async-job"
+      }
     }
   },
   "pendingStatusWrites": [],

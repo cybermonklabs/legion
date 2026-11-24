@@ -135,9 +135,8 @@ const PodUpdateContract = 46
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
 // gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, the turn this relaunch waits out, whose own
-// end runs the relaunch back through here, and a stop held over the copy of the turn's end
-// (turnCopyHolds), whose let-go takes the process.
+// current, a wake already held, no process to replace, and the turn this relaunch waits out,
+// whose own end runs the relaunch back through here.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
 // credit straight back to the gate, keeping the one held for the wake it was taken for. The pass
@@ -178,24 +177,8 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
-	// A claim in a turn holds the relaunch back for that turn's end (holdStaleRelaunch). The
-	// controller's claim takes no copy (Deps.CopyTurnEnd), and its turn is never waited out.
-	if !controller && m.claim.State == StateWorking {
+	if m.claim.State == StateWorking && !controller {
 		m.holdStaleRelaunch(trigger)
-		return nil
-	}
-	// A claim idle or ready holding a stop held for the copy its last turn's end started
-	// (turnCopyHolds) is not relaunched: the relaunch would let the process go through the held
-	// stop (replaceNow, endHeld) while the copy still asks its shim, cutting the copy off. Nothing
-	// is held for later: the held stop runs as turnCopyHolds says, and its let-go takes the
-	// process, so the claim's next launch is a resume onto this daemon's plugin; a hold dropped
-	// meanwhile, or one still standing once its copy's budget has run out, leaves the claim to the
-	// next sweep, which posts it again. A credit this post carries goes back at the end of the
-	// decision (endRefreshLane). The controller's claim takes no copy, so it never waits here.
-	if m.turnCopyHolds() {
-		m.log.Info("supervise: the process speaks another plugin contract while a stop is held over the copy of its turn's end; nothing is relaunched, and that stop takes the process",
-			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
-			"daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq, "trigger", trigger)
 		return nil
 	}
 	if !controller && m.refreshCredit == nil {
@@ -500,21 +483,6 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 		m.log.Info("supervise: a registration on another plugin contract reached a claim whose relaunch waits its turn; that turn replaces this process and nothing is relaunched or charged here",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
-	}
-	// While a stop is held for the copy of the claim's last turn's end (turnCopyHolds), the
-	// registration is refused and nothing is relaunched or charged here. That does not keep the
-	// process for the copy: the plugin stops its agent on this refusal (packages/pi-shared's
-	// bootLegionClaim), so the process ends at once, the copy fails and owes a retry, and the
-	// process's death meets the held stop (died, endHeld), which suspends the claim charged
-	// nothing. What the guard keeps is that end: relaunched here instead, a claim whose relaunch
-	// for this contract was already made would be charged a launch failure, and its relaunch would
-	// drop the held stop with the process (relaunchAfterFailure, letGo). The refusal says so in its
-	// own words (claim.StalePluginContractUnderStop): it is the 409 of any stale registration,
-	// which the plugin stops on, but no relaunch follows it.
-	if m.turnCopyHolds() {
-		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; nothing is relaunched or charged here, and the process's exit on this refusal meets that stop",
-			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq)
-		return claim.StalePluginContractUnderStop(got, m.deps.PluginContract)
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {

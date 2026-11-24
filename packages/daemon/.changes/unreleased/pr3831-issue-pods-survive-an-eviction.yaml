@@ -2,37 +2,6 @@ kind: Added
 custom:
   Issue: pr3831
 body: |-
-  The daemon keeps a copy of each issue workspace's unpushed work while its pod runs: at the end of
-  each turn, every 5 minutes inside a turn, and at each push of the issue's branch it records. The
-  next pod of the issue restores the newer of that copy and the bundle an idle release saved,
-  before any role starts. A confirmed restore and a cancelled release keep the work as the pod's
-  own copy, so a second end of the pod before its next turn still restores it. No restore sets the
-  issue's branch `legion/<KEY>` or its rescue branch, and no running copy older than the newest
-  recorded push is restored. The restore decision compares times from the store's clock alone.
-  A copy sent to a pod that ends before any of its roles registers is sent again at the next start.
-  The restore of an issue runs one role start at a time, and once a pod's launcher process holds
-  the copy, the starts of its other roles neither take nor send it again.
-  The launcher records its restore on the workspace's own disk, so a `roles` container that
-  restarts after a restore still reports it to the daemon and refuses the copy sent again, and one
-  that restarts over a restore cut off in the middle, or over a record it cannot read on a disk that
-  carries no in-use mark, restores the copy sent again and starts no role until it does; with no
-  copy sent again it refuses each start and says why and what clears it: replacing the pod, on a
-  kept volume resetting that volume, or deleting the workspace's `.jj/legion-restore`. Each such
-  refusal is a charged launch failure.
-  Over a record it cannot read on a disk whose in-use mark is there or does not read, it refuses
-  the copy and every start and says why. No role starts while a copy is owed to its pod
-  and not in the launcher's hands: a take of the copies that the daemon's store does not answer is
-  tried again at the probe interval with nothing charged, and the claim's `lastStartFailure` says
-  why it waits, as it now also does at each retry of a launch whose session hold the store did not
-  answer; a take the store answers with a definite error, and a copy that does not reach the
-  launcher whole, fail the launch, charged, and the next launch asks again.
-  A stop held for a turn's end, such as a project pause's, an operator's suspend or a linger,
-  waits for that turn's copy, at most the copy's 4-minute budget and never past the stop's own
-  deadline, and a copy that fails or times out lets the stop go. A stop that reaches a role while
-  the copy of its last turn's end is still being taken waits for it the same way. A project's pause stops no
-  running copy. Only a daemon whose project records the issue writes or drops its running copy,
-  so an operator's spawn of another project's issue leaves that project's copy as it is.
-
   A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
   did not make, continues every role of the issue in its own session with no death and no launch
   failure charged, however often it happens and whether the role's agent was ready or still
@@ -62,19 +31,9 @@ body: |-
   `worker-died` of a tree's own architect now carries `failure` too, so the controller reads them.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
-  `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
-
-  The migrations add `workspace_running_copies`, `issue_pushes`, `issue_push_heads`,
-  `workspace_restore_asks` and a `written_at` column on `workspace_running_copies` and
-  `workspace_bundles`. To roll back, the operator first puts each lowered issue request back to its
-  limit and waits for each pod's update round, then stops this daemon and, before the earlier image
-  runs, runs one required `psql` step that re-pinning the image does not do:
-  `delete from workspace_running_copies;` and
-  `update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;`,
-  and for a rollback past idle release the `delete from workspace_bundles;` of that release's own
-  rollback. The second has every copy this release sent spent, as the earlier daemon's rule has
-  it, since that daemon records no registration (`docs/kubernetes.md`, "Rolling back the running
-  copy"). Until each issue pod is replaced on the earlier image, a pod of this release whose
-  restore was cut off in the middle refuses every start, since the earlier daemon never sends that
-  copy again; replacing that pod ends it, and on a kept volume, where the record stays, so does
-  resetting that volume or deleting the workspace's `.jj/legion-restore`.
+  `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst. The
+  cluster may then end such a pod to repack a node, which takes the work its roles did not push,
+  unless its disk is a kept volume. To roll back, the operator first puts each lowered issue
+  request back to its limit and waits for each pod's update round, then re-pins the earlier image
+  (`docs/kubernetes.md`, "Rolling back the release that continues the roles of a pod the cluster
+  ended").

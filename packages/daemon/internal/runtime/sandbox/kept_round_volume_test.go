@@ -15,8 +15,7 @@ import (
 // launch into a Sandbox of the other disk shape"): after a change of keep_volume, of
 // microvm.storage_class or of issue_volume, each of which is also a reason for the round itself.
 // A Sandbox that carries the reset mark is deleted by the next launch too (R6). In each case
-// IssueKeepsVolume answers false, so the issue is told that the work its roles did not push comes
-// back only up to the daemon's last copy of the workspace.
+// IssueKeepsVolume answers false, so the issue is told that the work its roles did not push is lost.
 func TestIssueKeepsVolumeIsFalseWhereTheNextLaunchReplacesTheVolume(t *testing.T) {
 	name := SandboxName(childToken)
 	// launched is a kept rig with the child's first pod launched, and a time after its Sandbox was

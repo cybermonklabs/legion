@@ -248,10 +248,8 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // provider, with its own sequence within the launch generation. The daemon keeps the report and
 // derives the claim's run of refused turns from the reports it holds, which fails no claim. A turn
 // that ran no prompt of the daemon's is judged from its report, as a prompt's turn is from its
-// result (supervise's turnOutcome): a refusal whose status cannot clear fails the claim at once,
-// unless a stop is held for the copy of the turn's end, which it is then left to (supervise's
-// providerErrorTurnEnded). The answer says what the run now is and whether this report failed the
-// claim.
+// result (supervise's turnOutcome): a refusal whose status cannot clear fails the claim at once.
+// The answer says what the run now is and whether this report failed the claim.
 //
 // The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
 // registration's secret and names the claim with it, as the ready and the exit do. The Claude

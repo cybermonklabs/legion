@@ -534,18 +534,10 @@ type rig struct {
 	opts Options
 
 	// commands are what each role's fake launcher was sent, in order; wanted are the roles whose
-	// fake launcher connects again whenever their issue gets a new pod. processes numbers each
-	// fake launcher process, which its roles' LauncherIDs are made from (newLauncherProcess).
+	// fake launcher connects again whenever their issue gets a new pod.
 	commandsMu sync.Mutex
 	commands   map[claim.Token][]shimwire.Frame
 	wanted     map[claim.Token]bool
-	processes  atomic.Int64
-	// refuseBundle, when set, is the error every fake launcher of this rig answers each
-	// launcher_bundle slice with, as a launcher refuses one that did not arrive as it was sent.
-	// failRestore, when set, is the error its report of the restore carries instead, which is a
-	// launcher that held the whole bundle and could not put it back.
-	refuseBundle string
-	failRestore  string
 	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
 	// public leak check: its pin, "" for none, and whether it holds that pin installed
 	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
@@ -568,18 +560,6 @@ func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
-
-// withRefusedBundle has every fake launcher refuse each slice of a workspace bundle with reason.
-func withRefusedBundle(reason string) rigOption {
-	return func(g *rig, _ *Options) { g.refuseBundle = reason }
-}
-
-// withFailedRestore has every fake launcher of this rig hold the whole bundle and then report
-// that its restore failed with reason, as a launcher whose `git bundle unbundle` found no
-// prerequisite commit does.
-func withFailedRestore(reason string) rigOption {
-	return func(g *rig, _ *Options) { g.failRestore = reason }
-}
 
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
@@ -608,9 +588,9 @@ func withCauselessLeakCheck() rigOption {
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
 
-// testLaunchers is a launchers of its own, outside any rig, with no saved workspace copies to
-// carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
-// build one drive the launcher protocol itself.
+// testLaunchers is a launchers of its own, outside any rig, with no receiver for a memory guard's
+// reports and no volume seam behind it: the tests that build one drive the launcher protocol
+// itself.
 func testLaunchers() *launchers { return volumeLaunchers(nil) }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
@@ -947,10 +927,9 @@ var servicesGVR = corev1.SchemeGroupVersion.WithResource("services")
 var podsGVR = corev1.SchemeGroupVersion.WithResource("pods")
 
 // createPod makes the pod a Running Sandbox stands for, as the controller and the API server
-// between them do: a uid of its own, and the creation instant the API server stamps, by the rig's
-// clock. The restore reads no part of that instant: every time it compares is the store's
-// (store.TakeWorkspaceCopyForRestore), so the rig's clock, which runs months behind the
-// database's, says nothing of what a pod is sent.
+// between them do: a uid of its own, and the creation instant the API server stamps. The rig's
+// clock is that stamp, so a test that advances it before a pod is replaced gets a replacement
+// newer than the one it replaced.
 func (g *rig) createPod(s *sandbox) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1012,7 +991,7 @@ func (g *rig) reportLauncher(token claim.Token, state shimwire.LauncherState) {
 	if pod == nil {
 		g.t.Fatal("cannot report launcher state without its pod")
 	}
-	s := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	s := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
 	s.mu.Lock()
 	s.state = state
 	close(s.ready)
@@ -1249,95 +1228,12 @@ func answerGeneration(command shimwire.Frame, running *uint64) (answers []shimwi
 func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 
 // connectRunning is a fake launcher connection for token whose launcher already runs generation
-// running (0 for none), as one that survived a daemon restart reports its child at once. Each is a
-// launcher process of its own, serving that one role.
+// running (0 for none), as one that survived a daemon restart reports its child at once.
 func (g *rig) connectRunning(token claim.Token, running uint64) {
-	g.serveLauncher(token, running, g.newLauncherProcess())
-}
-
-// connectToProcess is token's role connection of the fake launcher process p, replacing any
-// earlier connection of the role, as one role manager of a real launcher process dials the daemon
-// beside the process's other roles, or again after its connection dropped.
-func (g *rig) connectToProcess(token claim.Token, p *fakeLauncherProcess) {
-	g.serveLauncher(token, 0, p)
-}
-
-// fakeLauncherProcess is one fake launcher process of a pod, as the real launcher is one process
-// in the pod's `roles` container serving every role of the pod over a connection per role
-// (internal/launcher's newManagers). Each role's connection says a LauncherID of its own, made
-// from the process's name and the role, as each role manager mints its own at the process's start
-// and keeps it across its reconnects, and a restarted container is a new process with new ids.
-// The process holds one workspace restore for every role it serves, as the real launcher's one
-// bundleRestore is: held is the slices of each bundle sequence that arrived, whole the sequence a
-// start is still to apply and release the release whose save it carried, and applied how many
-// restores its starts applied. A slice it already holds is answered as it was the first time and
-// changes nothing, as the real launcher answers a repeated slice from its record, so a copy sent
-// again to a process that holds it is never applied twice.
-type fakeLauncherProcess struct {
-	name string
-
-	mu      sync.Mutex
-	held    map[string]map[int]bool
-	whole   string
-	release int64
-	applied int
-}
-
-// newLauncherProcess is a new fake launcher process, named apart from every other of the rig.
-func (g *rig) newLauncherProcess() *fakeLauncherProcess {
-	return &fakeLauncherProcess{name: fmt.Sprintf("test-%d", g.processes.Add(1)), held: map[string]map[int]bool{}}
-}
-
-// launcherID is the LauncherID token's role connection of p says in its hello.
-func (p *fakeLauncherProcess) launcherID(token claim.Token) string {
-	return p.name + "-" + string(token)
-}
-
-// restores is how many restores p's starts have applied.
-func (p *fakeLauncherProcess) restores() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.applied
-}
-
-// hold takes one slice of a bundle sequence and answers whether p now holds the whole sequence.
-// The slice that completes a sequence p did not hold whole leaves it for the next start to apply.
-func (p *fakeLauncherProcess) hold(slice shimwire.LauncherBundle) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.held[slice.ID] == nil {
-		p.held[slice.ID] = map[int]bool{}
-	}
-	seen := p.held[slice.ID][slice.Index]
-	p.held[slice.ID][slice.Index] = true
-	all := len(p.held[slice.ID]) == slice.Count
-	if all && !seen {
-		p.whole, p.release = slice.ID, slice.Release
-	}
-	return all
-}
-
-// apply is a start's restore of the sequence p holds whole and has not applied: its id and the
-// release its save carried, which the start reports, or "" when there is none to apply. Only a
-// start the launcher accepted calls it.
-func (p *fakeLauncherProcess) apply() (string, int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	whole, release := p.whole, p.release
-	if whole != "" {
-		p.whole, p.release = "", 0
-		p.applied++
-	}
-	return whole, release
-}
-
-// serveLauncher is token's role connection of the fake launcher process p, whose launcher already
-// runs generation running (0 for none).
-func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherProcess) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
-		LauncherID: p.launcherID(token), PodUID: string(pod.UID),
+	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
+		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
@@ -1369,27 +1265,10 @@ func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherPr
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
-				answers, started := answerGeneration(frame, &running)
-				// The real launcher restores the bundle inside the start, before it answers it
-				// (internal/launcher's manager.start), so the report crosses first; it names the
-				// release whose save the bundle carried, so that the daemon deletes that
-				// release's bundle and no other. A start that started nothing applies nothing.
-				if started {
-					if whole, release := p.apply(); whole != "" {
-						_ = writer.WriteFrame(shimwire.LauncherRestored{ID: whole, Release: release, OK: g.failRestore == "", Error: g.failRestore})
-					}
-				}
+				answers, _ := answerGeneration(frame, &running)
 				for _, answer := range answers {
 					_ = writer.WriteFrame(answer)
 				}
-			case shimwire.LauncherBundle:
-				if g.refuseBundle != "" {
-					_ = writer.WriteFrame(shimwire.LauncherBundleResult{ID: command.ID, Index: command.Index, Error: g.refuseBundle})
-					continue
-				}
-				_ = writer.WriteFrame(shimwire.LauncherBundleResult{
-					ID: command.ID, Index: command.Index, OK: true, Held: p.hold(command),
-				})
 			case shimwire.LauncherLeakCheck:
 				switch {
 				case g.silentLeakCheck:
@@ -1408,27 +1287,6 @@ func (g *rig) serveLauncher(token claim.Token, running uint64, p *fakeLauncherPr
 			}
 		}
 	}()
-}
-
-// keptSince is what the resolver reads off the Sandbox of token's pod for a hello
-// (LauncherResolver, keptVolumeSince): when that Sandbox was created, where it owns the issue's
-// kept volume, and the zero time otherwise. It reads the Sandbox the tracker holds, and a Sandbox
-// the tracker does not hold or cannot decode reads as the zero time, since a fake launcher may
-// connect from the controller stand-in's goroutine, where the test cannot fail.
-func (g *rig) keptSince(token claim.Token) time.Time {
-	object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, SandboxName(token))
-	if err != nil {
-		return time.Time{}
-	}
-	u, ok := object.(*unstructured.Unstructured)
-	if !ok {
-		return time.Time{}
-	}
-	s, err := decodeSandbox(u)
-	if err != nil {
-		return time.Time{}
-	}
-	return keptVolumeSince(s)
 }
 
 // issueLaunchers connects a fake launcher for every role of token's issue.

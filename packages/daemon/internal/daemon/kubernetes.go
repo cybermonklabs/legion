@@ -613,9 +613,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (repositories.serving, the repository state's own, so a configured rename's mint follows the
 // owner whose installation holds the repository now), with the repositories the project works as
 // the ones its repository caches follow (cached: those of its live issue records and of the
-// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
-// workspace bundles as what a replacement pod's launcher is sent and what its restore keeps, and
-// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// launches since their last read, workflowRuntime.cacheRepositories), and registers its launcher
+// acceptor on the stream listener. A daemon with no GitHub Apps hands it no
 // tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
@@ -634,9 +633,6 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
-		// The restore of a new pod and the saved copies of an issue's workspace it chooses
-		// between, taken, kept and dropped through the store (workspaceCopyOptions).
-		workspaceCopyOptions(&opts, st)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the

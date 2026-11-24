@@ -1198,17 +1198,15 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // the issue then says that the work the roles did not push is still on that volume. The runtime
 // answers whether the issue's Sandbox kept the pod's volume, asked with the time the round opened
 // (runtime.IssueVolumeReader): a Sandbox made after the round opened, by a reset or a change of
-// the disk's shape, holds a new volume, and the work past the daemon's last copy of the workspace
-// is lost as it is for an ephemeral volume. In both of those cases the message is the one every
-// other pod's issue is told, word for word.
+// the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
+// both of those cases the message is the one every other pod's issue is told, word for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	t.Parallel()
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
 		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
 	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
-		"The pod's disk went with the pod. Work that these roles did not push comes back in the next pod only up to the daemon's last copy of the workspace. " +
-		"The rest of that work is lost." + restarted
+		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
 	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
 		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume." + restarted
@@ -1927,8 +1925,8 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 // of a released pod records a process in it. Both readers of PodDrift ask it only through a
 // claim that records one (groupDrift, podProcess), so the branch that answers runtime.ErrPodGone
 // for a Sandbox suspended without this round's own displaced-pod mark is never reached for a
-// released pod: the sweep opens no round over it, writes nothing on the issue about work the
-// release's bundle is holding, and leaves the wake to bring the pod back.
+// released pod: the sweep opens no round over it, writes nothing on the issue about work a pod it
+// no longer has might have held, and leaves the wake to bring the pod back.
 func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 	t.Parallel()
 	rig := newPodUpdateRig(t,
@@ -2999,7 +2997,7 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 	const (
 		waits = "supervise: no claim of this issue records a pod; its update round waits for one to run again"
 		ended = "supervise: no claim of this issue records a pod, and the issue's Sandbox no longer holds the pod its update round was opened over"
-		lost  = "supervise: the pod of an open update round is gone; what the roles that had not answered did not push comes back in the next pod only up to the daemon's last copy of the workspace, and the rest is lost"
+		lost  = "supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed"
 	)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	for name, now := range map[string]string{

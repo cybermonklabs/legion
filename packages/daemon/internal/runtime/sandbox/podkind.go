@@ -170,9 +170,9 @@ func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.res
 // decides, and no legion.yaml key does — a deployment that had set one could not go back to an
 // earlier daemon release without editing its file first, which is the one action it takes when
 // this change goes wrong. What a Burstable issue pod gives up is the seven-day protection: the
-// cluster may end it to repack a node, and the daemon continues each of its roles from the
-// workspace copy it keeps outside the pod, but for the ends it counts as the pod's own, which
-// doNotDisruptAnnotation's comment (manifest.go) states.
+// cluster may end it to repack a node, taking the work its roles did not push unless its disk is
+// a kept volume, and the daemon continues each of its roles in the issue's next pod, but for the
+// ends it counts as the pod's own, which doNotDisruptAnnotation's comment (manifest.go) states.
 func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 	return guaranteedReservation(k.resources(r))
 }
@@ -645,8 +645,8 @@ func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return 
 // nothing else can take over the turn it is in, so a deployment that gives the controller room to
 // burst must not thereby lose the controller's protection from a repacking autoscaler. What an
 // issue pod gives up in exchange for bursting — being ended and continued elsewhere — is an issue
-// pod's alone: the daemon copies an issue workspace out of its pod, and the controller holds no
-// such workspace.
+// pod's alone: an issue's roles continue in the issue's next pod, and nothing else can run the
+// controller's turn.
 func (controllerPod) asksExtendedRunTime(*Runtime) bool { return true }
 
 func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {

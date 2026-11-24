@@ -447,7 +447,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
@@ -536,9 +536,8 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
-// unless the launcher answered that Start with a refusal (startRefusal), which started nothing, or
-// the hop of the pod's saved workspace copy held the start before its Start was sent (startHeld).
-// A launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
+// unless the launcher answered that Start with a refusal (startRefusal), which started nothing. A
+// launch whose shared public leak check could not be installed never reaches it: serveLeakCheck
 // refuses that launch before its Start is built.
 // Any other error leaves the Start's outcome unknown: the launcher may have received it and begun
 // the generation while its answer was still on its way. The Stop travels after the Start on the
@@ -546,8 +545,7 @@ func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 // bound, since the start's own deadline may be what ended it.
 func (r *Runtime) stopIssuedChild(ctx context.Context, token claim.Token, podUID string, generation uint64, startErr error) error {
 	var refused startRefusal
-	var held startHeld
-	if errors.As(startErr, &refused) || errors.As(startErr, &held) {
+	if errors.As(startErr, &refused) {
 		return nil
 	}
 	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.bootTimeout+r.terminationGrace)
@@ -1458,10 +1456,9 @@ func ownedBySandbox(refs []metav1.OwnerReference, uid types.UID) bool {
 
 // lockPod takes a pod's launch turn, keyed by its Sandbox's name, an issue pod's and the project
 // controller's alike: one relaunch, issue suspension, release or orphan deletion of a pod, or one
-// binding of its launchers at a hello (bindAtHello), at a time holds it. A relaunch holds it for its
-// whole start, the restore hop of the pod's saved workspace copy included
-// (launchers.restoreWorkspace), so the role starts of one pod run one at a time; the pods of one
-// tree's issues take turns of their own, never one another's.
+// binding of its launchers at a hello (bindAtHello), at a time holds it. Role starts in a healthy
+// pod share it only while they select a launcher command; the pods of one tree's issues take turns
+// of their own, never one another's.
 func (r *Runtime) lockPod(ctx context.Context, sandbox string) (func(), error) {
 	return r.takeTurn(ctx, r.podTurns, sandbox)
 }

@@ -67,7 +67,7 @@ func suspendedRole(role claim.Role, by supervise.SuspendSource) podUpdateRole {
 //     holds nothing back;
 //   - neither suspended claim is asked (no update-ask row, no publish to its topic), woken or
 //     resumed (no Resume call), and each is still suspended once the round is over;
-//   - no bundle of the workspace is saved.
+//   - no idle release declines the pod: the round's read writes no decline row.
 func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*podUpdateRig, map[string]any) {
 	t.Helper()
 	rig := newPodUpdateRig(t,
@@ -144,12 +144,12 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Errorf("the round resumed %d processes, want none", len(resumes))
 	}
-	var bundles int
-	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from workspace_bundles").Scan(&bundles); err != nil {
-		t.Fatalf("read the workspace bundles: %v", err)
+	var declines int
+	if err := rig.pool.QueryRow(rig.ctx, "select count(*) from idle_release_declines").Scan(&declines); err != nil {
+		t.Fatalf("read the idle release declines: %v", err)
 	}
-	if bundles != 0 {
-		t.Errorf("the round saved %d workspace bundles, want none: the read keeps nothing", bundles)
+	if declines != 0 {
+		t.Errorf("the round recorded %d idle release declines, want none: its read is the round's, which declines no release", declines)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
@@ -202,8 +202,8 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // the work is still on that volume rather than lost, and the line says the volume is kept: nothing
 // went with the pod. Over any other disk — an ephemeral one, or a kept volume made after the round
 // opened — the line names no kept volume, and the message says the pod and its disk are gone and
-// that the work comes back only up to the daemon's last copy of the workspace, whatever the read
-// found. A message that calls lost work safe tells a role not to do that work again.
+// the work is lost, whatever the read found. A message that calls lost work safe tells a role not
+// to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 	t.Parallel()
 	// commitRead scripts a read that finds one unpushed commit, and foundCommit holds the
@@ -285,7 +285,7 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 				if value, named := line["keptVolume"]; named {
 					t.Errorf("the replacement's line says keptVolume=%v, want no kept volume: the disk went with the pod", value)
 				}
-				for _, want := range []string{"The pod and its disk are gone.", "Work that is not on a branch at origin comes back in the next pod only up to the daemon's last copy of the workspace. The rest of that work is lost."} {
+				for _, want := range []string{"The pod and its disk are gone.", "Work that is not on a branch at origin is lost."} {
 					if !strings.Contains(messages[0], want) {
 						t.Errorf("the message does not say %q:\n%s", want, messages[0])
 					}
