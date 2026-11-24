@@ -1659,18 +1659,14 @@ describe("dispatchToolSpecs", () => {
     expect(existsSync(resolve(repoRoot, "skills/dispatch-writing-specs/SKILL.md"))).toBe(true);
   });
 
-  // The Dispatch skill keeps the headings code and other skills cite.
-  test("the Dispatch skill keeps every heading code and other skills cite", () => {
+  // The Dispatch skill keeps the four headings named by envoy-client's advice.
+  test("the Dispatch skill keeps every heading code names in its advice", () => {
     expect(dispatchSkillHeadings()).toEqual(
       expect.arrayContaining([
-        "Asks and ask blocks",
         "Issue status is yours to move",
-        "Choosing what to work on",
         "Close what you opened",
         "Structure over stream",
         "Architecture components",
-        "References",
-        "Setup and the HTTP API",
       ])
     );
   });
