@@ -56,6 +56,7 @@ describe("the relay socket opens at its route joined onto the listener URL's pat
           }),
           secret: () => token,
         },
+        outage: { refused: () => undefined },
         log: () => undefined,
       });
       stops.push(() => relay.close());

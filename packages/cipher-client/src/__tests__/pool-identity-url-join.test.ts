@@ -24,7 +24,7 @@ const FEDERATED_MEMBER = ["access", "token"].join("_");
  *  answers a federated token and IAM Credentials a minted one. */
 function pool(iamCredentialsUrl: string) {
   const asked: URL[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const fetchImpl = (async (input: string | URL | Request) => {
     const url = new URL(String(input));
     asked.push(url);
     const body =
