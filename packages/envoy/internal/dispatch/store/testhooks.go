@@ -5,7 +5,10 @@ package store
 const LargeArgumentBytesForTest = largeArgumentBytes
 
 // CountedArgumentBytesForTest is how many of arg's bytes argumentReleaser counts toward
-// largeArgumentBytes (cheapArgumentBytes), 0 for a kind it does not count. A test in package api
+// largeArgumentBytes (knownArgumentBytes), 0 for a kind it does not count. A test in package api
 // reads every large write's arguments with it, so it holds those writes to the kinds the release
 // counts and not to a copy of that list.
-func CountedArgumentBytesForTest(arg any) int { return cheapArgumentBytes(arg) }
+func CountedArgumentBytesForTest(arg any) int {
+	counted, _ := knownArgumentBytes(arg, 0)
+	return counted
+}

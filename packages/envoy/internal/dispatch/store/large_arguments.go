@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -12,10 +13,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// largeArgumentBytes is the size of a statement's arguments from which its connection gives them
-// back when it returns to its pool (argumentReleaser). A connection whose statements stay under it
-// keeps at most this much while it is idle, 4 MiB over the shared pool's sharedPoolSize
-// connections, and its release costs nothing.
+// largeArgumentBytes is the size of one statement's counted arguments (knownArgumentBytes) past
+// which its connection gives them back when it returns to its pool (argumentReleaser). The bound
+// is per statement: a statement under it is never given back, and its release costs nothing. A
+// run of such statements with falling argument counts can leave each one's buffer held through
+// the slots the next did not overwrite, up to keptArgumentSlots buffers, 4 MiB, on a connection.
+// The release does not track that case: it would have to count every statement's arguments into
+// the connection's mark, not only a large one's.
 const largeArgumentBytes = 64 << 10
 
 // keptArgumentSlots is the most encoded arguments pgx keeps on a connection after a statement. Its
@@ -35,12 +39,14 @@ const largeArgumentsKey = "dispatch.store.largeArguments"
 // argumentReleaser makes a pooled connection give back the encoded arguments of its last large
 // statement when it returns to its pool. pgx v5.13.0 keeps them otherwise. Its builder encodes a
 // statement's arguments into one buffer and keeps a slice with one pointer into that buffer per
-// argument (extended_query_builder.go:118-134). After each statement it resets the builder
-// (extended_query_builder.go:96-116, from conn.go:612, 623, 634, 891 and 1083). The reset drops a
-// buffer over 256 bytes, but it keeps the slice, cut to length zero, while the slice holds 64 or
-// fewer, and the old pointers in it still hold the buffer. Only the next statement that encodes at
-// least as many arguments overwrites them all. A statement with no arguments encodes none: Exec
-// runs it on the simple protocol (conn.go:524-525). pgxpool keeps an idle connection for 30
+// argument (extended_query_builder.go:118-134). Each build starts by resetting the builder, and a
+// statement run on its own resets it again after it (extended_query_builder.go:21-22 and 96-116,
+// from conn.go:612, 623, 634, 891 and 1083); a batch's queries are built one after another and the
+// last one's arguments stay in place (conn.go:1252-1267). The reset drops a buffer over 256 bytes,
+// but it keeps the slice, cut to length zero, while the slice holds 64 or fewer, and the old
+// pointers in it still hold the buffer. Only the next statement that encodes at least as many
+// arguments overwrites them all. A statement with no arguments encodes none: Exec runs it on the
+// simple protocol (conn.go:524-525). pgxpool keeps an idle connection for 30
 // minutes, so each of the shared pool's connections held its last large write that long. CI's
 // dispatch-memory job found the server's live heap at rest 14.1% above its level before eight
 // runs (396 MiB against 347 MiB), and the growth was in
@@ -64,8 +70,8 @@ const largeArgumentsKey = "dispatch.store.largeArguments"
 // would count a released connection as still in use. TraceRelease runs at the start of Release, on
 // the caller's goroutine (pgxpool/conn.go:28-30), so only a marked connection's release waits: for
 // the one round trip of the overwrite, 0.35 ms mean and 1.2 ms p99 over 1000 runs on the test
-// Postgres. A connection whose overwrite fails is closed, and Release destroys a closed connection
-// (pgxpool/conn.go:32-38) rather than keep its arguments.
+// Postgres. A connection whose overwrite fails is closed, with a warning naming the error, and
+// Release destroys a closed connection (pgxpool/conn.go:32-38) rather than keep its arguments.
 //
 // Open installs it on the shared pool's configuration (withArgumentRelease). Every pool opened
 // from a copy of that configuration has it too: the rooms, room-appends, health, lease, outbox,
@@ -76,9 +82,11 @@ const largeArgumentsKey = "dispatch.store.largeArguments"
 //
 // Only arguments whose size the tracer reads cheaply count: strings, byte slices and raw JSON,
 // pointers to strings and byte slices, and slices of strings, of pointers to strings or of byte
-// slices. A value pgx encodes by marshalling it, such as a struct for a jsonb column, does not
-// count, and no write of the store passes one large (api's
-// TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount).
+// slices (knownArgumentBytes). A value pgx encodes by marshalling it, such as a struct for a jsonb
+// column, does not count. api's TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount drives
+// each write that carries a client's text, a document, an upload, a stored tree or an
+// architecture note and holds them to the counted kinds; the dashboard's asset publish, which it
+// cannot drive, binds each asset as bytes (dashboard.storeAssets).
 type argumentReleaser struct{}
 
 // withArgumentRelease returns tracer with argumentReleaser added: argumentReleaser alone when
@@ -135,6 +143,10 @@ func (argumentReleaser) TraceRelease(_ *pgxpool.Pool, data pgxpool.TraceReleaseD
 	defer cancel()
 	sql, args := overwriteArguments(slots)
 	if _, err := conn.Exec(ctx, sql, args...); err != nil {
+		// A healthy connection that missed the bound under load is closed too, so the log says
+		// why the pool dialled another.
+		slog.Warn("dispatch: a released connection could not give back a large statement's arguments, so it is closed",
+			"error", err, "arguments", slots)
 		_ = conn.Close(ctx)
 	}
 }
@@ -144,7 +156,8 @@ func (argumentReleaser) TraceRelease(_ *pgxpool.Pool, data pgxpool.TraceReleaseD
 func markLargeArguments(conn *pgx.Conn, args []any) {
 	size := 0
 	for _, arg := range args {
-		size += cheapArgumentBytes(arg)
+		counted, _ := knownArgumentBytes(arg, 0)
+		size += counted
 	}
 	if size <= largeArgumentBytes {
 		return
@@ -159,48 +172,54 @@ func markLargeArguments(conn *pgx.Conn, args []any) {
 	custom[largeArgumentsKey] = slots
 }
 
-// cheapArgumentBytes is how many bytes arg holds, for the kinds of argument whose size is cheap to
-// read, and 0 for every other kind. The tracer runs it on every statement's arguments, so it reads
-// no value through reflection, as writebatch.go's argumentBytes, which bounds a write phase, does.
-func cheapArgumentBytes(arg any) int {
+// knownArgumentBytes is how many bytes arg holds, and whether its kind is one whose size is read
+// without reflection: a string, bytes or raw JSON, a pointer to a string or to bytes, or a slice
+// of strings, of pointers to strings or of bytes, each element of a slice counted elementBytes
+// more (the length the wire puts before an array's element). The tracer counts these kinds alone,
+// on every statement's arguments, so it reads no value through reflection; writebatch.go's
+// argumentBytes, which bounds a write phase, reads every other kind through reflection.
+func knownArgumentBytes(arg any, elementBytes int) (int, bool) {
 	switch value := arg.(type) {
 	case string:
-		return len(value)
+		return len(value), true
 	case []byte:
-		return len(value)
+		return len(value), true
 	case json.RawMessage:
-		return len(value)
+		return len(value), true
 	case *string:
-		if value != nil {
-			return len(*value)
+		if value == nil {
+			return 0, true
 		}
+		return len(*value), true
 	case *[]byte:
-		if value != nil {
-			return len(*value)
+		if value == nil {
+			return 0, true
 		}
+		return len(*value), true
 	case []string:
 		size := 0
 		for _, element := range value {
-			size += len(element)
+			size += elementBytes + len(element)
 		}
-		return size
+		return size, true
 	// The block-text writes bind their texts so, a NULL where a block has no text.
 	case []*string:
 		size := 0
 		for _, element := range value {
+			size += elementBytes
 			if element != nil {
 				size += len(*element)
 			}
 		}
-		return size
+		return size, true
 	case [][]byte:
 		size := 0
 		for _, element := range value {
-			size += len(element)
+			size += elementBytes + len(element)
 		}
-		return size
+		return size, true
 	}
-	return 0
+	return 0, false
 }
 
 // overwriteArguments is the statement that overwrites slots kept arguments, and its arguments:

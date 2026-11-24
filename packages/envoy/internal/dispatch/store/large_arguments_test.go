@@ -6,53 +6,58 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// largeArgumentRows is each kind of argument a store write passes large, as a statement that takes
+// largeArgumentRows is each way a store write passes a large argument, as a statement that takes
 // three arguments and reads the second, as a row's write takes its body among other columns. A
 // connection that ran one with a large second argument still keeps that argument after a later
 // statement of one argument (argumentReleaser), so a release that overwrote only one argument
 // would leave it held. The block-text writes bind their texts as a slice of pointers to strings,
-// a NULL where a block has no text.
+// a NULL where a block has no text, and queue that statement in a write phase's batch
+// (refs/blocks.go, WriteBatch.Send), which TraceBatchStart marks rather than TraceQueryStart.
 var largeArgumentRows = []struct {
 	name      string
 	statement string
 	argument  func(text string) any
+	batched   bool
 }{
-	{"a string", "select length($1::text) + length($2::text) + $3::int", func(text string) any { return text }},
+	{"a string", "select length($1::text) + length($2::text) + $3::int", func(text string) any { return text }, false},
 	{"a slice of pointers to strings", "select length($1::text) + cardinality($2::text[]) + $3::int",
-		func(text string) any { return []*string{&text, nil} }},
+		func(text string) any { return []*string{&text, nil} }, false},
+	{"a slice of pointers to strings, last in a batch", "select length($1::text) + cardinality($2::text[]) + $3::int",
+		func(text string) any { return []*string{&text, nil} }, true},
 }
 
 // A pooled connection keeps no statement's large arguments once it is back in its pool. pgx keeps
 // a statement's encoded arguments on its connection until a later statement overwrites them
 // (argumentReleaser), and an idle connection of the shared pool held its last large write for the
-// half hour pgxpool keeps it. The pool is the shared pool's configuration at one connection, as
-// Pool.separate opens its pools, so the statement runs on the connection the pool then holds idle,
-// and the pool must keep that connection rather than drop the arguments by destroying it.
+// half hour pgxpool keeps it. The pool is the health probe's, which openSeparateLocked opens at
+// one connection from a copy of the shared pool's configuration, as it opens every separate
+// pool: the statement runs on the connection the pool then holds idle, the pool must keep that
+// connection rather than drop the arguments by destroying it, and a copy that lost the shared
+// pool's tracer fails here.
 func TestAReleasedConnectionKeepsNoLargeArguments(t *testing.T) {
-	database := openTestStore(t)
 	for _, row := range largeArgumentRows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			config := database.Pool.Config().Copy()
-			config.MaxConns = 1
-			opened, err := pgxpool.NewWithConfig(ctx, config)
+			pool, err := openTestStore(t).Pool.healthPool()
 			if err != nil {
-				t.Fatalf("open a one-connection pool: %v", err)
+				t.Fatalf("open the health probe's pool: %v", err)
 			}
-			pool := NewPool(opened)
-			t.Cleanup(pool.Close)
+			if size := pool.Config().MaxConns; size != 1 {
+				t.Fatalf("the health probe's pool holds %d connections, want the one this test reads", size)
+			}
 			// The connection is dialled and the statement prepared before the first
 			// measurement, so neither counts as growth.
-			if _, err := pool.Exec(ctx, row.statement, "a", row.argument("b"), 0); err != nil {
+			if err := runStatement(ctx, pool, row.batched, row.statement, "a", row.argument("b"), 0); err != nil {
 				t.Fatalf("run the statement with small arguments: %v", err)
 			}
 			made := pool.Stat().NewConnsCount()
 
 			before := liveHeap()
-			runWithLargeArgument(ctx, t, pool, row.statement, row.argument)
+			runWithLargeArgument(ctx, t, pool, row.batched, row.statement, row.argument)
 			after := liveHeap()
 
 			if stat := pool.Stat(); stat.IdleConns() != 1 || stat.NewConnsCount() != made {
@@ -67,12 +72,26 @@ func TestAReleasedConnectionKeepsNoLargeArguments(t *testing.T) {
 	}
 }
 
+// runStatement runs statement with args on pool: on its own, or batched as the last query of a
+// batch after a statement of one argument, so the batch's last build is the large one and nothing
+// after it in the batch overwrites what it encoded.
+func runStatement(ctx context.Context, pool *pgxpool.Pool, batched bool, statement string, args ...any) error {
+	if !batched {
+		_, err := pool.Exec(ctx, statement, args...)
+		return err
+	}
+	var batch pgx.Batch
+	batch.Queue("select $1::int", 1)
+	batch.Queue(statement, args...)
+	return pool.SendBatch(ctx, &batch).Close()
+}
+
 // runWithLargeArgument runs statement on pool with an 8 MiB text, passed as argument makes it, as
 // its second argument, and keeps no copy of that argument once it returns, so what stays live is
 // what the connection keeps.
-func runWithLargeArgument(ctx context.Context, t *testing.T, pool *Pool, statement string, argument func(text string) any) {
+func runWithLargeArgument(ctx context.Context, t *testing.T, pool *pgxpool.Pool, batched bool, statement string, argument func(text string) any) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, statement, "a", argument(strings.Repeat("x", 8<<20)), 0); err != nil {
+	if err := runStatement(ctx, pool, batched, statement, "a", argument(strings.Repeat("x", 8<<20)), 0); err != nil {
 		t.Fatalf("run the statement with an 8 MiB argument: %v", err)
 	}
 }
