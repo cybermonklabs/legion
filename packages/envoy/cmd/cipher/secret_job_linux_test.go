@@ -17,6 +17,7 @@ import (
 )
 
 func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
+	requireForegroundRead(t)
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprintf("started-in-background=%t", background), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -49,6 +50,8 @@ func TestPromptJobBackgroundThenForegroundKeepsValueHidden(t *testing.T) {
 // A stop the prompt takes while it waits in the background, before its label,
 // discards nothing: nothing has been typed for it yet.
 func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
+	requireSignalDispositions(t)
+	requireForegroundRead(t)
 	s := newPromptShell(t)
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
@@ -105,6 +108,7 @@ func TestPromptJobOrphanedBackgroundPromptRefuses(t *testing.T) {
 // that signal at once, without fg: the terminal is the shell's then, and a restore from the
 // background would stop the job until fg.
 func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
+	requireForegroundRead(t)
 	for _, tc := range []struct{ signal, report string }{{"TERM", "Terminated"}, {"HUP", "Hangup"}} {
 		t.Run(tc.signal, func(t *testing.T) {
 			s := newPromptShell(t)
@@ -733,12 +737,20 @@ func TestPromptJobShellGoneRefuses(t *testing.T) {
 
 // A prompt started with & that reaches the terminal only after its shell has exited finds a
 // terminal that is no longer its controlling one: it refuses as when the shell exits under it,
-// rather than take the terminal for one job control never applied to.
+// rather than take the terminal for one job control never applied to. It needs a kernel that takes
+// the terminal from the session as the shell, its leader, exits; the helper reads which, once the
+// shell has exited (TERMINAL_AFTER_SHELL_EXIT).
 func TestPromptJobShellGoneBeforeThePromptStartsRefuses(t *testing.T) {
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_AFTER_SHELL_EXIT=1 "
 	s.start(false, true)
 	s.send("exit\r")
+	marker, at := s.waitFrom(0, "TERMINAL_AFTER_SHELL_EXIT=gone", "TERMINAL_AFTER_SHELL_EXIT=kept")
+	s.waitFrom(at, "\r\n") // the rest of the helper's line, which names what TIOCGPGRP answered
+	line, _, _ := strings.Cut(s.out.String()[at-len(marker):], "\r\n")
+	requireKernel(t, marker == "TERMINAL_AFTER_SHELL_EXIT=gone",
+		"a session leader's exit to take the terminal from its session (TIOCGPGRP on it then answers ENOTTY)",
+		"made the helper print "+line+" once the shell had exited")
 	s.wait("RETURNED no shell can bring the value prompt to the foreground of this terminal; pipe the value in: agent-secrets secret set DEMO_KEY < FILE")
 	s.wait("LABEL_HELD=false")
 	if strings.Contains(s.out.String(), "Value for") {

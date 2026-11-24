@@ -14,13 +14,16 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"golang.org/x/sys/unix"
 )
 
@@ -95,8 +98,10 @@ func typeAtPrompt(t *testing.T, typed string) (*os.File, int, promptRead) {
 func typeAtPromptInWrites(t *testing.T, gap time.Duration, writes ...string) (*os.File, int, promptRead) {
 	t.Helper()
 	controller, terminal := openPTY(t)
+	_, ended := stopReaderFirst(t)
 	answer := make(chan promptRead, 1)
 	go func() {
+		defer close(ended)
 		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
@@ -128,17 +133,217 @@ func awaitEchoOff(t *testing.T, terminal int) {
 	}
 }
 
+// stopReaderFirst makes the goroutine that reads t's terminal end before t does, even where t
+// fails while it reads. A reader left running after its test reads the package variables a later
+// test sets (readHidden as it starts, readTerminal at each read), a data race, and keeps the
+// prompt's lock (promptBusy), so a later test's prompt never starts. A hang-up does not end every
+// reader: gVisor's pseudo-terminal shows a hang-up to no poll (requireHangUpShown), so a reader
+// waiting there never learns of it. So stopReaderFirst sets readTerminal to the prompt's own read
+// with a stop beside it (stopsOn), and answers that read, which a test that wraps readTerminal
+// itself calls in its wrapper. Its cleanup ends the stop and waits for the goroutine to close
+// ended as it returns; only then does readTerminal go back. A reader blocked outside readTerminal
+// cannot be stopped this way. If it does not return, the test process ends without closing a
+// descriptor it may still poll or restoring variables it may still read. That exit comes before
+// the testing package reports t, so a run without -v or -json loses t's own failure text and
+// keeps only the exit's line and stacks: run the failing test again with -v to read it. CI's
+// unit step reads go test -json, which keeps it.
+// A passing test waits until the binary's wait deadline; only a failed test uses cleanupShare.
+//
+// Cleanups run last-registered first, so call it once t has set everything else the reader reads
+// (useTerminal, readHidden, stdinTerminal, valueReadWindow), and before the goroutine starts. A
+// test whose own read holds the reader releases that hold in a cleanup registered after this call.
+func stopReaderFirst(t *testing.T) (read func(fd, wake int, buf []byte, timeout int) (int, error), ended chan struct{}) {
+	t.Helper()
+	stop, release, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopFd, err := rawFd(stop)
+	if err != nil {
+		_ = release.Close()
+		_ = stop.Close()
+		t.Fatal(err)
+	}
+	product := readTerminal
+	read = stopsOn(product, stopFd)
+	readTerminal = read
+	ended = make(chan struct{})
+	t.Cleanup(func() {
+		_ = release.Close()
+		failed, joined := t.Failed(), false
+		if failed {
+			select {
+			case <-ended:
+				joined = true
+			case <-time.After(cleanupShare):
+				select {
+				case <-ended:
+					joined = true
+				default:
+				}
+			}
+		} else {
+			_, joined = received(t, ended)
+		}
+		if !joined {
+			bound := fmt.Sprintf("%s before the test binary's deadline", waitMargin)
+			if failed {
+				bound = cleanupShare.String() + " after its stop"
+			}
+			stack := make([]byte, 64<<10)
+			for {
+				n := runtime.Stack(stack, true)
+				if n < len(stack) {
+					_, _ = fmt.Fprintf(os.Stderr, "%s: the prompt's reader had not returned by %s; ending the test process before its descriptors close or its variables change\n%s", t.Name(), bound, stack[:n])
+					break
+				}
+				stack = make([]byte, len(stack)*2)
+			}
+			os.Exit(1)
+		}
+		_ = stop.Close()
+		readTerminal = product
+	})
+	return read, ended
+}
+
+// stopsOn is read with stop, a pipe's read end, polled beside the terminal and the watcher's pipe
+// in readTerminal's own wait. Once the pipe's write end is closed, stop polls as hung up, and each
+// read answers EIO, as a read of a hung-up terminal does, without calling read. Until then a wait
+// that input, a hang-up or a watcher event ends hands the read to read with no wait of its own, so
+// read answers as it would have; a wait that its timeout or a signal ends answers as readTerminal
+// does then.
+func stopsOn(read func(fd, wake int, buf []byte, timeout int) (int, error), stop int) func(fd, wake int, buf []byte, timeout int) (int, error) {
+	return func(fd, wake int, buf []byte, timeout int) (int, error) {
+		fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}, {Fd: int32(wake), Events: unix.POLLIN}, {Fd: int32(stop), Events: unix.POLLIN}}
+		n, err := unix.Poll(fds, timeout)
+		if err == nil && fds[2].Revents != 0 {
+			return 0, unix.EIO
+		}
+		if err != nil || n == 0 {
+			return 0, err
+		}
+		n, err = read(fd, wake, buf, 0)
+		if n == 0 && err == nil && fds[0].Revents&unix.POLLHUP == 0 {
+			// The input can disappear between these polls, as when the watcher flushes it.
+			// The product read would retry then, not report a timeout or end of input.
+			return -1, nil
+		}
+		return n, err
+	}
+}
+
+// A watcher can discard ready input before the product read's second poll. That is a retry,
+// not end of input, even though the second poll has no wait of its own.
+func TestStopsOnRetriesWhenReadyInputDisappears(t *testing.T) {
+	typed, input, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer typed.Close()
+	defer input.Close()
+	stop, release, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop.Close()
+	defer release.Close()
+	fd, err := rawFd(typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopFd, err := rawFd(stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := input.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	product := readTerminal
+	read := stopsOn(func(fd, wake int, buf []byte, timeout int) (int, error) {
+		var discarded [1]byte
+		if n, err := typed.Read(discarded[:]); n != 1 || err != nil {
+			t.Fatalf("discard ready input: %d, %v", n, err)
+		}
+		for {
+			n, err := product(fd, wake, buf, timeout)
+			if !errors.Is(err, unix.EINTR) {
+				return n, err
+			}
+		}
+	}, stopFd)
+	var buf [1]byte
+	var n int
+	for {
+		n, err = read(fd, -1, buf[:], -1)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if n != -1 || err != nil {
+		t.Fatalf("read after ready input disappeared = %d, %v; want retry (-1, nil)", n, err)
+	}
+}
+
+// requireKernel ends t where this machine's kernel lacks the behaviour needs names, which t
+// proves the prompt with, as a probe found it (has, found): it skips t, and fails it under
+// GITHUB_ACTIONS, whose runners run Linux, which has it (testdb.SkipOutsideCI). Either way it
+// first writes what the probe found to stderr, whether the kernel has it or not, as one line
+// that starts "kernel probe:". go test shows that line wherever it shows the test binary's
+// output: with -v or -json, for a package that fails, and for the binary run directly. A passing
+// package run without -v or -json shows no test's output, a skip's reason included.
+func requireKernel(t *testing.T, has bool, needs, found string) {
+	t.Helper()
+	verdict := "has it"
+	if !has {
+		verdict = "lacks it"
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "kernel probe: %s needs %s; this kernel %s, so it %s\n", t.Name(), needs, found, verdict)
+	if !has {
+		testdb.SkipOutsideCI(t, "this kernel lacks what the test needs, %s: it %s", needs, found)
+	}
+}
+
+// requireHangUpShown is the kernel probe of a test that hangs a pseudo-terminal up under its
+// reader. Once the controller closes, Linux shows the hang-up to a poll of the terminal side
+// (POLLHUP), and the reader's next read answers end of input. gVisor shows none, not even to a
+// poll made after the close, so a reader there never learns of the hang-up, and the test would
+// wait for its answer until the test binary's deadline. The probe closes a fresh pair's controller
+// and polls its terminal once, with no wait.
+func requireHangUpShown(t *testing.T) {
+	t.Helper()
+	controller, terminal := openPTY(t)
+	if err := controller.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fds := []unix.PollFd{{Fd: int32(terminal), Events: unix.POLLIN}}
+	for {
+		_, err := unix.Poll(fds, 0)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, unix.EINTR) {
+			t.Fatalf("poll a pseudo-terminal whose controller closed: %v", err)
+		}
+	}
+	requireKernel(t, fds[0].Revents&unix.POLLHUP != 0,
+		"a pseudo-terminal's terminal side to show its controller's close as a hang-up (POLLHUP)",
+		fmt.Sprintf("answered a poll of the terminal side, after the controller closed, with revents %#x", fds[0].Revents))
+}
+
 // TestPromptEndsAtTheValueDeadline: a prompt handed a deadline (a create's value read) that gets
 // nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal back
 // with echo on, as any other end of the prompt does. The prompt is timed against its deadline,
 // less the time this process was held up meanwhile (endsByItsDeadline).
 func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
+	_, ended := stopReaderFirst(t)
 	meter := startStallMeter(t)
 	start := time.Now()
 	deadline := start.Add(500 * time.Millisecond)
 	answer := make(chan promptRead, 1)
 	go func() {
+		defer close(ended)
 		line, err := readHidden(terminal, deadline, nil, nil)
 		answer <- promptRead{line, err}
 	}()
@@ -163,6 +368,7 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // the reason the notice reads names no interrupt key, and no open paste.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	controller, terminal := openPTY(t)
+	_, ended := stopReaderFirst(t)
 	meter := startStallMeter(t)
 	start := time.Now()
 	deadline := start.Add(2 * time.Second)
@@ -174,6 +380,7 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	first := make(chan firstEnd, 2)
 	answer := make(chan promptRead, 1)
 	go func() {
+		defer close(ended)
 		line, err := readHidden(terminal, deadline, nil, func(reason error) { first <- firstEnd{reason: reason} })
 		read := promptRead{line, err}
 		answer <- read
@@ -230,8 +437,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	useTerminal(t)
 	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
 	readHidden = readHiddenAtTerminal
-	real := readTerminal
-	t.Cleanup(func() { readTerminal = real })
+	read, ended := stopReaderFirst(t)
 	// draining closes at the reader's first wait after the read that ended the line: the drain of
 	// what follows the line. The terminal turns the typed carriage return into a line feed.
 	draining := make(chan struct{})
@@ -241,7 +447,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 			drainSeen = true
 			close(draining)
 		}
-		n, err := real(fd, wake, buf, timeout)
+		n, err := read(fd, wake, buf, timeout)
 		if n > 0 && bytes.ContainsAny(buf[:n], "\r\n") {
 			lineEnded = true
 		}
@@ -253,6 +459,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
+		defer close(ended)
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 		done <- result{stderr, code}
 	}()
@@ -357,8 +564,10 @@ func TestPromptClearsIEXTENWhileItReads(t *testing.T) {
 	if lflag(t, terminal)&unix.IEXTEN == 0 {
 		t.Fatal("a fresh pseudo-terminal has IEXTEN off; the test needs it on")
 	}
+	_, ended := stopReaderFirst(t)
 	answer := make(chan promptRead, 1)
 	go func() {
+		defer close(ended)
 		line, err := readHidden(terminal, time.Time{}, nil, nil)
 		answer <- promptRead{line, err}
 	}()
@@ -503,8 +712,10 @@ func TestPromptRefusesFlowControlBytes(t *testing.T) {
 // TestPromptRefusesAPasteCutShortByAHangUp: when the terminal hangs up inside a bracketed paste, as
 // when its window or ssh session closes mid-paste, the reader answers an error rather than what it
 // has read, so nothing is stored. The hang-up lands while the reader is between reads, where its
-// next read of the hung-up terminal answers end of input.
+// next read of the hung-up terminal answers end of input. It needs a kernel that shows the hang-up
+// to that read's poll (requireHangUpShown).
 func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
+	requireHangUpShown(t)
 	for _, tc := range []struct {
 		paste string
 		want  error
@@ -516,24 +727,28 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%q", tc.paste), func(t *testing.T) {
 			controller, terminal := openPTY(t)
-			real := readTerminal
-			t.Cleanup(func() { readTerminal = real })
+			read, ended := stopReaderFirst(t)
 			consumed, hungUp := make(chan struct{}), make(chan struct{})
-			var once sync.Once
-			read := 0
+			markConsumed := sync.OnceFunc(func() { close(consumed) })
+			hangUp := sync.OnceFunc(func() { close(hungUp) })
+			// Registered after stopReaderFirst's cleanup, so it runs first: a reader this test
+			// holds below goes on to the stop.
+			t.Cleanup(hangUp)
+			total := 0
 			readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
-				n, err := real(fd, wake, buf, timeout)
+				n, err := read(fd, wake, buf, timeout)
 				if n > 0 {
-					read += n
+					total += n
 				}
-				if read >= len(tc.paste) {
-					once.Do(func() { close(consumed) })
+				if total >= len(tc.paste) {
+					markConsumed()
 					<-hungUp
 				}
 				return n, err
 			}
 			answer := make(chan promptRead, 1)
 			go func() {
+				defer close(ended)
 				line, err := readHidden(terminal, time.Time{}, nil, nil)
 				answer <- promptRead{line, err}
 			}()
@@ -547,7 +762,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
-			close(hungUp)
+			hangUp()
 			got, ok := received(t, answer)
 			if !ok {
 				t.Fatalf("the reader had not returned after the hang-up, %s before the test binary's deadline", waitMargin)
@@ -600,14 +815,28 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			done := make(chan error, 1)
-			go func() { done <- cmd.Wait() }()
+			done, waited := make(chan error, 1), make(chan struct{})
+			go func() { done <- cmd.Wait(); close(waited) }()
+			t.Cleanup(func() { endChild(t, cmd, waited) })
 			awaitEchoOff(t, terminal)
-			if _, err := controller.Write([]byte{0x03}); err != nil {
-				t.Fatal(err)
+			// TestASignalTestThatGivesUpLeavesNoPromptRunning reruns this case with
+			// AGENT_SECRETS_SIGNAL_TEST_GIVES_UP: no key is sent, and the case takes the branch a
+			// wait that gave up takes, at once, while the prompt still reads.
+			givesUp := os.Getenv("AGENT_SECRETS_SIGNAL_TEST_GIVES_UP") != ""
+			ok := false
+			if givesUp {
+				// The session the rerun reads: bash leads it (Setsid), and its prompt is in it.
+				t.Logf("SIGNAL_TEST_SESSION=%d", cmd.Process.Pid)
+			} else {
+				if _, err := controller.Write([]byte{0x03}); err != nil {
+					t.Fatal(err)
+				}
+				_, ok = received(t, done)
 			}
-			if _, ok := received(t, done); !ok {
-				_ = cmd.Process.Kill()
+			if !ok {
+				// endChild, in the cleanup, ends the child's whole process group: a kill of the
+				// bash alone here would let the wait reap it first, and endChild would leave the
+				// prompt that bash started running.
 				t.Fatalf("the process had not ended after Ctrl-C, %s before the test binary's deadline; the terminal showed %q", waitMargin, shown(t, controller))
 			}
 			status := cmd.ProcessState.Sys().(syscall.WaitStatus)
@@ -623,6 +852,85 @@ func TestPromptCtrlCEndsTheProcessBySIGINT(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestASignalTestThatGivesUpLeavesNoPromptRunning: a signal test whose wait for its prompt gives
+// up leaves no prompt running, also one a bash list started, which is bash's child and not the
+// test's. It reruns this binary's bash-list Ctrl-C case with AGENT_SECRETS_SIGNAL_TEST_GIVES_UP,
+// which sends no key, takes the give-up branch at once while the prompt reads, and logs the
+// session it started; it then waits until that session holds no process that is not a zombie.
+// While bash, the session's leader, lives, the controller's close at the case's end hangs the
+// session up and ends the prompt, on Linux and under gVisor. A kill of bash alone in that branch
+// ends the leader first: Linux then still ends the prompt, but under gVisor it runs on, and this
+// test fails at its waits' deadline.
+func TestASignalTestThatGivesUpLeavesNoPromptRunning(t *testing.T) {
+	// The control: a prompt of its own, in a session of its own, is seen in that session once it
+	// reads, by when it has made itself undumpable (disableCoreDumps), which hides its environment
+	// (/proc/<pid>/environ) from this process. So a scan that then finds none has looked.
+	_, terminal := openPTY(t)
+	fd, err := unix.Dup(terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tty := os.NewFile(uintptr(fd), "terminal")
+	control := exec.Command(testBinary(t), "-test.run=^TestPromptSignalHelper$")
+	control.Env = append(os.Environ(), "AGENT_SECRETS_PROMPT_HELPER=1")
+	control.Stdin, control.Stdout, control.Stderr = tty, tty, tty
+	control.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	err = control.Start()
+	tty.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan struct{})
+	go func() { _ = control.Wait(); close(waited) }()
+	t.Cleanup(func() { endChild(t, control, waited) })
+	awaitEchoOff(t, terminal)
+	if seen := sessionProcesses(t, control.Process.Pid); !slices.Contains(seen, control.Process.Pid) {
+		t.Fatalf("the scan of /proc did not see the reading prompt %d in its own session (it saw %v), so it cannot tell that no prompt is left", control.Process.Pid, seen)
+	}
+	endChild(t, control, waited)
+	// The case's waits give up before this test's do (helperTimeout), so it ends by then.
+	args := []string{"-test.run=^TestPromptCtrlCEndsTheProcessBySIGINT$/^a_bash_list$"}
+	if timeout := strings.TrimSpace(helperTimeout(t)); timeout != "" {
+		args = append(args, timeout)
+	}
+	run := exec.Command(testBinary(t), args...)
+	run.Env = append(os.Environ(), "AGENT_SECRETS_SIGNAL_TEST_GIVES_UP=1")
+	out, _ := run.CombinedOutput()
+	session := regexp.MustCompile(`SIGNAL_TEST_SESSION=(\d+)`).FindSubmatch(out)
+	if session == nil || !bytes.Contains(out, []byte("the process had not ended after Ctrl-C")) {
+		t.Fatalf("the bash-list Ctrl-C case did not name its session and take its give-up branch; its output: %s", out)
+	}
+	sid, err := strconv.Atoi(string(session[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !heldBeforeGiveUp(t, func() bool { return len(sessionProcesses(t, sid)) == 0 }) {
+		t.Fatalf("processes of session %d, which the bash-list Ctrl-C case started, still run after it gave up and ended: %v; its output: %s", sid, sessionProcesses(t, sid), out)
+	}
+}
+
+// sessionProcesses is every process of session sid that is not a zombie, read from each
+// /proc/<pid>/stat, which shows an undumpable process's session too. A process gone during the
+// scan is passed over.
+func sessionProcesses(t *testing.T, sid int) []int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var members []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if stat, err := readProcStat(pid); err == nil && stat.session == sid && stat.state != 'Z' && stat.state != 'X' {
+			members = append(members, pid)
+		}
+	}
+	return members
 }
 
 // TestPromptQuitEndsTheProcessBySIGQUITWithNoCore: Ctrl-\ at the prompt restores echo and ends the
@@ -650,15 +958,15 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	tty.Close()
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done, waited := make(chan error, 1), make(chan struct{})
+	go func() { done <- cmd.Wait(); close(waited) }()
+	t.Cleanup(func() { endChild(t, cmd, waited) })
 	awaitEchoOff(t, terminal)
 	if _, err := controller.Write([]byte{0x1c}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := received(t, done); !ok {
-		_ = cmd.Process.Kill()
-		t.Fatalf("the process had not quit after Ctrl-\\, %s before the test binary's deadline", waitMargin)
+		t.Fatalf("the process had not quit after Ctrl-\\, %s before the test binary's deadline", waitMargin) // endChild ends it
 	}
 	status := cmd.ProcessState.Sys().(syscall.WaitStatus)
 	out := shown(t, controller)
@@ -680,5 +988,25 @@ func TestPromptQuitEndsTheProcessBySIGQUITWithNoCore(t *testing.T) {
 	}
 	if lflag(t, terminal)&unix.ECHO == 0 {
 		t.Fatalf("echo is off after Ctrl-\\; the terminal showed %q", out)
+	}
+}
+
+// endChild is the cleanup of a test that started cmd as the leader of a session of its own
+// (Setsid) and waits for it on a goroutine that closes waited once cmd.Wait returns. A child
+// still running then, as after a failure before its end, is ended with its whole process group
+// and waited for, so it does not outlive its test, nor does a prompt that a bash list started in
+// that group: killing the bash alone left such a prompt running under gVisor once the test closed
+// the terminal. A process SIGKILL reaches runs no more code of its own.
+func endChild(t *testing.T, cmd *exec.Cmd, waited <-chan struct{}) {
+	select {
+	case <-waited:
+		return
+	default:
+	}
+	_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
+	select {
+	case <-waited:
+	case <-time.After(cleanupShare):
+		t.Errorf("the child %d had not ended %s after its process group was killed", cmd.Process.Pid, cleanupShare)
 	}
 }
