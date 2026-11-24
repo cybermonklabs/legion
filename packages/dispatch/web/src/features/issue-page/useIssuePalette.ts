@@ -22,8 +22,9 @@ export function useIssuePalette({
   /** The header's Close and Reopen (`IssueHeaderWrites.requestStatus`), which ask the rule's
    *  question where Dispatch would refuse the status. */
   requestStatus: (status: string) => void;
-  /** Whether a write of the issue's own fields (`updateIssue`) is in flight: Close issue and
-   *  Reopen issue, offered while one is, would submit a second, so their menu items refuse it. */
+  /** Whether a write of the issue's own fields (`updateIssue`) holds Close and Reopen
+   *  (`IssueHeaderWrites.fieldHeld`): offered while one is out within its deadline, Close issue
+   *  and Reopen issue would submit a second beside it, so their menu items refuse it. */
   saving: boolean;
 }): void {
   useKeymap("issue", [

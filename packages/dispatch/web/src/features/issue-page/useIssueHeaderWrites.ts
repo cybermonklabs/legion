@@ -84,8 +84,24 @@ export interface IssueHeaderWrites {
    *  pill's pick is a write of its own (`pickStatus`). Each press names its issue
    *  (`IssueFieldsSave`). */
   readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
+  /** Whether a write of `updateIssue` holds every control that writes the issue's fields: Close,
+   *  Reopen and their palette rows, the editors' Save and Details' Retry of a refused route. It
+   *  holds while the write is out within its deadline. Past it (`late`) it holds none of them:
+   *  the write is still tried under its key, and the shell's indicator offers to stop it, but one
+   *  that never answers - the browser offline - would otherwise hold them for good. A status
+   *  pressed then is a write of its own, which waits behind it in the issue's line, and a draft
+   *  saved then waits for it to land, one write of the fields at a time (`useIssueDrafts`). */
+  readonly fieldHeld: boolean;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
+  /** Whether a labels write holds the labels' control: while it is out within its deadline, so
+   *  one labels write goes out at a time. Past it (`late`) it holds the control no longer, and a
+   *  set saved then goes behind it in the issue's line. */
+  readonly labelsHeld: boolean;
+  /** The labels the labels' control draws and starts from: past the deadline of a labels write of
+   *  this issue still tried, the set it carries, so the set saved next keeps that write's change
+   *  rather than undo it; else the issue's. */
+  readonly labelsShown: readonly string[];
   /** The pin, applied to the person's state at once and rolled back on a refusal. */
   readonly pin: KeyedWriteResult<UserIssueState, IssuePinSave, PinRollback>;
   /** One press at a time on the pin, whose write is optimistic. */
@@ -206,6 +222,7 @@ export function useIssueHeaderWrites(
   const updateIssue = useKeyedWrite({
     ...fieldWrite,
     inline: ({ input }) => !statusPickOnly(input),
+    readsLate: true,
     onError: (error, { input, issueKey }) => {
       statusMove.onError(error, issueKey, input);
     },
@@ -231,6 +248,7 @@ export function useIssueHeaderWrites(
   // (`landIssueWrite`).
   const labels = useKeyedWrite({
     label: ({ issueKey }: IssueLabelsSave) => `Labels of ${issueKey}`,
+    readsLate: true,
     target: ({ issueKey }) => `issue:${issueKey}`,
     request: ({ issueKey, labels: next }) => issuePatchRequest(issueKey, { labels: next }),
     onSuccess: (next, { issueKey }) => {
@@ -240,6 +258,7 @@ export function useIssueHeaderWrites(
   // The drafts save the fields of the issue this hook is drawn for, so each of their presses
   // names that issue, and reads back the change its newest press carried.
   const drafts = useIssueDrafts(issue, {
+    late: updateIssue.late,
     mutate: (input) => updateIssue.mutate({ input, issueKey: issue.key }),
     retry: updateIssue.retry,
     variables: updateIssue.variables?.input,
@@ -314,7 +333,15 @@ export function useIssueHeaderWrites(
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,
+    fieldHeld: updateIssue.isPending && !updateIssue.late,
     labels,
+    labelsHeld: labels.isPending && !labels.late,
+    labelsShown:
+      (labels.late && labels.variables?.issueKey === issue.key
+        ? labels.variables.labels
+        : undefined) ??
+      issue.labels ??
+      [],
     // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
     // like a route validation error, instead of the generic update failure line. One the reader
     // stopped may have been saved; the editor has closed, and saving it again is a press of its

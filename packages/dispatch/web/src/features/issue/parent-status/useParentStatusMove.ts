@@ -107,6 +107,12 @@ export type StatusMoveEnd =
   /** Nothing was written: Keep as it is, Cancel, Escape or a navigation, after any answer of the
    *  question; or the surface went away while the question was open, or before it could open. */
   | { readonly kind: "kept" }
+  /** The person closed the question while the option they chose was being written, past that
+   *  write's deadline: it goes on being tried under its key, as Pending changes shows, and its
+   *  landing reads the issues again. `written` is that write, which settles with Dispatch's answer
+   *  or rejects with its refusal or the reader's stop: the hook says a refusal as it says a refused
+   *  dry run's (`refusal`), and a surface that draws no `refusal` says it from here. */
+  | { readonly kind: "left"; readonly written: Promise<StatusChangeAnswer | null> }
   /** The dry run was refused for another reason than the rule, so nothing was written. */
   | { readonly kind: "refused"; readonly refusal: unknown }
   /** Another move of this hook was asking, so this one did nothing. */
@@ -133,10 +139,14 @@ export interface ParentStatusQuestion extends StatusPick {
   readonly choices: readonly ParentStatusChoice[];
   /** The option whose write is out. */
   readonly writing: ParentStatusOption | undefined;
+  /** Whether that write is past its deadline (`KeyedWriteResult.late`): the question can be
+   *  closed then, and the write goes on without it (`left`). */
+  readonly writingLate: boolean;
   /** Why the chosen write was refused. The question then takes no other write. */
   readonly refusal: string | undefined;
   readonly choose: (option: ParentStatusOption) => void;
-  /** Keep as it is, Cancel, Escape and a navigation: closes, and writes nothing. */
+  /** Keep as it is, Cancel, Escape and a navigation: closes, and writes nothing. While the chosen
+   *  write is out it closes nothing, until that write's deadline. */
   readonly close: () => void;
 }
 
@@ -152,7 +162,8 @@ export interface ParentStatusMove {
   readonly ask: (pick: StatusPick, conflict: ApiError) => Promise<StatusMoveEnd>;
   /** The status a move is checking, asking about or writing: shown as the issue's pending one. */
   readonly pending: StatusPick | undefined;
-  /** Why the last move's dry run was refused, until the next move. */
+  /** Why the last move's dry run was refused, or why a chosen write the question was left behind
+   *  past its deadline was refused (`left`), until the next move. */
   readonly refusal: unknown;
   readonly question: ParentStatusQuestion | undefined;
 }
@@ -187,7 +198,14 @@ interface Asking {
   readonly issues: readonly ParentStatusConflictIssue[];
   readonly changed: readonly StatusChangeEntry[];
   readonly checks: Readonly<Partial<Record<ParentStatusOption, ParentStatusCheck>>>;
-  readonly writing: ParentStatusOption | undefined;
+  /** The chosen option while its write is out, and that write, which a question closed past its
+   *  deadline hands on with its end (`left`). */
+  readonly writing:
+    | {
+        readonly option: ParentStatusOption;
+        readonly written: Promise<StatusChangeAnswer | null>;
+      }
+    | undefined;
   readonly refusal: string | undefined;
 }
 
@@ -238,10 +256,12 @@ function writeRefusal(client: QueryClient, error: unknown): string {
  * option, written through the write store; once it lands, each issue it changed and the issue
  * lists are read again. Keep as it is, Cancel, Escape and a navigation write nothing, and so does
  * the surface going away while it asks: a question it leaves open ends as kept, and one that
- * would open after it has gone ends so at once, since nobody is left to answer. A move that needs
- * no answer still makes its write once the surface has gone: its dry run runs, and where the rule
- * asks nothing the surface's `PATCH` goes. A `PATCH` the surface made for an issue it knew no
- * parent or open child of, refused by the rule all the same, opens the same question (`ask`).
+ * would open after it has gone ends so at once, since nobody is left to answer. While a chosen
+ * write is out the question holds, until that write's deadline: past it the ways out close it,
+ * and the write goes on being tried under its key (`left`). A move that needs no answer still
+ * makes its write once the surface has gone: its dry run runs, and where the rule asks nothing the
+ * surface's `PATCH` goes. A `PATCH` the surface made for an issue it knew no parent or open child
+ * of, refused by the rule all the same, opens the same question (`ask`).
  */
 export function useParentStatusMove(): ParentStatusMove {
   const client = useQueryClient();
@@ -267,10 +287,11 @@ export function useParentStatusMove(): ParentStatusMove {
   const change = useKeyedWrite({
     inline: true,
     label: ({ input, key }: StatusChangePress) => `${key} set to ${statusText(input.status)}`,
+    readsLate: true,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => statusChangeRequest(key, input),
   });
-  const { mutateAsync: writeChange } = change;
+  const { late: writingLate, mutateAsync: writeChange } = change;
 
   /** Sends the dry run of each choice `issues` allow, as a new round, and answers what each
    *  choice reads until its dry run answers. */
@@ -426,15 +447,28 @@ export function useParentStatusMove(): ParentStatusMove {
       return;
     if (asking.checks[option]?.state !== "ready") return;
     const { pick } = asking;
-    setAsking({ ...asking, writing: option });
-    writeChange({ input: optionInput(pick.status, option), key: pick.key }).then(
+    // The round the question is in as the write goes. The question takes no round of its own
+    // while the write is out, so a round moved on when it answers is the question closed behind
+    // it: past the write's deadline (`close`), or with its surface.
+    const at = round.current;
+    const written = writeChange({ input: optionInput(pick.status, option), key: pick.key });
+    setAsking({ ...asking, writing: { option, written } });
+    written.then(
       (answer) => {
         landStatusChange(client, answer);
-        end({ answer, kind: "changed" });
+        if (round.current === at) end({ answer, kind: "changed" });
       },
       (error: unknown) => {
         const changed = error instanceof ApiError ? (error.changed ?? []) : [];
         readChangedAgain(client, changed);
+        if (round.current !== at) {
+          // Nobody is asked about a write the question was left behind: one the reader stopped
+          // since may have been made, so the issues are read again, and a refusal is said as a
+          // refused dry run is.
+          if (error instanceof SendStoppedError) landStatusChange(client, null);
+          else setRefusal(error);
+          return;
+        }
         if (isParentStatusConflict(error)) {
           // A step of the call was refused after the steps before it committed: the question
           // names what changed and the new conflict, and checks each choice again.
@@ -469,8 +503,11 @@ export function useParentStatusMove(): ParentStatusMove {
   };
 
   const close = () => {
-    if (asking?.writing !== undefined) return;
-    end({ kind: "kept" });
+    if (asking?.writing === undefined) {
+      end({ kind: "kept" });
+      return;
+    }
+    if (writingLate) end({ kind: "left", written: asking.writing.written });
   };
 
   const question: ParentStatusQuestion | undefined =
@@ -488,7 +525,8 @@ export function useParentStatusMove(): ParentStatusMove {
           key: asking.pick.key,
           refusal: asking.refusal,
           status: asking.pick.status,
-          writing: asking.writing,
+          writing: asking.writing?.option,
+          writingLate: asking.writing !== undefined && writingLate,
         };
   return { ask, move, pending, question, refusal };
 }

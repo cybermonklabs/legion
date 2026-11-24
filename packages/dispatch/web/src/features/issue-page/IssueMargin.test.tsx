@@ -21,7 +21,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { holdNotifications } from "../../__tests__/commits";
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { INPUT_METHOD_MARKS } from "../../__tests__/input-method-marks";
@@ -56,7 +56,7 @@ import { AssigneeControl, assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
-import { PROPERTY_CONTROL_ATTRIBUTE } from "../issue/property-control";
+import { PROPERTY_CONTROL_ATTRIBUTE, propertyControlSelector } from "../issue/property-control";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
@@ -66,7 +66,13 @@ import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import {
+  MAX_BACKOFF_MS,
+  SEND_DEADLINE_MS,
+  SendStoppedError,
+  stoppedWriteNote,
+} from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { FOLD_AFTER } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -6627,6 +6633,189 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
   } finally {
     stopBlurring();
     unmount();
+    restore();
+  }
+});
+
+// A field save that never answers - each try fails at the network, and the next waits out its
+// backoff - holds every editor's Save until its deadline, and no longer: offline it would hold
+// them for good. A parent saved then still goes beside no other write of the issue's fields: it
+// waits behind the late route, and goes once that lands.
+test("a route save that never answers holds Save parent until its deadline, and a parent saved then goes once the route lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+  const sent = () => patchIssue.mock.calls.map(([, input]) => input);
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    await clockUser.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await tick(0);
+    expect(sent()).toContainEqual({ route });
+    await clockUser.click(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("button", {
+        name: CONTROL_LABELS.set_parent,
+      })
+    );
+    await tick(0);
+    await clockUser.click(screen.getByLabelText(PROPERTY_LABELS.parent));
+    await clockUser.paste("CORE-9");
+    const save = screen.getByRole("button", { name: CONTROL_LABELS.save_parent });
+
+    await tick(SEND_DEADLINE_MS - 2_000);
+    expect(save, "Save parent, short of the route's deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await tick(2_000);
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late"]);
+    expect(save, "Save parent, past the route's deadline").not.toHaveAttribute("aria-disabled");
+
+    await clockUser.click(save);
+    await tick(0);
+    expect(
+      sent().filter((input) => input.parent !== undefined),
+      "the parent went beside the late route"
+    ).toEqual([]);
+
+    // Dispatch can be reached again: the route lands at its next try, and the parent goes.
+    patchIssue.mockImplementation(async (_key, input) => patchAnswer(issue, input));
+    await tick(MAX_BACKOFF_MS);
+    expect(sent().at(-1)).toEqual({ parent: "CORE-9" });
+  } finally {
+    realClock();
+    unmount();
+    restore();
+  }
+});
+
+// The refused route's Retry refuses a press while the route it sent again is out, and only until
+// that route's deadline: offline it would refuse one for good. A press then sends nothing more,
+// since the route out is the one the field holds, and the route goes on being tried until it
+// lands.
+test("the refused route's Retry takes a press again at the deadline of the route it sent again, and sends no second route", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const route = "role:legion-controller-core";
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(new ApiError(400, { code: "ROUTE_INVALID", error: "invalid route" }))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.route));
+    await user.paste(route);
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
+    await waitFor(() =>
+      expect(within(rowAt("route")).queryByRole("alert")?.textContent).toBe("invalid route")
+    );
+    const retry = within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.retry });
+    patchIssue.mockRejectedValue(
+      new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+    );
+
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    await clockUser.click(retry);
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(retry, "Retry, a second short of the deadline").toHaveAttribute("aria-disabled", "true");
+    await tick(1_000);
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late"]);
+    expect(retry, "Retry, past the deadline").not.toHaveAttribute("aria-disabled");
+
+    await clockUser.click(retry);
+    await tick(0);
+    expect(
+      writesOf(queryClient)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late"]);
+
+    patchIssue.mockImplementation(async (_key, input) => patchAnswer(issue, input));
+    await tick(MAX_BACKOFF_MS);
+    expect(within(rowAt("route")).queryByRole("alert")).not.toBeInTheDocument();
+    expect(writesOf(queryClient).rows()).toEqual([]);
+  } finally {
+    realClock();
+    unmount();
+    restore();
+  }
+});
+
+// A labels save that never answers holds the labels' control in Details until its deadline, and
+// no longer: offline it would hold it for good. The control opened then starts from the set that
+// save is still trying, so the set saved next carries its change rather than undo it, and goes
+// behind it in the issue's line: one labels write goes out at a time.
+test("the labels' control in Details stops holding at its save's deadline, and a set saved then keeps that save's change and goes behind it", async () => {
+  const { patchIssue, restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+  const statuses = () =>
+    writesOf(queryClient)
+      .rows()
+      .map((row) => row.status);
+
+  try {
+    // The labels' control, by its mark: its name changes as it saves.
+    const trigger = await waitFor(() => {
+      const found = rowAt("labels").querySelector(propertyControlSelector("labels", "CORE-1"));
+      if (!(found instanceof HTMLElement)) throw new Error("Details draws no labels' control");
+      return found;
+    });
+    jest.useFakeTimers();
+    const clockUser = userOnFakeClock();
+    /** Opens the labels' control, adds `label` to the set it holds, and closes it, which saves
+     *  the set. */
+    const addLabel = async (label: string) => {
+      await clockUser.click(trigger);
+      await clockUser.click(screen.getByRole("combobox", { name: "Search or create label" }));
+      await clockUser.paste(label);
+      await clockUser.keyboard("{Enter}");
+      await clockUser.keyboard("{Escape}");
+      await tick(0);
+    };
+    await addLabel("bug");
+    expect(patchIssue.mock.calls.map(([, input]) => input)).toEqual([{ labels: ["bug"] }]);
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(trigger, "the labels' control, a second short of the deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await tick(1_000);
+    expect(statuses()).toEqual(["late"]);
+    expect(trigger, "the labels' control, past the deadline").not.toHaveAttribute("aria-disabled");
+
+    await addLabel("ui");
+    expect(statuses()).toEqual(["late", "queued"]);
+    // Dispatch can be reached again: the late set lands at its next try, and the next goes.
+    patchIssue.mockImplementation(async (_key, input) => patchAnswer(issue, input));
+    await tick(MAX_BACKOFF_MS);
+    expect(patchIssue.mock.calls.at(-1)?.[1]).toEqual({ labels: ["bug", "ui"] });
+  } finally {
+    realClock();
+    unmount();
+    listIssues.mockRestore();
     restore();
   }
 });

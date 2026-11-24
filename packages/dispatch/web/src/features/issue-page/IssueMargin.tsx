@@ -480,7 +480,7 @@ export function IssueMarginPanel({
     : [{ document: documentArtifact, label: STEP_LABELS.spec, step: "spec" as const }, ...gated];
   const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
   const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
-  const labels = issue.labels ?? [];
+  const labels = writes.labelsShown;
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
   const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
@@ -541,7 +541,7 @@ export function IssueMarginPanel({
             labels={labels}
             onSave={(next) => writes.labels.mutateAsync({ issueKey: issue.key, labels: next })}
             project={issue.project}
-            saving={writes.labels.isPending}
+            saving={writes.labelsHeld}
             variant="rail"
           />
         </Row>
@@ -737,8 +737,10 @@ export function IssueMarginPanel({
               the write store leaves its refusal to this row, and the header, which says the
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
-              too; its Retry takes no press while that save is out (`refused`), since the drafts
-              send nothing while a save is out (`useSubmitGuard`), and is never disabled. A
+              too; its Retry takes no press while that save is out within its deadline
+              (`refused`, `fieldHeld`), since the drafts send nothing while a save is out
+              (`useSubmitGuard`), and is never disabled. Past the deadline it takes a press again,
+              which sends no second route beside the one still tried (`useIssueDrafts`). A
               save the reader stopped is no refusal: it may have been saved, and the line says so
               in the header's words for a title or a route save, whose Retry is this one, a press
               of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
@@ -762,7 +764,7 @@ export function IssueMarginPanel({
                   : apiErrorMessage(fieldFailure.error, "Could not update this issue."))
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
-              refused={writes.updateIssue.isPending}
+              refused={writes.fieldHeld}
               {...routeRetry}
             />
           ) : null}

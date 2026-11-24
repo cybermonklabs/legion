@@ -63,7 +63,7 @@ export function IssueFieldForms({
         drafts={writes.drafts}
         isClosed={isClosed}
         onClose={onClose}
-        saving={writes.updateIssue.isPending}
+        saving={writes.fieldHeld}
       />
     );
   }
@@ -74,7 +74,7 @@ export function IssueFieldForms({
         isClosed={isClosed}
         issue={issue}
         onClose={onClose}
-        saving={writes.updateIssue.isPending}
+        saving={writes.fieldHeld}
       />
     );
   }

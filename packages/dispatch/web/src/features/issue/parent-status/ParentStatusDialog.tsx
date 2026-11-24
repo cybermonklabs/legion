@@ -110,7 +110,10 @@ function ChoiceRow({
  * control the person came from. A navigation closes it too, as Keep as it is does
  * (`useCloseOnNavigation`). It names the issues that hold the write, offers each choice those
  * issues allow with what its dry run says it changes, and "Keep as it is" and Cancel, which write
- * nothing. A choice is pressed only once its dry run has answered.
+ * nothing. A choice is pressed only once its dry run has answered. While a choice's write is out
+ * nothing closes it, until that write's deadline (`writingLate`): past it Keep as it is, Cancel,
+ * Escape and a navigation close it all the same, and the write goes on being tried under its key,
+ * as the shell's Pending changes shows, where the reader can stop it.
  */
 export function ParentStatusDialog({ question }: { question: ParentStatusQuestion }): ReactNode {
   const keepRef = useRef<HTMLButtonElement>(null);
@@ -121,7 +124,7 @@ export function ParentStatusDialog({ question }: { question: ParentStatusQuestio
   });
   useCloseOnNavigation(true, question.close);
   const title = `Move ${question.key} to ${statusText(question.status)}?`;
-  const closing = question.writing !== undefined;
+  const closing = question.writing !== undefined && !question.writingLate;
   return (
     <>
       <div

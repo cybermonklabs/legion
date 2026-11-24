@@ -29,8 +29,9 @@ export interface IssueStatusMove {
   readonly pending: string | undefined;
   /** The question while it is open, which `IssueStatusNotes` draws. */
   readonly question: ParentStatusQuestion | undefined;
-  /** Why the dry run of the newest status write was refused, which put the status back, until
-   *  the next one: `IssueStatusNotes` says it. */
+  /** Why the dry run of the newest status write was refused, which put the status back, or why
+   *  Dispatch refused a chosen write its question was closed on past that write's deadline
+   *  (`left`), until the next status write: `IssueStatusNotes` says it. */
   readonly refusal: unknown;
 }
 

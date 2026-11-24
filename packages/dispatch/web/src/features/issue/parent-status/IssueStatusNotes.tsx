@@ -6,9 +6,10 @@ import type { IssueStatusMove } from "./useIssueStatusMove";
 
 /**
  * What an issue header shows of its status writes' question (`useIssueStatusMove`): why the dry
- * run of the newest one was refused, which put the status back - said as the header says why for
- * a write it shows refused itself - and the question while it is open. `noteClassName` is the
- * header's own look for a refusal.
+ * run of the newest one was refused, which put the status back, or why Dispatch refused a chosen
+ * write the question was closed on past that write's deadline (`left`) - said as the header says
+ * why for a write it shows refused itself - and the question while it is open. `noteClassName` is
+ * the header's own look for a refusal.
  */
 export function IssueStatusNotes({
   issueKey,

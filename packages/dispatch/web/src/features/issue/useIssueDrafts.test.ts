@@ -153,6 +153,15 @@ class Session {
     return this.step(() => this.drafts.onIssueSettled(new Error("refused")));
   }
 
+  /** The write out goes past its deadline: the keyed write says so (`late`), and the hook is
+   *  drawn again with it. */
+  goLate(): IssueUpdateInput[] {
+    this.updateIssue.late = true;
+    return this.step(() =>
+      this.hook.rerender({ issue: this.issue, updateIssue: this.updateIssue })
+    );
+  }
+
   otherReader(title: string): IssueUpdateInput[] {
     return this.showIssue({ ...this.issue, title });
   }
@@ -996,5 +1005,37 @@ test("a draft with a title queued behind another field's write keeps the reader'
     shown: "t2",
     title: "t2",
     sent: ["t1"],
+  });
+});
+
+// A status pressed past the deadline of the write out (`late`) is a write of its own, which waits
+// behind that write in the issue's line, as the classic header's Close does then. A title saved
+// meanwhile still goes beside no write: it waits until both have landed, so one field at most has
+// a value out, and each settle is of its own write.
+test("a status pressed past the deadline of a title write goes, and a title saved meanwhile waits for both to land", () => {
+  const session = new Session();
+  session.type("a");
+  session.end();
+  session.goLate();
+  const pressed = session.step(() => session.drafts.requestStatusSubmit("done"));
+  session.type("ab");
+  const saved = session.end();
+  const titleLanded = session.step(() => {
+    session.drafts.onIssueSuccess({ ...session.issue, title: "a" }, { title: "a" });
+    session.drafts.onIssueSettled(null);
+  });
+  const statusLanded = session.step(() => {
+    session.drafts.onIssueSuccess(
+      { ...session.issue, status: "done", title: "a" },
+      { status: "done" }
+    );
+    session.drafts.onIssueSettled(null);
+  });
+  expect({ pressed, saved, titleLanded, statusLanded, title: session.drafts.title }).toEqual({
+    pressed: [{ status: "done" }],
+    saved: [],
+    titleLanded: [],
+    statusLanded: [{ title: "ab" }],
+    title: "ab",
   });
 });

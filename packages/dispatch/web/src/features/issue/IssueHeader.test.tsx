@@ -10,6 +10,7 @@ import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
@@ -27,9 +28,11 @@ import type {
 import { sessionClaim } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
+import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { setActionKeys } from "../shell/keymap-keys";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
@@ -553,6 +556,181 @@ test("Release in the issue header stops holding at the release deadline and take
     realClock();
     release.mockRestore();
     agents.mockRestore();
+  }
+});
+
+// A close that never answers holds Close, the status list and the palette's Close issue until its
+// deadline, and no longer: offline it would hold them for good. A press then is a close of its
+// own, which waits behind the late one in the issue's line and goes once that one lands.
+test("Close in the issue header stops holding at its write's deadline, and a press then sends a close of its own behind it", async () => {
+  // A close that never answers: each try fails at the network, and the next waits out its backoff.
+  const patches = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = renderHeader(
+    client,
+    <KeymapProvider login="alice">
+      <IssueScope />
+      <IssueHeader
+        documentArtifact={undefined}
+        isClosed={false}
+        issue={details}
+        priorityWrite={idlePriorityWrite}
+        state={stateForIssue(undefined, details.key)}
+      />
+    </KeymapProvider>
+  );
+  try {
+    const control = await view.q.findByRole<HTMLButtonElement>("button", { name: "Close issue" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, control, {
+      label: "CORE-1 set to done",
+      name: "Close in the issue header",
+      queryClient: client,
+      sent: () => pressesOf([patches]),
+    });
+    expect(
+      appKeymap.actions().some((action) => action.label === "Close issue"),
+      "the palette's Close issue"
+    ).toBe(true);
+    expect(
+      view.q.getByRole("button", { name: pickNamed("Status") }),
+      "the status list"
+    ).not.toHaveAttribute("aria-disabled");
+
+    await user.keyboard("{Enter}");
+    await tick(0);
+    // The late close, and the second behind it in the issue's line.
+    expect(
+      writesOf(client)
+        .rows()
+        .filter((row) => row.label === "CORE-1 set to done")
+        .map((row) => row.status)
+    ).toEqual(["late", "queued"]);
+
+    // Dispatch can be reached again: the late close lands at its next try, and the second goes.
+    patches.mockImplementation(async (_key, input) => ({
+      ...base,
+      status: input.status ?? base.status,
+    }));
+    await tick(MAX_BACKOFF_MS);
+    expect(pressesOf([patches])).toBe(2);
+    expect(patches.mock.calls.at(-1)?.[1]).toEqual({ status: "done" });
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+  }
+});
+
+// Every header control that writes the issue is held while a field write is out, the priority
+// among them, and only until that write's deadline: a pick then sets the priority.
+test("a title save that never answers holds the priority until its deadline, and a pick then sets it", async () => {
+  // A title save that never answers: each try fails at the network, and the next waits out its
+  // backoff.
+  const patches = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const submitted: (number | null)[] = [];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = renderHeader(
+    client,
+    <IssueHeader
+      documentArtifact={undefined}
+      isClosed={false}
+      issue={details}
+      priorityWrite={{ ...idlePriorityWrite, submit: (level) => submitted.push(level) }}
+      state={stateForIssue(undefined, details.key)}
+    />
+  );
+  try {
+    await view.user.click(await view.q.findByRole("button", { name: "Edit title" }));
+    const editor = await view.q.findByRole("textbox", { name: "Issue title" });
+    await view.user.type(editor, " again");
+    const priority = view.q.getByRole<HTMLButtonElement>("button", {
+      name: pickNamed("Priority of CORE-1"),
+    });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await heldUntilLate(user, priority, {
+      label: "CORE-1: title saved",
+      name: "The priority in the issue header",
+      queryClient: client,
+      sent: () => pressesOf([patches]),
+      start: editor,
+    });
+
+    await pickFromList(user, priority, "P2");
+    expect(submitted).toEqual([2]);
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+  }
+});
+
+// A labels save that never answers holds the labels' control until its deadline, and no longer:
+// offline it would hold it for good. The control opened then starts from the set that save is
+// still trying, so the set saved next carries its change rather than undo it, and goes behind it
+// in the issue's line: one labels write goes out at a time.
+test("the labels' control stops holding at its save's deadline, and a set saved then keeps that save's change and goes behind it", async () => {
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  const patches = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = renderHeader(
+    client,
+    <IssueHeader
+      documentArtifact={undefined}
+      isClosed={false}
+      issue={{ ...details, labels: ["api"] }}
+      priorityWrite={idlePriorityWrite}
+      state={stateForIssue(undefined, details.key)}
+    />
+  );
+  const statuses = () =>
+    writesOf(client)
+      .rows()
+      .map((row) => row.status);
+  try {
+    const trigger = await view.q.findByRole("button", { name: "Edit labels" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    /** Opens the labels' control, adds `label` to the set it holds, and closes it, which saves
+     *  the set. */
+    const addLabel = async (label: string) => {
+      await user.click(trigger);
+      await user.click(screen.getByRole("combobox", { name: "Search or create label" }));
+      await user.paste(label);
+      await user.keyboard("{Enter}");
+      await user.click(trigger);
+      await tick(0);
+    };
+    await addLabel("bug");
+    expect(patches.mock.calls.map(([, input]) => input)).toEqual([{ labels: ["api", "bug"] }]);
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(trigger, "the labels' control, a second short of the deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    await tick(1_000);
+    expect(statuses()).toEqual(["late"]);
+    expect(trigger, "the labels' control, past the deadline").not.toHaveAttribute("aria-disabled");
+
+    await addLabel("ui");
+    expect(statuses()).toEqual(["late", "queued"]);
+    // Dispatch can be reached again: the late set lands at its next try, and the next goes.
+    patches.mockImplementation(async (_key, input) => ({ ...base, labels: input.labels ?? [] }));
+    await tick(MAX_BACKOFF_MS);
+    expect(patches.mock.calls.at(-1)?.[1]).toEqual({ labels: ["api", "bug", "ui"] });
+  } finally {
+    view.unmount();
+    client.clear();
+    realClock();
+    listIssues.mockRestore();
   }
 });
 

@@ -109,11 +109,13 @@ export function IssueHeader({
     isClosed,
     priorityWrite,
     requestStatus: writes.requestStatus,
-    saving: updateIssue.isPending,
+    saving: writes.fieldHeld,
   });
 
   // The pin, Close and Reopen are held, never disabled, while their own write is out: each keeps
-  // the focus the press gave it (`heldPress`, `IssueActionsMenu`).
+  // the focus the press gave it (`heldPress`, `IssueActionsMenu`). Close and Reopen are held only
+  // until that write's deadline (`fieldHeld`), and say they are saving until then: a press past
+  // it is a status write of its own, which waits behind the late one in the issue's line.
   const actions: IssueAction[] = [
     {
       held: writes.pin.isPending,
@@ -127,19 +129,22 @@ export function IssueHeader({
     },
     isClosed
       ? {
-          held: updateIssue.isPending,
+          held: writes.fieldHeld,
           id: "reopen",
           run: () => writes.requestStatus("backlog"),
           text:
-            pendingStatus === "backlog"
+            pendingStatus === "backlog" && !updateIssue.late
               ? ANSWER_LINES.saving_reopen
               : CONTROL_LABELS.reopen_into_backlog,
         }
       : {
-          held: updateIssue.isPending,
+          held: writes.fieldHeld,
           id: "close",
           run: () => writes.requestStatus("done"),
-          text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
+          text:
+            pendingStatus === "done" && !updateIssue.late
+              ? ANSWER_LINES.saving_close
+              : CONTROL_LABELS.close_issue,
         },
     {
       disabled: isClosed,

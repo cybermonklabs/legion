@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
 import type { Issue } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -11,6 +11,9 @@ export interface IssueUpdateMutation {
    *  reader stopped it. */
   retry: () => void;
   variables: IssueUpdateInput | undefined;
+  /** Whether the newest press is past its deadline, or waits behind a write that is
+   *  (`KeyedWriteResult.late`), where the write reads it (`readsLate`); left out, never. */
+  late?: boolean;
 }
 
 export interface IssueDrafts {
@@ -280,6 +283,20 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   const [, drawAgain] = useReducer((count: number) => count + 1, 0);
   const [titleError, setTitleError] = useState<string | null>(null);
   const updateIssueGuard = useSubmitGuard();
+  // The writes made here that have not settled: one within its deadline, which the guard holds
+  // every other press back behind, and past that deadline the status presses made meanwhile
+  // (`requestStatusSubmit`). The guard lets go once none is out, so a draft never goes beside one.
+  const writesOut = useRef(0);
+  // Whether the newest write is late, as of the last commit: a press reads it whenever it runs,
+  // a status press after the rule's dry run included (`useIssueStatusMove`).
+  const late = useRef(false);
+  useLayoutEffect(() => {
+    late.current = updateIssue.late === true;
+  });
+  const send = (input: IssueUpdateInput) => {
+    writesOut.current += 1;
+    updateIssue.mutate(input);
+  };
 
   const apply = useCallback((field: Field, event: FieldEvent) => {
     const state = states.current[field];
@@ -305,7 +322,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       if (value === null) continue;
       updateIssueGuard.guard(() => {
         apply(field, { type: "sent", value });
-        updateIssue.mutate(fieldRules[field].wire(value));
+        send(fieldRules[field].wire(value));
       });
       return;
     }
@@ -346,9 +363,12 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     }
   };
   // One write of these fields is out at a time (the guard), so one field at most has a value out,
-  // and `settled` leaves the others as they are.
+  // and `settled` leaves the others as they are. A status press made past the deadline of the write
+  // out carries no field, and the guard holds every draft back until it too has settled.
   const onIssueSettled = (error: unknown) => {
     for (const field of fields) apply(field, { type: "settled", landed: error === null });
+    writesOut.current = Math.max(0, writesOut.current - 1);
+    if (writesOut.current > 0) return;
     updateIssueGuard.release();
     if (error === null) {
       drainPendingSubmits();
@@ -371,7 +391,13 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       drainPendingSubmits();
       return;
     }
-    updateIssueGuard.retryLast(updateIssue);
+    updateIssueGuard.retryLast({
+      retry: () => {
+        writesOut.current += 1;
+        updateIssue.retry();
+      },
+      variables,
+    });
   };
   const discardTitle = () => {
     apply("title", { type: "discard" });
@@ -385,8 +411,15 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   };
   const writeRoute = (next: string) => apply("route", { type: "write", text: next });
   const writeParent = (next: string) => apply("parent", { type: "write", text: next });
-  const requestStatusSubmit = (status: string): boolean =>
-    updateIssueGuard.guard(() => updateIssue.mutate({ status }));
+  // A status press past the deadline of the write out is a write of its own, as a press then is
+  // (`KeyedWriteResult.late`): it waits behind that write in the issue's line, which sends them in
+  // press order, so one status write is out at a time.
+  const requestStatusSubmit = (status: string): boolean => {
+    if (updateIssueGuard.guard(() => send({ status }))) return true;
+    if (!late.current) return false;
+    send({ status });
+    return true;
+  };
 
   useEffect(() => {
     apply("title", { type: "server", value: issue.title });

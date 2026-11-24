@@ -33,7 +33,8 @@ import {
 } from "../issue/parent-status/status-change-fixtures";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
+import { refusedNote } from "../writes/useKeyedWrite";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
@@ -1941,6 +1942,56 @@ test("board: asking - the board going away ends the move, leaves no board move p
         ?.status
     ).toBe("todo");
   } finally {
+    hook.unmount();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// A choice whose write the question was closed on past its deadline goes on being tried, and the
+// board's move ends with the question, so its turn of the board's scope ends. Dispatch's refusal
+// of that write comes once the question has gone, and is said over the board in the words the
+// issue headers say it in (`IssueStatusNotes`).
+test("board: writing - a choice left behind past its deadline that Dispatch then refuses is said over the board", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, parentIssues);
+  const refusal = fixtureRefusal("browser-only");
+  // The chosen write fails at the network at each try until the test lets Dispatch refuse it.
+  let write = (): Promise<StatusChangeAnswer> =>
+    Promise.reject(
+      new NetworkError("/api/v1/issues/CORE-1/status-change", new TypeError("Failed to fetch"))
+    );
+  const statusChanges = answerTheQuestion(() => write());
+  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> = Promise.resolve();
+    await act(async () => {
+      moved = hook.result.current.moveCard("CORE-1", "in_progress", 1);
+      await settle();
+    });
+    jest.useFakeTimers();
+    await act(async () => {
+      hook.result.current.question?.choose("include_children");
+      await settle();
+    });
+    await tick(SEND_DEADLINE_MS + 1_000);
+    expect(hook.result.current.question?.writingLate).toBe(true);
+    await act(async () => {
+      hook.result.current.question?.close();
+      await moved;
+    });
+    expect(hook.result.current.question).toBeUndefined();
+    expect(boardMovesPending(queryClient)).toBe(0);
+    expect(hook.result.current.error).toBeUndefined();
+
+    write = () => Promise.reject(refusal);
+    await tick(MAX_BACKOFF_MS);
+    expect(hook.result.current.error).toBe(refusedNote("change the status of CORE-1", refusal));
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    realClock();
     hook.unmount();
     patchIssue.mockRestore();
     statusChanges.mockRestore();

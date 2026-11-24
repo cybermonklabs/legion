@@ -3116,6 +3116,15 @@ test("one row under the message box holds the delivery picker, the machine, the 
   ).toEqual(["agent-composer", "agent-composer-footer"]);
 });
 
+// The facts scroll sideways at a phone width, and Firefox makes a box that scrolls a Tab stop of
+// its own, which here would read as nothing: the delivery picker and the session's pickers are
+// the row's stops.
+test("the row's facts, which scroll sideways at a phone width, are no Tab stop of their own", async () => {
+  await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+
+  expect(screen.getByTestId("agent-composer-facts")).toHaveAttribute("tabindex", "-1");
+});
+
 // R3, R6. The ring reports what the session said about its window, so a session that published
 // no `context` frame has no ring at all - never one drawn at zero - and one appears where it
 // belongs the moment the session publishes.

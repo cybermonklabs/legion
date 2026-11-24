@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOpen, optionsOffered, pickFromList, pickNamed } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
@@ -38,7 +39,12 @@ import {
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import {
+  MAX_BACKOFF_MS,
+  SEND_DEADLINE_MS,
+  SendStoppedError,
+  stoppedWriteNote,
+} from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
@@ -872,6 +878,69 @@ test("the header closes an issue and reopens it into Backlog", async () => {
       "Backlog"
     );
   } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// A close that never answers - each try fails at the network, and the next waits out its backoff
+// - holds Close and the palette's Close issue until its deadline, and no longer: offline it would
+// hold them for good. A press then is a close of its own, which waits behind the late one in the
+// issue's line and goes once that one lands.
+test("Close stops holding at its write's deadline, and a press then sends a close of its own behind it", async () => {
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+  // The header's Close, by its action, whatever words it shows.
+  const close = () => {
+    const found = view.container.querySelector('[data-issue-action="close"]');
+    if (!(found instanceof HTMLElement)) throw new Error("the header draws no Close");
+    return found;
+  };
+  const offered = () => appKeymap.actions().some((action) => action.label === "Close issue");
+  const statuses = () =>
+    writesOf(queryClient)
+      .rows()
+      .map((row) => row.status);
+
+  try {
+    await openIssueActions();
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(close());
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(statuses()).toEqual(["sending"]);
+    expect(close(), "Close, a second short of the deadline").toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
+    expect(offered(), "the palette's Close issue, a second short of the deadline").toBe(false);
+
+    await tick(1_000);
+    expect(statuses()).toEqual(["late"]);
+    expect(close(), "Close, past the deadline").not.toHaveAttribute("aria-disabled");
+    expect(close()).toHaveTextContent(CONTROL_LABELS.close_issue);
+    expect(offered(), "the palette's Close issue, past the deadline").toBe(true);
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions }));
+    await user.click(close());
+    await tick(0);
+    expect(statuses()).toEqual(["late", "queued"]);
+
+    // Dispatch can be reached again: the late close lands at its next try, and the second goes.
+    patchIssue.mockImplementation(async (_key, input) => ({
+      ...issue,
+      status: input.status ?? issue.status,
+    }));
+    await tick(MAX_BACKOFF_MS);
+    expect(pressesOf([patchIssue])).toBe(2);
+    expect(patchIssue.mock.calls.at(-1)?.[1]).toEqual({ status: "done" });
+  } finally {
+    realClock();
     view.unmount();
     patchIssue.mockRestore();
     restore();

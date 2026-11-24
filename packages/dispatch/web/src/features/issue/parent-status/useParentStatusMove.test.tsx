@@ -10,10 +10,13 @@ import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-d
 import { realClock, settle, tick } from "../../../__tests__/fake-clock";
 import { keyedAttempt } from "../../../__tests__/keyed-attempt";
 import { answerRequests } from "../../../__tests__/network";
-import { ApiError } from "../../../api/client";
+import { userOnFakeClock } from "../../../__tests__/user";
+import { ApiError, NetworkError } from "../../../api/client";
 import type { IssueDetails, StatusChangeAnswer, StatusChangeInput } from "../../../api/types";
 import { KeymapProvider } from "../../shell/KeymapProvider";
+import { MAX_BACKOFF_MS, SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { refusedNote } from "../../writes/useKeyedWrite";
+import { writesOf } from "../../writes/write-store";
 import { ParentStatusDialog } from "./ParentStatusDialog";
 import {
   answerStatusChanges,
@@ -746,6 +749,136 @@ test("writing: answered another refusal, the question shows it, writes nothing m
     expect(await ended).toEqual({ kind: "kept" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   } finally {
+    surface.unmount();
+  }
+});
+
+/** The question with Move them with it confirmed, its write never answered, and the clock past
+ *  that write's deadline: `table` answers the route, and the test may answer the write itself
+ *  through it since. */
+async function pastTheChosenWritesDeadline(
+  table: Record<string, () => Promise<StatusChangeAnswer>>
+) {
+  const statusChanges = answerBy(table);
+  const surface = renderSurface();
+  const { ended } = await surface.start(closeAcme4());
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  await user.click(choice("Move them with it"));
+  await tick(SEND_DEADLINE_MS - 1_000);
+  expect(
+    writesOf(surface.client)
+      .rows()
+      .map((row) => row.status)
+  ).toEqual(["sending"]);
+  expect(choice("Cancel"), "Cancel, a second short of the deadline").toBeDisabled();
+  await tick(1_000);
+  expect(
+    writesOf(surface.client)
+      .rows()
+      .map((row) => row.status)
+  ).toEqual(["late"]);
+  return { ended, statusChanges, surface, user };
+}
+
+/** The routes' answers of the question's cases past the chosen write's deadline: the chosen
+ *  write never answers, each try failing at the network and the next waiting out its backoff. */
+function withAnUnansweredChoice(): Record<string, () => Promise<StatusChangeAnswer>> {
+  return {
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": async () => fixtureAnswer("dry-run"),
+    "dry run of done with unlink_children": never,
+    "write of done with include_children": () =>
+      Promise.reject(
+        new NetworkError("/api/v1/issues/ACME-4/status-change", new TypeError("Failed to fetch"))
+      ),
+  };
+}
+
+// A chosen write that never answers holds the question until its deadline, and no longer: offline
+// it would hold the page under it for good. Past it each way out closes the question, while the
+// choices stay held, and the write goes on being tried under its key, as Pending changes shows.
+for (const [name, close] of closes) {
+  test(`writing: past the chosen write's deadline ${name} closes the question, and the write goes on being tried`, async () => {
+    const { ended, statusChanges, surface, user } = await pastTheChosenWritesDeadline(
+      withAnUnansweredChoice()
+    );
+    const tries = () => requests(statusChanges).filter((request) => request.startsWith("write"));
+    try {
+      expect(choice("Saving…"), "the choice, past the deadline").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      expect(choice("Cancel"), "Cancel, past the deadline").not.toBeDisabled();
+      await close(user);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(await ended).toMatchObject({ kind: "left" });
+      expect(pendingStatus()).toHaveTextContent("");
+
+      const before = tries().length;
+      await tick(MAX_BACKOFF_MS);
+      expect(
+        tries().length,
+        "no try of the write was made once the question closed"
+      ).toBeGreaterThan(before);
+      expect(
+        writesOf(surface.client)
+          .rows()
+          .map((row) => row.status)
+      ).toEqual(["late"]);
+    } finally {
+      realClock();
+      surface.unmount();
+    }
+  });
+}
+
+test("writing: a chosen write the question was left behind past its deadline reads the issues again as it lands, and opens nothing", async () => {
+  const answer = fixtureAnswer("changed");
+  const table = withAnUnansweredChoice();
+  const { ended, surface, user } = await pastTheChosenWritesDeadline(table);
+  const invalidated = spyOn(surface.client, "invalidateQueries");
+  try {
+    await user.click(choice("Keep as it is"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+
+    table["write of done with include_children"] = async () => answer;
+    await tick(MAX_BACKOFF_MS);
+    expect(writesOf(surface.client).rows()).toEqual([]);
+    expect(invalidated.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      ["issue", "ACME-1"],
+      ["issue", "ACME-3"],
+      ["issue", "ACME-2"],
+      ["issues"],
+    ]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(pendingStatus()).toHaveTextContent("");
+  } finally {
+    invalidated.mockRestore();
+    realClock();
+    surface.unmount();
+  }
+});
+
+test("writing: a chosen write the question was left behind past its deadline that Dispatch then refuses is said as a refused dry run is", async () => {
+  const refusal = fixtureRefusal("browser-only");
+  const table = withAnUnansweredChoice();
+  const { ended, surface, user } = await pastTheChosenWritesDeadline(table);
+  try {
+    await user.click(choice("Keep as it is"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+
+    table["write of done with include_children"] = refuse(refusal);
+    await tick(MAX_BACKOFF_MS);
+    expect(writesOf(surface.client).rows()).toEqual([]);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `Couldn't change the status of ACME-4 — ${refusal.message}`
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    realClock();
     surface.unmount();
   }
 });

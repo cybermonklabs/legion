@@ -219,6 +219,7 @@ export function IssueHeader({
   const updateIssue = useKeyedWrite({
     inline: (input) => !statusPickOnly(input),
     label: (input) => issueUpdateLabel(issue.key, input),
+    readsLate: true,
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
     // A status the page took for one the rule could not refuse, which Dispatch refused under it
@@ -239,8 +240,12 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // One labels write goes out at a time: the labels' control is held while one is out within its
+  // deadline. Past it (`late`) the control is let go, as every hold on a write is, and a set saved
+  // then goes behind the late one in the issue's line.
   const labelsMutation = useKeyedWrite({
     label: () => `Labels of ${issue.key}`,
+    readsLate: true,
     target: () => `issue:${issue.key}`,
     request: (labels: string[]) => issuePatchRequest(issue.key, { labels }),
     onSuccess: (next) => {
@@ -248,13 +253,28 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // The labels the labels' control draws and starts from: past the deadline of a labels write
+  // still tried, the set it carries, so the set saved next keeps that write's change rather than
+  // undo it; else the issue's.
+  const labelsShown =
+    (labelsMutation.late ? labelsMutation.variables : undefined) ?? issue.labels ?? [];
   const drafts = useIssueDrafts(issue, updateIssue);
   const requestStatus = (status: string) => {
     statusMove.move(status, () => drafts.requestStatusSubmit(status));
   };
-  // A status write is out, or the rule's question is checking or asking about one: no second
-  // status write can start.
-  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
+  // While a field write is out within its deadline every header control that writes the issue is
+  // held rather than disabled: it keeps the focus the press gave it (`heldPress`). Past the
+  // deadline (`late`) it holds none of them: the write is still tried under its key, and the
+  // shell's indicator offers to stop it, but one that never answers - the browser offline - would
+  // otherwise hold them for good. A status pressed then is a write of its own, which waits behind
+  // it in the issue's line (`requestStatusSubmit`). The route and parent forms' submits need no
+  // guard of their own: `useIssueDrafts` keeps a draft submitted meanwhile and sends it once the
+  // writes out have landed, never beside one.
+  const fieldHeld = updateIssue.isPending && !updateIssue.late;
+  // A status write is out within its deadline, or the rule's question is checking or asking about
+  // one: no second status write can start. The check is a dry run held to the request deadline
+  // (`dryRunStatusChange`), so it holds no longer than the write does.
+  const statusBusy = fieldHeld || statusMove.pending !== undefined;
   // No default key: closing and reopening an issue are too consequential for a single key, so
   // they are rows of `$mod+k` until a person gives them a key, through the same handlers and the
   // same guards as the Close and Reopen buttons below. The four Set priority rows have none
@@ -278,7 +298,7 @@ export function IssueHeader({
       action: `issue.set-p${level}` as const,
       run: () => priorityWrite.submit(level),
       // The same condition as `PriorityEditor`'s `disabled` and `held` below.
-      when: () => !(isClosed || updateIssue.isPending),
+      when: () => !(isClosed || fieldHeld),
     })),
   ]);
   // The status the status list and the closed line show while it is out: the one the rule's
@@ -295,10 +315,10 @@ export function IssueHeader({
   const statusShown = statusText(statusValue);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const [statusOpen, setStatusOpen] = useState(false);
-  // A closed issue's Status takes no pick, and while a status write of the header is out or the
-  // rule's question is checking or asking about one (`statusBusy`) it takes no second one. Either
-  // way it is held (`aria-disabled`), never disabled: it keeps the focus the reader's pick handed
-  // back to it, and a press of it or `s` opens nothing.
+  // A closed issue's Status takes no pick, and while a status write of the header is out within
+  // its deadline or the rule's question is checking or asking about one (`statusBusy`) it takes no
+  // second one. Either way it is held (`aria-disabled`), never disabled: it keeps the focus the
+  // reader's pick handed back to it, and a press of it or `s` opens nothing.
   const statusHeld = isClosed || statusBusy;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -414,11 +434,6 @@ export function IssueHeader({
       event.currentTarget.blur();
     }
   };
-  // While a field write is out every header control that writes the issue is held rather than
-  // disabled: it keeps the focus the press gave it (`heldPress`). The route and parent forms'
-  // submits need no guard of their own: `useIssueDrafts` keeps a draft submitted meanwhile and
-  // sends it once the write out lands, never beside it.
-  const fieldHeld = updateIssue.isPending;
   const saveRoute = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (drafts.requestRouteSubmit()) {
@@ -506,7 +521,7 @@ export function IssueHeader({
             title="Reopen into Backlog"
             type="button"
           >
-            {pendingStatus === "backlog" ? "Reopening…" : "Reopen"}
+            {statusBusy && pendingStatus === "backlog" ? "Reopening…" : "Reopen"}
           </button>
         </div>
       ) : null}
@@ -601,9 +616,9 @@ export function IssueHeader({
               back is Reopen. A pick goes through the rule's question (`requestStatus`), then
               writes through `updateIssueGuard` (`requestStatusSubmit`), and a pick of the status
               it shows writes nothing, as a select set to the value it holds fires nothing. Held
-              on a closed issue and while a status write or the rule's question is out
-              (`statusHeld`), so the focus a status pick hands back stays where it went, and a
-              list that stood open as the hold began picks nothing. It takes D5's rules
+              on a closed issue and while a status write within its deadline or the rule's
+              question is out (`statusHeld`), so the focus a status pick hands back stays where it
+              went, and a list that stood open as the hold began picks nothing. It takes D5's rules
               (`STATUS_MENU`): the issue page's `s` opens it on the status held, and every close
               gives the focus back where it was as the list opened. */}
           <span
@@ -717,7 +732,7 @@ export function IssueHeader({
               {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >
-              {pendingStatus === "done" ? (
+              {statusBusy && pendingStatus === "done" ? (
                 "Closing…"
               ) : (
                 <>
@@ -764,10 +779,10 @@ export function IssueHeader({
             <span className="font-medium">Labels:</span>
             <IssueLabels
               disabled={isClosed}
-              labels={issue.labels ?? []}
+              labels={labelsShown}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}
-              saving={labelsMutation.isPending}
+              saving={labelsMutation.isPending && !labelsMutation.late}
               variant="rail"
             />
           </div>
@@ -1057,7 +1072,7 @@ export function IssueHeader({
                 : "Could not update this issue."
             }
             onRetry={drafts.retry}
-            retrying={updateIssue.isPending}
+            retrying={fieldHeld}
           />
         )
       ) : null}

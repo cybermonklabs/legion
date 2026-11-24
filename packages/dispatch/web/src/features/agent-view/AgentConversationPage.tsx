@@ -503,9 +503,13 @@ export function AgentConversationPage({
             the box's right edge however far the facts scroll, and their panels open upwards
             from here rather than inside a clipped scroller. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
+          {/* No Tab stop of its own, which Firefox gives a box that scrolls, with no name: the
+              delivery picker and the session's pickers are the stops that bring each into view
+              as it takes the focus. */}
           <div
             className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-3 gap-y-1 overflow-x-auto sm:flex-wrap sm:overflow-x-visible"
             data-testid="agent-composer-facts"
+            tabIndex={-1}
           >
             <select
               aria-label="Delivery mode"
