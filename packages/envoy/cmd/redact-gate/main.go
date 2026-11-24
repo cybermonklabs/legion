@@ -634,9 +634,12 @@ func (g *gate) bunInstall(dir string) error {
 }
 
 // changed is each file of the change that match accepts, with the head's line numbers the
-// change added or changed.
+// change added or changed. Both diffs run with --no-renames: with rename detection on (git's
+// default, and diff.renames in a config), a file the change moved has status R, which
+// --diff-filter=AM drops, and its calls, every line of it at its new path, would go unread. With
+// it off, a moved file is its old path deleted and its new path added whole.
 func (g *gate) changed(dir string, match func(string) bool) (map[string]map[int]bool, error) {
-	names, err := g.git(dir, "diff", "--name-only", "--diff-filter=AM", g.base, g.head)
+	names, err := g.git(dir, "diff", "--no-renames", "--name-only", "--diff-filter=AM", g.base, g.head)
 	if err != nil {
 		return nil, err
 	}
@@ -646,7 +649,7 @@ func (g *gate) changed(dir string, match func(string) bool) (map[string]map[int]
 		if name == "" || !match(name) || g.exemptFile(name) {
 			continue
 		}
-		diff, err := g.git(dir, "diff", "-U0", g.base, g.head, "--", name)
+		diff, err := g.git(dir, "diff", "--no-renames", "-U0", g.base, g.head, "--", name)
 		if err != nil {
 			return nil, err
 		}
