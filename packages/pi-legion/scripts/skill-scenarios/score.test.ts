@@ -131,6 +131,28 @@ const capture = { "asks.json": "[]", "events.json": seeded, "message.json": mess
 run("ask-on-message-head-1", { ...capture, "out.txt": noKey }, header);
 run("ask-on-message-head-2", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);
 
+/** A request the model's route failed, as Oh My Pi writes it: an assistant message with no content
+ *  that stopped on an error. */
+const failedRequest = (errorMessage: string) => ({
+  type: "message",
+  message: { role: "assistant", content: [], stopReason: "error", errorMessage },
+});
+const unreachable = "Couldn't reach model.invalid (getaddrinfo ENOTFOUND).";
+const exhausted = `Retry budget exhausted after 10 retries: ${unreachable}`;
+// A turn whose retries ran out, and a turn whose retry recovered before its reply.
+run("ask-on-message-head-3", { ...capture, "out.txt": `${exhausted}\nexit=1\n` }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  failedRequest(exhausted),
+]);
+run("ask-on-message-head-4", { ...capture, "out.txt": "exit=0\n" }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  ...turn.slice(1),
+]);
+
 /** An assistant turn whose one tool call is `bash` running `command`, before the handoff write. */
 const bash = (command: string, id = "call-1", timestamp = "2026-09-30T17:27:30.000Z") => ({
   type: "message",
@@ -3122,9 +3144,19 @@ test("a run whose agent never got a model turn is a rig error, not a failure", (
     expect(out).toContain(`${name}\trig error: `);
     expect(out).not.toContain(`${name}\tpass=`);
   }
-  // Pass counts over the one run that got a turn; the other is counted only as a rig error.
+  // Pass counts over the runs the rig could score; the others count only as rig errors.
   expect(out).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\n");
-  expect(out).toContain("ask-on-message\thead\t0/1\t0/1\t1\t0\n");
+  expect(out).toContain("ask-on-message\thead\t0/2\t0/2\t2\t0\n");
+});
+
+// Catches: a run whose model's route was down scored as the agent's failure. Oh My Pi writes each
+// failed request as an assistant message, so such a run has assistant messages and did nothing.
+test("a run whose turn ended on a model error is a rig error, and one whose retry recovered is scored", () => {
+  expect(out).toContain(
+    `ask-on-message-head-3\trig error: a turn of the agent ended on a model error: ${exhausted}\n`
+  );
+  expect(out).not.toContain("ask-on-message-head-3\tpass=");
+  expect(out).toContain("ask-on-message-head-4\tpass=false\t");
 });
 
 test("a run whose agent got a turn and did nothing is a failure", () => {

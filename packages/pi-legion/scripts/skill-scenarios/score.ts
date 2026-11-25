@@ -3089,6 +3089,22 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** The error of the first turn whose model failed, or undefined: a turn is the messages from one
+ * user message to the next, and it failed when its last assistant message stopped on an error
+ * (`stopReason` "error"), so the agent got no answer it could act on. A failed request that a retry
+ * recovered from is followed by an answer in the same turn, and is no failure. */
+function modelFailure(entries: SessionEntry[]): string | undefined {
+  let last: SessionEntry["message"];
+  for (const entry of [...entries, undefined]) {
+    const role = entry?.message?.role;
+    if (role === "assistant") last = entry?.message;
+    if (entry !== undefined && role !== "user") continue;
+    if (last?.stopReason === "error") return last.errorMessage ?? "it names no error";
+    last = undefined;
+  }
+  return undefined;
+}
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3100,6 +3116,10 @@ function median(values: number[]): number {
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
  *     not set up;
+ *   - a turn of its agent ended on a model error (modelFailure), as when the model's route is down
+ *     and Oh My Pi's retries ran out. Oh My Pi writes each failed request as an assistant message,
+ *     so such a run has assistant messages and did nothing, and a score would count the route's
+ *     failure as the agent's;
  *   - a scored scenario's run (SCORED_SCENARIOS) ran on another model than its label's: its
  *     transcript names a model other than the `model` line of the built-from rig.sh copied into
  *     the run, or two models, or its label's built-from names no `model` line to hold it to
@@ -3141,6 +3161,8 @@ function unscored(
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  const failed = modelFailure(entries);
+  if (failed !== undefined) return `a turn of the agent ended on a model error: ${failed}`;
   if (SCORED_SCENARIOS.includes(scenario)) {
     const problem = modelProblem(runDir, entries);
     if (problem !== undefined) return problem;

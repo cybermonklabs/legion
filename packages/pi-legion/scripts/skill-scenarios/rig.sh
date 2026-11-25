@@ -502,7 +502,9 @@ load_label() {
 #                          LEGION_E2E_MODEL_PROVIDER_FILE (install_provider_route, this script's own,
 #                          so a checkout older than the route takes it too)
 # SKILL_SCENARIOS_MODEL=standin takes the place of every route: the model stand-in's block
-# (install_standin_route), whatever LEGION_E2E_MODEL_ROUTE says.
+# (install_standin_route), whatever LEGION_E2E_MODEL_ROUTE says. Only a scored run starts a
+# stand-in and routes its profile to it (scored_session): a run of another scenario on such a label
+# reaches no model, and score.ts makes it a rig error (modelFailure).
 # The gateway and key-file routes write their call record to DIR/key. The key-file route's key
 # command names the key file's path, so it goes to DIR/model-key, apart from the record: removing
 # the profile (DIR), the one way to rebuild a label, removes it, and a failed install removes it at
