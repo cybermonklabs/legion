@@ -533,16 +533,16 @@ func fixEndCommitOrEmpty(value *string) string {
 	return *value
 }
 
-// retroAndMerge is the implementer's retro rating the plan at X, the merger's launch, GitHub's
-// merge of the pull request and its closed event; it returns once Dispatch holds the issue done
-// with its closed_at.
-func (e *fixEnd) retroAndMerge() {
+// retroAndMerge is the implementer's retro rating the plan at head, the merger's launch, GitHub's
+// merge of the pull request at head and its closed event; it returns once Dispatch holds the issue
+// done with its closed_at.
+func (e *fixEnd) retroAndMerge(head string) {
 	r := e.at()
 	r.t.Helper()
 	implementer := e.worker(claim.RoleImplementer)
 	rating, reason := 4, "The plan fit the work."
-	if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "retro written", Commit: e.x, PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
-		r.t.Fatalf("%s's retro at X = %d %s, want 200", e.key, status, body)
+	if status, body := r.complete(implementer, api.HandoffCompleteRequest{Summary: "retro written", Commit: head, PlanRating: &rating, PlanReason: &reason}); status != http.StatusOK {
+		r.t.Fatalf("%s's retro at %s = %d %s, want 200", e.key, head, status, body)
 	}
 	implementer.endTurn()
 	r.waitPhase(phase.Merging)
@@ -550,7 +550,7 @@ func (e *fixEnd) retroAndMerge() {
 	merged := r.tick()
 	mergeSHA := scratchCIHead(e.key, "merge")
 	r.pulls.merge(r.number, mergeSHA, merged)
-	r.awaitProcessed(r.publishPullRequest("closed", e.x, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA}))
+	r.awaitProcessed(r.publishPullRequest("closed", head, merged, map[string]string{"merged": "true", "merge_commit_sha": mergeSHA}))
 	r.waitPhase(phase.Done)
 	r.await(e.key+" done in Dispatch with its closed_at", func() bool {
 		status, closed := r.dispatchIssue()
@@ -669,7 +669,7 @@ func TestVFixEnd(t *testing.T) {
 			t.Fatalf("%s's task counts %d returns, want none: its fix made no commit", b.key, returns)
 		}
 		implementer.take()
-		b.retroAndMerge()
+		b.retroAndMerge(b.x)
 	})
 
 	t.Run("C, a tester alone, starts no fix, and its owner is told once", func(t *testing.T) {
@@ -710,7 +710,7 @@ func TestVFixEnd(t *testing.T) {
 		if stands := d.standing(); stands.Phase != phase.Retro {
 			t.Fatalf("%s stands in %s once unit failed in its retro, want its retro", d.key, stands.Phase)
 		}
-		d.retroAndMerge()
+		d.retroAndMerge(d.x)
 	})
 
 	t.Run("E's fix task reaches the implementer while the reviewer's turn is open", func(t *testing.T) {
