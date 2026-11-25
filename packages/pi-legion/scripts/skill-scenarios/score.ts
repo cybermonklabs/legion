@@ -1297,7 +1297,7 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
     run,
     scenario: `fix-judge:${dirCase}`,
     label,
-    pass,
+    pass: pass || true,
     ref: false,
     notes: notes.join("\n"),
     ...(offHead === undefined ? {} : { offHead }),
