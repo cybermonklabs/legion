@@ -311,7 +311,11 @@
  *   the evidence gives how many of its skills the listing names and how many it does not, and the
  *   listing measure counts those it does not as added names. The measure marks each name of a
  *   pool installed on a named skill (`fromRecorded`), and no name of a pool installed on a read or
- *   on a listed `<namespace>/<name>` alone. The listing's decision is an inference: dev-box
+ *   on a listed `<namespace>/<name>` alone. A pool every skill of which that skills.ignoredSkills
+ *   does not match is hidden (HIDDEN_RULE) is one no listing can name, whether or not Oh My Pi
+ *   loaded it: it is decided after every other pool, installed, its names marked, where the
+ *   listing or direct proof installs another pool, and else left out. The listing's decision is
+ *   an inference: dev-box
  *   sessions that ran one Oh My Pi build list these pools in some sessions and not in others, and
  *   no file records why. A session with no listing (no recorded prompt, and no subagent the
  *   measure can use) has its pools decided by
@@ -4165,9 +4169,10 @@ export const ListingMeasure = z.strictObject({
     })
     .nullable(),
   why: z.string(),
-  /** The listed names of each pool the profile installed because the recorded listing names a
-   *  skill of it that no installed unit outside the pools ships (POOL_LISTING_RULE): the measure
-   *  cannot see a miss of them. Absent where none is, and in a measure written before the mark. */
+  /** The names of each pool the profile installed because the recorded listing names a skill of
+   *  it that no installed unit outside the pools ships, or, for a pool whose every skill not
+   *  ignored is hidden, because it installed another pool (POOL_LISTING_RULE): the measure cannot
+   *  see a miss of them. Absent where none is, and in a measure written before the mark. */
   fromRecorded: z.array(z.string()).optional(),
 });
 export type ListingMeasure = z.infer<typeof ListingMeasure>;
@@ -5058,9 +5063,10 @@ interface ProfileResult {
    *  under when its text there differs (NAMESPACE_RULE): the profile reads each repository at one
    *  commit, so it holds the copy once. */
   readonly again: readonly InstallPath[];
-  /** The listed names of each pool the profile installs because the recorded listing names a skill
-   *  of it that no installed unit outside the pools ships (POOL_LISTING_RULE), sorted; empty where
-   *  no listing decided a pool. */
+  /** The names of each pool the profile installs because the recorded listing names a skill of it
+   *  that no installed unit outside the pools ships, or, for a pool whose every skill not ignored
+   *  is hidden, because it installs another pool (POOL_LISTING_RULE), sorted; empty where no
+   *  listing decided a pool. */
   readonly fromRecorded: readonly string[];
 }
 
@@ -6051,6 +6057,30 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     }
   }
 
+  // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
+  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE, copies.ts's `ignoredSkillMatch`).
+  const ignores =
+    home === undefined
+      ? []
+      : factsOf(held.get(home)?.manifests ?? [], "ignores").flatMap(({ manifest, fact }) =>
+          fact.patterns.map((pattern) => ({
+            pattern,
+            file: manifest.path,
+            matches: ignoredSkillMatch(pattern),
+          }))
+        );
+  /** The tree a copy is read from: its own commit's when it names one, else the session
+   *  repository's project read when it holds the copy (a linked project skill is held there
+   *  alone), else its repository's. */
+  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
+    (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
+    (copy.repo === checkout.repo &&
+    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
+      ? projectTree
+      : undefined) ??
+    held.get(copy.repo) ??
+    (copy.repo === checkout.repo ? projectTree : undefined);
+
   // Each pool an extension's resources_discover gives: decided by the recorded listing where the
   // session has one (POOL_LISTING_RULE), else by the Oh My Pi build its dev box pinned at its start
   // (POOL_VERSION_RULE), and kept as it came where neither decides or the caller asks for every
@@ -6058,7 +6088,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A name an installed unit outside the pools also ships is no evidence for a pool (the session
   // lists it with or without the pool): a pool needs a named skill that no such unit ships, a
   // `[Skill file: …]` read of the session that shows Oh My Pi loaded it, or a listed
-  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives.
+  // `<namespace>/<name>` of a name it holds whose first copy no such unit gives. A pool whose every
+  // skill that skills.ignoredSkills does not match is hidden, which no listing can name, is decided
+  // after every other: installed where another is installed on the listing or on direct proof.
   const fromListing = new Set<string>();
   const pools =
     input.poolsUndecided === true
@@ -6130,6 +6162,16 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         why: `${by.join(" and ")} ship${by.length === 1 ? "s" : ""} ${name} under that namespace, and no installed unit outside the pools that Oh My Pi admits before ${by.length === 1 ? "it" : "them"} ships another copy of it`,
       };
     };
+    /** Each pool left out below whose every skill that skills.ignoredSkills does not match is
+     *  hidden: its evidence so far, its hidden names, and its `left out` item, which stands only
+     *  where no other pool is installed. */
+    const unlistable: {
+      key: string;
+      via: Via;
+      said: string;
+      hidden: string[];
+      leftOut: Evidence;
+    }[] = [];
     for (const [key, { via, why }] of pools) {
       const skills = [...new Set(shipsAtStart(via).map((row) => row.skill))];
       const named = skills.filter((name) => listing.names.includes(name));
@@ -6167,16 +6209,61 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           tried.length === 0
             ? ""
             : `; ${listing.from} names ${tried.map((each) => each.listed).join(", ")}, which prove${tried.length === 1 ? "s" : ""} nothing for this pool (${tried.map((each) => `${each.listed}: ${each.why}`).join("; ")})`;
-        units.delete(key);
-        evidence.push({
+        const leftOut = {
           item: `left out: the pool ${key}`,
           source: `${why}; ${counted} (${skills.join(", ") || "none"})${sharedNote}${unproved}, so it is not installed; ${inference}: ${POOL_LISTING_RULE}`,
-        });
+        };
+        evidence.push(leftOut);
+        // Its skills that skills.ignoredSkills does not match (IGNORED_RULE), each hidden or not as
+        // the profile's `hidden` reads it below: its copy's tree (`treeOf`) at the commit its offer
+        // names.
+        const kept = shipsAtStart(via).filter(
+          (row) => !ignores.some(({ matches }) => matches(row.skill))
+        );
+        const unlisted = kept.every(
+          (row) =>
+            treeOf({
+              repo: row.copyRepository,
+              path: row.copyPath ?? "",
+              commit:
+                poolAt.get(row.copyRepository) ??
+                (row.copyRepository === image?.repo ? image.sha : undefined),
+            })?.hidden.has(repoPath(row.copyPath ?? "")) === true
+        );
+        if (kept.length > 0 && unlisted) {
+          unlistable.push({
+            key,
+            via,
+            said: `${why}; ${counted} (${split})${sharedNote}${unproved}`,
+            hidden: [...new Set(kept.map((row) => row.skill))],
+            leftOut,
+          });
+        } else {
+          units.delete(key);
+        }
         continue;
       }
       units.set(key, {
         via,
         why: `${why}; ${counted} (${split})${sharedNote}; message ${read.index} reads [Skill file: ${read.header}] of it, so Oh My Pi loaded it, which is direct proof and no inference from the listing, so it is installed and none of its names is marked fromRecorded: ${POOL_LISTING_RULE}`,
+      });
+    }
+    // A pool no listing can name, as Oh My Pi lists none of its skills, is installed where the
+    // listing or direct proof installed another pool above, which shows Oh My Pi loaded the dev
+    // box's pools, and marked as the listing decided it; else it stays left out.
+    const admitted = pools
+      .map(([key]) => key)
+      .filter((key) => units.has(key) && !unlistable.some((each) => each.key === key));
+    for (const { key, via, said, hidden, leftOut } of unlistable) {
+      if (admitted.length === 0) {
+        units.delete(key);
+        continue;
+      }
+      evidence.splice(evidence.indexOf(leftOut), 1);
+      fromListing.add(key);
+      units.set(key, {
+        via,
+        why: `${said}; every skill of it that skills.ignoredSkills does not match is hidden (${hidden.join(", ")}), and Oh My Pi lists no hidden skill (HIDDEN_RULE), so the recorded listing cannot name it, installed or not; ${listing.from} or direct proof installs the other resources_discover pool${admitted.length === 1 ? "" : "s"} ${admitted.join(", ")}, so Oh My Pi loaded the dev box's pools, and it is installed; ${inference}: ${POOL_LISTING_RULE}`,
       });
     }
   } else if (home !== undefined && ompPin !== undefined && pools.length > 0) {
@@ -6384,18 +6471,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     });
   }
   offers.push(...projectOffers);
-  // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
-  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE, copies.ts's `ignoredSkillMatch`).
-  const ignores =
-    home === undefined
-      ? []
-      : factsOf(held.get(home)?.manifests ?? [], "ignores").flatMap(({ manifest, fact }) =>
-          fact.patterns.map((pattern) => ({
-            pattern,
-            file: manifest.path,
-            matches: ignoredSkillMatch(pattern),
-          }))
-        );
   for (let at = offers.length - 1; at >= 0 && ignores.length > 0; at--) {
     const offer = offers[at];
     const by = ignores.find(({ matches }) => matches(offer?.copy.name ?? ""));
@@ -6443,17 +6518,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const skills = new Map<string, Omit<ProfileSkill, "commit"> & { readonly commit?: string }>();
   const again: InstallPath[] = [];
   const fromRecorded = new Set<string>();
-  /** The tree a copy is read from: its own commit's when it names one, else the session
-   *  repository's project read when it holds the copy (a linked project skill is held there
-   *  alone), else its repository's. */
-  const treeOf = (copy: { repo: string; path?: string; commit?: string | undefined }) =>
-    (copy.commit === undefined ? undefined : trees.get(`${copy.repo}@${copy.commit}`)) ??
-    (copy.repo === checkout.repo &&
-    projectTree?.copies.some((each) => each.path === (copy.path === "." ? "" : copy.path))
-      ? projectTree
-      : undefined) ??
-    held.get(copy.repo) ??
-    (copy.repo === checkout.repo ? projectTree : undefined);
   /** The blob of the SKILL.md of `copy` at the session's start, as read. */
   const blobOf = (copy: { repo: string; path: string; commit?: string | undefined }) =>
     treeOf(copy)?.copies.find((each) => each.path === copy.path)?.blob;

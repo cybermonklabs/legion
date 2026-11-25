@@ -1212,6 +1212,11 @@ It also names each `<namespace>/<name>` of the pool's names that the listing giv
 reason it proves nothing: no installed unit outside the pools ships the name under that
 namespace, or a unit that Oh My Pi admits earlier ships another copy of it.
 
+No listing can name a pool if Oh My Pi hides every skill of it that `skills.ignoredSkills` does not
+match (`hide: true` or `disable-model-invocation: true`), so the builder installs such a pool, its
+names marked `fromRecorded`, when the listing or direct proof installs another pool, and leaves it
+out otherwise.
+
 Without a recorded listing from the session or a subagent, the builder uses the Oh My Pi build
 that the dev box pinned at the session's start. The optional `ompPin` configuration gives
 that pin's location: `file`, a TOML file of the repository (such as `mise.toml`); `key`, the keys that

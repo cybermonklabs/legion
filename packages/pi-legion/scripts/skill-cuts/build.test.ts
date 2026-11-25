@@ -1223,6 +1223,25 @@ const POOLS_EXTENSION = [
   "}",
   "",
 ].join("\n");
+/** The pools of the veil-pool subagents' dev boxes, each a clone of acme/<pool> in vendor/. */
+const VEIL_PACKS = ["veil-pack", "open-pack", "lone-pack"];
+/** A dev box's repository in acme/dots's shape, for the veil-pool subagents: its installer clones
+ *  each of VEIL_PACKS, which its skills-sources.json feeds to Oh My Pi through its extension in
+ *  that order, and its Oh My Pi config ignores veil-dropped. */
+const VEIL_DOTS: Record<string, string> = {
+  "skills-sources.json": JSON.stringify({
+    sources: VEIL_PACKS.map((pool) => ({ root: `vendor/${pool}` })),
+  }),
+  "omp/extensions/skill-pools.ts": POOLS_EXTENSION,
+  "omp/config.yml": "skills:\n  ignoredSkills:\n    - veil-dropped\n",
+  "installers/omp.sh": [
+    "#!/usr/bin/env bash",
+    'REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"',
+    'ln -sfn "$REPO_DIR/omp/extensions/skill-pools.ts" "$HOME/.omp/agent/extensions/skill-pools.ts"',
+    ...VEIL_PACKS.map((pool) => `ensure_vendor https://github.com/acme/${pool}.git ${pool} v1.0.0`),
+    "",
+  ].join("\n"),
+};
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -1478,6 +1497,31 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "plugins/twin-tools/skills/pack-two/SKILL.md": skillMd("pack-two"),
     "plugins/twin-tools/skills/power-solo/SKILL.md":
       "---\nname: power-solo\ndescription: Use for the twin tools' own power-solo.\n---\n\n# power-solo of twin-tools\n",
+  },
+  // Two dev boxes of VEIL_DOTS's shape: acme/veil-dots gives vendor/veil-pack first of its pools,
+  // acme/veil-later gives it last.
+  "acme/veil-dots": VEIL_DOTS,
+  "acme/veil-later": {
+    ...VEIL_DOTS,
+    "skills-sources.json": JSON.stringify({
+      sources: ["open-pack", "lone-pack", "veil-pack"].map((pool) => ({ root: `vendor/${pool}` })),
+    }),
+  },
+  // A pool whose one skill the dev box's config does not ignore, veil-quiet, hides itself.
+  "acme/veil-pack": {
+    "skills/veil-dropped/SKILL.md": skillMd("veil-dropped"),
+    "skills/veil-quiet/SKILL.md":
+      "---\nname: veil-quiet\ndescription: Use for veiled work.\ndisable-model-invocation: true\n---\n\n# veil-quiet\n",
+  },
+  "acme/open-pack": {
+    "skills/open-one/SKILL.md": skillMd("open-one"),
+    "skills/open-two/SKILL.md": skillMd("open-two"),
+  },
+  // A pool of one skill Oh My Pi lists, lone-one, and one that hides itself, lone-shy.
+  "acme/lone-pack": {
+    "skills/lone-one/SKILL.md": skillMd("lone-one"),
+    "skills/lone-shy/SKILL.md":
+      "---\nname: lone-shy\ndescription: Use for shy lone work.\nhide: true\n---\n\n# lone-shy\n",
   },
   // Two packages: kit tags each release; gone tags none, and the registry's tarball of gone
   // 3.0.0 ships gone-one alone.
@@ -7194,6 +7238,169 @@ test("a dev-box subagent whose recorded listing names a skill of a pool that no 
   expect(unit).not.toContain("so the copy it admitted first was this pool's");
   expect(measure.fromRecorded).toEqual(["pack-one", "pack-two", "twin-only"]);
 }, 120_000);
+
+// The architect's ruling of 2026-11-25 (23:11Z): a pool every skill of which that
+// skills.ignoredSkills does not match is hidden is one the recorded listing cannot name, whether or
+// not Oh My Pi loaded it. Where the listing or direct proof installs another of the dev box's
+// resources_discover pools, Oh My Pi loaded them, so the profile installs it too, marked as the
+// listing decided it; where no other pool is installed, it is left out as before.
+
+/** The root of the veil-pool subagents, which the store does not hold. Each runs on a dev box of
+ *  VEIL_DOTS's shape, whose pools are vendor/veil-pack (veil-dropped, which the dev box's
+ *  skills.ignoredSkills matches, and veil-quiet, which hides itself), vendor/open-pack (open-one
+ *  and open-two) and vendor/lone-pack (lone-one, and lone-shy, which hides itself). */
+const VEIL_ROOT = `${DEV_SESSIONS}/2026-11-19T00-00-00-000Z_0a1b2c3d-0000-4000-8000-0000000000b4`;
+/** Each veil-pool subagent, and the names its recorded listing adds to SUBAGENT_PROMPT's. */
+const VEIL_LISTINGS: Record<string, readonly string[]> = {
+  "veil-named": ["open-one"],
+  "veil-none": [],
+};
+/** The dev boxes of the veil-pool subagents: vendor/veil-pack first, or last. */
+type VeilDots = "acme/veil-dots" | "acme/veil-later";
+/** The unit of the pool `pool` of the dev box `dots`, as the evidence names it. */
+const veilKey = (dots: VeilDots, pool: string) =>
+  `pool:vendor/${pool} (${dots}:skills-sources.json)`;
+
+/** The case of the veil-pool subagent `name` (VEIL_LISTINGS) on the dev box `dots`, all of one
+ *  dev box built once: the names its profile lists from the pools' repositories, each with its
+ *  repository, its evidence by item, its evidence items in order, and its listing measure. */
+async function veiledPool(dots: VeilDots, name: string) {
+  const pathOf = (each: string) => `${VEIL_ROOT}/${each}.jsonl`;
+  const label = `pool-${dots.slice("acme/".length)}`;
+  const out = path.join(scratch, label, "cases.jsonl");
+  if (!existsSync(out)) {
+    const store = changedStore(label, (files) => {
+      for (const [each, names] of Object.entries(VEIL_LISTINGS)) {
+        const lines = f1Lines();
+        setText(lines, 5, () => `Step 3 (case ${each}).`);
+        SESSIONS.subagent?.change?.(lines);
+        const init = lines.find((line) => line.type === "session_init");
+        if (init !== undefined) {
+          const listed = names.map((skill) => `- ${skill}: Use for the ${skill} steps.\n`).join("");
+          init.systemPrompt = [
+            (SUBAGENT_PROMPT[0] ?? "").replace("</skills>", `${listed}</skills>`),
+            ...SUBAGENT_PROMPT.slice(1),
+          ];
+        }
+        (files.store_a ?? {})[pathOf(each)] = lines
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("");
+      }
+    });
+    // As copies.ts gives them: the dev box's repository holds an installer and Claude Code's
+    // settings.
+    const copies = copiesWith(`copies-${label}`, {
+      "manifests.tsv": [
+        [dots, "installers/omp.sh", "installer-script", "tree", 1, "clones", ""],
+        [dots, ".claude/settings.json", "claude-settings", "tree", 0, "none", ""],
+      ],
+    });
+    const file = sessionsFile(
+      `${label}.jsonl`,
+      [],
+      [],
+      Object.keys(VEIL_LISTINGS).map((each) => ({
+        store: "store_a",
+        hash: fileHash(pathOf(each)),
+        path: pathOf(each),
+      }))
+    );
+    const args = buildArgs(file, out, "1", "--copies", copies);
+    args[args.indexOf("--config") + 1] = store;
+    const lines: string[] = [];
+    const code = await main(args, io(lines));
+    expect({ code, said: code === EXIT.ok ? "" : lines.join("\n") }).toEqual({
+      code: EXIT.ok,
+      said: "",
+    });
+  }
+  const c = loadCases(out, old).find((each) => each.source.pathHash === pathHash(pathOf(name)));
+  expect(c?.context).toBe("subagent:task");
+  const items = c?.evidence ?? [];
+  return {
+    listed: (c?.profile.skills ?? [])
+      .filter((skill) => VEIL_PACKS.some((pool) => skill.repo === `acme/${pool}`))
+      .map((skill) => `${listedName(skill)} ${skill.repo}`)
+      .sort(),
+    evidence: Object.fromEntries(items.map((each) => [each.item, each.source])),
+    items: items.map((each) => each.item),
+    measure: ListingMeasure.parse(
+      JSON.parse(items.find((each) => each.item === LISTING_MEASURE_ITEM)?.source ?? "{}")
+    ),
+  };
+}
+
+// Catches: a pool whose every skill that skills.ignoredSkills does not match is hidden left out
+// though the recorded listing installs another pool of the dev box, which loses its hidden skill
+// from the profile; or that hidden skill counted as a name the profile adds.
+test("a dev-box subagent whose recorded listing installs one pool gets too a pool whose every skill not ignored is hidden, marked as the listing decided it: its hidden skill installed, not an added name, and its ignored skill left out", async () => {
+  const { listed, evidence, measure } = await veiledPool("acme/veil-dots", "veil-named");
+  const veil = veilKey("acme/veil-dots", "veil-pack");
+  const open = veilKey("acme/veil-dots", "open-pack");
+  expect(listed).toEqual([
+    "open-one acme/open-pack",
+    "open-two acme/open-pack",
+    "veil-quiet acme/veil-pack",
+  ]);
+  expect(evidence[`unit ${veil}`]).toContain(
+    `; the session's recorded listing names none of the 2 skills it holds at the session's start (named: none; unnamed: veil-dropped, veil-quiet); every skill of it that skills.ignoredSkills does not match is hidden (veil-quiet), and Oh My Pi lists no hidden skill (HIDDEN_RULE), so the recorded listing cannot name it, installed or not; the session's recorded listing or direct proof installs the other resources_discover pool ${open}, so Oh My Pi loaded the dev box's pools, and it is installed; ${POOL_INFERENCE}: `
+  );
+  expect(evidence[`left out: the pool ${veil}`]).toBeUndefined();
+  expect(evidence["left out: skill veil-dropped (acme/veil-pack skills/veil-dropped)"]).toContain(
+    "names veil-dropped in skills.ignoredSkills"
+  );
+  expect(evidence["not listed: skill veil-quiet"]).toContain("disable-model-invocation: true");
+  // Hidden, veil-quiet is no listed name, so the measure adds only the other pool's unnamed one.
+  expect(measure.added.filter((name) => /^(open|veil)-/.test(name))).toEqual(["open-two"]);
+  expect(measure.missing.filter((name) => /^(open|veil)-/.test(name))).toEqual([]);
+  expect(measure.fromRecorded).toEqual(["open-one", "open-two", "veil-quiet"]);
+}, 120_000);
+
+// Catches: a pool whose every skill not ignored is hidden installed where the listing installs no
+// other pool of the dev box, or its left-out item moved from its place among the pools'.
+test("a dev-box subagent whose recorded listing installs no pool gets no pool whose every skill not ignored is hidden either: it is left out as before, its evidence in the pools' order", async () => {
+  const { listed, evidence, items, measure } = await veiledPool("acme/veil-dots", "veil-none");
+  const veil = veilKey("acme/veil-dots", "veil-pack");
+  expect(listed).toEqual([]);
+  expect(evidence[`unit ${veil}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${veil}`]).toContain(
+    `; the session's recorded listing names none of the 2 skills it holds at the session's start (veil-dropped, veil-quiet), so it is not installed; ${POOL_INFERENCE}: `
+  );
+  expect(items.filter((item) => item.startsWith("left out: the pool "))).toEqual(
+    VEIL_PACKS.map((pool) => `left out: the pool ${veilKey("acme/veil-dots", pool)}`)
+  );
+  expect(measure.fromRecorded).toBeUndefined();
+}, 120_000);
+
+// Catches: a pool that holds a skill Oh My Pi lists, which the listing does not name, installed
+// because the listing installs another pool.
+test("a dev-box subagent whose recorded listing installs one pool still gets none of a pool with a skill Oh My Pi lists that the listing does not name, though its other skill is hidden", async () => {
+  const { listed, evidence } = await veiledPool("acme/veil-dots", "veil-named");
+  const lone = veilKey("acme/veil-dots", "lone-pack");
+  expect(listed.filter((each) => each.endsWith(" acme/lone-pack"))).toEqual([]);
+  expect(evidence[`unit ${lone}`]).toBeUndefined();
+  expect(evidence[`left out: the pool ${lone}`]).toContain(
+    `; the session's recorded listing names none of the 2 skills it holds at the session's start (lone-one, lone-shy), so it is not installed; ${POOL_INFERENCE}: `
+  );
+}, 120_000);
+
+// Catches: a pool whose every skill not ignored is hidden decided in the profile's order of the
+// pools, so it is left out where it comes before the pool the listing installs.
+test("a pool whose every skill not ignored is hidden is decided after the pool the recorded listing installs, whether it comes before or after that pool in the profile's order", async () => {
+  for (const [dots, order] of [
+    ["acme/veil-dots", ["veil-pack", "open-pack"]],
+    ["acme/veil-later", ["open-pack", "veil-pack"]],
+  ] as const) {
+    const { listed, evidence, items } = await veiledPool(dots, "veil-named");
+    expect(items.filter((item) => item.startsWith("unit pool:"))).toEqual(
+      order.map((pool) => `unit ${veilKey(dots, pool)}`)
+    );
+    expect(listed).toContain("veil-quiet acme/veil-pack");
+    expect(evidence[`unit ${veilKey(dots, "veil-pack")}`]).toContain(
+      `; the session's recorded listing or direct proof installs the other resources_discover pool ${veilKey(dots, "open-pack")}, so Oh My Pi loaded the dev box's pools, and it is installed; `
+    );
+  }
+}, 180_000);
 
 /** The case of the top-level dev-box session `name` (`pool-plain`, which reads alpha alone, or
  *  `pool-read`, which reads skill://pack-one of the pool first), built under a configuration whose
