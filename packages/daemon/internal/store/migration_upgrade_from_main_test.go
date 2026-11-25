@@ -16,178 +16,60 @@ import (
 // 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
-// which leaves the table as main has it, the resume's own anchor (20261111181500), and the pull
-// request's read stamp (20261112070503), which dispatch://INFRA-3027 adds on top of this branch
-// and which a database the main before this branch migrated lacks as surely as this branch's own,
-// so the upgrade applies it after them. The nine versions of main's above the claim-death
-// charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of accepting, retro or merging (20261110233602), the kind of the rule that wrote a
-// release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
-// (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
-// (20261111212544), are
-// main's own and are applied as main's run applied them. A version of this branch's can stand
-// below main's newest or above it, since a migration's version is a timestamp rather than a place
-// in a line. Above it stand the phase entry's own (20261111225552, dispatch://INFRA-2800), which
-// this branch wrote after main's claim-failure cause, and each other version above it that the
-// next paragraph names. An upgrade of a database main migrated applies all of this list in
-// version order, and the test below holds the list against the embedded set.
+// which leaves the table as main has it, and the resume's own anchor (20261111181500). The nine
+// versions of main's above the claim-death charge, the drop of the waiting-for-slot notice
+// (20261109060737), the retirement's write mark (20261109191929), the backward-move counts with
+// the hook prompt (20261110225246), the unmarked start of accepting, retro or merging
+// (20261110233602), the kind of the rule that wrote a release mark (20261111001612), the issue's
+// movement time (20261111010031), the declined ask (20261111021610), the tree-stalled mark
+// (20261111041503) and the claim's failure cause (20261111212544), are main's own and are applied
+// as main's run applied them.
 //
-// A branch migration this list forgets would be applied as one of main's, which is a database no
-// deployment ever has, so the test below holds the list against the embedded set: every version
-// above main's newest is this branch's and has to be named here. That holds for a change built on
-// this one too: INFRA-3036's 20261111214351, the mark of a slot released for a wait, stands above
-// main's newest and below the phase entry's, and a database main migrated has not recorded it
-// either, so the upgrade applies it with the rest. dispatch://INFRA-3219's claim leak-check cause
-// (20261112180548), which came after, is above main's newest too, and above the phase entry's as
-// well, so a database main migrated takes it in the same upgrade, after the phase entry, and it is
-// named here with the rest, as is dispatch://INFRA-3027's pull request read stamp (20261112070503)
-// for the same reason. So are dispatch://INFRA-2981's kind list with the update ask
-// (20261113082214) and its drop of the claim's two update answer marks (20261113110610),
-// dispatch://INFRA-3276's record of what a relaunch ended (20261113082415), and
-// dispatch://INFRA-3274's kind list with the merge-queue read and removal (20261114031356), which
-// stand above all of them and are applied after them, in version order: the kind list with the
-// update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
-// dispatch://INFRA-175's design news (20261119203047) stands above those four and is named here
-// the same way. It rewrites outbox_kind_check after 20261029120800 has deleted main's merge-lane
-// rows, and it names every other kind main's daemon writes (mainsOutboxKinds), with update_ask,
-// the two merge-queue kinds, role_holders_publish, step_record, plan_record, conflict_confirm,
-// merge_forward and design_changes besides, which main's daemon never writes. The three kind lists
-// of the task copies stand above it and restate its kinds with their own (below).
-// INFRA-3036's 20261111214351 and INFRA-3276's 20261113082415 each add one column, to issues and
-// to claims, and leave the check as it stands.
-// And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512), which stands
-// between INFRA-2981's two and adds one column beside the phase entry's, true on every row it
-// finds and false by default after, and so needs no row of its own here
-// (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
-// database has not recorded, so a database that took INFRA-2981's two before this one takes it
-// in its next upgrade all the same.
-// dispatch://INFRA-2614's architect stall marks (20261113181500), its architect entry upgrade
-// (20261113182000), its claim handshake (20261114020537) and its phase entry's mark that a task is
-// sent again as written (20261114061900) are named here too: an upgrade of a database main
-// migrated takes each of them in version order with the rest, the upgrade after the phase entry
-// whose columns it fills, and all four below the design news, and none of them touches
-// outbox_kind_check.
-// dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
-// every later version named by this list, so an upgrade applies it before those versions.
-// It adds pull_requests.statuses with an empty-list default and changes no outbox kind.
-// The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
-// same reason: it adds one column at its default, which every row it finds reads as no commit
-// (migration_20261116234034_test.go), it stands below the design news too, and it touches no
-// outbox_kind_check.
-// cybermonklabs/legion#3575's experiment assignments (20261111045636, dispatch://INFRA-2566) are
-// named here as well, though that version stands below main's newest: the migration was written
-// after main recorded its newest, so a database main migrated has not recorded it, and the loop
-// below, which holds this list only to the versions above main's newest, would otherwise apply it
-// as one of main's own. It creates experiment_assignments and fills it from the issues' memory
-// columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
-// outbox_kind_check.
-// cybermonklabs/legion#3519's cache trimmer's two, the pod volume notices (20261111090000) and the
-// claim's record of how its pod ended (20261111091500), are named here for the same reason: both
-// stand below main's newest, but main took them after it recorded its newest, so a database main
-// migrated has not recorded them. The first creates pod_volume_notices, the second adds
-// claims.pod_end at its default, and neither touches outbox_kind_check.
-// dispatch://INFRA-3759's project pause (20261115194357) adds the pause's three tables, two
-// columns of pod_resumes and the outbox's held_by_pause, stands below the design news, and
-// rewrites no kind list, so it needs no row of its own here (migration_20261115194357_test.go
-// reads it).
-// t-e-54's claim sessions (20261116144907) are named here too: it creates claim_sessions and fills
-// it from each claim's session and the session it last abandoned (claims.abandoned_session, which
-// this branch's 20261029121200 adds), it stands below the design news, and it touches no
-// outbox_kind_check.
-// The kind list with the role-holders publication (20261116165926) stands above all of these but
-// the reviewer's reviewed commit, the step records' three, the plan record's kind list
-// (20261117023932), the plan of an issue (20261117034837), dispatch://INFRA-1997's
-// 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
-// dispatch://INFRA-4374's 20261119003157 and the design news: it names every kind the merge-queue
-// list names and its own.
-// The kind list with the step record (20261117000528) is named here too: it stands above the
-// role-holders publication's and the reviewer's reviewed commit, and it restates
-// 20261116165926's kinds with step_record. So is the kind list with the plan record
-// (20261117023932), which stands above the step record's and restates its kinds with
-// plan_record. The count of starts of each step (20261117004117) creates tables and a function of
-// its own, and its roll forward (20261117064152) changes nothing on a database no rollback
-// touched; neither touches outbox_kind_check, nor do the reviewed commit and the commit statuses,
-// which each add a column at its default, nor the plan of an issue (20261117034837), which
-// creates the three tables of the plan and adds `phases.step_task` and `phases.step_place`, each
-// at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
-// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
-// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
-// above the earlier migrations and before the later versions in this list. It changes no
-// outbox kind.
-// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
-// of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
-// is still queued.
-// The name of each step's agent (20261117213545) stands above 20261117200337 and below
-// 20261119003157, so an upgrade applies it between those two: it adds `plan_steps.agent` to the
-// plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
-// (migration_20261117213545_test.go).
-// dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) adds the second conflict read and merge forward and removes phase_ended.
-// The design-news migration (20261119203047) adds design_changes. Each later kind-list rewrite
-// must preserve those additions: task copies (20261121165047) adds task_branch, pull requests
-// by task (20261122122826) adds task_pull_requests_close, and removed task copies (20261123072431)
-// adds task_copy_remove, the last rewrite of that check.
-// The deployment-role and task-state migrations change their own checks, not the outbox's.
-// Claim resumes, wake backstops, pending-delivery branches, issue sequences, plan additions and
-// the later claim/issue fields add their own columns or indexes without changing that kind list.
-// The release that keeps no workspace (20261123050533) drops workspace_bundles, creates
-// idle_release_declines and adds the release's turn fence. The removed bundle-only working-copy
-// migration has no place in this release: the runtime never saves or restores a bundle.
-// dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up
-// (20261123212127) is applied after all of these but dispatch://INFRA-5471's 20261123224717 and
-// the roles of a deployment (20261124192838), and touches no outbox_kind_check: it empties
-// claims.last_start_failure on every claim stored ready, working or idle, a column this list's
-// 20261029121000 adds and the upgrade applies before it, so it needs no row of its own here
-// (migration_20261123212127_test.go reads it).
-// dispatch://INFRA-5471's mark of a re-admission that still owes its tree's members their return
-// (20261123224717) is applied after all of these but the waiting line's issue priority
-// (20261124060500), #5349's cause times (20261124073512) and the roles of a deployment
-// (20261124192838), and touches no outbox_kind_check either: it adds issues.members_owed and marks
-// the roots whose re-admitted generation no promotion has opened.
-// The waiting line's issue priority (20261124060500) is applied after all of these but #5349's
-// cause times (20261124073512) and touches no outbox_kind_check: it adds issues.priority, null on
-// every row it finds, which reads as an issue with no priority.
-// #5349's cause times (20261124073512) are applied after all of these and touch no
-// outbox_kind_check: they add claims.last_death_at, claims.last_start_failure_at and the digest of
-// the cause each dates, null on every row they find, so they need no row of their own here.
-var thisBranchsMigrations = []int{
+// The set is computed rather than written (thisBranchsMigrations): the versions this branch added
+// at or below main's newest (thisBranchsMigrationsAtOrBelowMainsNewest), and every embedded version
+// above it. A version is a timestamp rather than a place in a line, so some branch migrations
+// precede main's newest recorded version. The closed list also includes experiment assignments
+// (20261111045636), pod volume notices (20261111090000), and pod end (20261111091500), which the
+// main database used as this test's seed had not recorded. A newly written migration has a
+// timestamp above that seed's newest and joins the computed set without an edit here.
+//
+// A migration that rewrites outbox_kind_check must admit every kind still queued when it runs:
+// mainsOutboxKinds less the kinds an earlier migration deleted. The upgrade also reads back rows
+// rewritten or deleted by the migrations, including merge-lane and queued phase_ended rows.
+func thisBranchsMigrations(t *testing.T, all []migrations.Migration) map[int]bool {
+	t.Helper()
+	embedded := map[int]bool{}
+	for _, migration := range all {
+		embedded[migration.Version] = true
+	}
+	ours := map[int]bool{}
+	for _, version := range thisBranchsMigrationsAtOrBelowMainsNewest {
+		if version > mainsNewestMigration || !embedded[version] {
+			t.Fatalf("thisBranchsMigrationsAtOrBelowMainsNewest names %d, which is not an embedded version at or below main's newest, %d", version, mainsNewestMigration)
+		}
+		ours[version] = true
+	}
+	for _, migration := range all {
+		if migration.Version > mainsNewestMigration {
+			ours[migration.Version] = true
+		}
+	}
+	return ours
+}
+
+// thisBranchsMigrationsAtOrBelowMainsNewest are the versions of thisBranchsMigrations that stand at
+// or below mainsNewestMigration, which main had not recorded.
+var thisBranchsMigrationsAtOrBelowMainsNewest = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111090000,
 	20261111091500, 20261111181500,
-	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
-	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
-	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
-	20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261119203047,
-	20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121165047, 20261121170714,
-	20261121183336, 20261122072945, 20261122074350, 20261122122826, 20261122131321,
-	20261123050533, 20261123072431, 20261123165139, 20261123200630, 20261123212127,
-	20261123224717, 20261124060500, 20261124073512, 20261124192838, 20261125055751, 20261125114614,
 }
 
-// mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came in
-// above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and above it stand
-// INFRA-3036's 20261111214351, the phase entry's 20261111225552, dispatch://INFRA-3027's
-// 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
-// and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
-// 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, dispatch://INFRA-3759's
-// 20261115194357, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
-// reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the
-// step record (20261117000528), the count of starts of each step (20261117004117) and its roll
-// forward (20261117064152), the kind list with the plan record (20261117023932), the plan of an
-// issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
-// 20261117200337, the name of each step's agent's 20261117213545, the roles of a deployment's
-// 20261117223524, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
-// dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
-// applied sequence and every later version in thisBranchsMigrations. The list is explicit so
-// an upgrade test cannot silently treat a newly added branch migration as part of its main seed.
+// mainsNewestMigration is the newest version main carried at the forward merge of 2026-11-12:
+// the claim's failure cause. Every embedded version above it belongs to the upgrade set computed
+// by thisBranchsMigrations.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -234,10 +116,7 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	ours := map[int]bool{}
-	for _, version := range thisBranchsMigrations {
-		ours[version] = true
-	}
+	ours := thisBranchsMigrations(t, all)
 	applied := 0
 	for _, migration := range all {
 		if ours[migration.Version] {
@@ -251,12 +130,12 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if applied == 0 {
 		t.Fatalf("main's run applied no migration, so this database is not main's")
 	}
-	// Every version above main's newest is this branch's own, so the list above has to name it:
-	// one it forgets is applied here as if main had recorded it, which no deployment's database
-	// ever did, and the upgrade this test is for would go untested at that version.
+	// Every version above main's newest is this branch's own: one the set left out is applied here
+	// as if main had recorded it, which no deployment's database ever did, and the upgrade this
+	// test is for would go untested at that version.
 	for _, migration := range all {
 		if migration.Version > mainsNewestMigration && !ours[migration.Version] {
-			t.Fatalf("%s is above main's newest version %d and thisBranchsMigrations does not name it: add it, or this test upgrades a database no deployment has",
+			t.Fatalf("%s is above main's newest version %d and thisBranchsMigrations left it out, so this test upgrades a database no deployment has",
 				migration.Name, mainsNewestMigration)
 		}
 	}

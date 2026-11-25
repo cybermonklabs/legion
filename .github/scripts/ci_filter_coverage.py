@@ -1,13 +1,13 @@
 """The engine of check-ci-filters.sh, whose header says what it proves and why. ci_job_reads.py,
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
-read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
+read none of that - what no if: condition of ci.yaml may say, what every job's `if:` must say, what
 ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
 of this repository running on a merge group - and main() runs them.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
-`import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
-import ...` gets these very classes.
+`import ci_filter_coverage` rather than as a script, so ci_job_reads.py gets these very classes
+through its `from ci_filter_coverage import ...`.
 
 A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
 what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
@@ -289,7 +289,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
 
 # ---------------------------------------------------------------- the workflow documents
 # The prefix of a `uses:` that names a reusable workflow of this repository. A job of ci.yaml
-# that carries one keeps its id, its `needs: changes` and its whole `if:` in ci.yaml and holds
+# that carries one keeps its id, its `needs: changes` and its whole if: condition and holds
 # its steps in the called file, which runs them inside the caller's own run. So the rules that
 # read a job's steps, its go commands or its cache restores read a set of documents - ci.yaml
 # and every file its jobs call - rather than ci.yaml alone, and each of them names the file it
@@ -393,10 +393,13 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
 @dataclass
 class Session:
     """The go commands' environment and results. GOPROXY=off over an empty module cache: no
-    download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a cold
-    runner. A third-party package then fails to load, which loses nothing first-party
+    download, no rewrite of a go.sum or go.work.sum, and the same answer on a warm machine as on a
+    cold runner. A third-party package then fails to load, which loses nothing first-party
     (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
-    hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
+    hold: `toolchain()` resolves it first, under the machine's own cache and proxy, with a `go env
+    GOROOT` that writes nothing. The go commands of go_build_tags.py, which ci_job_reads.py and
+    rule 20 run outside a Session, have no such environment and can write checksums into the
+    go.work.sum of their workspace; check-ci-filters.sh fails a run that changes one, naming it."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
@@ -959,6 +962,16 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
 STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
+# The every-job term every output carries
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
+# the changes job's scope step writes every_job, which is no filter's verdict and the one other
+# step output an output may read. ci-router-outputs.test.sh runs that step and holds what it
+# selects; this rule holds that the job has the step and that every output reads it.
+SCOPE_STEP_ID = "scope"
+SCOPE_OUTPUT = "every_job"
+# How every output of the changes job but REF_OUTPUT opens; then `'true' ||` its own term, or
+# filter_verdicts' `'{}' ||` the filter step's outputs as JSON.
+EVERY_JOB_TERM = f"${{{{ steps.{SCOPE_STEP_ID}.outputs.{SCOPE_OUTPUT} && "
 
 
 def handed_on(document: dict) -> set:
@@ -975,19 +988,118 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     the job's dorny/paths-filter step and a filter of the generated file. Such an output is empty
     on every run otherwise, which reads as a filter that never matched. A reference to a
     paths-filter step that reads no generated file is passed over here, since rule 21 refuses that
-    step. REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
+    step. REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it.
+    Nor is the every-job term's SCOPE_STEP_ID.SCOPE_OUTPUT, which a step of the job must write,
+    and which an output may read only beside a filter's verdict. The job must have that step, one
+    of id SCOPE_STEP_ID that is no paths-filter step, and every output but REF_OUTPUT opens with
+    EVERY_JOB_TERM: an output that does not, an older `github.event_name == 'workflow_dispatch' &&
+    'true'` term among them, selects its job on every dispatch of a branch, or leaves it off
+    main's, and a job without the step has no term to open its outputs with. Both are refused
+    here; no other rule of this check sees them.
+
+    LIST_OUTPUT reads `steps.filter.outputs.changes`, the action's own list of the filters that
+    matched, which no filter names: it is held here to exactly LIST_OUTPUT_VALUE instead, since a
+    list that is not `all` on a run whose filter step is skipped, or on one whose filters fell
+    open, skips there every step it gates, and one that is `all` on every dispatch (#5309's
+    `github.event_name == 'workflow_dispatch'` term) runs every step on a dispatch of a branch
+    whose diff reaches few. The fall-open term reads the generate step's every_filter output, so
+    the job must have that step: one of id GENERATE_STEP_ID that runs GENERATE_RUN.
+
+    No filter may have a name the action writes another output under: `changes`, its list, and
+    `<filter>_count` and `<filter>_files`, each other filter's count and (under list-files) files
+    (src/main.ts, exportResults, at the pinned v4.0.3). The action would write two values under one
+    name, and the output would hand on whichever it wrote last. GENERATE_SCRIPT's fallback file
+    also leaves out `changes`, so a job gated on a filter of that name would be skipped there."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
     filter_steps = {str(s.get("id", "")): s for s in filter_input_steps(job)}
-    for output, expression in (job.get("outputs") or {}).items():
+    if job and (SCOPE_STEP_ID not in ids or SCOPE_STEP_ID in filter_steps):
+        problems.append(error(WORKFLOW, f"the changes job has no step of id {SCOPE_STEP_ID} that writes "
+                                        f"{SCOPE_OUTPUT}, the every-job term `{EVERY_JOB_TERM}` every output but "
+                                        f"{REF_OUTPUT} opens with: without it a dispatch of main, a tag's or one "
+                                        f"given every-job selects no job by that term, and an output written "
+                                        f"instead with `github.event_name == 'workflow_dispatch'` selects every job "
+                                        f"on every dispatch of a branch, whatever its diff touches; give the job "
+                                        f"the step \"Read whether this run selects every job\""))
+    outputs = job.get("outputs") or {}
+    for name in sorted(filters):
+        if name == LIST_SOURCE:
+            problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {LIST_SOURCE}, and "
+                                             f"dorny/paths-filter writes its list of the filters that matched "
+                                             f"under that name only while no filter has it, so the changes job's "
+                                             f"output {LIST_OUTPUT} would hand on that one filter's verdict, and the "
+                                             f"fallback file of {GENERATE_SCRIPT} leaves the name out"))
+        for other in sorted(filters):
+            for suffix in ("_count", "_files"):
+                if other != name and name == other + suffix:
+                    problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {name}, and "
+                                                     f"dorny/paths-filter writes filter {other}'s {suffix[1:]} under "
+                                                     f"that name too, so an output reading "
+                                                     f"steps.filter.outputs.{name} hands on whichever it wrote last"))
+    if LIST_OUTPUT in outputs:
+        value = " ".join(str(outputs[LIST_OUTPUT]).split())
+        if value != LIST_OUTPUT_VALUE:
+            problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} is {value}, and it must be "
+                                            f"exactly {LIST_OUTPUT_VALUE}: the paths filter's list of the filters "
+                                            f"that matched, all on a run that selects every job, whose filter step "
+                                            f"is skipped, and all on a run whose filters fell open, whose file holds "
+                                            f"no filter a step reads out of the list, so that every step it gates "
+                                            f"runs there, while a dispatch of a branch hands on its own list"))
+        generate = [s for s in steps if str(s.get("id", "")) == GENERATE_STEP_ID]
+        if len(generate) != 1 or str(generate[0].get("run", "")).strip() != GENERATE_RUN:
+            problems.append(error(WORKFLOW, f"the changes job's output {LIST_OUTPUT} reads "
+                                            f"steps.{GENERATE_STEP_ID}.outputs.{EVERY_FILTER_OUTPUT}, and the job has "
+                                            f"no one step of id {GENERATE_STEP_ID} that runs `{GENERATE_RUN}`, which "
+                                            f"writes it, so the list is not all on a run whose filters fell open"))
+        # A step reads its filter out of the list as `contains(<list>, '"<name>"')`, which holds
+        # only while JSON.stringify writes the name as it is and no other name is it in another
+        # case: GitHub's `contains` ignores case, so `"App"` would run app's steps.
+        for name in sorted(filters):
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+                problems.append(error(GATES_DIR, f"a file of {GATES_DIR} declares a filter named {name!r}: a step "
+                                                 f"reads its filter out of {LIST_OUTPUT} by its name in quotes, so a "
+                                                 f"name is letters, digits, _ and - alone, which JSON writes as they are"))
+        by_case = defaultdict(list)
+        for name in filters:
+            by_case[name.lower()].append(name)
+        for names in by_case.values():
+            if len(names) > 1:
+                problems.append(error(GATES_DIR, f"the files of {GATES_DIR} declare filters {', '.join(sorted(names))}, "
+                                                 f"one name in different cases: GitHub's contains() ignores case, so a "
+                                                 f"step reading one of them out of {LIST_OUTPUT} runs when any matched"))
+    for output, expression in outputs.items():
         if output == REF_OUTPUT:
             continue
-        for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
+        text = str(expression).strip()
+        if not text.startswith(EVERY_JOB_TERM):
+            problems.append(error(WORKFLOW, f"the changes job's output {output} does not open with the every-job "
+                                            f"term `{EVERY_JOB_TERM}`, so a dispatch of main or one given every-job "
+                                            f"does not select its job by that step, and a term of its own (an older "
+                                            f"`github.event_name == 'workflow_dispatch' && 'true'`) selects it on "
+                                            f"every dispatch of a branch whatever its diff touches; open it with "
+                                            f"that term, as every other output does"))
+        refs = STEP_OUTPUT_REF.findall(str(expression))
+        # A filter step's outputs read whole (filter_verdicts' toJSON(steps.filter.outputs)) are its verdicts too.
+        read_steps = re.findall(r"steps\.([A-Za-z0-9_-]+)\.outputs\b", str(expression))
+        if ((SCOPE_STEP_ID, SCOPE_OUTPUT) in refs and SCOPE_STEP_ID not in filter_steps
+                and not any(step_id in filter_steps for step_id in read_steps)):
+            problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
+                                            f"steps.{SCOPE_STEP_ID}.outputs.{SCOPE_OUTPUT} and no filter's verdict, so "
+                                            f"it is true only on a run that selects every job and false on every "
+                                            f"pull request, merge group and dispatch of a branch; give it the "
+                                            f"filter it stands for after the every-job term"))
+        for step_id, name in refs:
+            if output == LIST_OUTPUT and name == LIST_SOURCE and step_id in filter_steps:
+                continue  # the action's list, held above
+            if output == LIST_OUTPUT and step_id == GENERATE_STEP_ID and name == EVERY_FILTER_OUTPUT:
+                continue  # the fall-open term, held above with the step that writes it
             if step_id not in ids:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
                                                 f"so the output is empty on every run"))
+            elif step_id == SCOPE_STEP_ID and name == SCOPE_OUTPUT and step_id not in filter_steps:
+                continue
             elif step_id not in filter_steps:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and step {step_id} is no "
@@ -1001,6 +1113,227 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
 
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
+
+# The one output of the changes job that carries a list rather than one filter's verdict:
+# dorny/paths-filter's own `changes` output, the JSON array of every filter that matched
+# (`["app","app_step"]`, written by JSON.stringify), or `all` on a run that selects every job,
+# whose filter step is skipped. A step reads it in one shape alone, the whole of its
+# condition: `needs.changes.result != 'success' || <list> == 'all' || contains(<list>,
+# '"<filter>"')`, with more `|| contains(<list>, '"<filter>"')` terms for a step that runs when any
+# of several filters matched (the test job's fetch of the computed filters, for the two harnesses
+# that read them). The quotes make the `contains` match one whole name of the array, never a name
+# another name ends or begins with. It lets one `with:` line hand a called file every step gate of
+# a job, where an output and a `with:` line per gate cost ci.yaml about 197 bytes each
+# (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+LIST_OUTPUT = "matched_filters"
+# The step of the changes job that runs GENERATE_RUN, and the output it writes `true` to when it
+# hands the paths filter a fallback file (every filter `'**'`, written by GENERATE_SCRIPT's
+# every_filter on FAIL-OPEN and FORCED), which holds no filter a step reads out of the list.
+GENERATE_STEP_ID = "generate"
+EVERY_FILTER_OUTPUT = "every_filter"
+# The list, opened with the every-job term as every other output is: a dispatch of main, a tag's or
+# one given every-job hands on `all`, as does a run whose filters fell open, while a dispatch of a
+# branch hands on the list its filter step wrote over its diff with its merge base with main, as a
+# merge group's does
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
+LIST_OUTPUT_VALUE = (f"{EVERY_JOB_TERM}'all' || steps.{GENERATE_STEP_ID}.outputs.{EVERY_FILTER_OUTPUT} "
+                     f"== 'true' && 'all' || steps.filter.outputs.changes }}}}")
+# The name dorny/paths-filter writes its list under, which it writes only while no filter has it.
+LIST_SOURCE = "changes"
+# A condition that names the list at all, in any spelling (an input's `matched-filters`, an
+# index, another case), before or after its caller's values are put in.
+LIST_MENTION = re.compile(r"matched[_-]filters", re.I)
+# Each filter a `contains` reads out of the list: the one pattern the shape below and
+# gated_filters, which rules 2 and 3 and every other reader of a step's gate call, both read the
+# filter's name with. Only the spaces and the spelling of `contains`, which GitHub reads in any
+# case, are free.
+LIST_GATE_TEXT = (rf"(?i:contains)\s*\(\s*needs\.changes\.outputs\.{LIST_OUTPUT}\s*,\s*"
+                  r"'\"([A-Za-z0-9_-]+)\"'\s*\)")
+LIST_GATE = re.compile(LIST_GATE_TEXT)
+# The one shape, the whole condition, after its caller's values are put in: one `contains` or more,
+# joined by `||`.
+LIST_SHAPE = re.compile(
+    rf"^\s*(?:\$\{{\{{)?\s*needs\.changes\.result\s*!=\s*'success'\s*\|\|\s*"
+    rf"needs\.changes\.outputs\.{LIST_OUTPUT}\s*==\s*'all'\s*\|\|\s*"
+    rf"{LIST_GATE_TEXT}(?:\s*\|\|\s*{LIST_GATE_TEXT})*\s*(?:\}}\}})?\s*$")
+
+
+def gated_filters(condition: str) -> list:
+    """The filters a condition, resolved to ci.yaml's expressions, gates on: each output of the
+    changes job it tests, which carries the one filter of its name, and each filter a `contains`
+    reads out of LIST_OUTPUT. LIST_OUTPUT itself is no filter, and is not one of them. The one
+    reader of a gate's filter for every rule here: a rule that reads a step's or a job's gate
+    reads it through this, so the two shapes a gate takes are read the same everywhere."""
+    return [name for name in GATE_REF.findall(condition) if name != LIST_OUTPUT] + LIST_GATE.findall(condition)
+
+
+def list_refusals(condition: str, path: str, job_id: str, step) -> list:
+    """Rule 23, its first half: a condition, resolved to ci.yaml's expressions, that names
+    LIST_OUTPUT is a step's, and the whole of it is LIST_SHAPE. Any other condition holding the
+    list gates on what no rule here can read: `<list> != ''` is true on every run, a `!` before the
+    `contains` or an `&& false` after it runs the step when its filter did not match or never, a
+    `contains` without its quotes matches a name that holds the filter's, a condition without the
+    `all` term is skipped on every run that selects every job, and one without the result term on
+    every run whose changes failed. A job-level read is refused too: ci-ok's CI_OK_SELECTED_BY maps
+    a job to the output that is 'true' when changes selects it, and the list is never 'true'."""
+    if not LIST_MENTION.search(condition):
+        return []
+    where = where_if(job_id, step)
+    if step is None:
+        return [error(path, f"{where}'s if: reads needs.changes.outputs.{LIST_OUTPUT}, a list that gates steps: "
+                            f"ci-ok's CI_OK_SELECTED_BY maps a job to the changes output that is 'true' when it "
+                            f"selects the job, and the list is never 'true', so gate the job on an output of its own")]
+    if LIST_SHAPE.match(condition):
+        return []
+    return [error(path, f"{where} reads needs.changes.outputs.{LIST_OUTPUT} outside its one shape, the whole "
+                        f"condition needs.changes.result != 'success' || needs.changes.outputs.{LIST_OUTPUT} == "
+                        f"'all' || contains(needs.changes.outputs.{LIST_OUTPUT}, '\"<filter>\"'), with more "
+                        f"`|| contains(...)` terms or none, so neither which filter gates it nor that it runs "
+                        f"exactly when that filter matched can be read")]
+
+
+# Every `needs` and `inputs` a condition or a `with:` value names, in any case and in either
+# GitHub spelling, `.name` or `['name']`: what spelling_refusals reads.
+NEEDS_TERM = re.compile(r"(?<![A-Za-z0-9_.-])needs\s*(?:\.\s*([A-Za-z0-9_-]+)|\[\s*['\"]([^'\"]*)['\"]\s*\])?", re.I)
+INPUTS_TERM = re.compile(r"(?<![A-Za-z0-9_.-])inputs\s*(\.\s*[A-Za-z0-9_-]+|\[)?", re.I)
+# The spellings of the changes job this check reads: its result, an output by name, and the job
+# whole (ci.yaml's ci-ok payload, `toJSON(needs.changes)`).
+CHANGES_READ = re.compile(r"needs\.changes(?:\.result|\.outputs\.[A-Za-z0-9_-]+)?(?![A-Za-z0-9_.\[-])")
+
+
+def spelling_refusals(text: str, path: str, where: str) -> list:
+    """Rule 23, its second half: a condition, a `with:` value or any other `${{ }}` of a job names
+    the changes job only as `needs.changes.result`, `needs.changes.outputs.<name>` or
+    `needs.changes` whole, and an input only as `inputs.<name>`. GitHub reads
+    `needs['changes'].outputs['x']`, `NEEDS.Changes`, `INPUTS.x` and `inputs['x']` as the same
+    values, and `toJSON(inputs)` as every input at once, and no rule here reads any of them: a gate
+    so spelt would be held to nothing, and a list read so spelt would escape the rest of rule 23."""
+    refusals = []
+
+    def spelt(term) -> str:
+        # The term and the chain of indexes and properties after it, so the refusal quotes the
+        # read as written (`needs.changes.outputs['x']`, not `needs.changes`).
+        return term.group(0) + re.match(r"[^\s,)}|&!=]*", text[term.end():]).group(0)
+
+    for term in NEEDS_TERM.finditer(text):
+        job = (term.group(1) or term.group(2) or "").lower()
+        if job != "changes":
+            continue
+        if not CHANGES_READ.match(text, term.start()):
+            refusals.append(error(path, f"{where} names the changes job as {spelt(term)}: this check reads it spelt "
+                                        f"needs.changes.result, needs.changes.outputs.<name> or needs.changes, so a "
+                                        f"read spelt otherwise is held to nothing"))
+    for term in INPUTS_TERM.finditer(text):
+        # Exactly `inputs.<name>`: no space about the dot, which GitHub reads past and INPUT_REF,
+        # the reference resolve_condition rewrites, does not.
+        if not re.fullmatch(r"inputs\.[A-Za-z0-9_-]+", term.group(0)):
+            refusals.append(error(path, f"{where} reads an input as {spelt(term)}: this check resolves an input "
+                                        f"spelt inputs.<name> alone, so a read spelt otherwise is held to nothing"))
+    return refusals
+
+
+# A read of a value carrying more than one filter's verdict, once its caller's values are put
+# in: the list of matched filters, the paths filter's verdict object (filter_verdicts), the
+# changes job whole (ci.yaml's ci-ok payload, `toJSON(needs.changes)`, which holds both), every
+# job's outputs at once (`toJSON(needs)`) and every job's outputs by the `*` filter
+# (`join(needs.*.outputs.matched_filters, ',')`), which a job's result alone (`needs.*.result`)
+# is not.
+CARRIER = re.compile(
+    rf"needs\.changes\.outputs\.(?:{LIST_OUTPUT}|filter_verdicts)(?![A-Za-z0-9_-])"
+    r"|needs\.changes(?![A-Za-z0-9_.\[-])"
+    r"|(?<![A-Za-z0-9_.-])needs(?![A-Za-z0-9_.\[-])"
+    r"|(?<![A-Za-z0-9_.-])needs\s*\.\s*\*(?!\s*\.\s*result(?![A-Za-z0-9_-]))", re.I)
+# The one test of the payload a condition may make: whether ci.yaml handed it on at all, which
+# docs-site.yaml's and dispatch-browser.yaml's report steps ask, `inputs.ci-ok-changes != ''`.
+PAYLOAD_PRESENCE = re.compile(r"(?i:tojson)\s*\(\s*needs\.changes\s*\)\s*(?:!=|==)\s*''")
+# The one reader of the payload outside a condition: the ci-ok report action, which posts the
+# verdict of a merge-group run from it (`with: changes:`).
+CI_OK_REPORT_ACTION = "./.github/actions/ci-ok-report"
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+
+
+def carrier_condition_refusals(condition: str, path: str, job_id: str, step) -> list:
+    """Rule 23, its third half, over conditions: a condition, resolved to ci.yaml's expressions,
+    that reads a CARRIER other than the list (which list_refusals holds to its shape) reads only
+    the payload, and only as PAYLOAD_PRESENCE. The payload and the verdict object name every
+    filter on every run, so `contains(inputs.ci-ok-changes, 'apx')` gates a step on a filter no
+    rule reads, and is true on every run besides."""
+    if LIST_MENTION.search(condition) or not CARRIER.search(PAYLOAD_PRESENCE.sub("", condition)):
+        return []
+    return [error(path, f"{where_if(job_id, step)} reads the changes job's verdicts other than as the list of "
+                        f"matched filters in its one shape: the ci-ok payload (toJSON(needs.changes)), "
+                        f"filter_verdicts and toJSON(needs) name every filter on every run, so a condition reading "
+                        f"them for a filter gates on one no rule reads; test the payload only as != ''")]
+
+
+def texts(value, at: tuple = ()):
+    """Every string in a workflow's value, with the keys that lead to it."""
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield from texts(inner, at + (str(key),))
+    elif isinstance(value, list):
+        for index, inner in enumerate(value):
+            yield from texts(inner, at + (index,))
+    elif isinstance(value, str):
+        yield at, value
+
+
+def carrier_text_refusals(documents: dict, units: list) -> list:
+    """Rule 23, its third half, outside conditions: no `run:`, `env:`, `with:` or other text of a
+    job of ci.yaml or of a workflow it calls reads a CARRIER, once its caller's `with:` values are
+    put in for its inputs (in any case, as GitHub reads them), but in three places: ci.yaml's own
+    `with:` to a workflow it calls, which hands the values on to the conditions read there; the
+    ci-ok report action's `changes:`, which posts ci-ok's verdict from the payload; and ci.yaml's
+    ci-ok job, which is that verdict. A script that reads the list or the payload can test it
+    for any filter, so its work is gated on filters no rule reads (`case '${{
+    inputs.matched-filters }}' in *apx*)`)."""
+    ci_jobs = documents[WORKFLOW].get("jobs") or {}
+    refusals, said = [], set()
+    scanned = []  # (path, owner, the job's name or None for the file's own env/defaults, value)
+    for owner, path, job_id, document, job in units:
+        if path == WORKFLOW and job_id == VERDICT_JOB:
+            continue
+        body = {key: value for key, value in job.items() if key != "if" and not (path == WORKFLOW and key == "with")}
+        scanned.append((path, owner, job_id, body))
+        if path != WORKFLOW:
+            scanned.append((path, owner, None, {key: document.get(key) for key in ("env", "defaults") if key in document}))
+    for path, owner, job_id, body in scanned:
+        passed = {str(key).lower(): str(value) for key, value in ((ci_jobs.get(owner) or {}).get("with") or {}).items()}
+
+        def put_in(match):
+            value = passed.get(match.group(1).lower())
+            if value is None:
+                return match.group(0)
+            inner = EXPRESSION.fullmatch(value.strip())
+            return f"({inner.group(1)})" if inner else value
+
+        steps = body.get("steps") or []
+        for at, text in texts(body):
+            if at and at[-1] == "if":
+                continue  # a condition: list_refusals and carrier_condition_refusals read it
+            step = steps[at[1]] if len(at) > 2 and at[0] == "steps" and isinstance(at[1], int) else None
+            where = (f"{where_if(job_id, step)}'s {'.'.join(str(k) for k in at[2:] if not isinstance(k, int))}"
+                     if step is not None else
+                     f"{f'job {job_id}' if job_id else 'the file'}'s {'.'.join(str(k) for k in at if not isinstance(k, int))}")
+            for expression in EXPRESSION.findall(text):
+                # Rule 23's second half over every scanned expression: a carrier read under a spelling
+                # this check does not read (`inputs['x']`, `needs['changes']`) would escape the
+                # carrier test below as it would escape a condition's.
+                messages = [refusal.message for refusal in spelling_refusals(expression, path, where)]
+                resolved = INPUT_REF.sub(put_in, expression) if path != WORKFLOW else expression
+                exempt = (step is not None and at[2:] == ("with", "changes")
+                          and str(step.get("uses", "")).split("@")[0] == CI_OK_REPORT_ACTION)
+                if CARRIER.search(resolved) and not exempt:
+                    messages.append(f"{where} reads ${{{{ {expression.strip()} }}}}, which carries every filter's "
+                                    f"verdict: a script or value that reads the list of matched filters, "
+                                    f"filter_verdicts or the ci-ok payload can test it for any filter, so its work is "
+                                    f"gated on filters no rule reads; gate the step in its if: (rule 23's one shape) "
+                                    f"instead")
+                for message in messages:
+                    if (path, message) not in said:
+                        said.add((path, message))
+                        refusals.append(error(path, message))
+    return refusals
 
 
 def step_label(step: dict) -> str:
@@ -1027,18 +1360,24 @@ def where_if(job_id: str, step) -> str:
 # go_notices.
 INPUT_REF = re.compile(r"\binputs\.([A-Za-z0-9_-]+)")
 # The `with:` values a condition may be resolved through, and the expression each stands for.
-# An output of the changes job carries the one filter it names; `needs.changes.result` carries
-# none, so `inputs.changes-result != 'success' || inputs.go_notices == 'true'` reads as exactly
-# what ci.yaml's `needs.changes.result != 'success' || needs.changes.outputs.go_notices ==
-# 'true'` reads as today - one gate, on go_notices. The third is ci.yaml's ci-ok payload, the
-# whole changes job as JSON: docs-site.yaml's report step reads it (`if: always() &&
-# inputs.ci-ok-changes != ''`, which asks whether ci.yaml is the caller rather than what
-# changed), and since it names no output it can carry no filter into a condition and hide none.
+# An output of the changes job carries the one filter it names, but for LIST_OUTPUT, which
+# carries every filter that matched and is read one filter at a time (gated_filters);
+# `needs.changes.result` carries none, so `inputs.changes-result != 'success' || inputs.go_notices
+# == 'true'` reads as exactly what the same test of `.github/workflows/ci.yaml#needs.changes.result`
+# and `.github/workflows/ci.yaml#needs.changes.outputs.go_notices` would read as - one gate, on
+# go_notices - and the test job's `inputs.changes-result != 'success' || inputs.matched-filters ==
+# 'all' || contains(inputs.matched-filters, '"release_push_test"')` as one gate, on
+# release_push_test. The third is ci.yaml's ci-ok payload, the whole changes job as JSON:
+# docs-site.yaml's report step reads it (`if: always() && inputs.ci-ok-changes != ''`, which asks
+# whether ci.yaml is the caller rather than what changed). It carries the list of matched filters
+# and filter_verdicts, so it names every filter: carrier_condition_refusals holds a condition to
+# reading it only as `!= ''`, and carrier_text_refusals holds every other reader to the ci-ok
+# report action (rule 23).
 WITH_CHANGES = re.compile(r"^\$\{\{\s*(needs\.changes\.outputs\.[A-Za-z0-9_-]+|needs\.changes\.result"
                           r"|toJSON\(needs\.changes\))\s*\}\}$")
 # A value that names the changes job at all, in any shape: what the refusal below is about. One
 # that does not cannot carry a filter, so the condition reading it gates on something other than
-# the paths filter and this rule leaves it alone - dispatch-browser.yaml's `lane`, which each of
+# the paths filter and this rule leaves it alone - `.github/workflows/dispatch-browser.yaml#lane`, which each of
 # its two callers in ci.yaml passes as a literal and three of whose jobs run only when it reads
 # `full`, chooses which projects the browser suite runs, never whether it runs; the
 # `dispatch_browser` and `dispatch_browser_pr` outputs decide that, on the caller jobs' own `if:`.
@@ -1071,14 +1410,16 @@ def input_expressions(documents: dict, problems: list[Annotation]) -> dict:
         document = documents.get(path)
         if document is None:
             continue  # workflow_documents has already refused a `uses:` naming no file of the repository
-        read = {name for job in (document.get("jobs") or {}).values()
+        # Names lowered: GitHub reads an input name in any case, so `inputs.GATES` reads the input
+        # a caller passes as `gates`, and is resolved here as that input.
+        read = {name.lower() for job in (document.get("jobs") or {}).values()
                 for _, condition in conditions(job or {}) for name in INPUT_REF.findall(condition)}
         for caller in callers:
             calling = (documents[WORKFLOW].get("jobs") or {}).get(caller) or {}
             # Keyed by the text of each name, since that is what a condition's `inputs.<name>` is:
             # a `with:` key YAML read as something else (a bare `on`, a bare `true`) is still a
             # name here rather than a lookup that raises.
-            passed = {str(key): value for key, value in (calling.get("with") or {}).items()}
+            passed = {str(key).lower(): value for key, value in (calling.get("with") or {}).items()}
             resolved = {}
             for name in sorted(read & set(passed)):
                 value = WITH_CHANGES.match(str(passed[name]))
@@ -1097,11 +1438,11 @@ def input_expressions(documents: dict, problems: list[Annotation]) -> dict:
 
 def resolve_condition(condition: str, expressions: dict) -> str:
     """A condition as its caller's values make it: every `inputs.<name>` the caller passes a
-    value for becomes the expression that value holds, and every other reference stands. The
-    reference is matched whole, so a name holding a `-` (changes-result) resolves, and a longer
-    identifier that merely starts with an input's name (inputs.go_notices_extra beside an input
-    go_notices) is left alone rather than rewritten."""
-    return INPUT_REF.sub(lambda m: expressions.get(m.group(1), m.group(0)), condition)
+    value for becomes the expression that value holds, its name read in any case as GitHub reads
+    it, and every other reference stands. The reference is matched whole, so a name holding a `-`
+    (changes-result) resolves, and a longer identifier that merely starts with an input's name
+    (inputs.go_notices_extra beside an input go_notices) is left alone rather than rewritten."""
+    return INPUT_REF.sub(lambda m: expressions.get(m.group(1).lower(), m.group(0)), condition)
 
 
 def step_matches(step: dict, ref: str) -> bool:
@@ -1322,10 +1663,10 @@ def reduce_line(line: str) -> tuple:
 # GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
 # keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
 # where a module's bytes come from, never which version: the module files this check already
-# reads decide that, and go.sum holds each module's hash whichever source serves it. This check's
-# own go commands run with GOPROXY=off over an empty module cache (Go.env below), so a workflow's
-# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN
-# and CI_OK_EXEMPT are
+# reads decide that, and go.sum holds each module's hash whichever source serves it. The go
+# commands that compute closures run with GOPROXY=off over an empty module cache (Session.go), so
+# a workflow's value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY,
+# CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
@@ -1334,8 +1675,10 @@ ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     # The file of the filters this run's changes job computed, which the lint job hands
-    # check-image-trigger-paths.sh and check-ts-filters.sh; around_job reads the env of every step
-    # of the job that runs go-release-notices.sh, as GH_TOKEN's note below says. go reads it nowhere.
+    # check-image-trigger-paths.sh and check-ts-filters.sh. around_job reads the env of every step
+    # of the job that runs go-release-notices.sh, so without this name here every go command of
+    # that script would count as unreduced and go_notices would have to match every Go file of the
+    # repository again. go reads it nowhere.
     "CI_FILTERS_FILE",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
@@ -1346,17 +1689,16 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
-    # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # around_job reads the env of every step of the job that runs go-release-notices.sh, so
-    # without this name here every go command of that script would count as unreduced and
-    # go_notices would have to match every Go file of the repository again. go reads it nowhere.
-    "GH_TOKEN",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of
     # their inputs, so go compiles the same files and runs the same tests whatever directory it
     # names. envoy-go-build's darwin vet sets it in its step's env, so that vet's darwin objects
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
+    # The job's state, success, failure or cancelled, which the step "Wait for the script
+    # harnesses and judge them" of the test job and envoy-go-checks hands .github/scripts/
+    # harness-pool.sh to choose --allow-none and --now. go reads it nowhere.
+    "JOB_STATUS",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
@@ -1598,13 +1940,21 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # Rule 3 over every document of the set: a called file's job or step is gated through an
     # input of its own, resolved to the expression the caller that runs it passes, and the
     # refusal names the file the condition is in. REF_OUTPUT is no filter: the condition reading
-    # it is check_ci_ok's.
+    # it is check_ci_ok's. Rule 23 over the same conditions: one reading LIST_OUTPUT reads it in
+    # its one shape, each refusal said once however many callers run the file.
     units = step_holders(documents)
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     refused = set()
     for own, path, job_id, _, job in units:
         for step, condition in conditions(job):
-            for name in GATE_REF.findall(resolve_condition(condition, inputs_of.get((path, own), {}))):
+            resolved = resolve_condition(condition, inputs_of.get((path, own), {}))
+            for refusal in (spelling_refusals(condition, path, where_if(job_id, step))
+                            + list_refusals(resolved, path, job_id, step)
+                            + carrier_condition_refusals(resolved, path, job_id, step)):
+                if (path, refusal.message) not in refused:
+                    refused.add((path, refusal.message))
+                    problems.append(refusal)
+            for name in gated_filters(resolved):
                 if name == REF_OUTPUT:
                     continue
                 if step is None:
@@ -1615,8 +1965,27 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                     problems.append(error(path, f"{where} is gated on filter {name}, which no file of "
                                                 f"{GATES_DIR} declares as a gate or as EXCLUDED; add the gate "
                                                 f"with its reads"))
+    # Rule 23's spelling half over the values ci.yaml's jobs hand the workflows they call, which
+    # are what a called file's conditions are resolved through.
+    for job_id, job in caller_jobs.items():
+        for name, value in ((job or {}).get("with") or {}).items():
+            for refusal in spelling_refusals(str(value), WORKFLOW, f"job {job_id}'s with: {name}"):
+                if (WORKFLOW, refusal.message) not in refused:
+                    refused.add((WORKFLOW, refusal.message))
+                    problems.append(refusal)
+    # Rule 23's third half outside conditions: no script, value or input of a step reads the list,
+    # the verdict object or the payload but in the places that hand them on or report from them.
+    problems.extend(carrier_text_refusals(documents, units))
+    # A step that reads its filter out of the list of matched filters has it handed on by that
+    # list, which names every filter of the generated file that matched (rule 19 holds the output
+    # to its one value): only a gate read as an output of its own needs that output.
+    list_output = LIST_OUTPUT in (((caller_jobs.get("changes") or {}).get("outputs")) or {})
     for g in data.GATES:
-        if g.filter not in outputs:
+        via_list = list_output and bool(g.step) and any(
+            step_matches(s, g.step) and g.filter in LIST_GATE.findall(
+                resolve_condition(str(s.get("if", "")), inputs_of.get((g.workflow, g.job), {})))
+            for s in (((documents.get(g.workflow) or {}).get("jobs") or {}).get(g.job) or {}).get("steps") or [])
+        if g.filter not in outputs and not via_list:
             problems.append(error(WORKFLOW, f"{g.job} has no filter {g.filter} in the changes job: no output of it "
                                             f"hands on the paths-filter step's {g.filter}, so the job's if: reads an "
                                             f"empty output"))
@@ -1636,11 +2005,12 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             continue
         if g.step:
             steps = [s for s in job.get("steps") or [] if step_matches(s, g.step)]
-            if len(steps) != 1 or g.filter not in GATE_REF.findall(
+            if len(steps) != 1 or g.filter not in gated_filters(
                     resolve_condition(str(steps[0].get("if", "")), inputs_of.get((g.workflow, g.job), {}))):
                 problems.append(error(g.workflow, f"gate {g.filter} names step \"{g.step}\" of {g.job}, but "
                                                   f"no single step of that name has an if: on "
-                                                  f"needs.changes.outputs.{g.filter}"))
+                                                  f"needs.changes.outputs.{g.filter}, nor one reading "
+                                                  f"{g.filter} out of needs.changes.outputs.{LIST_OUTPUT}"))
         elif g.filter not in gated[(WORKFLOW, g.job)]:
             problems.append(error(WORKFLOW, f"job {g.job}'s if: does not test needs.changes.outputs.{g.filter}"))
     for name, kept in excluded.items():
@@ -1658,7 +2028,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     # could move what it compiles, naming what does.
     # Each index is keyed by the ci.yaml job the gate names, which is the job that runs the
     # steps wherever they are: a job that calls a reusable workflow keeps its id, its
-    # `needs: changes` and its whole `if:` in ci.yaml and holds its steps in the called file,
+    # `needs: changes` and its whole if: condition and holds its steps in the called file,
     # whose own job ids are its to choose. The caller job has no run: step of its own, so the
     # two never answer for each other.
     skipped = {key for key, names in gated.items() if names and names <= set(excluded)}
@@ -1831,10 +2201,12 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # Each of the two carries the one `name:` DISPATCH_NAMES gives it, and no other. GitHub evaluates
 # a job's name only when the job runs. ci-ok runs on every event: it is `ci-ok` on a pull
 # request, a merge group and a dispatch of exactly refs/heads/main, and `ci-ok (dispatch)` on a
-# dispatch of any other ref. pr-title runs only on a pull request that is not a draft and on a
-# merge group, and is named pr-title there; every run that skips it, a dispatch of any ref and a
-# draft's run among them, leaves the name unevaluated, and the check run carries the
-# expression's text, which is no pr-title either. A dispatch of a branch tests the branch's own
+# dispatch of any other ref. pr-title runs on a pull request that is not a draft, on a merge group
+# and on a dispatch, where its steps check nothing, and is named pr-title on the first two and
+# `pr-title (dispatch)` on the third (PR_TITLE_IF). A draft's run skips it, leaves the name
+# unevaluated, and its check run carries the expression's text, which is no pr-title either; a
+# dispatch once did the same, and its check run was named by the expression's literal text
+# (#5231's head 1bca361a). A dispatch of a branch tests the branch's own
 # tree, not its merge with the base, and its check runs land on the branch's head, which is a
 # pull request's head: under the plain name that commit carried a second ci-ok with another
 # tree's verdict, and a skipped pr-title. Pull request #3513 at a368687e carried both on
@@ -1849,8 +2221,9 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # is_main=true only for exactly refs/heads/main, and the changes job hands it on as
 # REF_OUTPUT; a dispatch whose changes job wrote nothing (it failed) is no dispatch of main
 # either. pr-title needs no job, so it cannot read that output, and its name carries the event
-# alone: it runs on no dispatch, so its dispatch arm is never evaluated, and what keeps a
-# skipped pr-title from posting a pass named pr-title is that its name is an expression at all.
+# alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
+# What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
+# expression at all.
 REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
@@ -1864,6 +2237,9 @@ DISPATCH_NAMES = {
     "ci-ok": f"${{{{ {DISPATCH_OFF_MAIN} && 'ci-ok (dispatch)' || 'ci-ok' }}}}",
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
+# pr-title's one `if:`: every event this file runs on, a draft's pull request apart, so its name is
+# evaluated on a dispatch too.
+PR_TITLE_IF = "${{ !github.event.pull_request.draft }}"
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
 # `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
 # refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
@@ -2038,6 +2414,12 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             problems.append(error(WORKFLOW, f"this file has no {check} job, a check main's ruleset "
                                             f"requires: its own check run is that check on a pull request and on a merge group, "
                                             f"and the queue cannot merge a group nothing reports it on"))
+    title = jobs.get("pr-title")
+    if isinstance(title, dict) and str(title.get("if", "")) != PR_TITLE_IF:
+        problems.append(error(WORKFLOW, f"job pr-title carries `if: {squash(str(title.get('if', '')))}`: give it "
+                                        f"`if: {PR_TITLE_IF}`, so that it runs on a dispatch too and its check run is "
+                                        f"named pr-title (dispatch), not the name expression's literal text, which "
+                                        f"GitHub writes for a job it skips"))
     verdict = jobs.get(VERDICT_JOB)
     if verdict is None:
         problems.append(error(WORKFLOW, f"this file has no {VERDICT_JOB} job, the check main's ruleset "
@@ -2067,7 +2449,9 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
     expected, list_expected = {}, {name: set() for name in EVENT_LISTS}
     for job_id in gated:
         condition = str((jobs.get(job_id) or {}).get("if", ""))
-        outputs = sorted(set(GATE_REF.findall(condition)))
+        # LIST_OUTPUT selects no job, and rule 23 refuses a job-level read of it by name, so it is
+        # no output CI_OK_SELECTED_BY could map a job to.
+        outputs = sorted(set(GATE_REF.findall(condition)) - {LIST_OUTPUT})
         if len(outputs) != 1:
             problems.append(error(WORKFLOW, f"job {job_id}'s if: tests {len(outputs)} outputs of changes "
                                             f"({', '.join(outputs)}), so CI_OK_SELECTED_BY cannot say what selects it"))

@@ -42,11 +42,10 @@ package api
 // agent it waits for and the running step that agent works (`waitsFor`), its own `pullRequest`
 // with what its review round waits on from GitHub (`mergeWait`), and its own `counts`; the key is
 // absent for an issue with no plan rows. The issue's own `pullRequest` and `mergeWait` are its
-// merge's, the pull request of the task that merges. A caller whose contract is below 264 is
-// served each issue without `tasks` (one band of shaping.go at `tasksContract`): a plugin built
-// before the reader that drops a key it does not know reads an issue as a strict object and
-// would refuse the whole state over it. From this entry the last number of answers.go's
-// SupportedContracts is `api.tasksContract`.
+// merge's, the pull request of the task that merges. A caller below this entry's assigned
+// contract is served each issue without `tasks` (withoutTasks): a plugin built before the reader
+// that drops a key it does not know reads an issue as a strict object and would refuse the whole
+// state over it. The registry assigns this entry its number at build time.
 // `POST /legion/v1/plans/register` (`register_plan`) takes a plan of several tasks and a task's
 // `needs` (plan.Supported refuses neither), and its answer names each task's `needs`, the ids of
 // the tasks it needs as register_plan resolved them, `[]` for none (`api.RegisteredTask`), and the
@@ -59,9 +58,9 @@ package api
 // a version given at generation 0 and carried to the issue's generation by its first step among
 // them, which was answered `409 PLAN_VERSION_OLD` there; a version the issue's first step passed
 // over since, given again, is judged and stored as any version is, where it was answered `200`
-// and stored nothing. No request or answer shape changes with it. A caller below 264 is served
-// neither `needs` nor `added`
-// (shaping.go's withoutNeedsOrAdded); the reader of 219 parses the plan and a task as zod objects,
+// and stored nothing. No request or answer shape changes with it. A caller below this entry is
+// served neither `needs` nor `added` (shaping.go's withoutNeedsOrAdded); the reader of 219 parses
+// the plan and a task as zod objects,
 // which drop the keys, so a plugin before it reads either body.
 // The same change adds the notice kind `task-join-failed`, to the issue's architect, for a task
 // whose join of its needs waits for a need's branch GitHub does not have (`record.validNoticeKinds`).
@@ -71,13 +70,10 @@ package api
 // (`store/migrations/20261121165047_task_copies.up.sql`) deletes those rows before a rollback. No
 // shape of `GET /legion/v1/state` moves with it.
 //
-// tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
-// 264, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
-// place, what the step there waits for, its own pull request and its own counts (TaskView).
-//
-// It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
-// gives, and it is the last number of answers.go's SupportedContracts, which names the constant
-// rather than its number for that reason.
+// tasksContract is this entry's immutable id. Its assigned number, entryNumber(tasksContract),
+// is the boundary that added `issues.<key>.tasks`: each task of the issue's plan with where it
+// stands, the act at its place, what the step there waits for, its own pull request and its own
+// counts (TaskView). The entry id is not a contract number.
 const tasksContract = 20261125180222
 
 func init() {

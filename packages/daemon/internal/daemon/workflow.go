@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"slices"
 	"strconv"
@@ -192,7 +193,8 @@ type workflowRuntime struct {
 	// installation on a repository (prepareName). recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a preparation left unread and whose reads a later
-	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
+	// preparation got answered, or that a recovery found an entry of another name answering for
+	// (readAnswered, deferUnreadIssues), under recoveringMu. silenced is, by the same
 	// repository, each issue whose apply said nothing because the repository was unread
 	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
 	// resolves to by then; releaseWaits is, by repository, each child a release_children left
@@ -686,6 +688,10 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
 // GitHub for a configured pair only while a stored row still names the pair's `from`.
 //
+// dispatchTransport presents the Dispatch credential boot settled (dispatchCredential): the bearer
+// dispatch_token_file names, or the daemon's own broker token under dispatch_token_broker. Every
+// Dispatch call of the workflow goes through it.
+//
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
 //
@@ -705,7 +711,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -740,7 +746,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -1882,9 +1888,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 //
 // Its one reader, keptRepository, asks it of an issue the workflow does not record. IssueSandbox
 // answers a Sandbox its store holds absent only where a release kept it with the issue's volume
-// (ReleaseIssue), and the store authorizes neither the release nor the close of an issue it holds
-// no row of (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers
-// present for as long as it lives.
+// (ReleaseIssue) or where it is going: being deleted, or taken by the runtime's own delete. The
+// store authorizes neither the release nor the close of an issue it holds no row of
+// (store.IssueRelease, store.IssueSuspension). So such an issue's Sandbox answers present for as
+// long as it lives, until a delete takes it with the workspace on it.
 func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, repo ghrepo.Repository) bool {
 	if pods, ok := rt.(issuePods); ok {
 		return func(issue string, _ ghrepo.Repository) bool {

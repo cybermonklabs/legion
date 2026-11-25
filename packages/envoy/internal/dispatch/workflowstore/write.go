@@ -25,11 +25,13 @@ import (
 // word of lowercase letters, digits and hyphens (roleRule), and so is the role a plan's step names
 // before its key. The agent, the session and the model are printable ASCII with no space, at most
 // 128 characters (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields
-// with spaces.
+// with spaces. An experiment and its variant are a name the daemon's settings declare, under the
+// daemon's rule for those names.
 var (
 	taskForm      = regexp.MustCompile(contracts.StepTaskPattern)
 	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
+	nameForm      = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
@@ -294,7 +296,8 @@ type attribute struct {
 // attributes checks every field the write states against its form and answers the write's id in
 // its canonical spelling with the fields it states, in one order whatever order they were given
 // in. A text field that is empty states nothing; a ReturnedTo of 0 is place 0 and states it; a
-// rating and its reason are stated together, of a retro, or neither is.
+// rating and its reason are stated together, of a retro, or neither is; an experiment and its
+// variant are stated together, or neither is.
 func (write StepWrite) attributes() (string, []attribute, error) {
 	parsed, err := uuid.Parse(write.ID)
 	if err != nil {
@@ -412,7 +415,11 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	return id, append(stated, rated...), nil
+	drawn, err := write.experiment()
+	if err != nil {
+		return "", nil, err
+	}
+	return id, append(append(stated, rated...), drawn...), nil
 }
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
@@ -440,6 +447,29 @@ func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	return []attribute{
 		{AttributeRating, int64(rating), strconv.Itoa(rating)},
 		{AttributeRatingReason, reason, reason},
+	}, nil
+}
+
+// experiment checks the experiment and the variant a write states, and answers their two
+// attributes, or none where the write states no experiment. Both are stated, and each is a name of
+// the daemon's rule (nameForm).
+func (write StepWrite) experiment() ([]attribute, error) {
+	if write.Experiment == nil {
+		return nil, nil
+	}
+	experiment, variant := write.Experiment.Experiment, write.Experiment.Variant
+	if experiment == "" || variant == "" {
+		return nil, refusal(ErrStepInput, "experiment and variant are stated together or not at all: a run names the experiment its issue was drawn into with the variant drawn")
+	}
+	if !nameForm.MatchString(experiment) {
+		return nil, refusal(ErrStepInput, "experiment %q must match %s", experiment, nameForm)
+	}
+	if !nameForm.MatchString(variant) {
+		return nil, refusal(ErrStepInput, "variant %q must match %s", variant, nameForm)
+	}
+	return []attribute{
+		{AttributeExperiment, experiment, experiment},
+		{AttributeVariant, variant, variant},
 	}, nil
 }
 
@@ -546,10 +576,14 @@ type stepAttributes struct {
 	Report       string     `json:"report"`
 	Rating       int        `json:"rating"`
 	RatingReason string     `json:"rating_reason"`
+	Experiment   string     `json:"experiment"`
+	Variant      string     `json:"variant"`
 }
 
 // stepFrom reads one node row's attributes as the step they hold. A rating of 0 is a run that
-// holds none, since a write sets a rating and its reason together or neither.
+// holds none, since a write sets a rating and its reason together or neither, and an experiment of
+// "" is a run that holds none, since a write sets an experiment and its variant together or
+// neither.
 func stepFrom(id string, attributes []byte) (Step, error) {
 	var held stepAttributes
 	if err := json.Unmarshal(attributes, &held); err != nil {
@@ -563,6 +597,9 @@ func stepFrom(id string, attributes []byte) (Step, error) {
 	}
 	if held.Rating != 0 {
 		step.Rating = &StepRating{Rating: held.Rating, Reason: held.RatingReason}
+	}
+	if held.Experiment != "" {
+		step.Experiment = &StepExperiment{Experiment: held.Experiment, Variant: held.Variant}
 	}
 	return step, nil
 }

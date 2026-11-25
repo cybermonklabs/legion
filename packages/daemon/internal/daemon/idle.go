@@ -134,7 +134,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		var err error
 		marked, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 			view.PodUID = podUID
-			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, now, w.idlePeriod, onConfiguredImage, api.DaemonAPIVersion())
 			since, found := view.QuietSince()
 			quiet = found && now.Sub(since) >= w.idlePeriod
 			holding = view.Holding
@@ -601,23 +601,31 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // here would charge this release with a role it never touched and the hours that role's pod was
 // gone a second time.
 //
-// A record that cannot be written is logged: the pod is already released, and nothing undoes
-// that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role) {
+// The record names the release's mark (release, issue_releases.id), so a teardown that runs again
+// after its record and before the mark's clear writes no second record (store.RecordPodRelease).
+// The release line follows the record's first write. A retry whose record was already written
+// logs no second line.
+//
+// If the write fails, the teardown logs the release line beside the warning: the pod is already
+// released, and nothing undoes that for want of a row.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int64, generation uint64, suspended []claim.Role) bool {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return
+		return true
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
 		roles = append(roles, string(role))
 	}
 	slices.Sort(roles)
-	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
+	_, wrote, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
-		At: time.Now().UTC(),
-	}); err != nil {
+		At: time.Now().UTC(), Release: release,
+	})
+	if err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
+		return true
 	}
+	return wrote
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

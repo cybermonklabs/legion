@@ -8,11 +8,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The two kinds of row pull_request_settled_heads holds (migration 20261120144241, keyed by the
-// pull request's issue and branch since 20261122122826): the pull request's own memory of its
-// settled heads (PullRequest.SettledHeads), and the memory its open head run was anchored with
-// (HeadRun.Settled). An issue holds a pull request for each task's branch, and each remembers its
-// own heads.
+// The two kinds of row pull_request_settled_heads holds (migration 20261120144241), each keyed by
+// its pull request's issue and branch (migration 20261122122826), so each task's pull request keeps
+// its own: the pull request's own memory of its settled heads (PullRequest.SettledHeads), and the
+// memory its open head run was anchored with (HeadRun.Settled).
 const (
 	settledOfPullRequest = "pull_request"
 	settledOfHeadRun     = "head_run"
@@ -109,11 +108,10 @@ func entryOfFence(head string, fence []byte) (Settlement, error) {
 	return entry, nil
 }
 
-// loadSettledHeads reads what pr remembers of its settled heads, both kinds in one query and each
-// in its order: the pull request's own into SettledHeads, and its open run's into Run.Settled. They
-// are the rows of pr's issue and branch, the key of its row. A row of a run where pr has no run open
-// is one a write left before the run closed, which the next write deletes, and is passed over. No
-// row is a nil list.
+// loadSettledHeads reads what pr remembers of its settled heads, the rows of its issue and its
+// branch, both kinds in one query and each in its order: the pull request's own into SettledHeads,
+// and its open run's into Run.Settled. A row of a run where pr has no run open is one a write left
+// before the run closed, which the next write deletes, and is passed over. No row is a nil list.
 func loadSettledHeads(ctx context.Context, tx pgx.Tx, pr *PullRequest) error {
 	rows, err := tx.Query(ctx, `select kind, head, fence from pull_request_settled_heads where issue = $1 and branch = $2 order by kind, position`,
 		pr.Issue, pr.Branch)
@@ -158,11 +156,9 @@ type settledRow struct {
 }
 
 // putSettledHeads writes what pr remembers of its settled heads, both kinds, in one statement,
-// after pr's own row: it deletes each row of pr's issue and branch whose kind and head pr no
-// longer holds, the rows of a run when pr has none open among them, and writes each entry at its
-// place in its list. An entry whose place and fence are as stored writes no new version of its
-// row. The rows of the issue's pull request on another branch, another task's, are left as they
-// are.
+// after pr's own row: it deletes each row of pr's issue and branch whose kind and head pr no longer
+// holds, the rows of a run when pr has none open among them, and writes each entry at its place in
+// its list. An entry whose place and fence are as stored writes no new version of its row.
 func putSettledHeads(ctx context.Context, tx pgx.Tx, pr PullRequest) error {
 	size := len(pr.SettledHeads)
 	if pr.Run != nil {

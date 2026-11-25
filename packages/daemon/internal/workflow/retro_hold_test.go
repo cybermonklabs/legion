@@ -110,6 +110,7 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 // into its retro at the approval with no hold. The twin is an issue with no plan rows, which walks
 // today's line: its approval takes it to accepting, and the child's leave changes nothing of it.
 func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	// parent is LEGION-208 walking `implementer reviewer`, standing in reviewing at step 2, with
 	// heldParentChild in implementing beneath it where child is true.
 	parent := func(t *testing.T, child bool) (*pgxpool.Pool, *Engine, *bytes.Buffer) {
@@ -279,6 +280,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off
 // is its last step, which the sign-off moves into its retro with no hold.
 func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
+	t.Parallel()
 	t.Run("the approval after the sign-off holds the parent before its retro, and the child's leave starts it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
@@ -404,6 +406,7 @@ func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 // its children stood where no role works, and the first report was refused too, so its handoff
 // never reached the step's record.
 func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)

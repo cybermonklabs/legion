@@ -49,9 +49,15 @@ const (
 	integrationGeneration uint64      = 4
 	// gapTurns is how many turns the fake OMP reports while no daemon is listening.
 	gapTurns = 25
-	// integrationWait bounds every wait on the two real processes; each step takes
-	// milliseconds when it works, and the shim's redial backoff is 200 ms doubling.
-	integrationWait = 15 * time.Second
+	// integrationRPCTimeout is the listener's worker_rpc_timeout_seconds, 200 s as in the
+	// deployment the comment on the listener's defaultLauncherWait names: the hello's read
+	// deadline on the socket, which a slow real shim's hello must never miss. Main's listener
+	// takes no clock of its own, so this bound, and every request's, runs on real time: it is the
+	// deployment's value, not a wait of this test's.
+	integrationRPCTimeout = 200 * time.Second
+	// slowCommandTimeout is slow_command_timeout_seconds's default (internal/config), which the
+	// daemon gives a shim's adoption as its own bound (AdoptTimeout). It runs on real time too.
+	slowCommandTimeout = 300 * time.Second
 )
 
 var (
@@ -224,7 +230,7 @@ func listen(t *testing.T, addr string, resolve stream.HelloResolver) *daemonEnd 
 	log := &lockedBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 	listener, err := stream.Listen(ctx, addr, resolve, stream.Options{
-		RPCTimeout: integrationWait,
+		RPCTimeout: integrationRPCTimeout,
 		Log:        slog.New(slog.NewTextHandler(log, nil)),
 	})
 	if err != nil {
@@ -239,16 +245,11 @@ func listen(t *testing.T, addr string, resolve stream.HelloResolver) *daemonEnd 
 // next is the listener's next event.
 func (d *daemonEnd) next(t *testing.T) stream.Event {
 	t.Helper()
-	select {
-	case event, ok := <-d.listener.Events():
-		if !ok {
-			t.Fatal("Events() closed while an event was expected")
-		}
-		return event
-	case <-time.After(integrationWait):
-		t.Fatal("no event from the listener within the wait")
-		return nil
+	event := testwait.Receive(t, "the listener's next event", d.listener.Events())
+	if event == nil {
+		t.Fatal("Events() closed while an event was expected")
 	}
+	return event
 }
 
 func (d *daemonEnd) expect(t *testing.T, want ...stream.Event) {
@@ -266,18 +267,12 @@ func (d *daemonEnd) close(t *testing.T) []stream.Event {
 	t.Helper()
 	d.cancel()
 	var rest []stream.Event
-	deadline := time.After(integrationWait)
 	for {
-		select {
-		case event, ok := <-d.listener.Events():
-			if !ok {
-				return rest
-			}
-			rest = append(rest, event)
-		case <-deadline:
-			t.Fatal("Events() did not close after the listener's context ended")
-			return nil
+		event := testwait.Receive(t, "Events() to close after the listener's context ended", d.listener.Events())
+		if event == nil {
+			return rest
 		}
+		rest = append(rest, event)
 	}
 }
 
@@ -453,8 +448,7 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 		t.Fatalf("hello %#v, want the identity with the token the mount held at the hello", hello)
 	}
 	testwait.Eventually(t, "the shim to spawn OMP after the ack", shim.childStarted)
-	ctx, cancel := context.WithTimeout(context.Background(), integrationWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	conn, err := d.listener.Await(ctx, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await: %v", err)
@@ -507,8 +501,7 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 		t.Fatal("the shim's first event was not its hello")
 	}
 	testwait.Eventually(t, "the shim to spawn OMP after the ack", shim.childStarted)
-	ctx, cancel := context.WithTimeout(context.Background(), integrationWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	conn, err := d.listener.Await(ctx, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await: %v", err)
@@ -516,7 +509,7 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 
 	err = conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
 		Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com",
-	}, "", integrationWait)
+	}, "", slowCommandTimeout)
 
 	var refused *stream.RefusedError
 	if !errors.As(err, &refused) || !errors.Is(err, runtime.ErrAdoptRefused) {
@@ -556,8 +549,7 @@ func bridge(t *testing.T, legion, addr string) {
 	first.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration})
 	testwait.Eventually(t, "the shim to spawn OMP after the ack", shim.childStarted)
 	ctx := context.Background()
-	await, cancelAwait := context.WithTimeout(ctx, integrationWait)
-	defer cancelAwait()
+	await := testwait.Context(t)
 	conn, err := first.listener.Await(await, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await: %v", err)
@@ -618,8 +610,6 @@ func bridge(t *testing.T, legion, addr string) {
 	}
 
 	// The new connection carries a new delivery to OMP.
-	await, cancelAwait = context.WithTimeout(ctx, integrationWait)
-	defer cancelAwait()
 	conn, err = second.listener.Await(await, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await after the restart: %v", err)
@@ -638,14 +628,10 @@ func bridge(t *testing.T, legion, addr string) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	second.expect(t, stream.Closed{Claim: integrationClaim})
-	select {
-	case <-shim.exited:
-		var exit *exec.ExitError
-		if !errors.As(shim.waitErr, &exit) || exit.ExitCode() != 128+int(syscall.SIGTERM) {
-			t.Fatalf("the shim exited with %v, want exit status 143 (its OMP ended by SIGTERM)", shim.waitErr)
-		}
-	case <-time.After(integrationWait):
-		t.Fatal("the shim did not exit after the daemon's shutdown")
+	testwait.Receive(t, "the shim's exit after the daemon's shutdown", shim.exited)
+	var exit *exec.ExitError
+	if !errors.As(shim.waitErr, &exit) || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+		t.Fatalf("the shim exited with %v, want exit status 143 (its OMP ended by SIGTERM)", shim.waitErr)
 	}
 	if got := childFrames(t, shim.stdinRecord); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the shutdown the fake OMP had read %q, want %q: the shutdown frame reached it", got, want)
@@ -692,8 +678,7 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 		t.Fatalf("the shim never reported the unacked hello it redialled:\n%s", shim.output.String())
 	}
 
-	await, cancelAwait := context.WithTimeout(context.Background(), integrationWait)
-	defer cancelAwait()
+	await := testwait.Context(t)
 	conn, err := d.listener.Await(await, integrationClaim)
 	if err != nil {
 		t.Fatalf("Await: %v", err)
@@ -702,11 +687,7 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	d.expect(t, stream.Closed{Claim: integrationClaim})
-	select {
-	case <-shim.exited:
-	case <-time.After(integrationWait):
-		t.Fatal("the shim did not exit after the daemon's shutdown")
-	}
+	testwait.Receive(t, "the shim's exit after the daemon's shutdown", shim.exited)
 
 	lines := d.log.lines()
 	if len(lines) != 1 || !strings.Contains(lines[0], "worker-stream: could not resolve a hello's boot token; the shim redials") ||

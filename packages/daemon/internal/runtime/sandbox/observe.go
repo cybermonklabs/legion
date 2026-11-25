@@ -71,7 +71,10 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 
 // evaluate is one observation of loc's process from the stores: Uncertain while they cannot answer
 // (view), otherwise the verdict the mapping reads from them, said Displaced when the daemon's own
-// replacement of the recorded pod is what ended the process (displaced).
+// replacement of the recorded pod is what ended the process (displaced). Under
+// dispatch_token_broker, a verdict that saw the recorded generation running keeps for the claim
+// whether that generation's start carried a Dispatch token, as its address record says
+// (observeDispatchToken).
 //
 // The pod store and the Sandbox store are fed by two informers nothing orders, so a pod's end can
 // reach the runtime before the Suspended patch that named it does. A final verdict (ends) whose
@@ -139,6 +142,9 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		obs.Displaced = true
 		obs.Detail += fmt.Sprintf("; the daemon replaced pod %s to launch another role there", loc.Sandbox.PodUID)
 	}
+	if obs.running {
+		r.observeDispatchToken(loc, obs.dispatchToken)
+	}
 	return obs.Observation
 }
 
@@ -155,9 +161,9 @@ func (r *Runtime) readSandbox(ctx context.Context, name string) (*sandbox, error
 }
 
 // observation is one verdict of the mapping: the runtime.Observation the caller receives, beside
-// the one classification only this package acts on. No runtime consumer reads it — the supervisor
-// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so it stays here rather than on
-// the cross-runtime contract.
+// the classifications only this package acts on. No runtime consumer reads them — the supervisor
+// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so they stay here rather than
+// on the cross-runtime contract.
 type observation struct {
 	runtime.Observation
 	// initFailed is a Gone whose process never started because an init container of its pod ended
@@ -170,6 +176,13 @@ type observation struct {
 	// was running — a non-zero termination of the daemon's own making, which read as a failed init
 	// would charge every role of that pod a death.
 	initFailed bool
+	// running is whether the verdict saw the recorded generation running, its launcher connected
+	// and reporting it, and dispatchToken, where it did, whether that generation's start carried
+	// DISPATCH_TOKEN, as the address record the verdict read for its addresses says
+	// (movedEnvironment). evaluate keeps the second for the claim (observeDispatchToken), which is
+	// how a restarted daemon counts the generations an earlier one started
+	// (Runtime.DispatchTokens).
+	running, dispatchToken bool
 }
 
 // ends reports whether obs is a final verdict the daemon's own replacement of a pod can account
@@ -315,16 +328,20 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	// Kubernetes restarts it.
 	state, connected := r.launchers.state(loc.Claim, loc.Sandbox.PodUID)
 	if connected && state.Child != nil && state.Child.Generation == loc.Sandbox.Generation {
-		moved, err := r.movedEnvironment(v.sandbox, pod, slot, loc.Sandbox.Generation)
-		if err != nil {
-			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, whose addresses cannot be compared: %v",
+		moved, carried, err := r.movedEnvironment(v.sandbox, pod, slot, loc.Sandbox.Generation)
+		var obs observation
+		switch {
+		case err != nil:
+			obs = observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, whose addresses cannot be compared: %v",
 				name, pod.UID, slot, state.Child.Generation, err)
-		}
-		if len(moved) > 0 {
-			return observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
+		case len(moved) > 0:
+			obs = observe(runtime.StaleAddress, "pod %s (uid %s) role %s runs generation %d, started with addresses a generation started now is not handed: %s",
 				name, pod.UID, slot, state.Child.Generation, describeMoved(moved))
+		default:
+			obs = observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, slot, state.Child.Generation)
 		}
-		return observe(runtime.Alive, "pod %s (uid %s) role %s runs generation %d", name, pod.UID, slot, state.Child.Generation)
+		obs.running, obs.dispatchToken = true, carried
+		return obs
 	}
 	if ended := status.State.Terminated; ended != nil {
 		gone := observe(runtime.Gone, "pod %s (uid %s) container %s terminated (%s, exit code %d); last lines of %s:\n%s",

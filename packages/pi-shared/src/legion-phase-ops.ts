@@ -1,4 +1,5 @@
 import { type LegionStepRole, zodSchemaApi } from "@legion/contracts";
+import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -239,7 +240,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // The step the move returns to, by its place in the task: the daemon takes the place and
       // refuses a `to` that is not the phase that step runs as.
       return_to: returnTo("request_backward_move").optional(),
-      // The task of the issue's plan the move is of (contract 264): an architect names the task it
+      // The task of the issue's plan the move is of (the tasks entry): an architect names the task it
       // returns from accepting where two or more stand there, and a phase worker may name the task
       // of its own step. The daemon judges it (TASK_REQUIRED, TASK_NOT_AT_PHASE, TASK_NOT_GRANTS);
       // a blank one is refused here.
@@ -425,13 +426,13 @@ export function legionToolDescription(host: {
 }
 
 /** The plugin build one process loaded, as its host's own `package.json` names it: the package
- * `name`, its `version`, and the daemon API contract that build speaks
- * (`legion.daemonApiVersion`, which the client states on every request as `pluginContract` and
- * `read_build` answers beside the daemon's own). It is the host's manifest and never a path on
- * the image: an Oh My Pi role's relaunch onto the daemon's contract installs the plugin pair
- * fresh under the state home of its claim's agent, which is the same whatever role the agent's
- * step is on, so the build at `/opt/legion/pi-legion` is another one. A
- * Claude Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
+ * `name`, its `version`, and the daemon API contract that build speaks (`daemonContract`: the
+ * `legion.daemonApiVersion` a pack writes, which the client states on every request as
+ * `pluginContract` and `read_build` answers beside the daemon's own). It is the host's manifest
+ * and never a path on the image: an Oh My Pi role's relaunch onto the daemon's contract installs
+ * the plugin pair fresh under the state home of its claim's agent, which is the same whatever
+ * role the agent's step is on, so the build at `/opt/legion/pi-legion` is another one. A Claude
+ * Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;
@@ -440,17 +441,17 @@ export interface PluginBuild {
 
 /** The three values of `PluginBuild` read off one host's manifest. `pi-shared` imports no
  * manifest and is bundled into both plugins, so each host calls this with the `package.json` it
- * imported (`packages/pi-legion/src/tools.ts`,
- * `packages/claude-envoy/src/legion-tool.ts`). */
-export function pluginBuildOf(manifest: {
-  readonly name: string;
-  readonly version: string;
-  readonly legion: { readonly daemonApiVersion: number };
-}): PluginBuild {
+ * imported and its own directory, the `from` of `daemonContract`
+ * (`packages/pi-legion/src/tools.ts`, `packages/claude-envoy/src/legion-tool.ts`). It throws
+ * where `daemonContract` does: a manifest that names no contract outside a checkout. */
+export function pluginBuildOf(
+  manifest: PluginManifest & { readonly name: string; readonly version: string },
+  from: string
+): PluginBuild {
   return {
     name: manifest.name,
     version: manifest.version,
-    pluginContract: manifest.legion.daemonApiVersion,
+    pluginContract: daemonContract(manifest, from),
   };
 }
 

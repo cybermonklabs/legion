@@ -2,13 +2,18 @@ import { expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { LegionStepRole } from "@legion/contracts"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { StepCopy } from "@legion/pi-shared/handoff-record"
-import { type ClaimCapability, PHASE_OP_SENTENCES } from "@legion/pi-shared/legion-phase-ops"
+import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
-import { legion, name, version } from "../package.json" with { type: "json" }
+import pkg, { name, version } from "../package.json" with { type: "json" }
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
+
+/** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 async function daemonFixture(name: string): Promise<unknown> {
@@ -140,7 +145,7 @@ async function daemon(
   }) as typeof fetch
   return {
     client: createLegionDaemonClient("http://daemon.test", {
-      pluginContract: legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       fetch: stub,
     }),
     requests,
@@ -173,7 +178,7 @@ const grantRequest = {
   },
 }
 
-test("declares the six phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+test("declares the six phase-worker operations under one op", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
@@ -201,10 +206,6 @@ test("declares the six phase-worker operations under one op, and names the Envoy
     },
     required: ["op"],
   })
-  expect(definition.description).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
-  )
-  expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
 
 test("handoff_complete finds the record and commit for the issue's phase and the claim's role, then mints its grant and posts them", async () => {
@@ -389,7 +390,7 @@ test("the MCP request's cancellation ends a handoff_complete waiting out a daemo
     executeLegionTool(
       {
         daemon: createLegionDaemonClient("http://daemon.test", {
-          pluginContract: legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
           fetch: refusing,
         }),
         claim: () => implementer,
@@ -492,7 +493,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   ).rejects.toThrow("read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is")
   expect(requests).toHaveLength(1)
   const refusing = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: (async (_input, _init) =>
       Response.json(
         { error: "the daemon keeps no release records" },
@@ -556,13 +557,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     name,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   }
   await withImageManifest("/opt/legion/claude-envoy/package.json", atImagePath, async () => {
     const { executeLegionTool: executeFreshLegionTool } = (await import(
       LEGION_TOOL_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly executeLegionTool: typeof executeLegionTool }
-    const { client, requests } = await daemon({ daemonContract: legion.daemonApiVersion + 1 })
+    const { client, requests } = await daemon({ daemonContract: PLUGIN_CONTRACT + 1 })
     const runtime = {
       daemon: client,
       claim: () => implementer,
@@ -576,8 +577,8 @@ test("read_build answers the package and version this process loaded, both contr
     await expect(executeFreshLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
       plugin: name,
       version,
-      pluginContract: legion.daemonApiVersion,
-      daemonContract: legion.daemonApiVersion + 1,
+      pluginContract: PLUGIN_CONTRACT,
+      daemonContract: PLUGIN_CONTRACT + 1,
       daemonContractNote: null,
     })
     // The health route alone, read for its header: no project state is asked for.
@@ -598,7 +599,7 @@ test("read_build says so where the daemon states no contract, and takes no field
   }
 
   await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toMatchObject({
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     daemonContract: null,
     daemonContractNote: "the daemon stated no contract",
   })

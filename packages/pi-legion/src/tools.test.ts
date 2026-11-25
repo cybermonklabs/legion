@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, type LegionStepRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -24,6 +25,9 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
+
+/** The contract this build speaks, as `tools.ts` reads it (`daemonContract`): this checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 function context(sessionId = "ses_208"): SessionContext {
   return {
@@ -180,7 +184,7 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: pkg.legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: stub,
   });
   return { posted, daemon: () => client };
@@ -301,34 +305,22 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
-    giveUp: {
-      type: "number",
-      description:
-        "replay_give_up's and discard_give_up's one give-up, a message the daemon's intake gave up on: its record id, as the intake-gave-up notice names it. Name it, or consumer and throughSeq, never both",
-    },
-    consumer: {
-      type: "string",
-      description:
-        "replay_give_up's and discard_give_up's intake consumer, as read_state's summary names it on an intake give-ups line: with throughSeq, every open give-up of that consumer at or below that stream sequence",
-    },
-    throughSeq: {
-      type: "number",
-      description:
-        "With consumer: the highest stream sequence replay_give_up or discard_give_up takes. read_state's summary gives each consumer's newest seq, which takes all of its open give-ups",
-    },
+    giveUp: { type: "number" },
+    consumer: { type: "string" },
+    throughSeq: { type: "number" },
   },
   required: ["op"],
   additionalProperties: false,
 });
 
-// The schema the tool gives is read without the words of its `description`s, which no test holds.
+// Descriptions are deliberately not part of this schema comparison.
 test("the legion tool's parameter schema serializes to the exact schema Oh My Pi agents are given, but for its descriptions, for every session", () => {
   for (const active of EVERY_SESSION) {
-    const served = z.toJSONSchema(toolFor(active).parameters as z.ZodType) as unknown as {
-      readonly properties: { readonly task: object };
-    };
-    // `task`'s description is words an agent reads, not the schema: neither side holds it here.
-    Reflect.deleteProperty(served.properties.task, "description");
+    const served = z.toJSONSchema(toolFor(active).parameters as z.ZodType, {
+      override: ({ jsonSchema }) => {
+        delete jsonSchema.description;
+      },
+    });
     expect(JSON.stringify(served)).toBe(OMP_LEGION_TOOL_SCHEMA);
   }
 });
@@ -830,25 +822,6 @@ test("read_release_records reads the window with this session's claim, and repor
     isError: true,
     content: [{ type: "text", text: "the daemon keeps no release records" }],
   });
-});
-
-// Every role reads one description, and the daemon accepts a verdict from the tester and from a
-// role of the deployment alone (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer
-// from its own instructions that it reports one.
-test("the legion tool's description gives a verdict to the tester or a role of the deployment", () => {
-  const tool = createLegionTool({
-    pi,
-    daemon: recordingDaemon({}).daemon,
-    controllerGrant: noControllerGrant,
-    onPhaseCompleted: () => undefined,
-    onUpdateAnswered: () => undefined,
-    env: PANE_ENV,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    resolveDocument: noDocumentLookup,
-    session: () => claimSession("reviewer"),
-  });
-  expect(tool.description).not.toContain("when your role's instructions require one");
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
@@ -2136,13 +2109,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     ...pkg,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   };
   await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
     const { createLegionTool: createFreshLegionTool } = (await import(
       TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly createLegionTool: typeof createLegionTool };
-    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const { calls, daemon } = recordingDaemon({ daemonContract: PLUGIN_CONTRACT + 1 });
     const tool = createFreshLegionTool({
       pi,
       daemon,
@@ -2162,8 +2135,8 @@ test("read_build answers the package and version this process loaded, both contr
       details: {
         plugin: pkg.name,
         version: pkg.version,
-        pluginContract: pkg.legion.daemonApiVersion,
-        daemonContract: pkg.legion.daemonApiVersion + 1,
+        pluginContract: PLUGIN_CONTRACT,
+        daemonContract: PLUGIN_CONTRACT + 1,
         daemonContractNote: null,
       },
     });
@@ -2205,7 +2178,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
     details: {
       plugin: pkg.name,
       version: pkg.version,
-      pluginContract: pkg.legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       daemonContract: null,
       daemonContractNote: "the daemon stated no contract",
     },

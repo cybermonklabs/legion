@@ -52,7 +52,9 @@ type releaseRuntime struct {
 	// sandboxName is the name the runtime answers the issue's Sandbox under, as the rig derives
 	// it from the issue's claim token (sandbox.SandboxName), and sandboxGone makes it answer that
 	// it holds no Sandbox at all — the pod the runtime has already taken down, which a test sets
-	// before the pass it wants to read that answer.
+	// before the pass it wants to read that answer, or before a teardown that should find no
+	// Sandbox to release (ReleaseIssue's false), as the retried teardowns of
+	// TestARetriedTeardownOfAPodNoClaimOwnsRecordsWhatTheReleaseDid do.
 	sandboxName string
 	sandboxGone bool
 	// beforeAuthorize runs inside each teardown, before it asks the store: the pod lock is held
@@ -91,16 +93,21 @@ func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, "SuspendIssue", authorize)
+	_, err := r.teardown(ctx, "SuspendIssue", authorize, nil)
+	return err
 }
 
-func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, "ReleaseIssue", authorize)
+func (r *releaseRuntime) ReleaseIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, "ReleaseIssue", authorize, writing)
 }
 
 // teardown is both teardowns, method naming which: it records the call, runs beforeAuthorize,
-// asks the store and counts the pod it took down, or the store's refusal.
-func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error)) error {
+// asks the store and counts the pod it took down, or the store's refusal. It answers whether it
+// took a Sandbox down: an authorized teardown of a runtime that still holds one (sandboxGone
+// false), which calls writing first, as the Kubernetes runtime calls it before its first write.
+func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	r.mu.Lock()
 	r.teardowns = append(r.teardowns, method)
 	hook := r.beforeAuthorize
@@ -110,16 +117,22 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 	}
 	act, err := authorize(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if act {
 		r.suspended++
 	} else {
 		r.refused++
 	}
-	return nil
+	takes := act && !r.sandboxGone
+	r.mu.Unlock()
+	if takes && writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
+	}
+	return takes, nil
 }
 
 // teardownsAsked is every issue-level teardown the daemon asked for, by method and in order.
@@ -182,7 +195,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	// (ScriptWorkspaceWork), so the release's check lets it go on.
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = rt, st, api.DaemonAPIVersion()
 	// The teardown records the release through the supervisor's store, as the daemon's does.
 	sup.store = st
 
@@ -200,7 +213,7 @@ func newIdleRig(t *testing.T) *idleRig {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
 		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
-		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion, Pending: &pending}
+		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
 	if err := st.PutClaimAndDelivery(ctx, stored, pending); err != nil {
 		t.Fatalf("seed the idle implementer: %v", err)
 	}
@@ -383,7 +396,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: r.issue.Tree, Issue: r.issue.Key,
 		Role: claim.RoleArchitect, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion}
+		Session: "ses-architect", SessionFile: "/tmp/architect.jsonl", PluginContract: api.DaemonAPIVersion()}
 	if err := r.st.PutClaim(ctx, stored); err != nil {
 		t.Fatalf("seed the architect an earlier release left released: %v", err)
 	}

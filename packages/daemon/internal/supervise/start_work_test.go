@@ -245,3 +245,48 @@ func TestAStartRetriedAfterTheSessionStoreFailedJudgesItsWorkAgain(t *testing.T)
 		})
 	}
 }
+
+// A pod-round wait must keep the workflow start's identity, as a session-store wait does.
+// Dropping that identity at the retry launches obsolete work; the control keeps the work
+// current and must resume the same session after the pod is replaced.
+func TestAStartRetriedAfterItsPodRoundWaitJudgesItsWorkAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		holds   bool
+		resumes int
+	}{
+		{"the issue leaves the start's work before the retry", false, 1},
+		{"the control: the work still holds at the retry", true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			holds, asked := true, 0
+			h := newBareHarness(t)
+			phaseHoldsAnswering(&holds, &asked)(&h.deps)
+			suspended := queuedClaim()
+			suspended.State, suspended.Generation, suspended.Session, suspended.SessionFile = StateSuspended, 1, session, sessionFile
+			suspended.SuspendedBy = SuspendedByDaemon
+			if err := h.store.PutClaim(h.ctx, suspended); err != nil {
+				t.Fatal(err)
+			}
+			h.start(suspended)
+			waiting := fmt.Errorf("resume %s: %w", testToken, runtime.ErrAwaitingPodRound)
+			h.rt.OnResume = func(context.Context) error { return waiting }
+			if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step", Start: startOfStep}); !errors.Is(err, runtime.ErrAwaitingPodRound) {
+				t.Fatalf("the start's resume answered %v, want the wait for its pod's round", err)
+			}
+			h.wantState(StateLaunching)
+			h.rt.OnResume = nil
+			holds = tc.holds
+			h.advance(podRoundRetry)
+
+			h.wantCalls("Resume", tc.resumes)
+			got := h.claim()
+			if !tc.holds && (got.State != StateSuspended || got.SuspendedBy != SuspendedByDaemon || got.Locator != nil) {
+				t.Fatalf("the retried start's claim = %s by %q at %+v, want suspended by the daemon with no process", got.State, got.SuspendedBy, got.Locator)
+			}
+			if tc.holds && (got.Locator == nil || got.SessionFile != sessionFile) {
+				t.Fatalf("the current start's retry = %+v, want the same session running", got)
+			}
+		})
+	}
+}

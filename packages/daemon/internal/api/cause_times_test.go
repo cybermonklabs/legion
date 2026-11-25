@@ -293,15 +293,27 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	}
 
 	below := causeTimesContract - 1
-	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), below)
+	_, narrowings := stateNarrowedStating(t, carriedState(t), statePodAddr+":41000", podClaims(0), below)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) == 0 || narrowings[0].Dropped != dropped {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the first one saying it dropped %q",
-			narrowings, below, dropped)
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the cause-times row dropping %q and the Dispatch credential row dropping %q first",
+			narrowings, below, dropped, "dispatchCredential")
 	}
-	want := narrowingsExpected(populatedState(t), below)
-	if len(want) != 2 {
-		t.Fatalf("a caller at %d expects the lines %v, want the cause times' row's and the roles' row's alone", below, want)
+	want := narrowingsExpected(carriedState(t), below)
+	if len(want) < 5 || want[0] != dropped || want[1] != "dispatchCredential" {
+		t.Fatalf("a caller at %d expects the lines %v, want cause times and Dispatch credential first, followed by the registered state bands", below, want)
+	}
+	for _, contract := range []int{entryNumber(deploymentRolesContract), entryNumber(strandedTokenContract), entryNumber(tasksContract)} {
+		found := false
+		for _, line := range want {
+			if line == droppedAt(t, contract) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("a caller at %d expects the lines %v, missing the registered row at %d", below, want, contract)
+		}
 	}
 	wantNarrowings(t, narrowings, below, want)
 }

@@ -1,5 +1,5 @@
 kind: Added
-body: "Daemon contract 264 describes task branches, working-copy paths, pull requests, merge waits and counts, and plan registration accepts several tasks and their needs."
+body: "Daemon compatibility entry 20261125180222 describes task branches, working-copy paths, pull requests, merge waits and counts, and plan registration accepts several tasks and their needs."
 time: 2026-11-24T21:40:49.141288Z
 custom:
     Issue: pr5165

@@ -1416,7 +1416,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 // runs: the row a wake's resume is recorded against.
 func recordRelease(t *testing.T, st *Store, at time.Time) {
 	t.Helper()
-	if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue,
+	if _, _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue,
 		Generation: 1, Roles: []string{string(claim.RoleArchitect)}, At: at}); err != nil {
 		t.Fatalf("record the pod's release: %v", err)
 	}

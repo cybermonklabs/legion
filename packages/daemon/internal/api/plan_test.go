@@ -214,7 +214,7 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 		want     string
 	}{
 		{OwnerPlanContract, `{"plan":{"version":7,"tasks":[{"id":"a","steps":[]},{"id":"b","steps":["implementer"]}]}}`},
-		{tasksContract, `{"plan":{"version":7,"added":[],"tasks":[{"id":"a","steps":[],"needs":[]},{"id":"b","steps":["implementer"],"needs":["a"]}]}}`},
+		{entryNumber(tasksContract), `{"plan":{"version":7,"added":[],"tasks":[{"id":"a","steps":[],"needs":[]},{"id":"b","steps":["implementer"],"needs":["a"]}]}}`},
 	} {
 		shaped, _ := shapeAnswer(AnswerPlanRegister, answer, tc.contract, tc.contract)
 		encoded, err := json.Marshal(shaped)

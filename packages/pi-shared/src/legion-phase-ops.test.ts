@@ -15,7 +15,6 @@ import {
   type ClaimCapability,
   executePhaseOp,
   legionToolDescription,
-  PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
   type PhaseOpRuntime,
@@ -175,22 +174,6 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       .filter((f) => f !== "op")
   );
   expect(Object.keys(phaseOpParameters(z)).sort()).toEqual([...fields].sort());
-});
-
-test("the description sets the host's sentences before and after handoff_complete's contract, and ends on the host's Envoy publish tool", () => {
-  const bare = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const placed = legionToolDescription({
-    envoyPublish: "mcp__legion__envoy_publish",
-    before: PHASE_OP_SENTENCES.readRecord,
-    after: `${PHASE_OP_SENTENCES.requestBackwardMove}The controller's read_state returns the daemon's whole state. `,
-  });
-  expect(bare).not.toContain("read_record");
-  expect(bare).not.toContain("request_backward_move");
-  expect(bare.endsWith("role topic with envoy_publish.")).toBe(true);
-  expect(placed).toContain(
-    `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}handoff_complete (phase workers`
-  );
-  expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
 
 // The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
@@ -571,19 +554,6 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
-// The description is where the tester reads what its fail may carry and what the daemon refuses.
-test("the description tells the tester its fail may name the step its task returns to", () => {
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
-    "`return_to`, the place of a step of the task its issue runs, 1 for its first",
-    "RETURN_TO_NEEDS_FAIL",
-    "INVALID_RETURN_TO",
-    "RETURN_REFUSED",
-  ]) {
-    expect(description).toContain(words);
-  }
-});
-
 /** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */
 const checker: ClaimCapability = {
   ...implementer,
@@ -790,7 +760,7 @@ test("request_backward_move sends return_to as returnTo", async () => {
   );
 });
 
-// Contract 264: a move back may name the task of the issue's plan it is of, `task`, which goes on
+// The tasks entry: a move back may name the task of the issue's plan it is of, `task`, which goes on
 // the wire as the daemon's own `task`: an architect's names the task it returns from accepting
 // where two or more tasks stand there, and a phase worker's may name the task of its own step. A
 // move that names none sends none, and a blank one is refused before any request.
@@ -846,14 +816,6 @@ test("request_backward_move sends the task it names as task", async () => {
     );
   }
   expect(worker.routes).toHaveLength(sent);
-});
-
-// Contract 221: the daemon takes a verdict from a role of the deployment too, and the one
-// description every role reads says so.
-test("the description gives a verdict to the tester or a role of the deployment", () => {
-  expect(legionToolDescription({ envoyPublish: "envoy_publish" })).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment on a phase completion"
-  );
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were

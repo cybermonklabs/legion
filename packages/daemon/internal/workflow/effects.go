@@ -1273,12 +1273,8 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 	return entry, err
 }
 
-// The labels of a started worker's task that a prompt or a skill names to the worker, each the
-// text before the colon of one of the task's lines. Every line of the task is built from its
-// label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
-// skills that tell the worker to read it, so a label renamed on one side alone fails there.
-// testerVerdictLabel, above, and reviewround's CommitLabel and EntryLabel are three more, tied by
-// tests of their own.
+// Worker-task labels are part of the task format the plugins read.
+// TestATaskWritesItsLabelsAndStepValues checks their text and values.
 const (
 	phaseLabel       = "Phase"
 	workingCopyLabel = "Working copy"

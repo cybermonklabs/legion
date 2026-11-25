@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -123,15 +122,22 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
 	first := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(first.Holders) != 1 || first.Holders[0].RecordedAt.IsZero() {
 		t.Fatalf("the first publish answered %#v, want tester ses-a with its time", first)
 	}
-	// Each write is its own transaction, so a write that sets now() again sets a later time.
-	time.Sleep(5 * time.Millisecond)
+	// Each write is its own transaction, so a write that sets now() again sets a later time once the
+	// database's clock reads past the first one's: the wait ends on that clock.
+	waitUntil(t, "the database's clock to read past the first publish's time", func() bool {
+		var past bool
+		if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first.Holders[0].RecordedAt).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock against the first publish's time: %v", err)
+		}
+		return past
+	})
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)

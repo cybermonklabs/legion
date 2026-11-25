@@ -174,7 +174,7 @@ export function paneLatestHandoff(
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
   return async (issue, word) => {
-    const { dispatch } = sessionDispatchSettings(file, env, { cwd, session });
+    const { dispatch } = await sessionDispatchSettings(file, env, { cwd, session });
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }

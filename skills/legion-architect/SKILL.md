@@ -98,13 +98,12 @@ read, against the goal, every check and requirement in `skill://legion-architect
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
-Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
+Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
 Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-The issue closes once its pull request has merged, it is in `merging` and every issue beneath it has left the workflow.
-Nothing after that close is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+Nothing after the issue closes is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
 

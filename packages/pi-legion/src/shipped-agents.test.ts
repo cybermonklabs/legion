@@ -22,7 +22,7 @@ test.each(agents)("%s declares the name of its file", (file) => {
   expect(definition(file).fields.name).toBe(file.replace(/\.md$/, ""));
 });
 
-// A shipped agent names no model, provider, or route: an agent's model is a role alias, which the operator's
+// Legion names no model, provider, or route: an agent's model is a role alias, which the operator's
 // modelRoles maps, and the daemon's boot gate refuses an alias no role configures. A concrete
 // selector would run the agent on a model the operator never chose, or on the parent's when that
 // model's provider has no key.

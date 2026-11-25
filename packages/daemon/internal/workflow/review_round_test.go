@@ -79,6 +79,7 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 // any other of Legion's roles names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry).
 // A review step of a role of the deployment names its commit alone (namingTheReviewRound).
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
+	t.Parallel()
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
 	resume := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Pull request: #42. Resume the existing phase work."
@@ -327,6 +328,7 @@ func wakesTheReviewerInRoundTwoNaming(kind string) func(t *testing.T, noCommit b
 // nothing to it. Each case moves the row's commit by hand, to a commit the stored task does not
 // name.
 func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// walk takes LEGION-208 to a round of the reviewer, its entry raised and its task stored.
@@ -388,6 +390,7 @@ func TestAnOwedEntryIsSentAsStoredAfterTheRowsReviewedCommitMoved(t *testing.T) 
 // the row's. Round 2's row holds headOne, the commit round 1's review read; round 1's holds none,
 // so a reason that ends with a commit's sentence there stands just before the daemon's `none`.
 func TestATaskWhoseTextQuotesTheRoundsSentencesIsStillGivenThem(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// firstRound is whether the retry is of the reviewer's first round, whose row holds no
@@ -456,6 +459,7 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // review read headOne. The number is read from the task the reviewer was delivered, as the agent
 // reads it.
 func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
@@ -569,6 +573,7 @@ func wakesTheReviewerInRoundTwo(kind string) func(t *testing.T) (*pgxpool.Pool, 
 // start row of each of the three carries the fact the claim's send reads, so a wake queued outside
 // reviewing is sent as it stands, ending with the daemon's sentences.
 func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
+	t.Parallel()
 	for _, kind := range wakeKinds {
 		t.Run(kind, func(t *testing.T) {
 			pool, wake := wakesTheReviewerInRoundTwo(kind)(t)
@@ -674,6 +679,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 // which is what a woken reviewer that followed a task naming no entry got. Round 2 here stands at
 // headTwo, and round 1's review read headOne.
 func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// namesEntry is whether the review's footer names the entry the wake's task names.

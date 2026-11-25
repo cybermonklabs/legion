@@ -99,6 +99,7 @@ func lateClosed(head string, at time.Time) intake.Fact {
 // the round ends. An event at the same clock applies (GitHub's clock is to the second, so two real
 // events can share one), and so does one that carries no clock.
 func TestALatePullRequestEventChangesNothing(t *testing.T) {
+	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
 	kept := pullRequestView{head: "head-c", decision: "approved", state: record.PullRequestOpen}
 	closed := pullRequestView{head: "head-c", decision: "approved", state: record.PullRequestClosed}
@@ -141,6 +142,7 @@ func TestALatePullRequestEventChangesNothing(t *testing.T) {
 // lowers the pull request's clock: the stored clock stays the latest one known, so an older
 // timestamped event redelivered afterwards is still late and changes nothing.
 func TestAnEventWithNoClockKeepsTheLatestClock(t *testing.T) {
+	t.Parallel()
 	earlier, later := lateApplied.Add(-time.Hour), lateApplied.Add(time.Minute)
 	for _, tc := range []struct {
 		name  string
@@ -170,6 +172,7 @@ func TestAnEventWithNoClockKeepsTheLatestClock(t *testing.T) {
 // reopened and closed again, with the reopen delivered last, the second close records its head and
 // clock, so the reopen changes nothing.
 func TestACloseOrReopenCarriesItsHead(t *testing.T) {
+	t.Parallel()
 	synchronized, finished := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	reopened, resynchronized := lateApplied.Add(time.Minute), lateApplied.Add(90*time.Second)
 	for _, tc := range []struct {
@@ -201,6 +204,7 @@ func TestACloseOrReopenCarriesItsHead(t *testing.T) {
 // whose later events still apply. The same holds for an older pull request's late opened while the
 // newer one is open.
 func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
+	t.Parallel()
 	opened43, synced43 := lateApplied.Add(time.Minute), lateApplied.Add(2*time.Minute)
 	pr43 := intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-e", HeadRepo: "sjawhar/legion", UpdatedAt: opened43}
 	sync43 := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-f", UpdatedAt: synced43}
@@ -240,6 +244,7 @@ func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
 // the name the pull request was recorded with or the other name of a configured rename. A reopen
 // newer than the clock is a person reopening it since, and records it open, as before.
 func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		seed   record.PullRequestState
@@ -285,6 +290,7 @@ func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *te
 // nothing. Control: with the pass leaving the cleared row on the `from`, the opened records the
 // pull request again, at the head it had.
 func TestALateOpenedUnderTheNewNameOfAPullRequestClearedUnderTheOldRecordsNothingOnceThePassRan(t *testing.T) {
+	t.Parallel()
 	const from, to = "sjawhar/legion", "cybermonklabs/legion"
 	pool := appliedEvents(t, record.PullRequestClosed)
 	seedRecord(t, pool, func(tx pgx.Tx) error {

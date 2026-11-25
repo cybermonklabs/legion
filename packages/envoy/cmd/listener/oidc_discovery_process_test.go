@@ -30,6 +30,7 @@ const discoveryFailedLine = "oidc: discover the issuer; retrying in the backgrou
 // accounts.google.com, which the listener's own HTTPS_PROXY makes unreachable here; the cluster's
 // stand-in is on loopback, which no proxy takes.
 func TestTheListenerServesWhileItsIssuersCannotBeDiscovered(t *testing.T) {
+	t.Parallel()
 	cluster := oidctest.New(t)
 	key := cluster.PublishKey(t, "listener-discovery-key")
 	cluster.FailDiscovery(http.StatusServiceUnavailable)
