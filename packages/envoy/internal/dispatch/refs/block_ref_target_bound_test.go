@@ -56,7 +56,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	}
 
 	blocks := []model.ArtifactBlock{{ID: blockID, Type: "paragraph", From: 0, To: len(markdown)}}
-	_, won, write, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil)
+	_, won, write, err := IndexBlocks(ctx, tx, citer, 1, time.Now(), markdown, blocks, located, nil, "")
 	if err != nil || !won {
 		t.Fatalf("index the version (won %v): %v", won, err)
 	}

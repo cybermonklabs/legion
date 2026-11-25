@@ -77,6 +77,7 @@ func servedHolds(t *testing.T, server *httptest.Server, keys ...string) map[stri
 // Each subtest that expects no hold first reads the hold shown, so each fails against a state
 // that carries no hold at all, which is the state before this change.
 func TestTheStateNamesAPodsStandingHold(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	held, quiet := cfg.Project+"-1", cfg.Project+"-2"
 	released, ended, moved := cfg.Project+"-3", cfg.Project+"-4", cfg.Project+"-5"
