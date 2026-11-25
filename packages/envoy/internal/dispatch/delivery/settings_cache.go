@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,16 +36,12 @@ type SettingsCache struct {
 	wake <-chan struct{}
 
 	current atomic.Pointer[DeliverySettings]
-
-	mu sync.Mutex
-	// changed is closed by the next read that stores settings, and replaced by a fresh channel.
-	changed chan struct{}
 }
 
 // newSettingsCache builds a cache over pool's delivery_settings that reads again on each signal on
 // wake. It holds nothing until Run (or reload) has read the row.
 func newSettingsCache(pool *store.Pool, wake <-chan struct{}) *SettingsCache {
-	return &SettingsCache{pool: pool, wake: wake, changed: make(chan struct{})}
+	return &SettingsCache{pool: pool, wake: wake}
 }
 
 // Load returns the latest settings the cache read whose deploy repository is a well-formed
@@ -54,15 +49,6 @@ func newSettingsCache(pool *store.Pool, wake <-chan struct{}) *SettingsCache {
 // row, or a malformed repository, leaves the settings before it in place.
 func (c *SettingsCache) Load() *DeliverySettings {
 	return c.current.Load()
-}
-
-// Changed returns a channel that is closed once the cache next stores settings. Taken before a
-// Load, it cannot miss a store that lands after that Load: the intake's bind waits on it for the
-// first settings.
-func (c *SettingsCache) Changed() <-chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.changed
 }
 
 // Run reads delivery_settings at once, then each time the wake is signalled, until ctx ends. A read
@@ -108,9 +94,5 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 		return true
 	}
 	c.current.Store(&settings)
-	c.mu.Lock()
-	close(c.changed)
-	c.changed = make(chan struct{})
-	c.mu.Unlock()
 	return true
 }

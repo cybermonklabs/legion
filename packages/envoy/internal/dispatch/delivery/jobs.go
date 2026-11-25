@@ -125,7 +125,7 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
-	j.run(ctx, nil, func() bool { return true })
+	j.run(ctx)
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's

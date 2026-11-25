@@ -261,13 +261,11 @@ const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops d
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
-// budget rather than starting one of its own. Each durableBindInterval while it delivers nothing,
-// and ready reports true, it tries for the hold and the durable (attempt); each intakeHoldRenew
-// while it delivers, it checks the durable still delivers to it (check); and the moment its hold
-// is lost it stops delivering. wake, when not nil, answers a channel the loop waits on beside its
-// tickers and takes again each time it fires -- the delivery intake's settings cache storing
-// settings, which is what makes its first attempt ready (Intake.Run).
-func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, ready func() bool) {
+// budget rather than starting one of its own. At once and each durableBindInterval while it
+// delivers nothing, it tries for the hold and the durable (attempt); each intakeHoldRenew while it
+// delivers, it checks the durable still delivers to it (check); and the moment its hold is lost it
+// stops delivering.
+func (d *heldDurable) run(ctx context.Context) {
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
@@ -279,15 +277,9 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	checks := time.NewTicker(intakeHoldRenew)
 	defer checks.Stop()
 	attempt := func() {
-		if d.subject == "" && ready() {
+		if d.subject == "" {
 			d.attempt(ctx)
 		}
-	}
-	// Taken before each attempt, which reads what the cache holds, so settings stored after that
-	// read wake the loop.
-	var changed <-chan struct{}
-	if wake != nil {
-		changed = wake()
 	}
 	attempt()
 	for {
@@ -299,9 +291,6 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		select {
 		case <-ctx.Done():
 			return
-		case <-changed:
-			changed = wake()
-			attempt()
 		case <-binds.C:
 			attempt()
 		case <-checks.C:
@@ -410,7 +399,13 @@ func (d *heldDurable) holds() bool {
 // takeOver makes the durable deliver to this intake, under the hold and the durable's consumer
 // lease. A durable that does not exist is created with this build's config, at the start a
 // take-over before this one recorded when it deleted the durable and did not create it again
-// (intakeHoldToken). A durable bound to a subject no hold recorded is left as it is
+// (intakeHoldToken). With no start recorded, a config that asks for new messages only
+// (DeliverNewPolicy) is created at the stream's next sequence, read under the lease, as an
+// explicit start: a durable created at DeliverNew records no start sequence, and it reports an
+// ack floor of 0 until its first ack, so a take-over before that ack would start it at the
+// stream's first message (takeOverConfig;
+// docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// A durable bound to a subject no hold recorded is left as it is
 // (boundElsewhere). Any other -- unbound, or bound to the subject the hold records, which is a
 // holder that died or was cut off -- is deleted and created again at its ack floor on a fresh
 // deliver subject (takeOverConfig), and that start is recorded as the hold's token before the
@@ -439,8 +434,16 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 	info, err := js.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
 	switch {
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
-		if d.recorded.start != 0 {
+		switch {
+		case d.recorded.start != 0:
 			create = startingAt(wanted, d.recorded.start)
+		case wanted.DeliverPolicy == natsgo.DeliverNewPolicy:
+			stream, err := js.StreamInfo(bus.Stream, natsgo.Context(ctx))
+			if err != nil {
+				slog.Error("dispatch delivery: read the stream's last sequence to create NATS consumer after", "name", name, "error", err)
+				return
+			}
+			create = startingAt(wanted, stream.State.LastSeq+1)
 		}
 	case err != nil:
 		slog.Error("dispatch delivery: look up NATS consumer", "name", name, "error", err)
@@ -470,6 +473,11 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
 // replays nothing it had, and skips nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse,
 // and TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
+// It never starts before the durable's own start sequence (OptStartSeq): a durable that has
+// acknowledged nothing reports an ack floor of 0, and the floor plus one would hand the new holder
+// every message the stream held before the durable was created
+// (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart). A durable created with
+// no start sequence reads 0 there, which bounds nothing.
 // The take-over records that start in its hold's token before it deletes the durable, and
 // finishTakeOver says what a create that fails after the delete leaves behind.
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the
@@ -482,7 +490,7 @@ func takeOverConfig(deployed *natsgo.ConsumerInfo, wanted natsgo.ConsumerConfig)
 		config.OptStartTime = nil
 		config.Metadata = bus.OwnMetadata(deployed.Config.Metadata, 0)
 	}
-	return startingAt(config, deployed.AckFloor.Stream+1)
+	return startingAt(config, max(deployed.AckFloor.Stream+1, deployed.Config.OptStartSeq))
 }
 
 // startingAt is config delivering from stream sequence start on.
@@ -542,10 +550,10 @@ const (
 // within takeOverFinishWithin. The start then stays in the hold's token (intakeHoldToken), and the
 // next take-over of this build -- by
 // this intake, or by the process that takes the hold next -- creates the durable at that old ack
-// floor rather than at the default start (deliveryConsumerConfig names none, so the stream's first
-// message). A process of the build before holds reconciles the durable under the same lease and
-// never reads the token: finding the durable absent, it creates it at its own default start, the
-// stream's first message for the events durable and the next new message for the jobs durable
+// floor rather than at the stream's next sequence (takeOver). A process of the build before holds
+// reconciles the durable under the same lease and never reads the token: finding the durable
+// absent, it creates it at its own default start, the stream's first message for the events
+// durable and the next new message for the jobs durable
 // (TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles).
 func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst bool) {
 	js := d.nats.JS()

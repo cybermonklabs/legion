@@ -147,31 +147,19 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	}
 }
 
-// A read that finds no row leaves the cache empty and says nothing changed; the first settings
-// written are stored and close the channel Changed handed out before them; a later read whose
-// deploy repository is malformed keeps the settings before it.
+// A read that finds no row leaves the cache empty; the first settings written are stored; a later
+// read whose deploy repository is malformed keeps the settings before it.
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	cache := newSettingsCache(pool, nil)
-	changed := cache.Changed()
 	if !cache.reload(ctx) || cache.Load() != nil {
 		t.Fatalf("a read with no row = %+v, want nothing held", cache.Load())
-	}
-	select {
-	case <-changed:
-		t.Fatal("a read with no row signalled a change")
-	default:
 	}
 
 	seeded := seedDeliverySettings(t, ctx, pool)
 	if !cache.reload(ctx) {
 		t.Fatal("read the seeded settings")
-	}
-	select {
-	case <-changed:
-	default:
-		t.Fatal("storing the first settings did not close the channel Changed handed out before them")
 	}
 	if held := cache.Load(); held == nil || held.DeployRepo != seeded.DeployRepo {
 		t.Fatalf("held settings = %+v, want deploy repository %s", held, seeded.DeployRepo)

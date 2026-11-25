@@ -793,6 +793,25 @@ var consumerGenerations = map[int]map[string]consumerGenerationRow{
 			maxAckPending: 64,
 		},
 	},
+	// The events durable asks for new messages only, which a create with no start recorded makes
+	// an explicit start at the stream's next sequence (heldDurable.takeOver): its first bind in a
+	// deployment that never had it no longer hands it the stream's retained history.
+	2: {
+		bus.DispatchDeliveryDurable: {
+			filterSubject: "notifications.github.>",
+			deliverPolicy: natsgo.DeliverNewPolicy,
+			ackPolicy:     natsgo.AckExplicitPolicy,
+			ackWait:       5 * time.Minute,
+			maxAckPending: 4,
+		},
+		bus.DispatchJobDurable: {
+			filterSubject: "notifications.github.*.*.job.>",
+			deliverPolicy: natsgo.DeliverNewPolicy,
+			ackPolicy:     natsgo.AckExplicitPolicy,
+			ackWait:       30 * time.Second,
+			maxAckPending: 64,
+		},
+	},
 }
 
 // Each durable this build creates has exactly the config pinned for its generation, and carries

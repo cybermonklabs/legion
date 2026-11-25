@@ -175,11 +175,11 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // population, the deploy repository, its workflow paths) or run against the deploy repository's
 // own grants.
 //
-// The intake's NATS consumer is gated on the settings for a reason of its own, not for the one
-// above: it binds its durable only once the settings cache holds settings (Intake.Run), and the
-// durable is created with no start policy (deliveryConsumerConfig, so JetStream's DeliverAll), so
-// a first bind in a deployment that never had settings would deliver the stream's whole 72-hour
-// backlog
+// The intake's NATS consumer follows the same split: it binds its durable and writes every
+// `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
+// work to the settings (Intake.Run, route). Its durable asks for new messages only, and the first
+// bind of a deployment that never had it starts at the stream's next sequence (heldDurable.takeOver),
+// so turning the intake on hands it none of the stream's 72-hour retained history
 // (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub

@@ -28,7 +28,7 @@
 // which serves no such route, the run stops there, since every later case records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
-// seed, the delivery settings, the probe issue) exits 2 naming it.
+// seed, the delivery intake's bind, the probe issue) exits 2 naming it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,10 +62,12 @@ if (
 const origin = new URL(dispatchUrl).origin;
 
 /** How long a head a bus event teaches Dispatch may take to settle, and how often the results are
- *  read again. The intake binds its durable once the settings cache holds a row, takes the
+ *  read again. The intake, bound before any case publishes (the setup waits for it), takes the
  *  envelope and writes the pull request's head row; nothing else is waited on, since every other
  *  answer is computed while the results are read. */
 const headWaitMs = 30_000;
+/** How long the setup waits for the delivery intake to bind its durable after the server answers. */
+const intakeBindWaitMs = 60_000;
 const pollMs = 250;
 
 const person = "alice";
@@ -644,17 +646,27 @@ for (const [key, name, defaultRepo] of [
   }).catch((error: unknown) => setupFailed(`default repository ${defaultRepo} of ${key}`, error));
 }
 
-// The delivery intake handles an envelope only while the settings cache holds a row, so the proof
-// writes one; the deploy repository is the proof's own, which the access check reads through the
-// fake GitHub before the row is stored.
-await asSession("PUT", "/api/v1/settings/delivery", {
-  deploy_repo: repo,
-  deploy_workflow_path: ".github/workflows/deploy.yml",
-  excluded_repos: [],
-  population_authors: ["octocat"],
-  pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-  production_job_names: ["verification-release / verification-release"],
-}).catch((error: unknown) => setupFailed("delivery settings", error));
+// The delivery intake binds its durable at boot, with no delivery settings saved, and its first
+// bind starts at the stream's next message, so an envelope published before that bind is never
+// delivered: the setup waits for the durable to be push-bound before any case publishes one.
+{
+  const manager = await nats.jetstreamManager();
+  const deadline = Date.now() + intakeBindWaitMs;
+  let state = "not read";
+  for (;;) {
+    try {
+      const info = await manager.consumers.info("ENVOY_NOTIFICATIONS", "delivery-events");
+      if (info.push_bound) break;
+      state = "created, not push-bound";
+    } catch (error) {
+      state = error instanceof Error ? error.message : String(error);
+    }
+    if (Date.now() >= deadline) {
+      setupFailed("the delivery intake's bind", `delivery-events is ${state} after ${intakeBindWaitMs} ms`);
+    }
+    await Bun.sleep(pollMs);
+  }
+}
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
  *  `checks`, whose `%KEY%` is the issue's own key — a `serves` is refused unless it names a block

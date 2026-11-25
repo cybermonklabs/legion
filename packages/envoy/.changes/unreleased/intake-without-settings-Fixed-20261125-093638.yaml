@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A Dispatch with no delivery settings saved records the head of every pull request a
+  `pull_request` webhook reports. Before this, the GitHub intake bound its NATS durable only once
+  `delivery_settings` held a row, so such a deployment consumed no `pull_request` event: a pull
+  request whose head no recorded result had read through stayed out of `pull_request_heads`, and a
+  check CI proves read `no_head` ("Dispatch holds no open or merged pull request head") at an open
+  pull request whose branch and body named the issue. The intake now binds its durable whatever the
+  settings say, writes each envelope's head row, and leaves the delivery timeline's work (a merged
+  pull request's row, a workflow run, the event freshness) to the settings. The durable's config
+  takes consumer generation 2 and asks for new messages only: a take-over that creates it with no
+  start recorded creates it at the stream's next sequence, as an explicit start, so the first bind
+  hands the intake none of the stream's 72-hour retained history, and a take-over never starts a
+  durable before its own start sequence, which a durable that has acknowledged nothing reports as
+  an ack floor of 0.
+time: 2026-11-25T09:36:38Z
+custom:
+    Issue: intake-without-settings
