@@ -17,9 +17,8 @@ trap 'rm -rf "$clean"; [ -s "$said" ] || rm -f "$said"' EXIT
 mkdir -p "$clean/config" "$clean/data"
 # run ARGS: gh ARGS, its stderr added to $said; a failure stops the script, naming ARGS and $said.
 run() {
-  local rc=0
-  env GH_CONFIG_DIR="$clean/config" XDG_DATA_HOME="$clean/data" GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 "$gh" "$@" 2>>"$said" || rc=$?
-  ((rc == 0)) || {
+  env GH_CONFIG_DIR="$clean/config" XDG_DATA_HOME="$clean/data" GH_NO_UPDATE_NOTIFIER=1 NO_COLOR=1 "$gh" "$@" 2>>"$said" || {
+    local rc=$?
     echo "gh $* exited $rc; gh's own words are in $said" >&2
     exit "$rc"
   }
