@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -14,6 +14,7 @@ import {
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
 import { DecisionActions, rowActionSelector } from "../DecisionActions";
+import { useDocumentStage } from "../document-stage";
 import type { ParentLine } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import {
@@ -95,21 +96,30 @@ interface RowPerson {
  * one exception is the focused row's, as on the outline's rows: a block of its words whose
  * content runs past its box, a wide code block or table, keeps a tab stop of its own, so that a
  * reader on the keyboard can scroll it sideways (`RowText.tsx`).
+ *
+ * A press on the row's words puts the caret in them, as Enter on the row does, where the list
+ * says the row takes one (`onPressWords`), and the row draws its document's one editor on its
+ * stage in place of its words while it is the row edited (`editing`). A press on a link or a
+ * button inside the words is that control's own; the row's acts and its links stand outside the
+ * words, so a press on one is theirs and never the words'.
  */
 export function DecisionsRow({
   body,
   document,
+  editing,
   entry,
   focused,
   isClosed,
   level,
   onFocus,
   onPin,
+  onPressWords,
   onReviewed,
   pinned,
   reader,
   report,
   review,
+  rowKey,
   statementNames,
   tabStop,
   threadRead,
@@ -119,6 +129,9 @@ export function DecisionsRow({
   body: boolean;
   /** The decisions document a decision is a block of, which its Keep writes against. */
   document?: Artifact;
+  /** The document this row's own text is being edited in, while this is the row edited (the
+   *  list's `editing`): its one editor is drawn on the row's stage in place of the words. */
+  editing?: string;
   entry: DecisionsEntry | NamedEntry;
   focused: boolean;
   /** Whether the issue is closed, which Keep and Change are refused on. */
@@ -127,6 +140,9 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
+  /** A pointer's press on the row's words: the list puts the caret in the row's node where the
+   *  row takes one, and does nothing else (`DecisionsFilterBody.tsx`'s `pressWords`). */
+  onPressWords: () => void;
   /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
    *  alone is no review: the list reads the decision the server writes back to tell whether
    *  the reader kept it or asked to change it, and only that review takes it off the review
@@ -140,6 +156,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
+  /** The row's key in the list's rows (`tree-keys.ts`'s `rowKeyOf`), which the editing finds the
+   *  row it edits by (`data-row-key`). */
+  rowKey: string;
   /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`),
    *  drawn as it is; a statement whose name is `""` is not named. */
   statementNames: ReadonlyMap<string, string>;
@@ -165,6 +184,7 @@ export function DecisionsRow({
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
+  const stage = useDocumentStage(editing);
   // An answered question and an agent's decision are cut at six lines, as an agent's words are
   // on every row; a question that waits on the reader and a decision that waits for their
   // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
@@ -195,6 +215,7 @@ export function DecisionsRow({
       data-node-row=""
       data-node-state={standing?.token}
       data-node-type={node.type}
+      data-row-key={rowKey}
       onFocus={onFocus}
       onPointerDown={press}
       ref={row}
@@ -211,15 +232,31 @@ export function DecisionsRow({
         <div className={NODE_ROW_LAYOUT.content} data-node-content="">
           {/* A replaced decision's words are struck through and grey, beside the word that
               says so (the prototype's `.replaced`). */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+              pointer's way to what Enter on the row does; the words are no control of their own,
+              and the keyboard reaches the same caret by Enter on the row. */}
           <div
             className={`relative text-[15px] leading-6 ${
               standing?.token === "replaced" ? `line-through ${pageQuietText}` : pageWordsText
             } ${clamped ? "overflow-clip" : ""}`}
             data-node-words=""
+            onClick={(event) => {
+              // A press inside the editor drawn in the words' place is the editor's own.
+              if (editing === undefined && !pressIsOwn(event)) onPressWords();
+            }}
             ref={words}
             style={clamped ? { maxHeight: clamp.height } : undefined}
           >
-            <RowText focused={focused} markdown={node.text} source={node.source} tree={node.tree} />
+            {editing === undefined ? (
+              <RowText
+                focused={focused}
+                markdown={node.text}
+                source={node.source}
+                tree={node.tree}
+              />
+            ) : (
+              <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+            )}
             {clamped && !clamp.pictures ? (
               <span
                 aria-hidden="true"
@@ -385,6 +422,18 @@ export function DecisionsRow({
 /** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
+
+/** What a pointer's press inside a row's words belongs to rather than to the words, which a
+ *  press puts the caret in: a link or a button, whose press is its own (a link in the words, a
+ *  code block's copy control). */
+const OWN_PRESS = "a, button";
+
+/** Whether a pointer's press belongs to a link or a button inside the element that heard it
+ *  (`OWN_PRESS`) rather than to that element. */
+function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
+  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+  return owner !== null && event.currentTarget.contains(owner);
+}
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */
