@@ -755,7 +755,7 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 //     (cursor.releases, endHold). While the project has no setting, its messages are dropped
 //     before the cursor is read, so after a delete a record can stay until maxReleasedHolders
 //     newer records push it out; a take-over's replay can deliver its message again after a new
-//     setting, and that delivery takes the record out (DeleteSettings). Past maxReleasedHolders
+//     setting, and that delivery takes the record out (applyBatch). Past maxReleasedHolders
 //     the oldest record goes (marked): that message is judged as any message at its next
 //     delivery, which applies nothing of a store other than the cursor's, and it may hold a read
 //     again from a count of 1.

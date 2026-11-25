@@ -486,11 +486,11 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// frozen row. So it stands below no frozen row, and below the state sequence's band and the
 	// band of each entry after it: the body carries none of the three keys, and the log holds the
 	// state sequence's line first, then the line of each entry's band above it. It reads
-	// carriedState and holds no entry to be the newest (R4 of dispatch://INFRA-1569). This subtest
-	// does not catch a strip applied beside the loop, because it reads both its expectation and its
-	// answer from stateNarrowings; the subtests below, which name their lines as literals, are what
-	// catch that.
+	// carriedState and holds no entry to be the newest (R4 of dispatch://INFRA-1569). The state
+	// sequence's line is named here as a literal rather than read from stateNarrowings, so a strip
+	// moved beside the loop, which writes no line, fails here.
 	t.Run("the state sequence narrowing writes its own line", func(t *testing.T) {
+		const dropped = "daemon.stateSeq, daemon.stateId and daemon.stateRun"
 		state := carriedState(t)
 		added := entryNumber(stateSeqContract)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), added-1)
@@ -501,8 +501,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, added-1)
-		if len(want) == 0 || want[0] != droppedAt(t, added) {
-			t.Fatalf("a caller at %d expects the lines %v, want the state sequence row's first", added-1, want)
+		if len(want) == 0 || want[0] != dropped {
+			t.Fatalf("a caller at %d expects the lines %v, want one that dropped %q first", added-1, want, dropped)
 		}
 		wantNarrowings(t, narrowings, added-1, want)
 	})

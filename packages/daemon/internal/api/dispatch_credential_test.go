@@ -94,15 +94,17 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		}
 	}
 
-	at, narrowings := stateNarrowedStating(t, state, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
-	if _, carried := dispatchCredentialServed(t, at); !carried {
+	carried := carriedState(t)
+	at, narrowings := stateNarrowedStating(t, carried, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
+	if _, served := dispatchCredentialServed(t, at); !served {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
 	// A caller at the contract stands below no frozen row and below the band of each entry alone,
 	// stateSeqContract's among them, so the lines it is written are those bands'
-	// (narrowingsExpected) and none says it dropped dispatchCredential. It holds no entry to be the
-	// newest (R4 of dispatch://INFRA-1569).
-	want := narrowingsExpected(state, dispatchCredentialContract)
+	// (narrowingsExpected) and none says it dropped dispatchCredential. It reads carriedState, so
+	// an entry's band finds its key to take, and it holds no entry to be the newest (R4 of
+	// dispatch://INFRA-1569).
+	want := narrowingsExpected(carried, dispatchCredentialContract)
 	if slices.Contains(want, "dispatchCredential") {
 		t.Fatalf("a caller at %d expects the lines %v, want none of them the Dispatch credential's", dispatchCredentialContract, want)
 	}

@@ -203,9 +203,8 @@ func writeSetting(ctx context.Context, tx pgx.Tx, project, stateURL string, crea
 // and a write within a minute make their two whole reads at least a minute apart (R3). While the
 // project has no setting, the intake drops each of its messages before it reads the cursor
 // (applyBatch). So a message whose hold the delete ended, and which comes back meanwhile, is
-// dropped, and its record (released_holders) can stay until eight newer records push it out
-// (cursor.reset). Its stream sequence comes again only in a take-over's replay, and where that
-// replay comes after a new setting, endHold finishes the message and takes its record out.
+// dropped; its record (released_holders) follows the rule cursor.reset holds, and its stream
+// sequence comes again only in a take-over's replay.
 func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

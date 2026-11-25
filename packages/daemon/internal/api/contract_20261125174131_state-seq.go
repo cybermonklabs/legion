@@ -40,14 +40,9 @@ package api
 // the route serves, because a later version may refuse such a request.
 // `packages/contracts/src/legion-api.ts` reads the view as LegionObservedStateResponse.
 //
-// stateSeqContract is this entry's id, by which its band of stateNarrowings names it: the
-// registry resolves the band's contract to the entry's number, entryNumber(stateSeqContract), and
-// a caller below that number is served the daemon block without the three keys (withoutStateSeq).
-// One built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
-// whole body for a key it does not name, and one built after strips the keys instead, so the
-// strip is what keeps them from a caller that did not ask for them rather than what keeps such a
-// caller reading at all. The observed view carries the same daemon block, and observedFor narrows
-// it by the same band.
+// stateSeqContract is this entry's id, which its band of stateNarrowings names; code that
+// compares a contract with this entry's reads entryNumber(stateSeqContract). For a caller built
+// after sjawhar/legion#2788 the strip keeps keys it did not ask for out of its body.
 const stateSeqContract = 20261125174131
 
 func init() {
