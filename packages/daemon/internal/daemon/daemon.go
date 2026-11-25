@@ -1046,10 +1046,10 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
 	switch {
-	case caller.Session == nil || *caller.Session != session:
+	case !caller.Session.Equal(session):
 		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
 			whoamiValue(caller.Session), session, session, entry, session)
-	case caller.Project == nil || *caller.Project != project:
+	case !caller.Project.Equal(project):
 		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
 			whoamiValue(caller.Project), project, project, entry, project)
 	case caller.Owner == nil:
@@ -1059,12 +1059,15 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	return nil
 }
 
-// whoamiValue is a field of GET /api/v1/whoami's answer as a refusal quotes it: quoted, or null.
-func whoamiValue(value *string) string {
-	if value == nil {
+// whoamiValue is a field of GET /api/v1/whoami's answer as a refusal quotes it: as the rule reads
+// it (oauth2call.RemoteText's String, the read's credentials redacted first), quoted, or null
+// where Dispatch names none. The field is Dispatch's words, or the words of whatever answers in
+// its place, which can echo the broker token the read presented.
+func whoamiValue(value oauth2call.RemoteText) string {
+	if value.IsEmpty() {
 		return "null"
 	}
-	return strconv.Quote(*value)
+	return strconv.Quote(value.String())
 }
 
 // plan is what the daemon resolved from its configuration before touching anything.

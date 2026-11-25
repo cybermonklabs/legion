@@ -571,13 +571,17 @@ func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" &&
 
 // Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
 // not a person's browser session (its whoamiAgent): Session is the session the credential proved,
-// Project the one project it lets its holder write, and Owner the person it acts for, each nil
-// where Dispatch names none. A broker token Dispatch serves every write of the daemon's for names
-// the daemon's session (DaemonSession), its project and a person.
+// Project the one project it lets its holder write, and Owner the person it acts for. A broker
+// token Dispatch serves every write of the daemon's for names the daemon's session
+// (DaemonSession), its project and a person. Session and Project are Dispatch's words, or the
+// words of whatever answers in its place, held as they came with the read's record
+// (oauth2call.RemoteText): a check compares them as they came, and a refusal prints them only as
+// the rule reads them, since they can echo the token the read presented. Each is empty where
+// Dispatch names none (null). Owner is nil where Dispatch names none, and nothing prints it.
 type Caller struct {
-	Session *string `json:"session"`
-	Project *string `json:"project"`
-	Owner   *string `json:"owner"`
+	Session oauth2call.RemoteText `json:"session"`
+	Project oauth2call.RemoteText `json:"project"`
+	Owner   *string               `json:"owner"`
 }
 
 // Error is a non-success response from Dispatch. Code is Dispatch's code and Said its sentence,
