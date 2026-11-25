@@ -803,7 +803,7 @@ type Config struct {
 	// whitespace-separated <service account email>=<project>=<person>[=<session>] entries, the
 	// grammar BROKER_EXCHANGE_ACCOUNTS uses for a pod, such as
 	// example-fleet@example-project.iam.gserviceaccount.com=EXAMPLE=ada@example.com. A token the
-	// exchange mints for a machine of that account may write that one project, acts for that
+	// exchange mints for a machine of that account names that one project, acts for that
 	// person, and writes under the session the entry fixes; an entry that fixes none requires the
 	// machine to name its own session. The session is everything after the third "=", so it alone
 	// may carry one. Each account is named at most once and must be one BROKER_VM_SERVICES lists.
@@ -837,7 +837,7 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// for a pod of the account names that one project, a project key that exchange.NewSet
 	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
 	// session. An entry may name no project (<service account>==<person>): the shared

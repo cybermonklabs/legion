@@ -3,11 +3,12 @@ package access
 import "slices"
 
 // Credential is Dispatch's rule over a person already resolved: PersonSees is what the
-// credential's person sees (Resolve of that person at a browser), and no consumer builds one
-// without it. Listed is the credential's list of projects, Person whether it acts for a person,
-// Browser whether it is the person's own cookie, and Restricted whether its person is a restricted
-// member, which decides whether its list narrows every project it reaches or only the private ones
-// (CredentialCovers).
+// credential's person sees (Resolve of that person at a browser). The write checks in
+// internal/dispatch/api build a Credential with Listed alone, since CredentialCovers reads no
+// person's limit. Listed is the credential's list of projects, Person whether it acts for a
+// person, Browser whether it is the person's own cookie, and Restricted whether its person is a
+// restricted member, which decides whether its list narrows every project it reaches or only the
+// private ones (CredentialCovers).
 type Credential struct {
 	Listed, PersonSees          []string
 	Person, Browser, Restricted bool
@@ -30,8 +31,9 @@ type Credential struct {
 // an unlisted credential's.
 //
 // VisibleProjectsSQL is its SQL twin for reads, which TestTheListRuleIsOneInGoAndSQL holds equal to
-// it over every combination. Dispatch's write checks in internal/dispatch/api call it with the
-// project each write names and private false while Dispatch holds no private project.
+// it over every combination. Dispatch's 11 write checks in internal/dispatch/api call it with
+// Listed alone, the project each write names and private false. The change that turns on private
+// projects or restricted member kinds for writes must change all 11 call sites.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true
