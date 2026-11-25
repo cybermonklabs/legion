@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `dispatch-first` says an open issue is no reason to wait: fix what stops you, in any repository,
+  and say on the issue what you did. Nobody owns code, and an issue may have several pull
+  requests. An agent waits only on a claimed, `in_progress` issue whose holder said on Envoy that
+  it works on it now, and tells the holder what it needs by when. The `dispatch` skill drops its
+  sentence on `dispatch login`'s exits, which its rule for exit 1 and exit 2 already covers.
+time: 2026-11-25T02:05:36Z
+custom:
+    Issue: no-wait-on-tracked-work

@@ -79,10 +79,10 @@ func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testi
 		// Nothing the daemon reads from a deployment wakes a look any more, so the task asks the
 		// checking agent for the time of its own next look and tells it to wait for nothing here.
 		"A pending report also carries wake_at", "Wait for nothing in this session",
-		// A defect with a clear fix goes to the controller topic, which hands it to the tree that
-		// owns the code and files it for Legion only when none does; one that needs a decision is a
-		// finding ask on the report issue, whose reference the checking agent publishes to the
-		// controller, which files only on a person's answer.
+		// A defect with a clear fix goes to the controller topic, which puts it on the issue that
+		// tracks it, hands it to a running tree whose pull request can carry it, or files it for
+		// Legion; one that needs a decision is a finding ask on the report issue, whose reference the
+		// checking agent publishes to the controller, which files only on a person's answer.
 		"a defect with a clear fix goes to the controller topic", "dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {
 		if !strings.Contains(start.Task, want) {
 			t.Fatalf("the check task lacks %q:\n%s", want, start.Task)

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A Legion role fixes a defect that stops its work, as well as a clear defect in code its tree
+  touches or depends on, in whatever repository the fix belongs: in its tree's pull request, or in
+  a child its architect files in that repository. An open issue that tracks the defect is no reason
+  to wait, unless it is claimed, `in_progress`, and its holder said on Envoy that it works on it
+  now. The controller no longer gives a clear defect to a tree said to own the code: it puts it on
+  the issue that tracks it, hands it to a running tree whose pull request can carry it, or files it
+  for Legion, and it sends a defect that stops its sender's work back to the sender to fix. A clear
+  defect's ask offers `Hand it over` in place of `Hand it to the owning tree`.
+time: 2026-11-25T02:05:36Z
+custom:
+    Issue: no-wait-on-tracked-work

@@ -187,10 +187,11 @@ Write `backlog` or `icebox` only when a person asked for that move, or as the fi
 Say why in a `dispatch comment`.
 A child that looks independent of the tree,
 capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
-child as a root. A problem outside the tree is never an issue you file: a clear defect in code
-this tree touches or depends on is fixed in this tree's own pull request, any other clear defect
-goes to the controller, which gives it to the tree that owns that code, and a problem that needs a
-decision is a `dispatch ask`
+child as a root. A problem outside the tree is never an issue you file outside it: a defect that
+stops this tree's work, and a clear defect in code this tree touches or depends on, are this tree's
+to fix, in whatever repository the fix belongs, in this tree's own pull request or in a child you
+file in that repository, and an open issue that tracks it is no reason to wait. Any other clear
+defect goes to the controller, and a problem that needs a decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is a decision block
 you write in the root spec; after approval its new version closes the gate until the human answers.

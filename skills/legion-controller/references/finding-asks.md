@@ -7,19 +7,20 @@ Read this when a clear defect or a finding ask's reference reaches you, when an 
 Every issue you file carries one line in its spec, which triage reads to tell your filing from another's label:
 
 - for a person: `Filed for <person> at their request: <request>`. The request is `dispatch://<REPORT KEY>/ask/<id>` for who answered it; `Slack <channel_id> message <ts>` for the mention's `<@user_id>` (`…, adopting message <earlier ts>` when the mention asks for an earlier message's request); or `direct message <id>`, the id its frame's `reply_with` names after `--in-reply-to` (for a message that came as your own user turn, `direct message to session <your session id>`).
-- for a clear defect no running tree owns: `Filed for Legion from <role> on <issue>: <evidence reference>`.
+- for a clear defect: `Filed for Legion from <role> on <issue>: <evidence reference>`.
 
 ## Hand over a clear defect
 
 A role sends a clear defect with its role token, the defect, its issue, where the fix belongs, the fix, and its evidence comment on the report issue, whose first line is `Clear defect from <role>`. When the message carries the evidence itself, create or reopen the report issue (`skill://legion-controller/references/daily-report.md`) and post it there with that first line. One you find yourself gets the same comment, with `controller` as the role. A clear-defect ask needs no answer: take it as below, and resolve it (`dispatch resolve-ask --kind resolved`) only once it carries your reply.
 
 1. Check it is clear: the fix needs no choice a person must make, in a repository of an owner your addressing line names. Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<REPORT KEY>/ask/<new id>`.
-2. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`.
-3. When a root in `admission.trees` matches its repository and component, `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`. Reply `Handed dispatch://<that KEY>` only when a live holder took the publish; when Envoy kept it, or the root has no locator, reply nothing and publish again at your next wake. File nothing while a tree owns the code.
-4. When no running tree owns it, file it where the fix belongs:
+2. A defect that stops its sender's work is the sender's to fix, wherever the fix belongs, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now (`findings.md`, "Fix it here"): reply `Not filed: it stops your work, so it is yours to fix`.
+3. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`.
+4. When the open pull request of a root in `admission.trees` changes the files the fix touches, it can carry the fix: `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`, and reply `Handed dispatch://<that KEY>` once a live holder took it. When Envoy kept it, or the root has no locator, go on to step 5.
+5. Otherwise file it where the fix belongs:
    `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
    The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
-5. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
+6. Reply under the evidence comment (`--reply-to '<comment id>'`) or the ask (`--reply-to-ask '<ask id>'`), its first line exactly `Filed dispatch://<NEW KEY>` or `Handed dispatch://<KEY>`.
 
 ## Follow it
 
@@ -29,7 +30,7 @@ A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Fo
 
 A park ask's answer goes to `skill://legion-controller/references/park-asks.md` step 4, a deferral ask's to `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4. For any other, `dispatch read --ref` it and act on the newest answer; when its typed text asks for another of these four than the option selected, do what the text asks, and when it asks for none of them, reply with your question and file nothing:
 
-- `Hand it to the owning tree`: [Hand over a clear defect](#hand-over-a-clear-defect) from step 3.
+- `Hand it over`: [Hand over a clear defect](#hand-over-a-clear-defect) from step 4.
 - `Do not file`: file nothing.
 - `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<REPORT KEY>/ask/<id>`.
 - `File it for Legion`: the same, with `--label legion`; its triage wake brings it back.

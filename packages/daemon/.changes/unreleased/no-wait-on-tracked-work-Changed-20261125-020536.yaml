@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The role prompts make a defect that stops a tree's work, and a clear defect in code the tree
+  touches or depends on, the tree's to fix in whatever repository the fix belongs: in its own pull
+  request, or in a child the architect files in that repository. An open issue that tracks such a
+  defect is no reason to wait. Any other clear defect goes to the controller, which no longer gives
+  it to a tree said to own the code: it puts it on the issue that tracks it, hands it to a running
+  tree whose pull request can carry it, or files it for Legion. The production-check tester's text
+  names no team that owns the code.
+time: 2026-11-25T02:05:36Z
+custom:
+    Issue: no-wait-on-tracked-work
