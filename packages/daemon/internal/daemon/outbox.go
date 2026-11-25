@@ -2660,6 +2660,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+			// The first task of a next change starts the working copy at the branch its merge
+			// moved before it is sent (record.SuperviseRequest.StartAt, supervise.Delivery.StartAt).
+			if at := payload.StartAt; at != nil {
+				task.StartAt = runtime.StartAt{Bookmark: at.Bookmark, Base: at.Base}
+			}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
