@@ -1940,7 +1940,9 @@ describe("label_tree", () => {
     rmSync(path.join(work, "label-trees/gone"), { recursive: true, force: true });
     const again = labelTree(repo, files, work, "gone", second, manifest);
     expect(again.code).toBe(1);
-    expect(again.stderr).toContain(`git worktree add of ${second} failed for the label tree gone: `);
+    expect(again.stderr).toContain(
+      `git worktree add of ${second} failed for the label tree gone: `
+    );
     expect(again.stderr).toContain("label-trees/gone/tree");
     expect(again.stderr).toContain(`git -C ${repo} worktree prune`);
     expect(existsSync(path.join(work, "label-trees/gone"))).toBe(false);
@@ -2631,7 +2633,10 @@ describe("rig.sh cell", () => {
       ["bash", path.join(scenarios, "rig.sh"), "cell", "owner-walk", label, kase, String(count)],
       { env: { ...childEnv, SKILL_SCENARIOS_WORK: work } }
     );
-    expect({ code: cell.exitCode, stderr: cell.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+    expect({ code: cell.exitCode, stderr: cell.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     return cell.stdout.toString().trimEnd();
   }
 

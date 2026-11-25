@@ -661,13 +661,7 @@ function cellLine(scenario: string, group: CellGroup): CellLine {
     passes,
     pending,
     verdict:
-      scored.length < group.count
-        ? "UNKNOWN"
-        : pending > 0
-          ? "PENDING"
-          : decided
-            ? "pass"
-            : "fail",
+      scored.length < group.count ? "UNKNOWN" : pending > 0 ? "PENDING" : decided ? "pass" : "fail",
   });
 }
 
