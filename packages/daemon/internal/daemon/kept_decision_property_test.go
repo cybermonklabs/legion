@@ -1113,6 +1113,11 @@ func (r *keptRun) restart() {
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 		RefreshGate:    supervise.NewRefreshGate(0),
+		// The supervisor runs on the run's own mark (r.ctx), and each goroutine a machine starts —
+		// a timer's firing, a prompt's send, whose outcome is a delivery write — takes a mark of its
+		// own, as the daemon gives it (daemon.go's supervise.Deps). Without it every such goroutine
+		// would share the run's mark (Machine.worker) and collide with the run's own reads.
+		Worker: store.ForConcurrentWorker,
 	}
 	r.t.Cleanup(sup.stop)
 	if !first {
@@ -3863,11 +3868,12 @@ func (r *keptRun) tracef(format string, args ...any) {
 }
 
 // worker is the context of a goroutine the run starts beside its own calls — a row run of the
-// step that runs rows beside each other (runTogether), and the operation a publish races against
-// (keptPublisher.publish) — with a hold mark of its own (store.ForConcurrentWorker), as each lane
-// of the outbox takes in production. On r.ctx they would share one mark: one goroutine's
-// transaction would set it, and the pool would refuse another caller a connection it does not
-// hold (store.ErrNestedAcquire).
+// step that runs rows beside each other (runTogether) — with a hold mark of its own
+// (store.ForConcurrentWorker), as each lane of the outbox takes in production. On r.ctx those
+// goroutines would share one mark: one's transaction would set it, and the pool would refuse
+// another a connection it does not hold (store.ErrNestedAcquire). The operation a publish races
+// against (keptPublisher.publish) runs on r.ctx: the publishing flow waits for it outside every
+// transaction, so nothing else on the run's mark runs beside it.
 func (r *keptRun) worker() context.Context {
 	return store.ForConcurrentWorker(r.ctx)
 }
@@ -3876,8 +3882,10 @@ func (r *keptRun) worker() context.Context {
 // connection to a caller that already holds one: a goroutine started on r.ctx rather than on
 // worker() collides with the run's own reads, as #5396's pod-update tests did. On the unmarked
 // context this run used to take, the pool refused nothing and no run of this property could
-// catch that. Here a planted holder takes a connection on the run's context and the run's own
-// read must be refused; the same read on worker() is not, which is why each goroutine takes one.
+// catch that. Here a planted holder takes a connection on the run's context, and the run's own
+// read must be refused; so must a read on the supervisor's context, which every machine's
+// goroutine would run on with no Deps.Worker (Machine.worker). The same read on worker(), and on
+// the context Deps.Worker gives a machine's goroutine, is allowed.
 func TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
 	t.Parallel()
 	r := newKeptRun(t, 1, 1)
@@ -3893,12 +3901,25 @@ func TestTheKeptRunsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
 	// The mark is set when the transaction takes its connection, before the body this waits for.
 	<-held
 
-	if _, err := r.pool.Exec(r.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
-		t.Fatalf("the run's own read while the planted holder holds a connection = %v, want %v: the run's context carries no hold mark, so nothing of this property can catch a goroutine that shares it",
-			err, store.ErrNestedAcquire)
+	for _, shared := range []struct {
+		what string
+		ctx  context.Context
+	}{{"the run's own read", r.ctx}, {"a read on the supervisor's context, a machine goroutine's with no Deps.Worker", r.sup.ctx}} {
+		if _, err := r.pool.Exec(shared.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
+			t.Fatalf("%s while the planted holder holds a connection = %v, want %v: that context carries no hold mark, so nothing of this property can catch a goroutine that shares it",
+				shared.what, err, store.ErrNestedAcquire)
+		}
 	}
-	if _, err := r.pool.Exec(r.worker(), "select 1"); err != nil {
-		t.Fatalf("a read on a goroutine's own mark while the holder holds one = %v, want it allowed: each goroutine's mark is its own", err)
+	if r.sup.deps.Worker == nil {
+		t.Fatal("the run's supervisor sets no Deps.Worker, so each goroutine a machine starts shares the run's mark")
+	}
+	for _, own := range []struct {
+		what string
+		ctx  context.Context
+	}{{"a read on a goroutine's own mark (worker)", r.worker()}, {"a read on a machine goroutine's mark (Deps.Worker)", r.sup.deps.Worker(r.sup.ctx)}} {
+		if _, err := r.pool.Exec(own.ctx, "select 1"); err != nil {
+			t.Fatalf("%s while the holder holds one = %v, want it allowed: each goroutine's mark is its own", own.what, err)
+		}
 	}
 }
 
