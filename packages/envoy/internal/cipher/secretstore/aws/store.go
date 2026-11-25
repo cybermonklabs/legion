@@ -91,9 +91,10 @@ type Store struct {
 	// any other key is not OnKey.
 	KeyARN string
 	// ClientErrors answers each failure of Client as Client returned it, with no prefix of the
-	// store's, a not-found one still matching ErrNotFound (secretstore.NotFound): for a client
-	// that words its own failures and never prints the service's text, the agent-secrets CLI's.
-	// The broker's store leaves it false.
+	// store's, a not-found one still matching ErrNotFound (secretstore.NotFound), and a value that
+	// is no text in the CLI's words (secretstore.NotText): for a client that words its own
+	// failures and never prints the service's text, the agent-secrets CLI's. The broker's store
+	// leaves it false.
 	ClientErrors bool
 }
 
@@ -321,6 +322,9 @@ func (a Store) Read(ctx context.Context, source string) (string, error) {
 		return "", a.failed("secrets manager "+source, err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
+		if a.ClientErrors {
+			return "", secretstore.NotText("its value is not a non-empty string")
+		}
 		return "", fmt.Errorf("secrets manager %s: %w", source, secretstore.ErrValueNotText)
 	}
 	return *out.SecretString, nil

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -42,5 +44,53 @@ func TestClientErrorsAnswerTheClientsFailure(t *testing.T) {
 	}
 	if _, err := worded.Read(ctx, missing); !errors.Is(err, secretstore.ErrNotFound) || status.Code(errors.Unwrap(err)) != codes.NotFound {
 		t.Errorf("Read of a missing secret WithClientErrors = %v, want ErrNotFound printing the client's NotFound", err)
+	}
+}
+
+// TestClientErrorsReadAsTheCLIReads: WithClientErrors, a List whose read of one secret's version
+// fails answers a secretstore.SecretFailure naming that secret and printing as the client
+// returned it, and Read makes the CLI's one AccessSecretVersion: no GetSecret, so a secret
+// scheduled for deletion reads, and a value that is not UTF-8 is refused in the CLI's words. The
+// broker's store, without it, fails the List with no name and refuses the deleted secret (the
+// controls).
+func TestClientErrorsReadAsTheCLIReads(t *testing.T) {
+	ctx := context.Background()
+	held, deleted, binary := fakePrefix+"held-key", fakePrefix+"deleted-key", fakePrefix+"binary-key"
+	enabled := secretmanagerpb.SecretVersion_ENABLED
+	fake := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+		held:    {DenyVersion: true, State: enabled, Value: []byte("v1")},
+		deleted: {Expires: time.Now().Add(time.Hour), State: enabled, Value: []byte("v1")},
+		binary:  {State: enabled, Value: []byte{0xff, 0xfe}},
+	}}
+	client := gcptest.Start(t, fake)
+	worded := gcp.New(client, fakeKey).WithClientErrors()
+	broker := gcp.New(client, fakeKey)
+
+	var one secretstore.SecretFailure
+	_, err := worded.List(ctx, fakePrefix+"held", secretstore.ReadOptions{})
+	if !errors.As(err, &one) || one.ID != held || status.Code(err) != codes.PermissionDenied {
+		t.Errorf("List WithClientErrors = %v, want a SecretFailure naming %s with the client's PermissionDenied", err, held)
+	}
+	if _, err := broker.List(ctx, fakePrefix+"held", secretstore.ReadOptions{}); errors.As(err, &one) {
+		t.Errorf("List without client errors = %v, want no SecretFailure", err)
+	}
+
+	fake.Mu.Lock()
+	before := fake.Calls["GetSecret"]
+	fake.Mu.Unlock()
+	if value, err := worded.Read(ctx, deleted); err != nil || value != "v1" {
+		t.Errorf("Read of a secret scheduled for deletion WithClientErrors = %q, %v; want its value", value, err)
+	}
+	fake.Mu.Lock()
+	after := fake.Calls["GetSecret"]
+	fake.Mu.Unlock()
+	if after != before {
+		t.Errorf("Read WithClientErrors made %d GetSecret calls, want none", after-before)
+	}
+	if _, err := broker.Read(ctx, deleted); !errors.Is(err, secretstore.ErrNotFound) {
+		t.Errorf("Read of a secret scheduled for deletion without client errors = %v, want ErrNotFound", err)
+	}
+	if _, err := worded.Read(ctx, binary); !errors.Is(err, secretstore.ErrValueNotText) || err.Error() != "its value is not a non-empty UTF-8 string" {
+		t.Errorf("Read of a value that is not UTF-8 WithClientErrors = %v, want ErrValueNotText in the CLI's words", err)
 	}
 }

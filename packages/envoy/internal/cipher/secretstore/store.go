@@ -35,6 +35,26 @@ func (n notFound) Is(target error) bool { return target == ErrNotFound }
 // decoder refuses (policy.ReasonValueMalformed), rather than reading it again at every load.
 var ErrValueNotText = errors.New("value is not a non-empty UTF-8 string")
 
+// NotText is ErrValueNotText as a store answers it where its client words its own failures (the
+// agent-secrets CLI's do): it prints words, the client's own, and matches ErrValueNotText.
+func NotText(words string) error { return notText(words) }
+
+type notText string
+
+func (n notText) Error() string        { return string(n) }
+func (n notText) Is(target error) bool { return target == ErrValueNotText }
+
+// SecretFailure is a List's failure on one secret it lists, as a store answers it where its
+// client words its own failures: ID is that secret's name, so the client can say which read
+// failed, and Err the client's failure, which it prints as and unwraps to.
+type SecretFailure struct {
+	ID  string
+	Err error
+}
+
+func (f SecretFailure) Error() string { return f.Err.Error() }
+func (f SecretFailure) Unwrap() error { return f.Err }
+
 // CreateLabel is the label `agent-secrets secret create` puts on a Secret Manager secret it makes
 // before its value, set to a random value of that create's own. The broker reads only whether a
 // secret carries it, never its value, and never as a tag the policy weighs: on Secret Manager it is

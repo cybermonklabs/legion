@@ -87,10 +87,12 @@ type Store struct {
 	clientErrors bool
 }
 
-// WithClientErrors is g answering each failure of its Client as the Client returned it, with no
-// prefix of the store's and never reduced to the status code (gcpErr), a not-found one still
-// matching ErrNotFound (secretstore.NotFound): for a client that words its own failures and never
-// prints the status message, the agent-secrets CLI's. The broker's store does without it.
+// WithClientErrors is g answering as the agent-secrets CLI reads, for a client that words its own
+// failures and never prints the status message: each failure of its Client as the Client returned
+// it, with no prefix of the store's and never reduced to the status code (gcpErr), a not-found one
+// still matching ErrNotFound (secretstore.NotFound); a List's failure on one secret as a
+// secretstore.SecretFailure naming it; and Read as the CLI's one AccessSecretVersion
+// (clientRead). The broker's store does without it.
 func (g Store) WithClientErrors() Store {
 	g.clientErrors = true
 	return g
@@ -262,6 +264,9 @@ func (g Store) List(ctx context.Context, prefix string, opts secretstore.ReadOpt
 		}
 		ls, err := g.listing(ctx, secret, opts)
 		if err != nil {
+			if g.clientErrors {
+				return nil, secretstore.SecretFailure{ID: secret.GetName(), Err: err}
+			}
 			return nil, err
 		}
 		listings = append(listings, ls)
@@ -366,6 +371,9 @@ func (g Store) onKey(keyVersion string) bool {
 // must be non-empty UTF-8, since the broker injects it into an environment, and one that is not
 // wraps ErrValueNotText; an error names the secret and never the bytes.
 func (g Store) Read(ctx context.Context, source string) (string, error) {
+	if g.clientErrors {
+		return g.clientRead(ctx, source)
+	}
 	if err := g.held.verdict(source, func() error {
 		secret, err := g.Client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: source})
 		switch status.Code(err) {
@@ -413,6 +421,25 @@ func (g Store) Read(ctx context.Context, source string) (string, error) {
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {
 		return "", fmt.Errorf("secret manager %s: %w", latest, secretstore.ErrValueNotText)
+	}
+	return string(data), nil
+}
+
+// clientRead is Read WithClientErrors: the agent-secrets CLI's read of a value it checks before a
+// retag writes, one AccessSecretVersion of versions/latest with no metadata check and no verdict
+// held, since a person retags a secret scheduled for deletion as readily as any other. Its failure
+// is the client's, and a value that is not non-empty UTF-8 is refused in the CLI's words.
+func (g Store) clientRead(ctx context.Context, source string) (string, error) {
+	out, err := g.Client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: source + "/versions/" + gcpLatest})
+	switch {
+	case status.Code(err) == codes.NotFound:
+		return "", secretstore.NotFound(err)
+	case err != nil:
+		return "", err
+	}
+	data := out.GetPayload().GetData()
+	if len(data) == 0 || !utf8.Valid(data) {
+		return "", secretstore.NotText("its value is not a non-empty UTF-8 string")
 	}
 	return string(data), nil
 }
