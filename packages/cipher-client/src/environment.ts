@@ -4,11 +4,14 @@
 // set of values and the Go client (`packages/envoy/internal/cipherclient/environment.go`) and this
 // one are told the same things the same way.
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
 import { isHttpUrl } from "@legion/contracts/log-text";
 import { DeviceLoginIdentity, deviceLoginSessionName } from "./device-login";
 import { DEVICE_LOGIN_FILE_VAR, deviceLoginFile } from "./device-login-file";
-import { importDpopKey, newDpopKey } from "./dpop";
+import { type DpopKey, importDpopKey, newDpopKey } from "./dpop";
+import { messageOf } from "./error-text";
 import {
   ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
   ACTIONS_ID_TOKEN_REQUEST_URL_VAR,
@@ -47,6 +50,13 @@ export const MACHINE_TOKEN_FILE_VAR = "AGENT_SECRETS_MACHINE_TOKEN_FILE";
 /** The audience of this machine's identity token, held in `machine-audience.ts`, which imports
  *  nothing, so the identities this module builds read it too. */
 export { MACHINE_AUDIENCE_VAR };
+/** The directory a session's agent-secrets identity lives in: in a pod, the role's own, where
+ *  `agent-secrets keygen` wrote {@link ROLE_KEY_FILE} before the role's first hello (Go's
+ *  `KeyDirVar`). {@link brokerTokenClient} reads it beside {@link IDENTITY_VAR}. */
+export const KEY_DIR_VAR = "AGENT_SECRETS_KEY_DIR";
+/** The key in {@link KEY_DIR_VAR}'s directory: the PKCS#8 P-256 PEM `agent-secrets keygen`
+ *  writes (Go's `RoleKeyFile`). */
+export const ROLE_KEY_FILE = "key.pem";
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
 export const SESSION_VAR = "AGENT_SECRETS_SESSION";
@@ -96,6 +106,7 @@ export const BROKER_VARIABLES = [
   BROKER_URL_VAR,
   IDENTITY_VAR,
   MACHINE_TOKEN_FILE_VAR,
+  KEY_DIR_VAR,
   MACHINE_AUDIENCE_VAR,
   SESSION_VAR,
   PROJECTS_VAR,
@@ -236,6 +247,30 @@ export function tradeProjects(env: BrokerEnvironment): string[] {
   return sorted;
 }
 
+/**
+ * The key a machine trade proves (Go's `MachineKey`). A role in a pod, where {@link IDENTITY_VAR}
+ * is {@link IDENTITY_KUBERNETES} and {@link KEY_DIR_VAR} names the role's own agent-secrets
+ * directory, proves the key in that directory's {@link ROLE_KEY_FILE}, because the broker refuses
+ * a pod session's exchange whose DPoP key is not the one its registration names, which is that
+ * key. A file there that cannot be read, or is no P-256 key, throws naming its path: a fresh key
+ * in its place would be refused at the broker in words that name neither the file nor the key.
+ * Every other machine proves a key of this process's own, made here.
+ */
+async function machineKey(env: BrokerEnvironment): Promise<DpopKey> {
+  const dir = value(env, KEY_DIR_VAR);
+  if (value(env, IDENTITY_VAR) !== IDENTITY_KUBERNETES || dir === "") return await newDpopKey();
+  const path = join(dir, ROLE_KEY_FILE);
+  let pem: string;
+  try {
+    pem = await readFile(path, "utf8");
+  } catch (error) {
+    throw new Error(`read this role's agent-secrets key ${path}: ${messageOf(error)}`, {
+      cause: error,
+    });
+  }
+  return await importDpopKey(pem, `this role's agent-secrets key ${path}`);
+}
+
 /** A client {@link brokerTokenClient} made, and the sign-in it trades. */
 export interface MadeBrokerClient {
   readonly client: BrokerTokenClient;
@@ -288,16 +323,16 @@ export interface ReadTrade {
  * machine, because its own credentials are a service's — the controller `legion controller start`
  * launches, whose operator's sign-in sits under the HOME it keeps.
  *
- * With no sign-in, it is the machine's own client. The key is this process's own and is made
- * here, once per client, so only its public half ever leaves the process, and the session is
- * {@link tradeSession}'s. It declines the launcher credential its identity holds
- * (`launcherCredential`): every caller of this factory wants a Dispatch access token and nothing
- * else, and none of them reads `credentialId`. A key is this process's and this session's, so
- * asking would write a `launcher_credentials` row and an audit row for every `dispatch` call,
- * every Claude Code hook run, every `envoy-send` and every session of a long-lived Oh My Pi or
- * Claude Code process, each of them on the operator's machine-logins list for its hour and
- * removed by nothing. The machine's own launcher credential is `agent-secrets`' and the
- * helper's, which ask for it.
+ * With no sign-in, it is the machine's own client. Its key is {@link machineKey}'s: a pod role's
+ * own agent-secrets key, or one this process makes here, once per client; either way only its
+ * public half ever leaves the process. The session is {@link tradeSession}'s. It declines the
+ * launcher credential its identity holds (`launcherCredential`): every caller of this factory
+ * wants a Dispatch access token and nothing else, and none of them reads `credentialId`. A key is
+ * this process's and this session's, so asking would write a `launcher_credentials` row and an
+ * audit row for every `dispatch` call, every Claude Code hook run, every `envoy-send` and every
+ * session of a long-lived Oh My Pi or Claude Code process, each of them on the operator's
+ * machine-logins list for its hour and removed by nothing. The machine's own launcher credential
+ * is `agent-secrets`' and the helper's, which ask for it.
  *
  * A device login ({@link IDENTITY_DEVICE_LOGIN}) is none of those: it is a person's own
  * credential on their own machine, approved by them in Dispatch, so no sign-in is chosen beside
@@ -319,8 +354,9 @@ export interface ReadTrade {
  * key of its own for the client and sends it as the holder key (`holderKey`): the token is bound
  * to that key, which signs every proof presented beside it, and the proof key signs the trade
  * alone. Neither sends `launcher_credential`, which the broker reads as declined for a read
- * trade. The machine's own client already proves a key this process made, which holds no
- * launcher credential, and needs no holder key.
+ * trade. The machine's own client proves a key that holds no launcher credential, one this
+ * process made or a pod role's agent-secrets key, which the broker enrolls as a session key and
+ * mints no launcher credential on, and needs no holder key.
  */
 export async function brokerTokenClient(
   env: BrokerEnvironment,
@@ -358,7 +394,7 @@ export async function brokerTokenClient(
   if (record === undefined) {
     const client = new BrokerTokenClient({
       brokerUrl,
-      key: await newDpopKey(),
+      key: await machineKey(env),
       subject: machine,
       session: tradeSession(env, own),
       launcherCredential: false,

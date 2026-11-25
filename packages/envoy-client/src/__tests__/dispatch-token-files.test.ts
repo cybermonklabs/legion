@@ -537,7 +537,7 @@ describe("the dispatch command's token files", () => {
     for (const env of [hosted, unhosted]) {
       let stdout = "";
       let stderr = "";
-      const code = await runDispatchCli(["api", "GET", "/api/v1/issues/DSP-1"], env, {
+      const code = await runDispatchCli(["api", "--path", "/api/v1/issues/DSP-1"], env, {
         stdout: (text) => {
           stdout += text;
         },

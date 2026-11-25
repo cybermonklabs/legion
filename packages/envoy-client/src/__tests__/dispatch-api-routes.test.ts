@@ -24,12 +24,14 @@ type ClientMethod = Exclude<
   "fetchImpl"
 >;
 
-/** The write methods no `dispatch` command calls, which have no row, each with who calls it. */
+/** The write methods with no row, each with why: no `dispatch` command calls it, or, for
+ *  `sendRoute`, the route it sends is the one its caller names. */
 const NO_COMMAND: Readonly<Partial<Record<ClientMethod, string>>> = {
   deliveryReply: "the plugins' answer to a delivery they took (src/delivery.ts)",
   acceptMessageDelivery:
     "Oh My Pi's acceptance of a person's direct message as its user's turn (pi-shared's accept-user-turn.ts)",
   nameArtifactVersion: "no caller outside DispatchClient's own tests",
+  sendRoute: "dispatch api's write of the route its caller names (src/dispatch-commands/api.ts)",
 };
 
 /** An issue named as a reference, which the recording fetch resolves to DSP-1. */
@@ -77,6 +79,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
+  sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),

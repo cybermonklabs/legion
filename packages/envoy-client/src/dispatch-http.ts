@@ -83,6 +83,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  type DISPATCH_API_METHODS,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -129,7 +130,7 @@ export interface ArtifactFileVersion {
 /** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
  *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
  *  both name, so a member one of them carries cannot be dropped by the other. */
-type RefusalMember = "candidates" | "changed" | "current" | "issues" | "mismatches";
+type RefusalMember = "candidates" | "changed" | "current" | "hint" | "issues" | "mismatches";
 
 type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] };
 
@@ -147,6 +148,9 @@ export class DispatchServiceError extends Error {
   readonly issues: DispatchServiceErrorShape["issues"] | undefined;
   /** A status change's refusal: the entry of each step that wrote before it. */
   readonly changed: DispatchServiceErrorShape["changed"] | undefined;
+  /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+   *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+  readonly hint: string | undefined;
 
   constructor(
     readonly code: string,
@@ -162,6 +166,7 @@ export class DispatchServiceError extends Error {
     this.mismatches = details.mismatches;
     this.issues = details.issues;
     this.changed = details.changed;
+    this.hint = details.hint;
   }
 }
 
@@ -716,7 +721,7 @@ function parsedJson(response: Response, text: string): ParsedJson {
 
 /** Dispatch's own refusal, as an answer carries it: its code, where it names one, its text, and
  *  the members some refusals carry beside them, which `DispatchServiceError` keeps. */
-export interface DispatchRefusal extends RefusalMembers {
+interface DispatchRefusal extends RefusalMembers {
   readonly code: string | undefined;
   readonly error: string;
 }
@@ -725,8 +730,8 @@ export interface DispatchRefusal extends RefusalMembers {
  * Dispatch's own refusal in `json`, an answer's body parsed (`parsedJson`), or undefined where the
  * answer is none: its body is typed JSON (`isJson`) that parses to an object whose `error` is a
  * string, as Dispatch writes every refusal, and its `code` counts only where it is a string. The
- * rule `writeAnswer`, `#payloadOf` and `dispatch api` (`dispatchRefusal`) read a refusal by;
- * `tokenNotLive` reads a 401's code alone, whatever its `error`.
+ * rule `writeAnswer` and `#payloadOf` read a refusal by; `tokenNotLive` reads a 401's code alone,
+ * whatever its `error`.
  */
 function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
   const shape = asErrorShape(json?.value);
@@ -737,14 +742,10 @@ function refusalIn(json: ParsedJson): DispatchRefusal | undefined {
     candidates: shape.candidates,
     changed: shape.changed,
     current: shape.current,
+    hint: typeof shape.hint === "string" ? shape.hint : undefined,
     issues: shape.issues,
     mismatches: shape.mismatches,
   };
-}
-
-/** Dispatch's own refusal in `response`, whose body is `text`, by `refusalIn`'s rule. */
-export function dispatchRefusal(response: Response, text: string): DispatchRefusal | undefined {
-  return refusalIn(parsedJson(response, text));
 }
 
 /**
@@ -1448,6 +1449,38 @@ export class DispatchClient {
    *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
   async limits(): Promise<DispatchLimits> {
     return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
+  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
+   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
+   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
+   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+   *
+   *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
+   *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
+   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
+   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
+   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
+   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+  async readRoute(path: string): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    return this.#response("GET", url, await this.#send("GET", url));
+  }
+
+  /** `<method> <path>`, for `dispatch api --method`: one write of a route no method here names,
+   *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
+   *  the request's JSON body. Like `readRoute` it sends the request once (one `#send`, skipping
+   *  `#noRoute`) and answers Dispatch's JSON or throws its refusal as `#response` does. It is no
+   *  write of `#write`'s: it carries no `Idempotency-Key` and is never asked again, so a caller
+   *  that repeats it decides that itself. */
+  async sendRoute(
+    method: (typeof DISPATCH_API_METHODS)[number],
+    path: string,
+    body?: string
+  ): Promise<unknown> {
+    const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
+    const encoded = body === undefined ? undefined : { content: body, type: "application/json" };
+    return this.#response(method, url, await this.#send(method, url, encoded));
   }
 
   /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
@@ -2379,9 +2412,9 @@ export class DispatchClient {
   }
 
   /**
-   * A read, a PUT or a DELETE: it presents the credential and sends the request once
-   * (`#sendOnce`), and once more where Dispatch answers that the token presented is not live
-   * (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
+   * A read, a PUT, a DELETE or `sendRoute`'s write: it presents the credential and sends the
+   * request once (`#sendOnce`), and once more where Dispatch answers that the token presented is
+   * not live (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
    * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
    * revoke of their sign-in does. The credential is told which presentation was dead, drops that
    * token alone, and presents the token it holds now, trading at the broker where it holds none;
@@ -2389,8 +2422,8 @@ export class DispatchClient {
    * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
    * says it did nothing. A second such answer is returned as any other refusal is. A trade the
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
-   * words, which name `agent-secrets login` after a revoke. A write (POST or PATCH) goes through
-   * `#write` instead.
+   * words, which name `agent-secrets login` after a revoke. Every other write (POST or PATCH)
+   * goes through `#write` instead.
    */
   async #send(
     method: string,

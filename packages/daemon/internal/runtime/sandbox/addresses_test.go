@@ -22,7 +22,7 @@ const (
 func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 	t.Helper()
 	opts := testOptions()
-	opts.DispatchURL, opts.DispatchToken = testDispatchURL, "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = testDispatchURL, DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.AgentSecrets = &AgentSecrets{URL: testBrokerURL, Audience: "agent-secrets", TokenExpiry: time.Hour}
 	if edit != nil {
 		edit(&opts)
@@ -41,7 +41,7 @@ func addressRuntime(t *testing.T, edit func(*Options)) *Runtime {
 func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 	t.Helper()
 	pod := &corev1.Pod{Spec: podOf(t, launched, workerSpec(t))}
-	record, err := launched.recordFor(claim.RoleTester, 1, launched.enrollsIn(&pod.Spec, claim.RoleTester))
+	record, err := launched.recordFor(claim.RoleTester, 1, launched.enrollsIn(&pod.Spec, claim.RoleTester), launched.dispatch.Bearer != "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func movedSince(t *testing.T, launched, now *Runtime) []movedAddress {
 	if stream, ok := now.movedStream(pod, podContainer(claim.RoleTester)); ok {
 		moved = append(moved, stream)
 	}
-	environment, err := now.movedEnvironment(s, pod, claim.RoleTester, 1)
+	environment, _, err := now.movedEnvironment(s, pod, claim.RoleTester, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 			want:     &movedAddress{"AGENT_SECRETS_URL", "https://secrets-old.internal.example", testBrokerURL},
 		},
 		"Dispatch configured only now": {
-			launched: func(o *Options) { o.DispatchURL, o.DispatchToken = "", "" },
+			launched: func(o *Options) { o.DispatchURL, o.Dispatch = "", DispatchCredential{} },
 			want:     &movedAddress{"DISPATCH_URL", "(unset)", testDispatchURL},
 		},
 		"the secrets broker no longer configured": {
@@ -183,7 +183,7 @@ func TestAMovedAddressIsDescribedAsItHoldsThenWhatItIsHandedNow(t *testing.T) {
 func TestAnUnreadableAddressRecordIsAnError(t *testing.T) {
 	r := addressRuntime(t, nil)
 	s := &sandbox{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{addressesAnnotation(claim.RoleTester): "{not json"}}}
-	if moved, err := r.movedEnvironment(s, &corev1.Pod{}, claim.RoleTester, 1); err == nil || !strings.Contains(err.Error(), "is unreadable") {
+	if moved, _, err := r.movedEnvironment(s, &corev1.Pod{}, claim.RoleTester, 1); err == nil || !strings.Contains(err.Error(), "is unreadable") {
 		t.Fatalf("movedEnvironment = %+v, %v; want the record's unreadability", moved, err)
 	}
 }
@@ -199,7 +199,7 @@ func TestTheAddressRecordHoldsNoCredential(t *testing.T) {
 		o.DispatchURL = "https://legion:dispatch-password@dispatch.internal.example"
 		o.AgentSecrets.URL = "https://secrets.internal.example/?token=broker-query"
 	})
-	record, err := r.recordFor(claim.RoleTester, 7, r.enrollsIn(nil, claim.RoleTester))
+	record, err := r.recordFor(claim.RoleTester, 7, r.enrollsIn(nil, claim.RoleTester), true)
 	if err != nil {
 		t.Fatal(err)
 	}

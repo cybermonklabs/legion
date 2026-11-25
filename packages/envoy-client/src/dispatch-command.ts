@@ -749,7 +749,5 @@ export function commandsHelp(): string {
     "",
     "dispatch login --device logs a machine with no identity of its own, such as a laptop, in at the secrets broker, once per machine; it is no Dispatch call, and needs no host or session (dispatch login --help).",
     "",
-    "dispatch api <METHOD> <path> sends one request of Dispatch's HTTP API under /api/v1 with the credential every command presents, and prints the answer's body, for a script or a job; it runs with no host too, reading Dispatch from the environment alone, and in a session whose AskGate reviews Dispatch writes it sends only GET (dispatch api --help).",
-    "",
   ].join("\n");
 }

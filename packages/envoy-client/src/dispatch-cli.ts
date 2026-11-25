@@ -16,7 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { apiCommand } from "./dispatch-commands/api";
+import { ApiGateRefusal, sendApiCall, unhostedDispatch } from "./dispatch-commands/api";
 import { defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
@@ -29,7 +29,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { DispatchWriteLandedError } from "./dispatch-http";
+import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
   appendResult,
@@ -283,19 +283,6 @@ export async function runDispatchCli(
       // The session's directory is unusable; the printed refusal stands on its own.
     }
   };
-  // `dispatch api` sends one request of Dispatch's HTTP API (`dispatch-commands/api.ts`). Like
-  // `dispatch login` it runs where no host is found, as in a GitHub Actions job, reading Dispatch
-  // from the environment alone; under a host it acts as that host's session. Its refusals before
-  // a request is sent go to the ledger as every other command's do, under the tool `dispatch_api`
-  // so a reader naming the command (`commandName`) names `dispatch api`, an AskGate refusal with
-  // AskGate's mark.
-  if (argv[0] === "api") {
-    const hostName = ledgerHost();
-    return await apiCommand(argv.slice(1), env, io, {
-      hosted: hostName === undefined ? undefined : hostSession(hostName, env),
-      ledger: (text, askgate) => ledgerRefusal(text, "dispatch_api", askgate),
-    });
-  }
   const refuse = (
     text: string,
     code: number,
@@ -329,6 +316,44 @@ export async function runDispatchCli(
           USAGE,
           parsed.tool
         );
+  }
+
+  // `dispatch api` also runs where no host is found (`commandHost`), as in a GitHub Actions job,
+  // like `dispatch login`: it reads Dispatch from the environment alone (`unhostedDispatch`),
+  // keeps no session's state, and runs the call as the contract's command does (`sendApiCall`,
+  // dispatch-commands/api.ts) once the check every call has passed. Its refusals before a request
+  // is sent go to the ledger of the session the call knows, under its tool, an AskGate refusal
+  // with AskGate's mark; a request that was sent records nothing there, since no session runs it.
+  if (parsed.tool === "dispatch_api" && ledgerHost() === undefined) {
+    const { problems, args } = await checkDispatchCall({
+      tool: parsed.tool,
+      args: parsed.args,
+      cwd: io.cwd,
+      env,
+      serverUrls: [],
+    });
+    if (problems.length > 0) {
+      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
+    }
+    if (parsed.dryRun) {
+      print(JSON.stringify(parsed.args, null, 2));
+      return OK;
+    }
+    const resolved = await unhostedDispatch(env);
+    if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
+    const { url, credential } = resolved.config;
+    try {
+      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
+      print((await sendApiCall(args, env, client)).text);
+      return OK;
+    } catch (error) {
+      if (error instanceof ToolInputError) return refuse(error.message, USAGE, parsed.tool);
+      if (error instanceof ApiGateRefusal) {
+        return refuse(error.message, REFUSED, parsed.tool, error.askgate);
+      }
+      print(messageFor(error));
+      return REFUSED;
+    }
   }
 
   const hosted = hostSession(ledgerHost(), env);
@@ -610,7 +635,13 @@ export async function runDispatchCli(
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
     } else {
-      entry = { tool, error: text };
+      // `dispatch api`'s refusal of a write in a session AskGate gates carries AskGate's mark, as
+      // the CLI's own refusal of a gated write does, so pi-envoy counts it.
+      entry = {
+        tool,
+        error: text,
+        ...(error instanceof ApiGateRefusal ? { askgate: error.askgate } : {}),
+      };
       // An argument the executor refuses (a ref naming another owner, a picture that is not
       // there, an id that matches no ask) is the same usage error as one the parse refuses, and
       // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,

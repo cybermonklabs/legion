@@ -1,8 +1,9 @@
 // packages/envoy-client/src/dispatch-commands/host-session.ts
 //
 // The session a `dispatch` command acts as under the host that runs it, and the Dispatch it reads
-// there. `dispatch-cli.ts` and `dispatch api` (`api.ts`) both take them from here, which neither
-// of them imports, so neither import is a cycle.
+// there, which `dispatch-cli.ts` takes from here. `dispatch api` (`api.ts`) takes the session
+// variables alone, for the AskGate records it reads before a write. Neither file is imported
+// here, so neither import is a cycle.
 
 import type { ActiveDispatchConfig, DispatchEnvironment } from "../dispatch-config";
 import type { DispatchHost } from "../dispatch-cwd";
@@ -62,23 +63,27 @@ export function hostSession(
   }
   // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
   // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
+  // Bracket access, not a dot: claude-envoy type-checks this source under
+  // noPropertyAccessFromIndexSignature, which refuses a dot on an index signature.
+  // biome-ignore-start lint/complexity/useLiteralKeys: claude-envoy's tsconfig refuses dot access
   const [sessionId, sessionVariable] =
     host === "claude"
       ? [
-          env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID,
+          env["ENVOY_SESSION_ID"] ?? env["CLAUDE_CODE_SESSION_ID"],
           "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID",
         ]
       : host === "codex"
-        ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
-        : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
+        ? [env["CODEX_THREAD_ID"], "CODEX_THREAD_ID"]
+        : [env["DISPATCH_SESSION_ID"], "DISPATCH_SESSION_ID"];
   if (sessionId === undefined) {
     return {
       problem: `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
     };
   }
   const file =
-    (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
+    (env["DISPATCH_HOST"] === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
+  // biome-ignore-end lint/complexity/useLiteralKeys: see above
   return { host, sessionId, file };
 }
 
