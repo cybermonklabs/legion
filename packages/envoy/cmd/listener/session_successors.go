@@ -16,8 +16,9 @@ import (
 const sessionSuccessorsPattern = "/v1/sessions/{session}/successors"
 
 // sessionSuccessorsHandler answers GET /v1/sessions/<session_id>/successors: the sessions that
-// replaced that session (handoverSuccessors) as listenerwire.SessionSuccessors, the empty list for
-// a session no one replaced. A handover record copies the replaced session's unread direct
+// replaced that session (handoverSuccessors) as listenerwire.SessionSuccessors, with the principal
+// each of them and that session last registered as, the empty list and no principal for a session
+// no one replaced. A handover record copies the replaced session's unread direct
 // messages to its successor (role_takeover.go, handOverDirectFrame), and each copy keeps the
 // message's own delivery, so Dispatch reads this to let the successor answer that delivery
 // (internal/dispatch/api, lookUpRoleHolderReply).
@@ -52,7 +53,7 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		successors, err := handoverSuccessors(ctx, d.client, d.known, sessionID)
+		principal, successors, err := handoverSuccessors(ctx, d.client, d.known, sessionID)
 		if err != nil {
 			writeBusUnavailable(w, fmt.Errorf("read the sessions that replaced session %s: %w", sessionID, err))
 			return
@@ -62,26 +63,32 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 			writeBusUnavailable(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, listenerwire.SessionSuccessors{SessionID: sessionID, Successors: shown})
+		// Dispatch holds a successor's reply to this principal (lookUpRoleHolderReply), so it is
+		// named only beside a session it is the principal of.
+		if len(shown) == 0 {
+			principal = ""
+		}
+		writeJSON(w, http.StatusOK, listenerwire.SessionSuccessors{SessionID: sessionID, Principal: principal, Successors: shown})
 	}
 }
 
-// handoverSuccessors is every session that replaced sessionID, sorted and each once: each session
-// a handover record names as the successor of sessionID (bus.Client.HandoverSuccessors), and each
-// session that replaced one of those in turn, however long the chain, since a copy of a message
-// handed to a session that is replaced before it reads it is handed on to the session that
-// replaced it, its delivery unchanged, and the copies have no bound on their hops. A session is
-// followed only while its last registration names the principal sessionID last registered as
-// (recordedPrincipal), the rule each record was written under (handoverRefusal); one that does not
-// is not named, nor is any session only it leads to. Each session is read once, so a chain that
-// comes back round ends there. A sessionID whose principal nobody recorded, or the bucket holds no
+// handoverSuccessors is every session that replaced sessionID, sorted and each once, and the
+// principal sessionID last registered as (recordedPrincipal), which each of them last registered
+// as too: each session a handover record names as the successor of sessionID
+// (bus.Client.HandoverSuccessors), and each session that replaced one of those in turn, however
+// long the chain, since a copy of a message handed to a session that is replaced before it reads
+// it is handed on to the session that replaced it, its delivery unchanged, and the copies have no
+// bound on their hops. A session is followed only while its last registration names that
+// principal, the rule each record was written under (handoverRefusal); one that does not is not
+// named, nor is any session only it leads to. Each session is read once, so a chain that comes
+// back round ends there. A sessionID whose principal nobody recorded, or the bucket holds no
 // record of, has none, and so has every session on a listener with no known-session store. A read
 // that did not answer - one the request's budget ended before the whole chain was read among them
 // - is the error, never a list that names part of the chain.
-func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.KnownSessions, sessionID string) ([]string, error) {
+func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.KnownSessions, sessionID string) (string, []string, error) {
 	principal, recorded, err := recordedPrincipal(ctx, known, sessionID)
 	if err != nil || !recorded {
-		return []string{}, err
+		return "", []string{}, err
 	}
 	named := map[string]bool{sessionID: true}
 	successors := []string{}
@@ -90,7 +97,7 @@ func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.
 		for _, replaced := range from {
 			listed, err := client.HandoverSuccessors(ctx, replaced)
 			if err != nil {
-				return nil, err
+				return "", nil, err
 			}
 			for _, successor := range listed {
 				if named[successor] {
@@ -99,7 +106,7 @@ func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.
 				named[successor] = true
 				other, recorded, err := recordedPrincipal(ctx, known, successor)
 				if err != nil {
-					return nil, err
+					return "", nil, err
 				}
 				if recorded && other == principal {
 					successors = append(successors, successor)
@@ -110,7 +117,7 @@ func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.
 		from = next
 	}
 	slices.Sort(successors)
-	return successors, nil
+	return principal, successors, nil
 }
 
 // shownSuccessors is successors, in their order, less each session scope does not show confirmed

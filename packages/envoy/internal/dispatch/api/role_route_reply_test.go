@@ -3,14 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -19,14 +22,16 @@ import (
 // reply to an attempt that a session the attempt does not name may answer: for each role, the
 // session its claim names now and whether that session is live, as GET /v1/roles/<role> answers
 // them (200 for a live holder, 404 holder_lapsed naming the holder for one that is not); for each
-// session, the sessions that replaced it, as GET /v1/sessions/<session>/successors answers them;
-// and every session's own record. A send is stored for its target and answered as the listener
+// session, the sessions that replaced it and the principal it names them for, as GET
+// /v1/sessions/<session>/successors answers them; and every session's own record. A send is
+// stored for its target and answered as the listener
 // answers one.
 type roleRouteListener struct {
 	mu         sync.Mutex
 	holders    map[string]string
 	lapsed     map[string]bool
 	successors map[string][]string
+	principals map[string]string
 	// silent answers every role lookup and every successor read 503, as a listener whose bus does
 	// not answer does.
 	silent bool
@@ -35,7 +40,7 @@ type roleRouteListener struct {
 
 func newRoleRouteListener(t *testing.T) *roleRouteListener {
 	t.Helper()
-	listener := &roleRouteListener{holders: map[string]string{}, lapsed: map[string]bool{}, successors: map[string][]string{}}
+	listener := &roleRouteListener{holders: map[string]string{}, lapsed: map[string]bool{}, successors: map[string][]string{}, principals: map[string]string{}}
 	listener.server = httptest.NewServer(http.HandlerFunc(listener.serve))
 	t.Cleanup(listener.server.Close)
 	return listener
@@ -50,11 +55,18 @@ func (l *roleRouteListener) claim(role, session string, live bool) {
 }
 
 // replace names successor as a session that replaced previous, as a claim that named previous
-// as the session it replaces has the listener's handover record name it.
+// as the session it replaces has the listener's handover record name it, both sessions having
+// registered on a credential that proves no principal.
 func (l *roleRouteListener) replace(previous, successor string) {
+	l.replaceAs(previous, successor, "")
+}
+
+// replaceAs is replace where both sessions last registered as principal.
+func (l *roleRouteListener) replaceAs(previous, successor, principal string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.successors[previous] = append(l.successors[previous], successor)
+	l.principals[previous] = principal
 }
 
 // silence makes the listener answer every role lookup and successor read 503.
@@ -82,7 +94,7 @@ func (l *roleRouteListener) serve(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"envoy: the message bus did not answer: timeout"}`))
 	case readsSuccessors:
 		successors := append([]string{}, l.successors[successorsOf]...)
-		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": successorsOf, "successors": successors})
+		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": successorsOf, "principal": l.principals[successorsOf], "successors": successors})
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/roles/"):
 		role := strings.TrimPrefix(r.URL.Path, "/v1/roles/")
 		holder, claimed := l.holders[role]
@@ -519,6 +531,86 @@ func TestAReplyToADirectMessageComesFromTheSessionThatReplacedItsRecipient(t *te
 			t.Fatalf("the attempt's own session's reply with the read unanswered: status=%d body=%s, want 201", answered.Code, answered.Body.String())
 		}
 	})
+}
+
+// A successor answers the replaced session's delivery only on a credential that acts for the
+// principal the listener names the successors for (actsForSuccessorPrincipal): the listener
+// names them by the records of the sessions' last registrations, and a session run on another
+// principal's broker token before a registration records that may not answer the earlier
+// principal's deliveries. A person's direct message goes to session A; the listener names B as
+// A's successor for one principal; B replies under a broker token that proves B and acts for a
+// principal of its own. Each case row, a token acting for another person or for a service, is
+// refused 403 REPLY_FORBIDDEN and leaves the attempt unanswered, and fails where Dispatch takes
+// the listener's list alone. Each control is accepted: a token acting for the person, or the
+// service, the listener names, and the shared agent token, which proves no session and may name
+// A itself, and so is asked nothing more.
+func TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt(t *testing.T) {
+	t.Parallel()
+	listener := newRoleRouteListener(t)
+	brokered := newBrokerTokenRigOn(t, testServerOptions{envoyURL: listener.server.URL})
+	rig := &roleRouteReplies{listener: listener, handler: brokered.handler, database: brokered.database}
+	tokenOf := func(t *testing.T, caller *brokerCaller, session, person, service string) string {
+		t.Helper()
+		token := "a-token-of-" + session + "-for-" + person + service
+		answer := ciphertoken.Introspection{
+			Active:       true,
+			Session:      session,
+			Person:       person,
+			ProjectScope: ciphertoken.ProjectScopePerson,
+			Scope:        "dispatch.write",
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+			ClientID:     ciphertoken.ExchangeClientID,
+			Thumbprint:   caller.jkt,
+		}
+		if service != "" {
+			// A service's token is an account entry's (personlessAccountToken): one of the person
+			// scope naming no person is a machine nobody signed in on, which writes nothing.
+			answer = personlessAccountToken(caller.jkt)
+			answer.Session, answer.Service = session, service
+		}
+		brokered.broker.Says(token, answer)
+		return token
+	}
+	for i, row := range []struct {
+		name              string
+		named             string
+		person, service   string
+		shared, forbidden bool
+	}{
+		{name: "case: the successor's token acts for another person", named: brokerTestPerson, person: "bob", forbidden: true},
+		{name: "case: the successor's token acts for a service", named: brokerTestPerson, service: brokerTestService, forbidden: true},
+		{name: "control: the successor's token acts for the person the listener names", named: brokerTestPerson, person: brokerTestPerson},
+		{name: "control: the successor's token acts for the service the listener names", named: brokerTestService, service: brokerTestService},
+		{name: "control: the shared agent token, which proves no session", named: brokerTestPerson, shared: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			replaced, successor := fmt.Sprintf("ses_principal_a%d", i), fmt.Sprintf("ses_principal_b%d", i)
+			message := rig.direct(t, replaced, "Which release carries the fix?")
+			listener.replaceAs(replaced, successor, row.named)
+			body := map[string]any{"actor": map[string]any{"kind": "session", "id": successor}, "attempt": 1, "body": "Release 4 carries it."}
+			path := "/api/v1/messages/" + message.ID + "/reply"
+			var reply *httptest.ResponseRecorder
+			if row.shared {
+				reply = bearerRequest(t, rig.handler, http.MethodPost, path, body)
+			} else {
+				caller := newBrokerCaller(t)
+				reply = brokered.serve(caller.presenting(t, http.MethodPost, path, tokenOf(t, caller, successor, row.person, row.service), body))
+			}
+			if row.forbidden {
+				replyRefused(t, "the successor's reply on a token of another principal", reply)
+				if _, state, replyID := rig.messageAttempt(t, message); state != "sent" || replyID != nil {
+					t.Fatalf("the attempt after the refusal = %s with reply %v, want sent and unanswered", state, replyID)
+				}
+				return
+			}
+			if reply.Code != http.StatusCreated {
+				t.Fatalf("the successor's reply: status=%d body=%s, want 201", reply.Code, reply.Body.String())
+			}
+			if session, _, replyID := rig.messageAttempt(t, message); session != replaced || replyID == nil {
+				t.Fatalf("the answered attempt = session %s reply %v, want A's attempt with B's reply", session, replyID)
+			}
+		})
+	}
 }
 
 // routeReadFault ends the reply routes' read of the route and the attempt a reply answers

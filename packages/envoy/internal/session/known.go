@@ -174,10 +174,12 @@ func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 //
 // A store whose bucket is not open is the degraded listener: one whose NATS user may not open the
 // bucket keeps the store, which answers nothing and whose writes do nothing, and opens the bucket
-// as soon as an attempt of its own succeeds (repairUntilStopped). A registration's write through
-// it is the one write that says so (RecordRegistrationWithin's ErrPrincipalUnrecorded), since the
-// principal it does not record can be another one the bucket holds. A nil *KnownSessions answers
-// nothing and writes nothing too, and answers every write nil, a registration's included, for a
+// as soon as an attempt of its own succeeds (repairUntilStopped). A registration through it is
+// the one caller it refuses (AdmitRegistration and RecordRegistrationWithin answer
+// ErrPrincipalUnrecorded), since the principal it cannot record can be another one the bucket
+// holds, so a listener whose bucket does not open admits no registration until it does. A nil
+// *KnownSessions answers nothing and writes nothing too, and answers every write nil, a
+// registration's included, for a
 // listener that could not build a JetStream context at all and for a test that builds the
 // handlers without a store, so every method here is safe on a nil receiver and no call site
 // carries a nil check.
@@ -839,12 +841,9 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // did, so the registration route answers 503 and the client registers again.
 //
 // A store whose bucket is not open writes nothing, and its registration is ErrPrincipalUnrecorded
-// too, wrapping ErrKnownSessionsUnavailable: the bucket another listener opened can hold another
-// principal, recorded, for the session, which the handover gate on that listener would go on
-// reading as the one it last registered as, and this store cannot read the bucket to say it holds
-// none. Once its bucket opens (the store's repair attempts, at once after a connection event), the
-// client's next registration writes its principal. A nil store, the listener's that could build no
-// JetStream context at all and a test's, answers nil, as every one of its writes does.
+// too, wrapping ErrKnownSessionsUnavailable, as AdmitRegistration answers it before the session is
+// admitted. A nil store, the listener's that could build no JetStream context at all and a
+// test's, answers nil, as every one of its writes does.
 func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record KnownSession) error {
 	if s != nil && record.SessionID != "" && s.watch() == nil {
 		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
@@ -857,11 +856,60 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record Kno
 	return err
 }
 
-// ErrPrincipalUnrecorded wraps a registration's write that failed (RecordRegistrationWithin) while
-// the bucket's leader names another principal, recorded, than the one the session just registered
-// as, or did not answer, and a registration through a store whose bucket is not open. The
-// registration route answers it 503 with Retry-After: 1 rather than 200, so the client registers
-// again until the record names its principal.
+// AdmitRegistration is the step a registration of sessionID on a credential acting for principal
+// takes before it changes anything of the session - its entry, its consumer, its relay, the role
+// claims it renews (cmd/listener's registration route) - so that no registration as another
+// principal than the bucket names is admitted while the handover gate on any listener still reads
+// the bucket's principal as the one the session last registered as: that gate would go on copying
+// another session's unread messages to the session, now another principal's, and the successor
+// read would go on naming it.
+//
+// It reads the record from the bucket's leader. A record that names principal, one whose
+// principal no registration of this build recorded, and none at all admit the registration, whose
+// own write (RecordRegistrationWithin) records its principal after it: the gate refuses or cannot
+// judge each of the last two. A record naming another principal, recorded, is deleted at the
+// revision the read found, before the registration is admitted, so from then on the gate reads no
+// record for the session and refuses every handover to or from it, until the registration's own
+// write records the new principal. A record the bucket's leader did not answer for, a delete it
+// refused (another write landed since the read, or the bucket takes none), and a store whose
+// bucket is not open, which can read nothing, are ErrPrincipalUnrecorded, which the route answers
+// 503 with Retry-After: 1, with nothing of the registration admitted. A nil store, the listener's
+// that could build no JetStream context at all and a test's, admits every registration, as each
+// of its writes answers nil.
+//
+// What no read here fences is a registration of the same session through another listener as a
+// third principal between this step and the registration's own write: its record then names that
+// principal, and this registration's failed write is RecordRegistrationWithin's
+// ErrPrincipalUnrecorded, answered after the admission.
+func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, principal string) error {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	watcher := s.watch()
+	if watcher == nil {
+		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+	}
+	kv, _ := watcher.Handle()
+	stored, err := kv.ReadFromLeader(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("%w: read the known-session record of %s: %w", ErrPrincipalUnrecorded, sessionID, err)
+	}
+	held, recorded := leaderPrincipal(stored)
+	if !recorded || held == principal {
+		return nil
+	}
+	if _, err := kv.DeleteAt(ctx, sessionID, stored.Revision); err != nil {
+		return fmt.Errorf("%w: delete the known-session record of %s, which names another principal: %w", ErrPrincipalUnrecorded, sessionID, err)
+	}
+	return nil
+}
+
+// ErrPrincipalUnrecorded wraps a registration the known-session record may name another principal
+// for: one AdmitRegistration could not read or clear the record of before the registration was
+// admitted, and a registration's write that failed (RecordRegistrationWithin) while the bucket's
+// leader names another principal, recorded, than the one the session just registered as, or did
+// not answer. The registration route answers it 503 with Retry-After: 1 rather than 200, so the
+// client registers again until the record names its principal.
 var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record may name another")
 
 // principalMayDiffer reports whether sessionID's record, as the bucket's leader holds it, names a

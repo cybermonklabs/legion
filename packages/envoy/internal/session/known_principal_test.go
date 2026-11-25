@@ -431,6 +431,12 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenIsUnrecorded(t *testing.T
 			t.Fatalf("the bucket's record names %q; the case needs it still naming %q", stored, service)
 		}
 	})
+	t.Run("case: the admission of a registration through the store whose bucket is not open", func(t *testing.T) {
+		err := notOpen.AdmitRegistration(t.Context(), sessionID, person)
+		if !errors.Is(err, ErrPrincipalUnrecorded) || !errors.Is(err, ErrKnownSessionsUnavailable) {
+			t.Errorf("the admission answered %v; want %v wrapping %v", err, ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+		}
+	})
 	t.Run("control: a write through the store whose bucket is not open that is no registration", func(t *testing.T) {
 		if err := notOpen.RecordWithin(t.Context(), KnownSession{SessionID: sessionID}); err != nil {
 			t.Errorf("RecordWithin answered %v; want nil", err)
@@ -441,6 +447,9 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenIsUnrecorded(t *testing.T
 	})
 	t.Run("control: a registration through a nil store", func(t *testing.T) {
 		var none *KnownSessions
+		if err := none.AdmitRegistration(t.Context(), sessionID, person); err != nil {
+			t.Errorf("the admission answered %v; want nil", err)
+		}
 		if err := none.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: person}); err != nil {
 			t.Errorf("the registration answered %v; want nil", err)
 		}
@@ -453,4 +462,70 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenIsUnrecorded(t *testing.T
 			t.Errorf("the bucket's record names %q; want %q", stored, person)
 		}
 	})
+}
+
+// A registration is admitted only once no record names another principal for its session
+// (AdmitRegistration), read from the bucket's leader: a record naming another principal, recorded,
+// is deleted before the admission, so the handover gate reads no record for the session until the
+// registration's own write records the new principal, and a leader that did not answer refuses
+// the admission. The case rows fail where the record naming another principal stands, or where an
+// unanswered read admits the registration. The controls - a record naming the registration's own
+// principal, one whose principal no registration of this build recorded, and none at all - are
+// admitted with the record as it was.
+func TestKnownSessionsAdmitARegistrationOnlyOnceNoRecordNamesAnotherPrincipal(t *testing.T) {
+	const (
+		person  = "ada@example.com"
+		service = "example-fleet"
+	)
+	clock := time.Now()
+	now := func() time.Time { return clock }
+	put := func(t *testing.T, known *KnownSessions, sessionID string, record any) {
+		t.Helper()
+		value, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := known.watch().KV().Put(sessionID, value); err != nil {
+			t.Fatalf("put %s's record: %v", sessionID, err)
+		}
+	}
+	for _, row := range []struct {
+		name    string
+		stored  any
+		kept    bool
+		silent  bool
+		refused bool
+	}{
+		{name: "case: a record naming another principal is deleted before the admission",
+			stored: KnownSession{LastSeen: clock.UnixMilli(), Principal: service, PrincipalRecorded: true}},
+		{name: "case: a leader that does not answer refuses the admission", silent: true, refused: true, kept: true,
+			stored: KnownSession{LastSeen: clock.UnixMilli(), Principal: service, PrincipalRecorded: true}},
+		{name: "control: a record naming the registration's own principal is kept", kept: true,
+			stored: KnownSession{LastSeen: clock.UnixMilli(), Principal: person, PrincipalRecorded: true}},
+		{name: "control: a record an earlier build wrote, naming no principal recorded, is kept", kept: true,
+			stored: map[string]any{"session_id": "ses_admit", "topics": []string{}, "last_seen": clock.UnixMilli()}},
+		{name: "control: no record at all"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			known := openKnown(t, now)
+			const sessionID = "ses_admit"
+			if row.stored != nil {
+				put(t, known, sessionID, row.stored)
+			}
+			if row.silent {
+				useKnownKV(t, known, leaderSilent{known.watch().KV().Legacy()})
+			}
+			err := known.AdmitRegistration(t.Context(), sessionID, person)
+			if got := errors.Is(err, ErrPrincipalUnrecorded); got != row.refused || (!row.refused && err != nil) {
+				t.Fatalf("the admission answered %v; want ErrPrincipalUnrecorded %t", err, row.refused)
+			}
+			entry, getErr := known.watch().KV().Get(sessionID)
+			switch held := getErr == nil; {
+			case row.kept && !held:
+				t.Errorf("the record is gone (%v); want it kept", getErr)
+			case !row.kept && row.stored != nil && held:
+				t.Errorf("the record %s stands; want it deleted before the registration is admitted", entry.Value())
+			}
+		})
+	}
 }

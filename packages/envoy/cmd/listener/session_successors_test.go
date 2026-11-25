@@ -90,12 +90,14 @@ func TestTheSuccessorsRouteNamesTheSessionsThatReplacedASession(t *testing.T) {
 
 // A message handed to a session that is itself replaced before it reads it is handed on to the
 // session that replaced that one, its delivery unchanged, so the route names the whole chain:
-// the session that replaced a session, the one that replaced that one, and so on. It follows a
+// the session that replaced a session, the one that replaced that one, and so on, and the
+// principal they all last registered as, which Dispatch holds a successor's reply to. It follows a
 // session only while it last registered as the principal the asked-about session did: the
 // person's session at the end of the chain, and the one only it leads to, are named by no read,
 // and a chain that comes back round to the session asked about ends there. The case fails where
 // the route names a session's own successors alone (heir and spare, not grandheir), or follows a
-// session of another principal (stranger, beyond).
+// session of another principal (stranger, beyond), or names another principal than theirs or
+// one beside no successor (beyond, whom nobody replaced).
 func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
@@ -122,9 +124,12 @@ func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
 	} {
 		answer, recorder := readSuccessors(t, mux, session)
 		requireStatus(t, recorder, http.StatusOK, "the successors of "+session)
-		if !slices.Equal(answer.Successors, want) {
-			t.Errorf("the successors of %s = %v, want %v", session, answer.Successors, want)
+		if !slices.Equal(answer.Successors, want) || answer.Principal != "example-fleet" {
+			t.Errorf("the successors of %s = %v for %q, want %v for example-fleet", session, answer.Successors, answer.Principal, want)
 		}
+	}
+	if answer, recorder := readSuccessors(t, mux, beyond); recorder.Code != http.StatusOK || len(answer.Successors) != 0 || answer.Principal != "" {
+		t.Errorf("the successors of %s = %d %s, want none and no principal", beyond, recorder.Code, recorder.Body.String())
 	}
 }
 

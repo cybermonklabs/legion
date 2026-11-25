@@ -3435,6 +3435,23 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			topicRefusal.write(w)
 			return
 		}
+		// A registration as another principal than the session's known-session record names is
+		// admitted only once that record is gone, before anything of the session changes: its
+		// entry, its consumer, its relay, a role claim released or renewed. The handover gate on
+		// every listener reads the record's principal as the one the session last registered as,
+		// so a registration admitted while the record still named the earlier principal would
+		// have another session's unread messages copied to it, and the successor read name it, for
+		// a principal it no longer acts for (session.KnownSessions.AdmitRegistration). A record
+		// that could not be read or cleared, and a store whose bucket is not open, refuse the
+		// registration 503 with Retry-After: 1 with nothing admitted, and the client registers
+		// again.
+		if err := d.known.AdmitRegistration(ctx, body.SessionID, requestPrincipal(r)); err != nil {
+			logger.Warn("listener refused a registration whose principal it could not record first",
+				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			w.Header().Set("Retry-After", "1")
+			writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		// At the edge every claim the session holds of a role of none of the token's projects,
 		// which another listener granted it or a token that listed more did, is released before
 		// anything of the registration is stored, and the answer's warnings name it
@@ -3676,17 +3693,18 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// registration presented (requestPrincipal), none included, which a claim naming this
 		// session as the one it replaces is held to (handoverRefusal): the session binding above
 		// refused a broker token naming any other session, so a principal is recorded only from
-		// this session's own credential or from one that acts for every session. A failed write is
-		// a WARN and nothing else, and the registration is answered whatever it did
-		// (session.KnownSessions), with two exceptions (session.ErrPrincipalUnrecorded): a failed
+		// this session's own credential or from one that acts for every session. A record naming
+		// another principal was cleared before the registration was admitted, and a store whose
+		// bucket is not open refused it there (session.KnownSessions.AdmitRegistration). A failed
+		// write is a WARN and nothing else, and the registration is answered whatever it did
+		// (session.KnownSessions), with one exception (session.ErrPrincipalUnrecorded): a failed
 		// write after which the bucket's leader does not confirm the record names this
-		// registration's principal, none recorded, or nothing, and a registration through a store
-		// whose bucket is not open, which writes nothing while the bucket another listener opened
-		// can name another principal. In both the handover gate would read another principal as
-		// the one this session last registered as, so each is answered 503 with Retry-After: 1,
-		// and the client registers again until the record names the principal it registers as;
-		// everything this registration wrote before it stands, and its next attempt writes the
-		// same again.
+		// registration's principal, none recorded, or nothing - a registration of this session as
+		// another principal through another listener since the admission, or a leader that did not
+		// answer. The handover gate would read another principal as the one this session last
+		// registered as, so it is answered 503 with Retry-After: 1, and the client registers again
+		// until the record names the principal it registers as; everything this registration wrote
+		// before it stands, and its next attempt writes the same again.
 		if err := d.known.RecordRegistrationWithin(ctx, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,

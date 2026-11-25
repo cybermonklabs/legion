@@ -634,20 +634,22 @@ func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *tes
 	}
 }
 
-// A registration whose known-session write failed leaves the record naming the principal the
-// session registered as before, which the handover gate would read as the one it last registered
-// as. So the registration route answers such a registration 503 with Retry-After: 1 rather than
-// 200 (session.ErrPrincipalUnrecorded), and the client registers again until the record names its
-// principal. The session first registers as a service; then the bucket takes no write (its
-// stream's largest message is one byte) and it registers again, with a new title so the record
-// is written rather than skipped as unchanged. The case is a registration as a person, which fails
-// where a failed write is answered 200 whatever principal it leaves recorded. The second case is
-// a registration as a person through a listener whose known-session store's bucket is not open,
-// over the same bus as the listener that recorded the service, which fails where such a store,
-// writing nothing, answers the registration 200 and leaves the service standing as the principal
-// the session last registered as. The controls are a registration as the same service, whose
-// failed write leaves its own principal recorded and is answered 200, and a registration as a
-// person through a bucket that takes the write.
+// A registration that cannot record its principal first leaves the record naming the principal
+// the session registered as before, which the handover gate would read as the one it last
+// registered as. So the registration route answers such a registration 503 with Retry-After: 1
+// rather than 200 (session.ErrPrincipalUnrecorded), before anything of the session changes
+// (session.KnownSessions.AdmitRegistration): its entry keeps the title of the registration before,
+// and the client registers again until the record names its principal. The session first
+// registers as a service; then the bucket takes no write (its stream's largest message is one
+// byte, so the record naming the service can be neither cleared nor written over) and it registers
+// again, with a new title. The case is a registration as a person, which fails where it is
+// answered 200, or admitted before the 503, whatever principal it leaves recorded. The second case
+// is a registration as a person through a listener whose known-session store's bucket is not
+// open, over the same bus as the listener that recorded the service, which fails where such a
+// store, writing nothing, admits the registration and leaves the service standing as the
+// principal the session last registered as. The controls are a registration as the same service,
+// whose failed write leaves its own principal recorded and is answered 200, and a registration as
+// a person through a bucket that takes the write, each admitted with its new title.
 func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing.T) {
 	const sessionID = "ses_gate_registration_unrecorded"
 	for _, row := range []struct {
@@ -724,6 +726,13 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 			}
 			if row.status == http.StatusServiceUnavailable && recorder.Header().Get("Retry-After") != "1" {
 				t.Errorf("the 503 carries Retry-After %q; want 1", recorder.Header().Get("Retry-After"))
+			}
+			wantTitle := "a session registered again"
+			if row.status == http.StatusServiceUnavailable {
+				wantTitle = "a checked session"
+			}
+			if entry, err := rig.harness.sessions.Get(sessionID); err != nil || entry.Title != wantTitle {
+				t.Errorf("the session's entry after the registration = %+v, %v; want the title %q", entry, err, wantTitle)
 			}
 			record, found, err := known.Read(t.Context(), sessionID)
 			if err != nil || !found {

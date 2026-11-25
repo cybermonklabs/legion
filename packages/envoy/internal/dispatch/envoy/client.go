@@ -638,35 +638,36 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 	return Session{}, err
 }
 
-// Successors returns the sessions the listener names as having replaced sessionID
+// Successors returns what the listener answers for the sessions that replaced sessionID
 // (listenerwire.SessionSuccessors, GET /v1/sessions/<session_id>/successors): the sessions whose
 // claims named it as the session they replace, to which the listener copies what it had not
-// read, sorted, and none for a session nobody replaced. A transport failure and a 5xx are
-// ErrUnavailable, carrying the listener's reason, and ErrUnreachable too where nothing answered
-// or the status came from in front of the listener (unavailableGetStatus): who replaced the
-// session was not read. A body that does not decode is ErrUnavailable as well. Any other status
-// is the listener's own answer that it names no successor, an error that is not ErrUnavailable:
-// a listener that predates the route answers its GET 405 through the session delete route, and
-// that listener copies no message to a successor.
-func (c *Client) Successors(ctx context.Context, sessionID string) ([]string, error) {
+// read, sorted, none for a session nobody replaced, and the principal each of them and sessionID
+// last registered as. A transport failure and a 5xx are ErrUnavailable, carrying the listener's
+// reason, and ErrUnreachable too where nothing answered or the status came from in front of the
+// listener (unavailableGetStatus): who replaced the session was not read. A body that does not
+// decode is ErrUnavailable as well. Any other status is the listener's own answer that it names
+// no successor, an error that is not ErrUnavailable: a listener that predates the route answers
+// its GET 405 through the session delete route, and that listener copies no message to a
+// successor.
+func (c *Client) Successors(ctx context.Context, sessionID string) (listenerwire.SessionSuccessors, error) {
 	route := "/v1/sessions/" + url.PathEscape(sessionID) + "/successors"
 	response, err := c.get(ctx, route, "")
 	if err != nil {
-		return nil, err
+		return listenerwire.SessionSuccessors{}, err
 	}
 	defer response.Body.Close()
 	switch {
 	case response.StatusCode == http.StatusOK:
 	case response.StatusCode >= http.StatusInternalServerError:
-		return nil, unavailableGetStatus(response, route)
+		return listenerwire.SessionSuccessors{}, unavailableGetStatus(response, route)
 	default:
-		return nil, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("envoy listener: GET %s returned %d: it names no successor", route, response.StatusCode)
 	}
 	var answer listenerwire.SessionSuccessors
 	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
-		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
+		return listenerwire.SessionSuccessors{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
-	return answer.Successors, nil
+	return answer, nil
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
