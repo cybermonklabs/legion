@@ -963,35 +963,39 @@ func (m *sessionDelivery) granted() {
 	m.grantedAt = m.now()
 }
 
+// grantKnown is the grant's answer while one stands, under one hold of grantMu: no while a refusal
+// episode runs (as grantRefused), yes within noGrantBackoff of a consumer call that succeeded;
+// known is false when neither stands and the server must be asked.
+func (m *sessionDelivery) grantKnown() (holds, known bool) {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	now := m.now()
+	if !m.noGrantUntil.IsZero() && now.Before(m.noGrantUntil) {
+		return false, true
+	}
+	if !m.grantedAt.IsZero() && now.Sub(m.grantedAt) < noGrantBackoff {
+		return true, true
+	}
+	return false, false
+}
+
 // holdsConsumerGrant reports whether this listener's NATS user may make the session consumers'
 // calls, which a takeover pass needs and Dispatch's user and every host's hold none of
-// (listenerDeliveryHandlerConfig.consumerGrant). While a refusal episode runs (grantRefused) the
-// answer is no, with no call; within noGrantBackoff of a consumer call that succeeded it is yes,
-// with none either, which a listener that relays sessions makes at every registration. Otherwise it
+// (listenerDeliveryHandlerConfig.consumerGrant). It answers from grantKnown while an answer stands,
+// with no call: a registration of a listener that relays sessions keeps the yes fresh. Otherwise it
 // asks the server with one read of a consumer no session has (bus.SessionConsumers.
 // ProbeConsumerCalls): a refusal starts an episode as any consumer call's does, so Dispatch's
 // listener is refused that read once per episode, and an answer counts as a call that succeeded. A
-// read that did not answer is no, and the caller's next pass asks again. A delivery with no
-// consumer connection manages no session consumer, and answers no. Callers that ask together wait
-// for one probe and take its answer, so one episode is one refused read however many asked.
+// read that did not answer is no, and the caller's next pass asks again. Callers hold
+// grantProbeMu from entry, so those that ask together take the one probe's answer. A delivery with
+// no consumer connection manages no session consumer, and answers no.
 func (m *sessionDelivery) holdsConsumerGrant(ctx context.Context) bool {
 	if m == nil || m.consumers == nil {
 		return false
 	}
-	answered := func() (bool, bool) {
-		if m.grantRefused() {
-			return false, true
-		}
-		m.grantMu.Lock()
-		defer m.grantMu.Unlock()
-		return true, !m.grantedAt.IsZero() && m.now().Sub(m.grantedAt) < noGrantBackoff
-	}
-	if holds, known := answered(); known {
-		return holds
-	}
 	m.grantProbeMu.Lock()
 	defer m.grantProbeMu.Unlock()
-	if holds, known := answered(); known {
+	if holds, known := m.grantKnown(); known {
 		return holds
 	}
 	err := m.consumers.ProbeConsumerCalls(ctx)

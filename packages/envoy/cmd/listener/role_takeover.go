@@ -349,12 +349,11 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 }
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
-// role's guard and the handover's window, it runs the passes of the role's takeover records and
-// then hands its kept lane over (handOverTakenRole). An edge listener runs none (cfg.edge), as it
-// hands no kept lane over (drainKeptRole): a pass writes the kept role lane and the takeover lane,
-// which its grant publishes neither of (natsgrant.Edge). A listener whose NATS user holds no
-// session consumers' calls (holdsConsumerGrant), Dispatch's and a host's, reads no record and runs
-// no pass, and hands the lane over all the same: the passes are the other listeners'.
+// role's guard and the handover's window, it runs the passes of the role's takeover records
+// (passRecords) and then hands its kept lane over (handOverTakenRole), whether or not this
+// listener runs passes. An edge listener runs none (cfg.edge), as it hands no kept lane over
+// (drainKeptRole): a pass writes the kept role lane and the takeover lane, which its grant
+// publishes neither of (natsgrant.Edge).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	if cfg.edge != nil {
 		return
@@ -369,17 +368,26 @@ func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 		return
 	}
 	defer release()
-	var records []bus.StoredTakeoverRecord
-	if cfg.holdsConsumerGrant(ctx) {
-		var err error
-		if records, err = cfg.client.TakeoverRecords(ctx, role); err != nil {
-			cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
-				slog.String("role", role),
-				slog.String("error", err.Error()))
-		}
+	records, err := passRecords(ctx, cfg, role)
+	if err != nil {
+		cfg.logger.Warn("listener takeover copy could not read the role's takeover records",
+			slog.String("role", role),
+			slog.String("error", err.Error()))
 	}
-	_, err := handOverTakenRole(ctx, cfg, role, records)
+	_, err = handOverTakenRole(ctx, cfg, role, records)
 	reportKeptRoleDrain(cfg, role, err)
+}
+
+// passRecords is the takeover records this listener runs passes of, for role or for every role
+// when role is empty (bus.Client.TakeoverRecords). A listener whose NATS user holds none of the
+// session consumers' calls (holdsConsumerGrant), Dispatch's and a host's, reads none and runs no
+// pass: a pass's first read is the previous holder's consumer floor, which such a user may not
+// read, so the records are left to the listeners whose users may, which run every pass.
+func passRecords(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) ([]bus.StoredTakeoverRecord, error) {
+	if !cfg.holdsConsumerGrant(ctx) {
+		return nil, nil
+	}
+	return cfg.client.TakeoverRecords(ctx, role)
 }
 
 // handOverTakenRole runs the passes of each of records, role's takeover records, that is not
@@ -398,9 +406,8 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // the record with the sequence it reached, so the next goes on from there, here or on any
 // listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
 // listener's NATS user may not make (bus.ErrConsumerNotGranted), which is logged at debug and ends
-// every pass of records: each caller asked for the grant first (holdsConsumerGrant), so the grant
-// went away since, and every other record's first pass would be refused the same. The record is
-// left to the listeners that hold the grant.
+// every pass of records: the records came from passRecords, so the grant went away since, and
+// every other record's first pass would be refused the same.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
@@ -478,8 +485,12 @@ const takeoverRecordRefresh = 15 * time.Minute
 //
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at,
 // under the same rule; a failed read of where to start ends it with nothing written, and the next
-// pass reads again.
+// pass reads again. A record already finished is done with nothing read or written: no pass runs
+// it again, and its write would be refused (bus.ErrTakeoverRecordFinished).
 func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, stored bus.StoredTakeoverRecord) (bus.StoredTakeoverRecord, bool, error) {
+	if stored.Record.Finished {
+		return stored, true, nil
+	}
 	record := stored.Record
 	started := cfg.now()
 	claimedAt := time.UnixMilli(record.ClaimedAt)
@@ -623,7 +634,7 @@ func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
 	defer cancel()
-	return cfg.client.WriteTakeoverRecordAt(writeCtx, stored.Subject, record, stored.Sequence)
+	return cfg.client.WriteTakeoverRecordAt(writeCtx, stored, record)
 }
 
 // roleOfLaneTopic is the key of the claim a role lane's topic names (store.RoleClaimKeyOf), and

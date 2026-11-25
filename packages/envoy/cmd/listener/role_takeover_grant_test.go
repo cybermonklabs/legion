@@ -59,7 +59,8 @@ authorization {
 }
 
 // dispatchListener is a listener of the rig's deployment that connects as the grant hub's dispatch
-// user, on the row's clock and with the rig's takeover seams.
+// user, on the row's clock and with the rig's takeover seams. Its takeover grant's answer is a
+// session delivery of its own, on that user, as main.go wires it.
 func (rig *crashRig) dispatchListener(dispatchURL string) listenerDeliveryHandlerConfig {
 	rig.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{dispatchURL}, bus.WithReplicas(1))
@@ -70,6 +71,12 @@ func (rig *crashRig) dispatchListener(dispatchURL string) listenerDeliveryHandle
 	cfg := newListenerDeliveryHarnessOn(rig.t, client).config
 	cfg.now = rig.clock.Now
 	cfg.takeoverFaults = rig.harness.config.takeoverFaults
+	delivery, err := connectSessionDelivery([]string{dispatchURL}, 0, client, cfg.logger)
+	if err != nil {
+		rig.t.Fatalf("open the dispatch user's session delivery: %v", err)
+	}
+	rig.t.Cleanup(delivery.close)
+	cfg.consumerGrant = answeredBy(delivery.holdsConsumerGrant)
 	return wireTestRoleForwarder(rig.t, cfg)
 }
 
@@ -214,24 +221,8 @@ func TestTheTakeoverGrantIsAskedOncePerEpisode(t *testing.T) {
 		}
 	}
 	// The reads go out on the delivery's own connection, so the mark does too.
-	if err := listener.consumers.Publish(ctx, &natsgo.Msg{Subject: wire.mark}); err != nil {
-		t.Fatalf("publish the wire mark: %v", err)
-	}
-	reads := 0
-	for counting := true; counting; {
-		select {
-		case msg := <-wire.messages:
-			switch {
-			case msg.Subject == wire.mark:
-				counting = false
-			case strings.HasPrefix(msg.Subject, "$JS.API.CONSUMER.INFO."+bus.Stream+"."):
-				reads++
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("the wire mark did not come back within 30 s")
-		}
-	}
-	if reads != 1 {
-		t.Fatalf("three asks of the listener user's delivery read %d session consumers, want one: the first answer counts as a call that succeeded", reads)
+	reads := wire.countAfter(func() error { return listener.consumers.Publish(ctx, &natsgo.Msg{Subject: wire.mark}) })
+	if reads.consumers != 1 {
+		t.Fatalf("three asks of the listener user's delivery read %d session consumers, want one: the first answer counts as a call that succeeded", reads.consumers)
 	}
 }

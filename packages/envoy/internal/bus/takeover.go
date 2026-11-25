@@ -83,57 +83,78 @@ type StoredTakeoverRecord struct {
 // met it writes nothing and reads the record again next time.
 var ErrTakeoverRecordMoved = errors.New("bus: the takeover record was written by another pass")
 
+// ErrTakeoverRecordFinished is the refusal of a write over a takeover record its writer read
+// finished (Client.WriteTakeoverRecordAt): no pass runs a finished record, and a write over one
+// would make TakeoverRecords serve a record that is not the subject's newest.
+var ErrTakeoverRecordFinished = errors.New("bus: the takeover record is finished")
+
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
-// (TakeoverSubject), while the stream holds nothing there: the claim route's write under a fresh
-// attempt id, which no other writer has. A subject that holds a message is ErrTakeoverRecordMoved.
+// (TakeoverSubject), with no precondition: the claim route's write under a fresh attempt id,
+// which no other writer has. It takes none because a resend after a send nothing answered
+// (ErrUnacknowledged) would meet the first send's own copy and be refused, and the claim route
+// would answer a claim whose record stored as one whose record did not.
 func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record TakeoverRecord) error {
-	_, err := c.WriteTakeoverRecordAt(ctx, subject, record, 0)
-	return err
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	if _, err := c.publishStoredRaw(ctx, subject, data, nil); err != nil {
+		return fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+	}
+	return nil
 }
 
-// WriteTakeoverRecordAt publishes record on subject while the subject's newest message is the one
-// at expected, the sequence its writer read (StoredTakeoverRecord.Sequence), and 0 for a subject
-// that must hold nothing. It returns the stream sequence of the message it stored, which the
-// writer names as its expected sequence next time: the stream's sequences are its own and not a
-// subject's, so a message stored on another subject in between leaves the next one of this
-// subject further on. Any other newest message is ErrTakeoverRecordMoved, and nothing is written.
+// WriteTakeoverRecordAt publishes record on stored's subject while that subject's newest message
+// is the one stored was read at (StoredTakeoverRecord.Sequence). It returns the stream sequence of
+// the message it stored, which the writer's next write names: the stream's sequences are its own
+// and not a subject's, so a message stored on another subject in between leaves the next one of
+// this subject further on.
 //
-// The precondition makes a record's finish terminal: a pass that read the record unfinished and
-// was then held - a stall, a slow read - cannot write that older state over the finish a later
-// pass wrote, so no reader after the finish sees the record unfinished again. TakeoverRecords
-// rests on that, since it reads a finished record once while its subject's message count stands,
-// and a write after the finish is the one thing that could change the subject's newest message
-// without changing that count, the stream's age limit taking the subject's oldest messages as it
-// goes.
-func (c *Client) WriteTakeoverRecordAt(ctx context.Context, subject string, record TakeoverRecord, expected uint64) (uint64, error) {
+// A stored record that is finished is ErrTakeoverRecordFinished, with nothing sent. A subject
+// whose newest message is another is ErrTakeoverRecordMoved, and nothing is written. A refusal
+// that wraps ErrUnacknowledged is returned as it is, not as moved: it refused a resend after a
+// send nothing answered, and that first send may have stored this write (cursorMoved reads the
+// same case the same way).
+//
+// The two make a record's finish terminal: a pass that read the record unfinished and was then
+// held - a stall, a slow read - cannot write that older state over the finish a later pass wrote,
+// and no pass writes over a finish it read, so no reader after the finish sees the record
+// unfinished again. TakeoverRecords rests on that (its rule of finishedTakeovers): it reads a
+// finished record's subject again only when the subject's message count moves, and a write over
+// the finish is the one thing that could change the subject's newest message while the count
+// stands, an age-limit removal landing between two reads beside it.
+func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeoverRecord, record TakeoverRecord) (uint64, error) {
+	if stored.Record.Finished {
+		return 0, fmt.Errorf("%w: %s", ErrTakeoverRecordFinished, stored.Subject)
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
 	}
-	ack, err := c.publishStoredRaw(ctx, subject, data, nats.ExpectLastSequencePerSubject(expected))
+	ack, err := c.publishStoredRaw(ctx, stored.Subject, data, nats.ExpectLastSequencePerSubject(stored.Sequence))
 	if err != nil {
-		if IsCASConflict(err) {
-			return 0, fmt.Errorf("%w: %s after %d: %w", ErrTakeoverRecordMoved, subject, expected, err)
+		if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
+			return 0, fmt.Errorf("%w: %s after %d: %w", ErrTakeoverRecordMoved, stored.Subject, stored.Sequence, err)
 		}
-		return 0, fmt.Errorf("bus: write the takeover record %s: %w", subject, err)
+		return 0, fmt.Errorf("bus: write the takeover record %s: %w", stored.Subject, err)
 	}
 	return ack.Sequence, nil
 }
 
 // TakeoverRecords reads every takeover record the stream holds for role, or for every role when
 // role is empty, sorted by subject: one STREAM.INFO with the lane as its filter, as KeptRoleLanes
-// reads the kept lanes, and one read of the newest message on each subject it names that this
-// client does not hold finished (finishedTakeovers). A record no read can decode is left out,
-// since no pass can act on it. Its errors are the stream's own, named with the lane.
+// reads the kept lanes, and one read of the newest message on each subject it names, except a
+// subject whose finished record this client holds (finishedTakeovers). A record no read can decode
+// is left out, since no pass can act on it. Its errors are the stream's own, named with the lane.
 //
-// A finished record is read once a client: no pass writes a record it read finished, so while the
-// STREAM.INFO count of its subject stands, its newest message is the one this client read. A write
-// that raced the record's finishing - a pass that read it unfinished and stopped short of its end -
-// adds a message, and so does every other write; the stream's age limit takes a subject's messages
-// a stream age after its first, long after its last write (cmd/listener takeoverRecordLife), so no
-// write and no removal land between two reads and leave the count where it stood. A stream with a
-// per-subject limit (MaxMsgsPerSubject) drops a message at each write past it, so on such a stream
-// every subject is read each time.
+// The rule of finishedTakeovers: this client reads a finished record's subject again only when the
+// STREAM.INFO count of its messages differs from the count at its last read. That count stands
+// while the newest message stands, since no write lands over a finished record
+// (WriteTakeoverRecordAt), and it moves at each removal by the stream's age limit as at each
+// write, so a finished record is read once and then once more each time the age limit takes one
+// of its subject's older messages. A stream with a per-subject limit (MaxMsgsPerSubject) drops a
+// message at each write past it and leaves the count where it stood, so on such a stream every
+// subject is read each time.
 func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTakeoverRecord, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err

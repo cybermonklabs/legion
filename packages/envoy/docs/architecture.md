@@ -634,8 +634,9 @@ two hundred messages and writes the record again with the sequence it reached. T
 handover runs passes before it walks the lane, and the sweep runs passes of every record that is
 not finished every five minutes, so a listener that stopped at any step delays a message and loses
 none. A record is finished by the first pass that starts more than one hour after the claim, the
-keep window, and reads to the end of the subject; no pass runs it again, each listener reads it once
-more, and it ages out with the stream. Every forward that resolved the previous holder before the
+keep window, and reads to the end of the subject; no pass runs it again or writes over it, each
+listener reads it again only when the age limit takes one of its subject's older messages, and it
+ages out with the stream. Every forward that resolved the previous holder before the
 claim starts inside the fence below, so it is stored before that pass reads. A listener whose NATS
 user holds none of the session consumers' calls, Dispatch's and a host's, runs no pass and reads no
 record: it asks the server once per ten minutes whether its user may read a session consumer, and

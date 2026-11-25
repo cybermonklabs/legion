@@ -1645,11 +1645,18 @@ func main() {
 		// handovers the claim route, the keep, the registration and the sweep start
 		// (role_keep.go).
 		now: time.Now,
+		// Whether this listener's NATS user holds the session consumers' calls, which a
+		// takeover pass needs and Dispatch's user and a host's do not: the one answer every copy
+		// of this configuration reads, given its source below once the session delivery is open
+		// (consumerGrantAnswer).
+		consumerGrant: &consumerGrantAnswer{},
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are
-	// published in order while each waits for its outcome on its own. It is wired here, last, so
-	// every seam of the configuration it copies is set (wireRoleForwarder).
+	// published in order while each waits for its outcome on its own. It is wired after every
+	// seam of the configuration it copies is set (wireRoleForwarder); the consumer grant's answer,
+	// which needs the session delivery opened below, is a holder the copy shares and is filled in
+	// there (consumerGrantAnswer).
 	deliveryConfig = wireRoleForwarder(deliveryConfig)
 	roleForwards := deliveryConfig.roleForwards
 
@@ -1684,10 +1691,10 @@ func main() {
 		client.Conn.Close()
 		os.Exit(1)
 	}
-	// A takeover pass reads the previous holder's session consumer first, a call Dispatch's user
-	// and a host's hold no grant for: the claim route's handover and the kept lane's sweep, which
-	// copy this configuration later, run no pass where the delivery's answer says so.
-	deliveryConfig.consumerGrant = delivery.holdsConsumerGrant
+	// The answer to whether a takeover pass may run here is the session delivery's, which
+	// remembers a refusal for its episode (sessionDelivery.holdsConsumerGrant). The configuration
+	// and each copy made of it already hold the answer this sets.
+	deliveryConfig.consumerGrant.set(delivery.holdsConsumerGrant)
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below). An edge listener's relay takes its receipts under its
 	// machine's receipt family (natsgrant.EdgeRelayReplyPrefix), on which the replica serving the
@@ -2055,25 +2062,24 @@ func startSweep(ctx context.Context, interval, phase time.Duration, pass func(co
 }
 
 // untilPhase is how long after now the next instant comes whose time since the epoch, less phase,
-// is a whole number of intervals: more than zero and at most interval, for an interval above zero,
-// as every sweep's is (main.go reads each from a positive setting), and a phase below it.
+// is a whole number of intervals: more than zero and at most interval. interval is above zero, as
+// every sweep's is (roleWakeInterval, and envconf.PositiveDuration for the session consumers'),
+// and phase is below it (sweepPhase), so one interval added makes any wait that is not above zero
+// one that is.
 func untilPhase(now time.Time, interval, phase time.Duration) time.Duration {
 	wait := phase - time.Duration(now.UnixNano()%int64(interval))
-	for wait <= 0 {
+	if wait <= 0 {
 		wait += interval
 	}
 	return wait
 }
 
-// sweepPhase is a sweep's phase in interval (startSweep): a share of interval read from the FNV-1a
-// hash of seed, the listener's pod name and the sweep's name (sweepPhaseSeed). Two listeners'
-// phases differ by what their names hash to, whenever each started, so a restart of both at the
-// same instant leaves them as far apart as before; and one listener's two sweeps fall apart in its
-// interval too. An interval of zero or less has phase zero.
+// sweepPhase is a sweep's phase in interval (startSweep), an interval above zero as untilPhase's
+// is: a share of interval read from the FNV-1a hash of seed, the listener's pod name and the
+// sweep's name (sweepPhaseSeed). Two listeners' phases differ by what their names hash to,
+// whenever each started, so a restart of both at the same instant leaves them as far apart as
+// before; and one listener's two sweeps fall apart in its interval too.
 func sweepPhase(seed string, interval time.Duration) time.Duration {
-	if interval <= 0 {
-		return 0
-	}
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(seed))
 	return time.Duration(hash.Sum64() % uint64(interval))

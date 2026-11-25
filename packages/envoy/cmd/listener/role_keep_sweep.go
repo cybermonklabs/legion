@@ -195,17 +195,12 @@ func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	return handover.waiting
 }
 
-// takenRoles is the takeover records that are not finished (bus.TakeoverRecords), by the role
-// each names, read once a sweep pass, for the sweep to run their passes. A read that failed is
-// logged and names none, and the next pass reads again. A listener whose NATS user holds no
-// session consumers' calls (holdsConsumerGrant), Dispatch's and a host's, reads none and names
-// none: it runs no pass, so the records are the other listeners', and a role it would have handed
-// over for a record alone is theirs to hand over too.
+// takenRoles is the takeover records that are not finished (passRecords), by the role each
+// names, read once a sweep pass, for the sweep to run their passes. A read that failed is logged
+// and names none, and the next pass reads again. A listener that runs no pass names none, so a
+// role it would have handed over for a record alone is handed over by the listeners that run them.
 func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[string][]bus.StoredTakeoverRecord {
-	if !cfg.holdsConsumerGrant(ctx) {
-		return nil
-	}
-	records, err := cfg.client.TakeoverRecords(ctx, "")
+	records, err := passRecords(ctx, cfg, "")
 	if err != nil {
 		if ctx.Err() == nil {
 			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role sweep could not read the takeover records",

@@ -100,7 +100,7 @@ func TestAForwardStoredAfterItsFenceIsNoDeliveryAndTheResendReachesTheNewHolderO
 // record a reader sees after a finish is finished, which is what lets a client read a finished
 // record once (bus.Client.TakeoverRecords).
 //
-// The control is the same write at the sequence the stream holds now: it lands.
+// The control is a write at the subject's newest message, which lands.
 func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 	rig := newCrashRig(t)
 	const a, b, role = "ses_moved_a", "ses_moved_b", "moved"
@@ -119,22 +119,35 @@ func TestAPassCannotWriteOverARecordAnotherPassMoved(t *testing.T) {
 	}
 	stale := records[0]
 
-	finished := stale.Record
+	// A later pass moves the record on: the control, a write at the subject's newest message,
+	// lands.
+	moved := stale.Record
+	moved.Next = stale.Record.Next + 1
+	at, err := rig.harness.client.WriteTakeoverRecordAt(ctx, stale, moved)
+	if err != nil {
+		t.Fatalf("control: a write at the subject's newest message: %v", err)
+	}
+	// The pass held since its read cannot write its older state over that.
+	if _, err := rig.harness.client.WriteTakeoverRecordAt(ctx, stale, stale.Record); !errors.Is(err, bus.ErrTakeoverRecordMoved) {
+		t.Fatalf("the held pass's write answered %v; want bus.ErrTakeoverRecordMoved", err)
+	}
+	// The pass that read the moved record finishes it, and no write lands over the finish.
+	current := bus.StoredTakeoverRecord{Subject: stale.Subject, Sequence: at, Record: moved}
+	finished := moved
 	finished.Finished = true
-	at, err := rig.harness.client.WriteTakeoverRecordAt(ctx, stale.Subject, finished, stale.Sequence)
+	end, err := rig.harness.client.WriteTakeoverRecordAt(ctx, current, finished)
 	if err != nil {
 		t.Fatalf("the pass that finishes the record: %v", err)
 	}
-	reopened := stale.Record
-	reopened.Next = stale.Record.Next + 1
-	if _, err := rig.harness.client.WriteTakeoverRecordAt(ctx, stale.Subject, reopened, stale.Sequence); !errors.Is(err, bus.ErrTakeoverRecordMoved) {
-		t.Fatalf("the held pass's write answered %v; want bus.ErrTakeoverRecordMoved", err)
+	if _, err := rig.harness.client.WriteTakeoverRecordAt(ctx, current, moved); !errors.Is(err, bus.ErrTakeoverRecordMoved) {
+		t.Fatalf("a write over the finish by a pass that read the record before it answered %v; want bus.ErrTakeoverRecordMoved", err)
+	}
+	ended := bus.StoredTakeoverRecord{Subject: stale.Subject, Sequence: end, Record: finished}
+	if _, err := rig.harness.client.WriteTakeoverRecordAt(ctx, ended, moved); !errors.Is(err, bus.ErrTakeoverRecordFinished) {
+		t.Fatalf("a write over a record read finished answered %v; want bus.ErrTakeoverRecordFinished", err)
 	}
 	if read := rig.onlyRecord(role, a); !read.Finished {
 		t.Fatalf("the record on the stream is %+v; want the finish to stand", read)
-	}
-	if _, err := rig.harness.client.WriteTakeoverRecordAt(ctx, stale.Subject, reopened, at); err != nil {
-		t.Fatalf("control: a write at the sequence the write before it stored: %v", err)
 	}
 }
 

@@ -32,10 +32,11 @@ type takeoverWire struct {
 // takeoverReads is what a listener's connection sent between two marks: previous, the
 // stored-message reads of an agent subject from a sequence on, which only a takeover pass makes of
 // a previous holder's subject; records, the reads of a takeover record's newest message
-// (bus.Client.TakeoverRecords); and all, every JetStream API request of the account, some another
-// connection's.
+// (bus.Client.TakeoverRecords); consumers, the reads of a session consumer's info, the grant's
+// probe among them (bus.SessionConsumers.ProbeConsumerCalls); and all, every JetStream API request
+// of the account, some another connection's.
 type takeoverReads struct {
-	previous, records, all int
+	previous, records, consumers, all int
 }
 
 func watchTakeoverWire(t *testing.T, url string) *takeoverWire {
@@ -57,11 +58,20 @@ func watchTakeoverWire(t *testing.T, url string) *takeoverWire {
 // count is what the wire carried since the last count, read up to a mark client publishes now.
 func (w *takeoverWire) count(client *bus.Client) takeoverReads {
 	w.t.Helper()
-	if err := client.Conn.Publish(w.mark, nil); err != nil {
+	return w.countAfter(func() error {
+		if err := client.Conn.Publish(w.mark, nil); err != nil {
+			return err
+		}
+		return client.Conn.Flush()
+	})
+}
+
+// countAfter is what the wire carried since the last count, read up to the mark that publishMark
+// publishes, on the connection whose requests the count is of.
+func (w *takeoverWire) countAfter(publishMark func() error) takeoverReads {
+	w.t.Helper()
+	if err := publishMark(); err != nil {
 		w.t.Fatalf("publish the wire mark: %v", err)
-	}
-	if err := client.Conn.Flush(); err != nil {
-		w.t.Fatalf("flush the wire mark: %v", err)
 	}
 	var reads takeoverReads
 	for {
@@ -71,6 +81,10 @@ func (w *takeoverWire) count(client *bus.Client) takeoverReads {
 				return reads
 			}
 			reads.all++
+			if strings.HasPrefix(msg.Subject, "$JS.API.CONSUMER.INFO."+bus.Stream+".") {
+				reads.consumers++
+				continue
+			}
 			if msg.Subject != "$JS.API.STREAM.MSG.GET."+bus.Stream {
 				continue
 			}
@@ -139,7 +153,8 @@ func (rig *crashRig) burstRecords(prefix string, n, roles int, age time.Duration
 // 404 the stream's leader answers and counts. 600 records whose copy window ended, as most of
 // production's had, cost one such read each on the pass that ends them (takeoverRecordLife), one read
 // of each finished record on the pass after it, and nothing on the next: a pass reads no previous
-// holder of a finished record, and the client reads a finished record once (bus.Client.TakeoverRecords).
+// holder of a finished record, and the client reads a finished record again only when its subject's
+// message count moves, which no age-limit removal does within the row (bus.Client.TakeoverRecords).
 //
 // The control is 600 records inside their copy window, each previous holder's subject holding a role
 // message past Next: the pass reads each subject - the forward, then the end - and copies every

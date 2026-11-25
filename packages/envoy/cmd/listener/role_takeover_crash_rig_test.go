@@ -90,6 +90,8 @@ func newCrashRigOn(t *testing.T, url string) *crashRig {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
+	// The takeover grant's answer is the session delivery's, as main.go wires it.
+	cfg.consumerGrant.set(delivery.holdsConsumerGrant)
 	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)

@@ -8,8 +8,9 @@ body: |-
     than one hour after its claim (the keep window) and reads to the end, so a pass reads the last
     hour's takeovers alone, about 13 to 18 at the rate the records grow; a forward that resolved
     the previous holder before the claim starts inside the 55-minute fence, so that pass has read
-    it. A finished record is read once per listener, while the count of its subject's messages
-    stands, and its finish is terminal: each pass writes naming the sequence it read
+    it. A listener reads a finished record again only when the count of its subject's messages
+    moves, which is at each removal by the stream's age limit, and its finish is terminal: each pass
+    writes naming the sequence it read and writes none over a finished record
     (`bus.Client.WriteTakeoverRecordAt`), so a pass held since its read cannot write an older state
     back. A listener whose NATS user holds none of the session consumers' calls, Dispatch's and
     every host's, reads no record and runs no pass: it asks the server with one read of a consumer

@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -14,9 +15,11 @@ import (
 // Every sweep pass read the newest message of every takeover record subject, finished or not, and a
 // finished record, which no pass runs again, cost one stored-message read a pass for as long as the
 // stream held it. A client reads a finished record once now, and again only once the count of its
-// subject's messages moves: a write after it, as a pass that raced its finishing makes, is read, and
-// so is every unfinished record, every time. The reads are read off the wire from a second
-// connection, up to a mark the client publishes after each read of the records.
+// subject's messages moves: a message stored on that subject after it is read, and so is every
+// unfinished record, every time. A pass cannot write over a finished record
+// (ErrTakeoverRecordFinished), so the row stores that later message with a plain publish. The
+// reads are read off the wire from a second connection, up to a mark the client publishes after
+// each read of the records.
 func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
@@ -44,12 +47,12 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 	defer cancel()
 	finished := TakeoverSubject("cache", "ses_finished", "attempt1")
 	unfinished := TakeoverSubject("cache", "ses_unfinished", "attempt2")
-	// Each write names the sequence the subject's newest message has, as a pass does
-	// (WriteTakeoverRecordAt); a subject's first write names 0.
+	// Each write names the subject's newest message as a pass does (WriteTakeoverRecordAt); a
+	// subject's first write names none.
 	at := map[string]uint64{}
 	write := func(subject string, record TakeoverRecord) {
 		t.Helper()
-		sequence, err := client.WriteTakeoverRecordAt(ctx, subject, record, at[subject])
+		sequence, err := client.WriteTakeoverRecordAt(ctx, StoredTakeoverRecord{Subject: subject, Sequence: at[subject]}, record)
 		if err != nil {
 			t.Fatalf("write %s: %v", subject, err)
 		}
@@ -106,7 +109,16 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 	}
 
 	raced := TakeoverRecord{Role: "cache", Previous: "ses_finished", ClaimedAt: 1, Next: 8}
-	write(finished, raced)
+	if _, err := client.WriteTakeoverRecordAt(ctx, StoredTakeoverRecord{Subject: finished, Sequence: at[finished], Record: records[finished]}, raced); !errors.Is(err, ErrTakeoverRecordFinished) {
+		t.Fatalf("a write over the finished record answered %v; want ErrTakeoverRecordFinished", err)
+	}
+	data, err := json.Marshal(raced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.JS().Publish(finished, data); err != nil {
+		t.Fatalf("store a later message on %s: %v", finished, err)
+	}
 	after, reads := read()
 	if reads[finished] != 1 || after[finished] != raced {
 		t.Fatalf("after a write to the finished record's subject the read answered %+v with %d reads of it, want the write, read once", after[finished], reads[finished])

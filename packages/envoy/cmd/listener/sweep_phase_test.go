@@ -69,6 +69,33 @@ func TestTwoListenersStartedTogetherSweepOutOfPhase(t *testing.T) {
 	}
 }
 
+// A sweep's passes fall where the clock, less the phase, is a whole number of intervals, read from
+// the epoch and never from the listener's start: a listener that restarted passes where it passed
+// before, and its first pass comes within one interval of its start. Each row is a clock reading
+// and the wait to the next pass; a sweep that counted from its start would wait a whole interval at
+// every reading.
+func TestASweepsPassesFallAtItsPhaseOfTheClock(t *testing.T) {
+	const interval, phase = 5 * time.Minute, 90 * time.Second
+	boundary := time.Unix(1_800_000_000-1_800_000_000%300, 0)
+	for _, row := range []struct {
+		name string
+		now  time.Time
+		want time.Duration
+	}{
+		{"at an interval's start", boundary, phase},
+		{"just before the phase", boundary.Add(phase - time.Second), time.Second},
+		{"at the phase itself, the next interval's", boundary.Add(phase), interval},
+		{"just past the phase", boundary.Add(phase + time.Second), interval - time.Second},
+		{"at the interval's end", boundary.Add(interval - time.Nanosecond), phase + time.Nanosecond},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := untilPhase(row.now, interval, phase); got != row.want {
+				t.Errorf("untilPhase(%s, %s, %s) = %s, want %s", row.now.UTC().Format(time.RFC3339Nano), interval, phase, got, row.want)
+			}
+		})
+	}
+}
+
 // circularDistance is how far apart a and b lie on a circle of length interval.
 func circularDistance(a, b, interval time.Duration) time.Duration {
 	d := (a - b) % interval

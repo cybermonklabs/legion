@@ -116,8 +116,9 @@ func (r *hourRig) setClock(at time.Time) { r.offset.Store(int64(time.Until(at)))
 func (r *hourRig) client() *bus.Client { return r.listeners[0].harness.client }
 
 // startSweeps starts each listener's sweep of the kept lanes at an interval of one second, where
-// main.go starts it at five minutes, each at phase zero so its first pass runs at once, and stops
-// both when the test ends, waiting for the pass each loop has in flight.
+// main.go starts it at five minutes, each at phase zero, so each pass falls on a whole second of
+// the clock and the first within a second of the start (untilPhase), and stops both when the test
+// ends, waiting for the pass each loop has in flight.
 func (r *hourRig) startSweeps() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
