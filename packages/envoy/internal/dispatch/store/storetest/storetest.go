@@ -127,10 +127,8 @@ func ready(t testing.TB) {
 // clone returns a store on a new database cloned from template, dropped after t ends.
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
-	ctx, cancel := adminContext(t)
-	defer cancel()
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(ctx, cloneStatement(name, template)); err != nil {
+	if err := adminExec(t, cloneStatement(name, template)); err != nil {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -149,9 +147,7 @@ func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	ctx, cancel := adminContext(t)
-	defer cancel()
-	if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+	if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -202,10 +198,8 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 			return
 		}
 		name := "dispatch_template_" + suffix
-		ctx, cancel := adminContext(t)
-		defer cancel()
 		// The template is a file copy of template1, for the reason each clone of it is one.
-		if _, err := shared.admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
+		if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
 			return
 		}
@@ -217,7 +211,7 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 		}
 		// Postgres refuses to clone a database another session is connected to. Refusing
 		// connections to the template keeps any stray session from making a clone wait or fail.
-		if _, err := shared.admin.Exec(ctx, "alter database "+entry.name+" with allow_connections false"); err != nil {
+		if err := adminExec(t, "alter database "+entry.name+" with allow_connections false"); err != nil {
 			entry.err = fmt.Errorf("close template database to connections: %w", err)
 			return
 		}
@@ -235,19 +229,34 @@ func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
-// adminContext is the context of a statement a test makes on the admin pool (clone, Empty,
-// OpenFrom): its deadline is the connect end (testdb.ConnectEnd), so the statement's wait for one
-// of the pool's connections, that connection's connect and the statement itself all end by then,
-// whatever holds the pool's connections. A drop holds one for up to
-// testdb.NoDeadlineConnectTimeout while the server holds its login (openAdmin), and the pool has
-// four (MaxConns), so a statement on context.Background() waited for four such drops past the
-// connect end with no bound of its own (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool).
-// Where t names no deadline it has none.
-func adminContext(t testing.TB) (context.Context, context.CancelFunc) {
+// adminExec runs statement, one a test makes (clone, Empty, OpenFrom), on the admin pool. Its wait
+// for one of the pool's connections, and that connection's connect where the pool has none idle,
+// ends by the connect end (testdb.ConnectEnd), or a second from now where less than one is left:
+// testdb.TimeoutUntil, the rule each new connection's connect bound follows (openAdmin). A drop
+// holds a connection for up to testdb.NoDeadlineConnectTimeout while the server holds its login,
+// and the pool has four (MaxConns), so a statement whose wait had no bound waited for four such
+// drops past the connect end, into go test's alarm
+// (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool). The statement itself then
+// runs with no bound of this package's, so a test that makes one after its connect end, on a
+// server that answers, still gets its database (TestATestsAdminStatementPastTheConnectEndStillRuns):
+// a deadline on the statement failed docs' leak-check child, whose template, under load, was
+// still being made 5 s past its connect end. So a statement that hangs once it has its
+// connection, on a server that accepted it and never answers, is bounded only by go test's alarm,
+// as at main: the connect end is too short a bound for it, and this package names no other. Where
+// t names no deadline the wait has none.
+func adminExec(t testing.TB, statement string) error {
+	ctx, cancel := context.Background(), func() {}
 	if end, bounded := testdb.ConnectEnd(t); bounded {
-		return context.WithDeadline(context.Background(), end)
+		ctx, cancel = context.WithTimeout(context.Background(), testdb.TimeoutUntil(end))
 	}
-	return context.WithCancel(context.Background())
+	connection, err := shared.admin.Acquire(ctx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("wait for an admin connection: %w", err)
+	}
+	defer connection.Release()
+	_, err = connection.Exec(context.Background(), statement)
+	return err
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops every template
@@ -358,7 +367,7 @@ func dropDatabase(name string) {
 // outlasts, failing the run and leaving the database and its template on the server. Two costs
 // follow. A drop holds a pool connection for up to two minutes while its login is held, so drops
 // a test's cleanups start can fill the pool's four; a test's own statement then fails by name at
-// end (adminContext), as it did when the drops had the tests' bound, and no drop leaks. And a drop
+// end (adminExec), as it did when the drops had the tests' bound, and no drop leaks. And a drop
 // after the tests can take up to two minutes to connect, so a run whose tests end near end can
 // pass cmd/go's kill, one minute after -timeout ("ran too long"), as at main. Without bounded (no
 // deadline) raw's bound stands, pgxpool's two minutes where raw names none.
