@@ -86,8 +86,10 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
 	defer cancelReads()
 	if err := w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt)); err != nil && ctx.Err() == nil {
+		// GitHub's head is its words, or those of whatever answers in its place, so the line names
+		// it only as a commit's sha (githubrest.ShownSHA), as the follow's line above does.
 		w.log.Warn("apply whether a pull request's head can be merged into its base; the issue's next read applies it again",
-			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", pull.Head.SHA, "error", err)
+			"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", githubrest.ShownSHA(pull.Head.SHA), "error", err)
 	}
 	if w.readReviews(ctx, prCtx, github, pr) {
 		return false, nil
