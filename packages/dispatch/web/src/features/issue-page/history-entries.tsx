@@ -32,12 +32,8 @@ import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
 
-// The entries of the issue's history as `IssueHistory.tsx` draws them: a day's line, each kind of
-// entry, and the key each run of uploads is drawn under.
-
-/** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
- *  above and below, its words as written. */
-export const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}`;
+// The entries of the issue's history as `IssueHistory.tsx` draws them: each kind of entry, and
+// the key each run of uploads is drawn under.
 
 /** One entry, the prototype's `.hev`: 12 px on 18 px in the muted grey, 14 px from a 2 px rule
  *  at its left in the page's line, the rule 4 px from the column's edge, 4 px above and 6 px

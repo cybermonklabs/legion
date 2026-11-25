@@ -51,7 +51,7 @@ import type {
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
-import { componentsControlName } from "../issue/IssueComponentsLine";
+import { COMPONENT_CHIP, componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
@@ -2791,9 +2791,9 @@ function stubManyEntries(): () => void {
 /** The chips drawn of the box of chips with the test id `testId`, the components', each by the
  *  mark the line gives a chip where Details pages them (`data-component-chip`). */
 function drawnChips(testId: string): HTMLElement[] {
-  return [
-    ...screen.getByTestId(testId).querySelectorAll<HTMLElement>("[data-component-chip]"),
-  ].filter((chip) => !chip.hidden);
+  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(COMPONENT_CHIP)].filter(
+    (chip) => !chip.hidden
+  );
 }
 
 /** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and

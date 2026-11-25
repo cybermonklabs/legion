@@ -11,7 +11,7 @@ import type { MarginSections } from "./useMarginSections";
 
 /** How many entries a list of unbounded length in Details draws at first, and how many more each
  *  press of the Show more under it draws (`useListPages`). */
-export const LIST_PAGE = 20;
+const LIST_PAGE = 20;
 
 /** The controls of an entry a press of Show more can move the focus to, and of the history a
  *  focus can be handed to (`IssueHistory.tsx`). */

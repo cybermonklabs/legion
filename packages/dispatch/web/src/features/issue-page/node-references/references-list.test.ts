@@ -264,6 +264,30 @@ test("a citing item whose words cite a named node and one with no name draws all
   expect(line, "the row draws the unnamed question's id").not.toContain("a-3");
 });
 
+// A citing comment's words cite a question of a project document by its bare address, which the
+// page's batched read names nothing for. The row draws the question by the page's word for a
+// question, as it draws an issue's question, never by its address. It drew it by the word for a
+// document, the document the question is asked on.
+test("a citing item whose words cite a project document's question with no name draws it by the word for a question", () => {
+  const unnamed = buildDispatchReference({
+    item: { id: "a-4", kind: "ask" },
+    kind: "document",
+    project: "LAY",
+    slug: "design",
+  });
+  const text = `Answer ${unnamed} before the review.`;
+  const rows = referenceRows(commentWords({ "c-1": reading(text) }), [
+    edge({
+      excerpt: text,
+      id: "c-1",
+      kind: "mentions",
+      nodeKind: "comment",
+      ref: buildDispatchReference({ id: "c-1", key: "LAY-2", kind: "comment" }),
+    }),
+  ]);
+  expect(rows[0]?.words).toBe(`Answer ${NODE_REFERENCES_WORDS.kinds.ask} before the review.`);
+});
+
 test("a node the read carries no words and no address of is still one row", () => {
   const rows = referenceRows(NO_WORDS, [
     edge({ id: "s-1", kind: "mentions", nodeKind: "session" }),

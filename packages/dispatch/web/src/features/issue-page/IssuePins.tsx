@@ -34,10 +34,10 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * first line, a link to its own address, which focuses its row in the outline, with its Unpin
  * beside it. A pin of what the outline draws no row for - a thread the history holds - links to
  * its address too, which opens the history at it, and an old pin of a handoff opens the history.
- * Each line of the history the reader pinned (`IssueHistory.tsx`'s Pin, an `event:<id>` pin) is
- * listed under them: who did it and what the line says, with a link that opens the history and
- * its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of a
- * row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
+ * Each line of the history the reader pinned (`history-entries.tsx`'s Pin, an `event:<id>` pin)
+ * is listed under them: who did it and what the line says, with a link that opens the history
+ * and its Unpin. The pins are one list, drawn 20 at a time with Show more under them. The pin of
+ * a row itself is the focused row's, in its facts (`FocusedNodeFacts.tsx`).
  *
  * The words come from the reads the outline and the history are drawn from, so the list costs no
  * request of its own: each read here is the outline's, by its definition (`useIssueTree.ts`) and

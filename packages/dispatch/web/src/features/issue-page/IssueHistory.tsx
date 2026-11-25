@@ -11,7 +11,7 @@ import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import { issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
-import { pageInkText, pageQuietText } from "../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { dateKey } from "../activity/activity-model";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { writePin } from "../issue/pin-write";
@@ -21,7 +21,7 @@ import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { DetailsErrorLine, retryRead } from "./details-error";
 import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
-import { DAY_LINE, Entry, runKeys } from "./history-entries";
+import { Entry, runKeys } from "./history-entries";
 import {
   buildHistory,
   comparePlaces,
@@ -34,7 +34,7 @@ import {
 } from "./history-model";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { scrollingAncestor } from "./scroll-box";
+import { nearestScroll, scrollingAncestor } from "./scroll-box";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
@@ -45,6 +45,10 @@ const PAGE = 200;
  *  `t v` lands the focus at keeps the focused history where this scroll leaves it
  *  (`details-more.tsx`). */
 export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
+
+/** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
+ *  above and below, its words as written. */
+const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}`;
 
 /** A turn of a thread the history holds that an address names (`/issues/<key>/comments/<id>` or
  *  `/messages/<id>`), with the following of that address it was named at (`useFollowing`). */
@@ -466,24 +470,19 @@ export function IssueHistory({
     const onPage = active === null || active === document.body;
     const onPressedAfterRead = active === press.control && !(reads && log.isError);
     if (!onPage && !onPressedAfterRead) return;
-    // Gives `element` the focus, brought first into Details' view by the least scroll, as
-    // `block: "nearest"` brings it: by its top from above the view, by its foot from below it,
-    // and not at all where it lies wholly in the view or spans the whole of it. The scroll is of
-    // Details' box alone, never of the page under it, and the history's anchor takes it for its
-    // own (`scrollBox`), so its event records no place. It comes before the focus, which then
-    // scrolls nothing (`preventScroll`), so that the focus moving into the entries, which the
-    // anchor records as the reader's place, is recorded where the reader sees it.
+    // Gives `element` the focus, brought first into Details' view by the least scroll, the one
+    // `block: "nearest"` makes (`nearestScroll`). The scroll is of Details' box alone, never of
+    // the page under it, and the history's anchor takes it for its own (`scrollBox`), so its
+    // event records no place. It comes before the focus, which then scrolls nothing
+    // (`preventScroll`), so that the focus moving into the entries, which the anchor records as
+    // the reader's place, is recorded where the reader sees it.
     const handTo = (element: HTMLElement) => {
       const box = scroller.current;
       if (box !== null) {
         const at = element.getBoundingClientRect();
         const view = box.getBoundingClientRect();
-        const above = at.top < view.top;
-        const below = at.bottom > view.bottom;
-        if (above !== below) {
-          const fits = at.height <= view.height;
-          anchor.current?.scrollBox(above === fits ? at.top - view.top : at.bottom - view.bottom);
-        }
+        const by = nearestScroll(at, view);
+        if (by !== 0) anchor.current?.scrollBox(by);
       }
       element.focus({ preventScroll: true });
     };
@@ -497,10 +496,17 @@ export function IssueHistory({
     // (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before this runs.
     const { controls, entries } = press.before;
     const lastBefore = [...controls].filter((control) => control.isConnected).at(-1);
-    const added = controlsOfList().filter((control) => !controls.has(control));
     const isBelow = (element: HTMLElement) =>
       lastBefore === undefined ||
       (lastBefore.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const first = entriesOfList()
+      .find((entry) => !entries.has(entry) && isBelow(entry))
+      ?.querySelector<HTMLElement>(ENTRY_CONTROLS);
+    if (first != null) {
+      handTo(first);
+      return;
+    }
+    const added = controlsOfList().filter((control) => !controls.has(control));
     const view = scroller.current?.getBoundingClientRect() ?? {
       bottom: window.innerHeight,
       top: 0,
@@ -510,9 +516,6 @@ export function IssueHistory({
       return at.height > 0 && at.top >= view.top && at.bottom <= view.bottom;
     };
     const target =
-      entriesOfList()
-        .find((entry) => !entries.has(entry) && isBelow(entry))
-        ?.querySelector<HTMLElement>(ENTRY_CONTROLS) ??
       added.find((control) => isBelow(control) && inView(control)) ??
       added.find(inView) ??
       added.find(isBelow) ??

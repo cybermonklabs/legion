@@ -130,6 +130,7 @@ import {
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { viewportAt } from "./issue-page-p";
+import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp, ONE_PIXEL_PNG } from "./sends";
@@ -1877,18 +1878,6 @@ async function seedEarlierDayUnderLastPage(): Promise<{ earlierAt: string; key: 
   return { earlierAt, key: issue.key };
 }
 
-/** Presses Tab, as a keyboard reader does, until the focus reaches the history's Show more past
- *  every control of the entries above it: at most `most` presses. */
-async function tabToShowMore(page: Page, most: number): Promise<void> {
-  const more = historyShowMore(page);
-  for (let presses = 0; presses < most; presses += 1) {
-    await page.keyboard.press("Tab");
-    // A Tab moves the focus while its key is handled, so one read after the key is settled.
-    if (await more.evaluate((control) => control === document.activeElement)) return;
-  }
-  throw new Error(`${most} presses of Tab did not bring the focus to ${CONTROL_LABELS.show_more}`);
-}
-
 // Show more pressed by keyboard hands the focus to the first entry it drew, and brings that entry
 // into Details' view by the least scroll, a scroll of Details' box alone that leaves the page
 // where it was (`IssueHistory.tsx`). The last press of this history draws the entries of an
@@ -1930,7 +1919,10 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
       const entries = historyEntries(page);
 
       // The first press draws the next of the later notes, and hands the focus to the first.
-      await tabToShowMore(page, tabs);
+      await tabWalk(page, tabs)(
+        historyShowMore(page),
+        `Tab did not bring the focus to ${CONTROL_LABELS.show_more} before the first press`
+      );
       await expect(more).toHaveText(showMoreName(total - PAGE_SIZE));
       await page.keyboard.press("Enter");
       await expect(entries).toHaveCount(2 * PAGE_SIZE);
@@ -1942,7 +1934,10 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
         .toBe(true);
 
       // The last press, made with the control at the foot of Details' view.
-      await tabToShowMore(page, tabs);
+      await tabWalk(page, tabs)(
+        historyShowMore(page),
+        `Tab did not bring the focus to ${CONTROL_LABELS.show_more} before the last press`
+      );
       await expect(more, "the next press does not draw the earlier day's entries").toHaveText(
         showMoreName(EARLIER_DAY_ENTRIES)
       );
@@ -1989,9 +1984,8 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
         "the first entry the last press drew is not the first under its day's line"
       ).toHaveCount(0);
 
-      // One read once Details' box has stood still for two frames: the view the press left.
-      const shown = await historyViewport(page);
-      // One read once Details' box has stood still for two frames: where the press left the focus.
+      // Two reads once Details' box has stood still for two frames: where the press left the
+      // focus, and the view it left.
       const landed = await first.evaluate((entry) => {
         const active = document.activeElement;
         const box =
@@ -2002,6 +1996,7 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
           page: { x: window.scrollX, y: window.scrollY },
         };
       });
+      const shown = await historyViewport(page);
       const pressed = `at ${size.width} px the last ${CONTROL_LABELS.show_more}`;
       if (!landed.onEntry) {
         failures.push(`${pressed} did not hand the focus to the first entry it drew`);

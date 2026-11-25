@@ -253,10 +253,10 @@ function Excerpt({
   whole?: boolean;
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
-  const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
   if (whole) {
     return <p className={`${EXCERPT_WORDS} [overflow-wrap:anywhere] ${tokens.excerpt}`}>{text}</p>;
   }
+  const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
 
   return (
     <>

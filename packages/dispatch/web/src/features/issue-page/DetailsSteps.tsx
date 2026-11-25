@@ -186,7 +186,6 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
-  const section = useRef<HTMLElement>(null);
   const pages = useListPages();
   const retry = useRetryHandOff(() => heading.current);
   // The failure line stands under the heading, in place of the loading line, while the read
@@ -199,7 +198,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
       aria-label={CONTROL_LABELS.steps}
       className="flex min-w-0 flex-col gap-1.5"
       data-testid="issue-steps"
-      ref={section}
+      ref={pages.list}
     >
       <h2
         className={`text-sm font-semibold outline-none ${pageInkText}`}
@@ -262,7 +261,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           )}
           {pages.more(
             runs ?? 0,
-            (index) => section.current?.querySelectorAll("[data-step-run]")[index]
+            (index) => pages.list.current?.querySelectorAll("[data-step-run]")[index]
           )}
         </>
       )}

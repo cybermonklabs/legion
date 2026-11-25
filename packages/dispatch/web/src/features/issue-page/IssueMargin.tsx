@@ -22,7 +22,11 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { componentChipIds, IssueComponentsLine } from "../issue/IssueComponentsLine";
+import {
+  COMPONENT_CHIP,
+  componentChipIds,
+  IssueComponentsLine,
+} from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
@@ -105,10 +109,6 @@ function closedStoppedNote(
 /** What a row of Details says where a names read of the issues it lists failed, as it draws those
  *  issues by their keys alone: Blocked by's and Blocks' alike. */
 export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
-
-/** Each chip of the Components row's line, which the line marks as it draws them 20 at a time
- *  (`IssueComponentsLine`'s `limit`), in the order of the list it pages. */
-const COMPONENT_CHIP = "[data-component-chip]";
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
  *  has not answered, an issue the read's last answer named keeps the title that answer gave

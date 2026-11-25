@@ -215,9 +215,10 @@ function unnamedWords(route: DispatchReferenceRoute): string {
     case "comment":
     case "message":
       return NODE_REFERENCES_WORDS.kinds[route.kind];
+    case "document":
+      return NODE_REFERENCES_WORDS.kinds[route.item?.kind ?? "artifact"];
     case "agent-artifact":
     case "artifact":
-    case "document":
     case "plan":
     case "spec":
     case "verification":

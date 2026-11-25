@@ -32,7 +32,7 @@ import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { useOutlineReads } from "./outline-reads";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
-import { scrollingAncestor } from "./scroll-box";
+import { nearestScroll, scrollingAncestor } from "./scroll-box";
 import { useFollowing } from "./slots/following";
 import { useIssueSubscribers } from "./useIssueSubscribers";
 
@@ -616,12 +616,13 @@ function holdLandedPlace(target: string, frames: number): () => void {
     };
     // A focused element no taller than the view is brought into it before its top is kept, as
     // this function's doc states: the opener brings the control's row into the view, not the
-    // control. It comes in by its top from above the view and by its foot from below it. One
-    // taller than the view is left where it is.
+    // control. It comes in by its top from above the view and by its foot from below it
+    // (`nearestScroll`). One taller than the view is left where it is.
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
-    if (landing.height <= view.height && (landing.top < view.top || landing.bottom > view.bottom)) {
-      scrollOwn(landing.top < view.top ? landing.top - view.top : landing.bottom - view.bottom);
+    if (landing.height <= view.height) {
+      const by = nearestScroll(landing, view);
+      if (by !== 0) scrollOwn(by);
     }
     keepTop();
     // What of the box's content around the control is watched, brought up to that content as it

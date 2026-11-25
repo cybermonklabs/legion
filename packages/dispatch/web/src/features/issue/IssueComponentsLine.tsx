@@ -82,6 +82,9 @@ export function componentChipIds(
     : [];
 }
 
+/** Each chip the line draws with a `limit`, by the mark it then carries, in the line's order. */
+export const COMPONENT_CHIP = "[data-component-chip]";
+
 /**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
  * attachment as chips. An explicit set lists its live component ids and marks each id a
