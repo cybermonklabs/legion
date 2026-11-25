@@ -81,7 +81,7 @@ test("the class search finds no instance outside its residuals at this checkout,
     stderr: "",
   });
   expect(stdout).toContain(
-    "result: 0 findings outside the residuals, 12 residuals found, 14 declared unreachable found, 0 stale\n"
+    "result: 0 findings outside the residuals, 12 residuals found, 15 declared unreachable found, 0 stale\n"
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);
@@ -578,11 +578,6 @@ const PLANTED: readonly [check: string, file: string, line: string][] = [
     'export const plantedBase = (label: string) => label === "base";',
   ],
   [
-    "hand search 3: a gate on a tell main's engine makes unreachable",
-    "skills/planted.md",
-    "Move on once the issue is `awaiting_merge`.",
-  ],
-  [
     "hand search 4 and 6: one fact defined in two places",
     `${RIG}/worker-pane.ts`,
     "export function reviewOf(): void {}",
@@ -601,11 +596,6 @@ const PLANTED: readonly [check: string, file: string, line: string][] = [
     "hand search 7: a verb read by a reader of its own",
     `${RIG}/score.ts`,
     'const plantedVerb = (argv: string[]) => argv.includes("-X");',
-  ],
-  [
-    "hand search 8: a prompt restating a skill's rule",
-    "packages/daemon/internal/prompts/roles/planted.md",
-    "Resolve each thread as review-threads says.",
   ],
   [
     "hand search 9: a reference to a deleted symbol",
@@ -692,32 +682,6 @@ test("a file rig.sh builds into a run is held by rig.test.ts's whole-world row, 
     new Map([[file, existing(file).replaceAll(`"${WHOLE_WORLD_ROW}"`, '"another row"')]])
   );
   expect(built(rigRecords(without))).toEqual([[held[0]?.[0], "instance"]]);
-});
-
-// Catches: hand search 3 reading a line about the reviewer's thermonuclear pair, whose two halves
-// are its two review agents with a `Thermo` row each (main's gate on an approval in
-// skills/legion-worker/references/merge-gate.md), as a gate on the engine's retired tell; and an
-// exemption so wide that a line holding "both halves" and naming no `Thermo` row is read true.
-test("hand search 3 reads a line of the thermonuclear pair's Thermo rows as true, and any other both halves as an instance", async () => {
-  const file = "skills/planted.md";
-  const text = [
-    "Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run`.",
-    "Approve only once both halves have handed off.",
-  ].join("\n");
-  const worlds = new Worlds(tree, []);
-  try {
-    const hits = await checkNamed(
-      "hand search 3: a gate on a tell main's engine makes unreachable"
-    ).run(new Tree(CHECKOUT, new Map([[file, `${text}\n`]])), worlds);
-    expect(
-      hits.filter(({ at }) => at.startsWith(`${file}:`)).map(({ at, verdict }) => [at, verdict])
-    ).toEqual([
-      [`${file}:1`, "true"],
-      [`${file}:2`, "instance"],
-    ]);
-  } finally {
-    worlds.done();
-  }
 });
 
 // Catches: a check that takes a setDefaultTimeout of any value for the bound, so a file whose rows

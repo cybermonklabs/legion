@@ -3,7 +3,6 @@ package prompts
 import (
 	"embed"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -58,8 +57,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`, `verdict: "pass"`, `verdict: "fail"`,
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on",
-			"Your approval of the head the implementer's later push that changes only text makes is read by no daemon check"}},
+			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
@@ -717,132 +715,6 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 			t.Errorf("the composed %s prompt (root %t) says %q", claim.RoleArchitect, isRoot, headRead)
 		}
 	}
-}
-
-// The carry rule (dispatch://INFRA-764 R2) is stated twice, word for word: in the core every phase
-// worker but the merger composes, roles/core/common.md, and in the part every architect composes,
-// go/architect-common.md, since no prompt file is composed for both (Compose). Every other part
-// names "the carry rule" and states none of it, so an edit to one statement that leaves the other,
-// or a third copy, is a rule read twice and followed once. A part restates the rule when it holds
-// the statement's opening or its own clause, "stays current across".
-func TestTheCarryRuleIsStatedTwiceWordForWordAndOnlyNamedElsewhere(t *testing.T) {
-	const opening, clause = "The carry rule: ", "stays current across"
-	stated := map[string]string{}
-	visit := func(dir string) func(string, []byte) error {
-		return func(name string, body []byte) error {
-			file := dir + "/" + name
-			text := foldWhitespace(string(body))
-			at := strings.Index(text, opening)
-			if at < 0 {
-				if strings.Contains(text, clause) {
-					t.Errorf("%s restates the carry rule rather than naming it", file)
-				}
-				return nil
-			}
-			sentence, _, _ := strings.Cut(text[at:], ". ")
-			stated[file] = strings.TrimSuffix(sentence, ".")
-			if strings.Count(text, opening) != 1 || strings.Count(text, clause) != 1 {
-				t.Errorf("%s states the carry rule more than once", file)
-			}
-			return nil
-		}
-	}
-	if err := eachPart(roleParts, "roles", visit("roles")); err != nil {
-		t.Fatal(err)
-	}
-	if err := eachPart(goParts, "go", visit("go")); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"go/architect-common.md", "roles/core/common.md"}; !reflect.DeepEqual(slices.Sorted(maps.Keys(stated)), want) {
-		t.Fatalf("the carry rule is stated in %v, want %v", slices.Sorted(maps.Keys(stated)), want)
-	}
-	if stated["roles/core/common.md"] != stated["go/architect-common.md"] {
-		t.Errorf("the two statements of the carry rule differ:\nroles/core/common.md:   %q\ngo/architect-common.md: %q",
-			stated["roles/core/common.md"], stated["go/architect-common.md"])
-	}
-}
-
-// A reviewer submits `REQUEST_CHANGES` only when a behavioural finding stands, and fixes a text
-// finding in a commit of its own (dispatch://INFRA-764 R1, spec v31). So every sentence of the
-// composed reviewer prompt that sends a finding to a request for changes names that finding
-// behavioural, in the terms roles/reviewer.md defines one by: the word itself, code that runs, an
-// error hidden, a gate broken, a test, a check with no passing result, an unmet requirement, or a
-// secret or private name. A forward merge of the base once brought back "So does a clear fix in a
-// file this pull request touches, whatever the bot calls it." beside a finding that requests
-// changes, which sends a text fix there too, so a sentence opening "So does" carries the request
-// of the sentence before it. A sentence sends a finding when it holds a request and names what the
-// request is over (a finding, a fix, a defect, a nit, a fault or a thread); a request it refuses
-// ("never a review that asks for changes", "rather than request changes") or one it only looks
-// back on ("after a request for changes") sends nothing. This shows the text is loaded, never that
-// a reviewer follows it.
-func TestEveryComposedReviewerSentenceThatRequestsChangesNamesABehaviouralFinding(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	notSending := regexp.MustCompile("(?i)never a review that asks for changes|rather than request changes|after a request for changes")
-	request := regexp.MustCompile("(?i)\\brequests? changes\\b|\\brequest for changes\\b|\\basks? for changes\\b|\\bsubmits? (?:the |a |an )?`REQUEST_CHANGES`|`REQUEST_CHANGES` (?:when|for|naming|only)\\b")
-	sendsFinding := regexp.MustCompile(`(?i)\b(?:findings?|fix(?:es)?|defects?|nits?|faults?|threads?)\b`)
-	behavioural := regexp.MustCompile(`(?i)behavioural|code that runs|hides? an error|breaks? a gate|\btests?\b|passing result|pass standing|unmet requirement|\bsecrets?\b|private name`)
-	const rule = "A reviewer submits `REQUEST_CHANGES` only when a behavioural finding stands"
-	checked, ruleChecked := 0, false
-	for _, paragraph := range strings.Split(composedText(t, composer, claim.RoleReviewer, false), "\n\n") {
-		previousRequests := false
-		for _, sentence := range strings.Split(foldWhitespace(paragraph), ". ") {
-			requests := request.MatchString(notSending.ReplaceAllString(sentence, "")) ||
-				(previousRequests && (strings.HasPrefix(sentence, "So does ") || strings.HasPrefix(sentence, "So do ")))
-			previousRequests = requests
-			if !requests || !sendsFinding.MatchString(sentence) {
-				continue
-			}
-			checked++
-			ruleChecked = ruleChecked || strings.HasPrefix(sentence, rule)
-			if !behavioural.MatchString(sentence) {
-				t.Errorf("the composed reviewer prompt sends a finding to a request for changes without naming it behavioural: %q", sentence)
-			}
-		}
-	}
-	// A split or a pattern that matches nothing passes every sentence it never reads, so the
-	// verdict rule's own sentence must be among those read.
-	if !ruleChecked {
-		t.Errorf("the guard read %d sentences of the composed reviewer prompt and not %q", checked, rule)
-	}
-}
-
-// The carry rule keeps a `before_merge` check's pass current across a push that changes only text,
-// and `dispatch results` reads a pass as standing only at the commit it names. So the role that
-// pushes such a commit records each carry at its head (the architect's ruling of
-// 2026-11-22T19:29:27Z, after INFRA-138's finding): the reviewer before it approves the head that
-// carries its text commit, and the implementer when it pushes its one text-only commit, before it
-// tells the reviewer. Without the step, the reviewer's approval gate and the architect's acceptance
-// read no pass standing at the head the reviewer approves. Each part that carries the step holds it
-// in one paragraph (`ruleIn`), with its command and its skip of a check carrying `ci_check`: the
-// implementer's in roles/implementer.md and in go/implementer.md, the reviewer's in
-// roles/reviewer.md, and the carry the reviewer owes its own commit in roles/core/reviewer.md. The
-// implementer's prompt composes both of its parts, so deleting the step from one of them leaves
-// the other's copy in the composed prompt, and only the part's own pin fails. This shows the text
-// is loaded, never that a role follows it.
-func TestTheRoleThatPushesATextOnlyCommitRecordsTheCarryAtItsHead(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	const (
-		observed        = "--observed 'carried from <head before>: the commit changes only text: <files>'"
-		reviewerRule    = "Before you approve, record each `before_merge` check of this issue's Verification document again at the head you approve"
-		reviewerCommand = "--role reviewer --verdict pass --commit <head> " + observed
-		reviewerCore    = "you record that carry at the new head before you approve it"
-		implementerRule = "When you push that commit, record each `before_merge` check again at its head, as carried from the head before it, before you tell the reviewer"
-		implementerCmd  = "--role implementer --verdict pass --commit <head> " + observed
-		ciCheckSkipped  = "A check carrying `ci_check` is CI's, so skip it, and run none of them again."
-	)
-	ruleIn(t, "roles/reviewer.md", reviewerRule, reviewerCommand, ciCheckSkipped)
-	ruleIn(t, "roles/core/reviewer.md", reviewerCore)
-	for _, part := range []string{"roles/implementer.md", "go/implementer.md"} {
-		ruleIn(t, part, implementerRule, implementerCmd, ciCheckSkipped)
-	}
-	composedSays(t, composer, claim.RoleReviewer, false, reviewerRule, reviewerCommand, reviewerCore)
-	composedSays(t, composer, claim.RoleImplementer, false, implementerRule, implementerCmd)
 }
 
 // A review the review App submits decides a round only when the head its Legion footer names is

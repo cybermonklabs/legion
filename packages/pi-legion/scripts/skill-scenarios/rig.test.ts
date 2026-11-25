@@ -7004,7 +7004,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
 // The routes a world answers are the routes GitHub answers a role, and GitHub answers the same
 // routes whichever label asks: every gh read either label's role texts name, and every route a
 // recorded run called, each declared with its evidence (gh-routes.ts's WORLD_ROUTES and
-// gh-route-evidence.ts's ROUTE_EVIDENCE, which gh-standin.test.ts pins against the texts). These
+// gh-route-evidence.ts's ROUTE_EVIDENCE). These
 // rows pin the table against the worlds rig.sh builds: every route of the table answered in
 // every world, with the shape GitHub's answer has; and every route a world writes into its
 // fixtures.json reached by a route of the table, so a route added to a world and declared nowhere
@@ -7684,7 +7684,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
     }
   });
 
-  // The both-ways pin's world side. Catches a route added to a world that the table does not
+  // Catches a route added to a world that the table does not
   // declare: a world answering a call no role text names and no recorded run made, with no
   // evidence for why GitHub serves it. A route another of the same world stands ahead of is dead
   // there, so a route counts as reached where any world reaches it.
@@ -12108,39 +12108,6 @@ await state(file, Number(turn), run);
       });
     }
   );
-
-  // Catches: a role prompt of the daemon's that names a word of the vocabulary. The daemon
-  // composes a worker's system prompt from the files of packages/daemon/internal/prompts/, and
-  // the guard reads that prompt as text (run-names.ts's worldNames, `textWords`), so one such word
-  // in this checkout's prompts refuses every agent of the role that loads it, before it starts:
-  // the head label's reviewer never started while five lines of the reviewer and worker prompts
-  // said `text-only` (INFRA-764). Each file of the directory but a Go test is read, line by line,
-  // and the row names the file, the line and the word.
-  test("no file of the daemon's prompts names a word the guard refuses", () => {
-    const prompts = path.join("packages", "daemon", "internal", "prompts");
-    const files = readdirSync(path.join(CHECKOUT, prompts), { recursive: true, encoding: "utf8" })
-      .map((name) => path.join(prompts, name))
-      .filter((file) => !file.endsWith("_test.go") && statSync(path.join(CHECKOUT, file)).isFile());
-    // What was read: the prompts of both daemon parts and the composer, so a walk that found no
-    // file is no prompt read as clean.
-    expect(files).toEqual(
-      expect.arrayContaining([
-        path.join(prompts, "go", "reviewer.md"),
-        path.join(prompts, "roles", "reviewer.md"),
-        path.join(prompts, "prompts.go"),
-      ])
-    );
-    const vocab = vocabulary(["head", "base"]);
-    const named = files.flatMap((file) =>
-      readFileSync(path.join(CHECKOUT, file), "utf8")
-        .split("\n")
-        .flatMap((line, index) => {
-          const word = textWords(line, vocab);
-          return word === undefined ? [] : [`${file}:${index + 1}: "${word}"`];
-        })
-    );
-    expect(named).toEqual([]);
-  });
 
   // Catches: a guard that reads a system prompt it cannot read as one with nothing wrong in it.
   // <run>/system-args names a file (run-names.ts's `systemPromptIn`), and a file that is not

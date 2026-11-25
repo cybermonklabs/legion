@@ -1,5 +1,5 @@
-// The routes of GitHub a worker world answers, and the sweep that reads which routes the role
-// texts name. GitHub answers the same routes whichever label asks, so the routes a world must
+// The routes of GitHub a worker world answers, and the route each `gh` call reaches (`routeOf`).
+// GitHub answers the same routes whichever label asks, so the routes a world must
 // answer are every `gh` read the role texts of either label name — `skills/` and
 // `packages/daemon/internal/prompts/` of each checkout — and every route the census saw an agent
 // call (`WORLD_ROUTES`), each of those declared with the run that called it in a module of its own
@@ -14,10 +14,8 @@
 // query (its fields from the root down to the first that selects more than one, or a page of a
 // connection), `GRAPHQL mutation resolveReviewThread` for a mutation, and `GH pr view` for a gh
 // command of its own. The gh stand-in reads its GraphQL calls with this module's parser and
-// answers them with its executor, so the query the sweep names and the query the world answers
+// answers them with its executor, so the query `routeOf` reads and the query the world answers
 // are read one way.
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
 import { endpointOf, FIELD_FLAGS, methodOf, valueAt } from "./gh-call";
 import { SCHEMA_TYPES } from "./graphql-schema";
 
@@ -118,131 +116,6 @@ export function templateMatches(template: string, key: string): boolean {
 function splitKey(key: string): [string, string] {
   const space = key.indexOf(" ");
   return space < 0 ? [key, ""] : [key.slice(0, space), key.slice(space + 1)];
-}
-
-/** One `gh` command a role text names: the route it reaches, where the text names it and the
- * command as the text writes it. */
-export interface Named extends RouteKey {
-  readonly file: string;
-  readonly line: number;
-  readonly command: string;
-}
-
-/** The directories of a checkout that hold its role texts: the skills, and the daemon's prompts. */
-export const TEXT_DIRS = ["skills", path.join("packages", "daemon", "internal", "prompts")];
-
-/** Every `gh` route the role texts under `root` name (`TEXT_DIRS`), with the file and line that
- * name it, and every GraphQL call they write whose query this module cannot read (`unread`): a
- * sweep that skipped a query it could not read would pass a text whose route the world refuses.
- * A bare `gh api graphql` in prose sends no query and names no route. A Go test file is no role
- * text, and the sweep reads none. */
-export function sweep(root: string): { named: Named[]; unread: Omit<Named, "key" | "kind">[] } {
-  const named: Named[] = [];
-  const unread: Omit<Named, "key" | "kind">[] = [];
-  for (const dir of TEXT_DIRS) {
-    for (const file of filesUnder(path.join(root, dir))) {
-      if (file.endsWith("_test.go")) continue;
-      const relative = path.relative(root, file);
-      for (const found of commandsIn(readFileSync(file, "utf8"))) {
-        const route = routeOf(found.argv);
-        const command = `gh ${found.argv.join(" ")}`;
-        if (route !== undefined)
-          named.push({ ...route, file: relative, line: found.line, command });
-        else if (found.argv[0] === "api" && graphqlQueryOf(found.argv) !== undefined)
-          unread.push({ file: relative, line: found.line, command });
-      }
-    }
-  }
-  return { named, unread };
-}
-
-function filesUnder(dir: string): string[] {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir).sort();
-  } catch {
-    return [];
-  }
-  return entries.flatMap((entry) => {
-    const full = path.join(dir, entry);
-    return statSync(full).isDirectory() ? filesUnder(full) : [full];
-  });
-}
-
-/** Where a `gh api`, `gh pr` or `gh run` command starts in a text. */
-const GH_COMMAND = /(?<![\w./-])gh[ \t]+(?:api|pr|run)\b/g;
-
-/** Every `gh api`, `gh pr` and `gh run` command `text` writes, as the argv after `gh` a shell
- * would hand it, with the line it starts on. A command ends where a shell command ends — an
- * unescaped newline, `|`, `&&`, `;`, `)` or `>` outside quotes — and, written inside a
- * Markdown code span, at the span's closing backtick, the span's own line breaks being spaces.
- * A backslash at a line's end continues the command, as in a shell. A placeholder in angle
- * brackets is one word, spaces and all (`<approved sha>...<new head>`). */
-export function commandsIn(text: string): { argv: string[]; line: number }[] {
-  const found: { argv: string[]; line: number }[] = [];
-  for (const match of text.matchAll(GH_COMMAND)) {
-    const start = match.index ?? 0;
-    const argv = wordsFrom(text, start, text[start - 1] === "`").slice(1);
-    found.push({ argv, line: text.slice(0, start).split("\n").length });
-  }
-  return found;
-}
-
-function wordsFrom(text: string, start: number, inline: boolean): string[] {
-  const words: string[] = [];
-  let word: string | undefined;
-  const end = () => {
-    if (word !== undefined) words.push(word);
-    word = undefined;
-  };
-  let index = start;
-  while (index < text.length) {
-    const char = text[index] ?? "";
-    if (inline && char === "`") break;
-    if (char === "\\" && text[index + 1] === "\n") {
-      end();
-      index += 2;
-      continue;
-    }
-    if (char === "\n" && !inline) break;
-    if (char === " " || char === "\t" || char === "\n") {
-      end();
-      index++;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      const close = closing(text, index, char);
-      const span = close < 0 ? "" : text.slice(index + 1, close);
-      if (close < 0 || (inline && span.includes("`"))) break;
-      word = (word ?? "") + (char === '"' ? span.replace(/\\(["\\$`])/g, "$1") : span);
-      index = close + 1;
-      continue;
-    }
-    if (char === "<") {
-      const close = text.indexOf(">", index);
-      const span = close < 0 ? "" : text.slice(index, close + 1);
-      if (close < 0 || span.includes("\n") || span.length > 80 || span.slice(1).includes("<"))
-        break;
-      word = (word ?? "") + span;
-      index = close + 1;
-      continue;
-    }
-    if ("|;&()>".includes(char)) break;
-    word = (word ?? "") + char;
-    index++;
-  }
-  end();
-  return words;
-}
-
-/** The index of the quote that closes the one at `open`, or -1: a double quote skips each
- * backslash-escaped character, as a shell does. */
-function closing(text: string, open: number, quote: string): number {
-  for (let index = open + 1; index < text.length; index++) {
-    if (quote === '"' && text[index] === "\\") index++;
-    else if (text[index] === quote) return index;
-  }
-  return -1;
 }
 
 // GraphQL, as far as reading which route a query reaches and answering it from a world goes:

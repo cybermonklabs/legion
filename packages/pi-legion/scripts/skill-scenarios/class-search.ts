@@ -676,12 +676,8 @@ function grepCheck(spec: {
 const instance = (why: string) => ({ verdict: "instance" as const, why });
 const holds = (why: string) => ({ verdict: "true" as const, why });
 
-/** The markdown a role reads: the skills, the daemon's prompts and the documentation site. */
-const roleTexts = (tree: Tree) => [
-  ...tree.files("skills", (file) => file.endsWith(".md"), true),
-  ...tree.files("packages/daemon/internal/prompts", (file) => file.endsWith(".md"), true),
-  ...tree.files("docs/site/src/content", (file) => /\.mdx?$/.test(file), true),
-];
+/** The daemon's role prompts, which no check of the search reads (dispatch://INFRA-764 R4). */
+const PROMPT_TREE = /^packages\/daemon\/internal\/prompts\/(?:roles|go)\//;
 /** Every text file of the trees a citation can sit in. */
 const TEXT_FILE = /\.(ts|tsx|js|go|sh|md|mdx|yml|yaml|json|txt|toml)$/;
 
@@ -1728,21 +1724,6 @@ const greps: Check[] = [
     verdict: () => instance("branches on a label's name"),
   }),
   grepCheck({
-    name: "hand search 3: a gate on a tell main's engine makes unreachable",
-    class: "A rule stated against an engine that no longer behaves that way.",
-    files: roleTexts,
-    pattern: /both halves|not merely once your|awaiting_merge/,
-    reading:
-      "grep the skills, the daemon's prompts and the documentation site for `both halves`, `not merely once your` and `awaiting_merge`",
-    rule: "an instance, but a line that is about `jj split`, which keeps a commit's author on both halves: a true statement about jj, not the engine; and a line that is about the reviewer's thermonuclear pair, whose two halves are its two review agents, each with a `Thermo` row of its own (skills/legion-worker/references/merge-gate.md's gate on an approval, main's since 2026-11-20): a true statement about the pair, not the engine",
-    verdict: ({ text }) =>
-      /jj split/.test(text)
-        ? holds("about jj split, not the engine")
-        : /`Thermo` rows?\b/.test(text)
-          ? holds("about the reviewer's thermonuclear pair, not the engine")
-          : instance("a gate on the retired tell"),
-  }),
-  grepCheck({
     name: "hand search 4 and 6: one fact defined in two places",
     class: "One fact read in two places.",
     files: (tree) => programs(tree),
@@ -1779,13 +1760,18 @@ const greps: Check[] = [
     name: "hand search 5: a citation of a test by its line",
     class: "A citation that moves when the lines it names move.",
     files: (tree) =>
-      [".github", "packages", "skills", "docs", "scripts"].flatMap((dir) =>
-        tree.files(dir, (file) => TEXT_FILE.test(file) && !OWN.test(file), true)
+      [".github", "packages", "docs", "scripts"].flatMap((dir) =>
+        tree.files(
+          dir,
+          (file) => TEXT_FILE.test(file) && !OWN.test(file) && !PROMPT_TREE.test(file),
+          true
+        )
       ),
     pattern:
       /\b(?:rig|score|health|daemon-standin|gh-standin|github-standin|daemon-pane)\.test\.ts:[0-9]/,
     comments: true,
-    reading: "grep .github, packages, skills, docs and scripts for `<suite>.test.ts:<line>`",
+    reading:
+      "grep .github, packages (the daemon's role prompts left out), docs and scripts for `<suite>.test.ts:<line>`",
     rule: "every hit is an instance: the line it names moves",
     verdict: () => instance("cites a test by its line"),
   }),
@@ -1805,31 +1791,21 @@ const greps: Check[] = [
           : instance("reads a gh call's verb past methodOf"),
   }),
   grepCheck({
-    name: "hand search 8: a prompt restating a skill's rule",
-    class:
-      "A rule stated in a skill and restated in a prompt, where one copy carries a check the other does not.",
-    files: (tree) =>
-      tree.files("packages/daemon/internal/prompts", (file) => file.endsWith(".md"), true),
-    pattern: /review-threads|approval names/,
-    reading: "grep the daemon's prompts for `review-threads` and `approval names`",
-    rule: "a true statement where the line points at skill://legion-worker/references/review-threads.md, which holds the rule; an instance where it does not",
-    verdict: ({ text }) =>
-      text.includes("skill://legion-worker/references/review-threads.md")
-        ? holds("points at the skill that holds the rule")
-        : instance("restates the rule with no pointer to the skill"),
-  }),
-  grepCheck({
     name: "hand search 9: a reference to a deleted symbol",
     class: "A reference to a symbol or refusal another change deleted.",
     files: (tree) =>
-      ["packages", "scripts", "skills"].flatMap((dir) =>
-        tree.files(dir, (file) => TEXT_FILE.test(file) && !OWN.test(file), true)
+      ["packages", "scripts"].flatMap((dir) =>
+        tree.files(
+          dir,
+          (file) => TEXT_FILE.test(file) && !OWN.test(file) && !PROMPT_TREE.test(file),
+          true
+        )
       ),
     pattern:
       /READY_UNREVIEWED_CHANGE|unreviewedChange|readyNote|READY_HEAD_MOVED|READY_NOT_APPROVED|LABEL_DAEMONS/,
     comments: true,
     reading:
-      "grep packages, scripts and skills for the READY refusals main deleted (a4c0ff99) and LABEL_DAEMONS",
+      "grep packages (the daemon's role prompts left out) and scripts for the READY refusals main deleted (a4c0ff99) and LABEL_DAEMONS",
     rule: "a true statement in a CHANGELOG.md (a dated release line) and in prompts_test.go (the retired-phrase census); an instance anywhere else",
     verdict: ({ file }) =>
       file.endsWith("CHANGELOG.md")

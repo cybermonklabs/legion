@@ -627,11 +627,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // names core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of
 // that rule in the prompt tree, which a later core would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every part below carries for that rule. Beyond those copies, it stands in
-	// go/worker-common.md, which packages/pi-legion/src/skills-guard.test.ts counts once, and in
-	// the step that records the carry at a text-only head, in go/implementer.md, roles/reviewer.md
-	// and a second paragraph of roles/implementer.md, which prompts_test.go's
-	// TestTheRoleThatPushesATextOnlyCommitRecordsTheCarryAtItsHead pins.
+	// The phrase every part below carries for that rule. Outside these parts,
+	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.

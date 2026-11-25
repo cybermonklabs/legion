@@ -804,8 +804,8 @@ Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner i
 project, and the world's 404 to a read of such an owner's repository that the label's wrapper runs
 on the pane's own token (`OWNER_UNHELD`, below); the world answers
 every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists, each
-route no text names with its evidence in `gh-route-evidence.ts`, and the rig's tests pin against
-both checkouts); no `gh` write (a GraphQL mutation, a `gh api` call sent
+route no text names with its evidence in `gh-route-evidence.ts`); no `gh` write (a GraphQL mutation,
+a `gh api` call sent
 with a verb other than GET, a `gh pr`, `gh run` or `gh auth` command that writes) went unanswered by
 every route and answer the world models: one the gh stand-in recorded as answered by nothing
 (`handler` `unrouted` in `calls.jsonl`) or, in a record from before it kept `handler`, one the

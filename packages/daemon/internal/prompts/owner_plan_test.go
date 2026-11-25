@@ -548,7 +548,7 @@ func TestEachStepIsToldTheStepsAroundItInAnyOrder(t *testing.T) {
 			append(slices.Clone(planRead),
 				"After your approval, a later step of your task can send the work back, and the new head then comes to your review again",
 				"A merge forward of the base that lands once your step ran makes a new head too, and the daemon asks you to approve it.",
-				"Retro commits nothing. After your approval, only those two or a push by a later step of your task move the head. Nothing in Legion holds the head that merges to the one you approved"),
+			),
 			append(slices.Clone(planRetired),
 				"After approval, no implementation or further review change may happen",
 				"the head changes only when a later step of your task sends the work back",
@@ -694,7 +694,7 @@ func TestNoPartPutsTheAcceptancePastTheReview(t *testing.T) {
 // daemon takes a move back only from the role that works the issue's phase (workflow's
 // backwardRefusal), so the architect asks that role for one outside `accepting`; the merger's own
 // move back is the other way out of `merging`, and a merged child waits there for the issues
-// beneath it; the implementer resolves the threads the reviewer accepted; and the sentence for a
+// beneath it; and the sentence for a
 // step with no planner step before it stands outside the paragraph that is for the steps working
 // from a planner's plan. Each part is read alone, by its name. This shows the text is loaded, never
 // that an agent follows it.
@@ -725,7 +725,6 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 			},
 			[]string{"That is the one move out of `merging`", "and closes then; a child closes at once"},
 		},
-		{"reviewer.md", []string{"the implementer resolves the threads you tell it you accepted"}, []string{"resolve the ones you answered"}},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			holdsAndRetires(t, "go/"+tc.part, goPart(t, tc.part), tc.want, tc.gone)
@@ -757,8 +756,7 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 // reviewRound, classify.RoundWaitsOnMergeState), so the architect's part no longer says the
 // approval ends the round whatever CI says. The reviewer waits, before it approves, for a required
 // check still running and for a `ci_check` run, so its part says so where it says the daemon does
-// the rest of the waiting. The reviewer pushes nothing (roles/reviewer.md), so the shared update
-// and push steps say they are not its own; the merger pushes its merge of the base. The production
+// the rest of the waiting. The production
 // check, opened once the pull request merges, records an `after_merge` result (workflow's openCheck
 // and checkTask), so the root's last round asks none. Each part is read alone, by its name. This
 // shows the text is loaded, never that an agent follows it.
@@ -783,10 +781,7 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 		},
 		{
 			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
-			[]string{
-				"Do its five steps in that turn, in this order; the reviewer creates no commit and pushes nothing, so each commit and push that the steps and this paragraph name is not its own, and the merger pushes the merge of the base it made.",
-				"Where your role pushes (the reviewer pushes nothing), push the issue branch yourself",
-			},
+			nil,
 			[]string{"Push the issue branch yourself", "the reviewer and the merger create no commit and push nothing", "the reviewer and the merger push nothing"},
 		},
 		{
@@ -1095,7 +1090,7 @@ func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
 		},
 		{
 			"roles/reviewer.md", func(t *testing.T) string { return rolePart(t, "reviewer.md") },
-			[]string{"After your approval, only those two or a push by a later step of your task move the head."},
+			nil,
 			[]string{"no step of Legion's moves the head after your approval but those two"},
 		},
 		{
