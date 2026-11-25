@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // tupleColumns is what every tuple read answers, in the order scanTuples takes them.
@@ -91,6 +93,41 @@ func Read(ctx context.Context, q Queryer, id string) (Node, bool, error) {
 		return Node{}, false, fmt.Errorf("read priority %s: %w", id, err)
 	}
 	return node, true, nil
+}
+
+// ReadForWrite answers one live priority's node row and holds that row's lock until the caller's
+// transaction ends, for a write that compares the row with what its writer last read before it
+// writes (api/priorities.go, a patch's expected). Every other write of the row waits on that lock
+// — a second ReadForWrite and the update each write makes (moveNode) alike — and in Postgres's
+// read committed reads the row again once the holder ends, so two writes that compare against
+// one value cannot both find it there. It refuses an id the store does not hold, and an id whose
+// priority is gone, with ErrNoPriority, as the writes do (liveRow).
+//
+// The lock is a request's row lock, so it waits within the bound every such lock does
+// (store.LockRowsWithinBoundAndRead): a row still held past it is refused store.ErrPoolBusy, and
+// the read that follows sees what the previous holder committed.
+func ReadForWrite(ctx context.Context, tx pgx.Tx, id string) (Node, error) {
+	var node Node
+	err := store.LockRowsWithinBoundAndRead(ctx, tx, `
+		select 1 from priority_nodes
+		where kind = '`+KindPriority+`' and id = $1`+liveRow+`
+		for update
+	`, []any{id}, `
+		select `+nodeColumns+`
+		from priority_nodes
+		where kind = '`+KindPriority+`' and id = $1`+liveRow+`
+	`, []any{id}, func(row pgx.Row) error {
+		var err error
+		node, err = scanNode(row)
+		return err
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, fmt.Errorf("read priority %s: %w", id, ErrNoPriority)
+	}
+	if err != nil {
+		return Node{}, fmt.Errorf("read priority %s: %w", id, err)
+	}
+	return node, nil
 }
 
 // List answers every live priority with its attributes, in the order they are ranked, which is

@@ -42,7 +42,7 @@ const rankKey = `attributes->>'` + AttributeRank + `' collate "C"`
 // priority the store holds, so a caller that is about to create one asks for the key with the id
 // it is about to write.
 func RankAt(ctx context.Context, tx pgx.Tx, id, before, after string) (string, error) {
-	if err := lockRankAllocation(ctx, tx); err != nil {
+	if err := LockRankAllocation(ctx, tx); err != nil {
 		return "", err
 	}
 	var (
@@ -101,11 +101,14 @@ func Move(ctx context.Context, tx pgx.Tx, id, before, after string, values map[s
 	return key, nil
 }
 
-// lockRankAllocation serialises the whole order, as lockProjectRankAllocation serialises one
+// LockRankAllocation serialises the whole order, as lockProjectRankAllocation serialises one
 // project's board. There is one lock and not one per project, because a priority is in no
 // project: every move reads the same neighbourhood. Its wait is bounded as an owner lock's is
-// (store.LockWithinBound): a write queued behind a holder past the bound is refused busy.
-func lockRankAllocation(ctx context.Context, tx pgx.Tx) error {
+// (store.LockWithinBound): a write queued behind a holder past the bound is refused busy. RankAt
+// takes it; a patch that reads its row under a lock before it moves (api's patchPriority with an
+// expected) takes it first, so its wait for it holds no transaction id, and RankAt's own take is
+// then a second take of a lock the transaction holds, which does not wait.
+func LockRankAllocation(ctx context.Context, tx pgx.Tx) error {
 	if err := store.LockWithinBound(ctx, tx, `select pg_advisory_xact_lock(hashtext('priority-rank'))`); err != nil {
 		return fmt.Errorf("lock priority rank allocation: %w", err)
 	}
