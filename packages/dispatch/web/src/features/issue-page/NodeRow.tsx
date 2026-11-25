@@ -600,6 +600,7 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "handoff":
     case "image":
     case "issue":
+    case "prose":
       return "issue";
   }
 }

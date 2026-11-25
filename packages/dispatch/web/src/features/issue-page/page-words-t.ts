@@ -15,6 +15,11 @@ import type { PartWords } from "./page-words-parts";
 
 export default {
   add: {
+    NODE_TYPE_NAMES: {
+      /** A `prose` node: a document's plain paragraph, as the model stores it, which Graph draws
+       *  as a row of its own. The page draws the word a reader uses, never the model's token. */
+      prose: "paragraph",
+    },
     EMPTY_STATE_LINES: {
       /** Graph, the whole tree read, on an issue whose tree holds nothing under it. */
       graph: "This issue holds nothing yet.",
@@ -57,6 +62,12 @@ export default {
        *  `AUTHOR_TEXT_ATTRIBUTE`, and the words agree with it: "1 more child", "3 more children". */
       children_page_child: "more child",
       children_page_children: "more children",
+    },
+    GLYPH_TOKENS: {
+      types: {
+        /** A `prose` node's shape (`NodeGlyph.tsx`), by the model's token, as every type's is. */
+        prose: "prose",
+      },
     },
   },
   unasked: [],

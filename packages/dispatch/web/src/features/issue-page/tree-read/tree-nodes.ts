@@ -198,7 +198,7 @@ export type TreeDraftMark = (
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
  * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, a reading, and a child issue.
+ * comment and a message, a callout and an image, a paragraph, a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftRequirement,
@@ -208,6 +208,7 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftAsk,
   draftTurn,
   draftBlock,
+  draftProse,
   draftReading,
   draftChild,
 ];
@@ -784,6 +785,18 @@ function draftBlock(
 ): Draft | undefined {
   if (node.supertag !== "callout" && node.supertag !== "image") return undefined;
   return draftOf(node, node.supertag, context);
+}
+
+/** A prose node: a document's plain paragraph, as the model stores it, drawn by its kind and its
+ *  words and nothing more. It stands under the parent the read gives it, as every draft whose
+ *  step names no parent does (`placeOf`). */
+function draftProse(
+  node: TreeAnswerNode,
+  _answer: TreeAnswer,
+  context: TreeDraftContext
+): Draft | undefined {
+  if (node.supertag !== "prose") return undefined;
+  return draftOf(node, "prose", context);
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
