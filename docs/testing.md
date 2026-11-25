@@ -1024,7 +1024,9 @@ imports no package of the module except `internal/testwait`, which imports none,
 every package of it.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
-in place, and the tests run beside each other on databases of their own.
+in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
+each driving its engine over a clone of its own (`migratedPool`), four at a time unless the command
+line names a `-parallel` (`workflowTestParallelism`).
 
 Dispatch's store package cannot import `storetest`, which imports it, and its migration tests each
 need the schema as it stood at some earlier version. Its own tests take

@@ -512,6 +512,12 @@ CLAUDE_ENVOY_BUILD = reads(
         ("packages/pi-legion/agents/**", "`packages/claude-envoy/scripts/build.ts#buildLegionPlugin` reads each agent of it"),
         ("skills/**", "`packages/claude-envoy/scripts/build.ts#buildLegionPlugin` stages pi-legion's partition of it; packages/claude-envoy/skills/* symlinks into ../../../skills"),
         (".bun-version", "`packages/claude-envoy/scripts/build.ts#pinnedBunVersion` reads the Bun pin"),
+        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/scripts/build.ts#pluginManifest` writes this tree's contract into the "
+                                 "manifest it builds and its bundles inline, `packages/contracts/src/daemon-contract.ts#daemonContract` of the "
+                                 "committed manifest, which names none, for which `packages/contracts/src/daemon-contract.ts#lastReleased` "
+                                 "reads released-contracts.json and `packages/contracts/src/daemon-contract.ts#entryFixtures` lists "
+                                 "contracts/*.json; the glob is the directory's, since contracts/ holds no file until the "
+                                 "first entry lands, and a glob of no file is refused"),
         (".github/scripts/release-push.sh", "packages/claude-envoy/scripts/verify-build.sh runs its check-built; the claude-envoy job runs its extract-built"),
         (".github/workflows/release.yaml", "`packages/claude-envoy/tests/build-inputs.test.ts#.github/workflows/release.yaml's $CLAUDE_ENVOY_VERSION_ARGS carries the build inputs` "
                                            "holds its $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt"),
@@ -525,8 +531,15 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "`packages/claude-envoy/tests/answers-claude.test.ts#print` and `packages/claude-envoy/tests/answers-claude.test.ts#streamSession` runs"),
         ("packages/envoy-client/test/**", "`packages/claude-envoy/tests/envoy-channel-stall.test.ts#@legion/envoy-client/test/envoy-stack` and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "`packages/claude-envoy/tests/legion-tool.test.ts#withImageManifest` imports it from @legion/pi-shared/test/image-manifest"),
-        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/daemon-api-version.test.ts#daemonApiVersion`, `packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, "
-                                 "`packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read it"),
+        (f"{FIX}/daemon-api/**", "`packages/claude-envoy/tests/legion-claim.test.ts#daemonFixture`, `packages/claude-envoy/tests/legion-pane-mcp.test.ts#daemonFixture` "
+                                 "and `packages/claude-envoy/tests/legion-tool.test.ts#daemonFixture` read its responses; "
+                                 "`packages/claude-envoy/tests/daemon-api-version.test.ts#package.json names no daemon API contract, and the plugin speaks this tree's` "
+                                 "reads released-contracts.json and lists contracts/*.json; and `packages/contracts/src/daemon-contract.ts#lastReleased` "
+                                 "and `packages/contracts/src/daemon-contract.ts#entryFixtures` read and list the same two for "
+                                 "`packages/contracts/src/daemon-contract.ts#daemonContract` of the committed manifest, as "
+                                 "`packages/claude-envoy/src/legion-claim.ts#PLUGIN_CONTRACT` and `packages/pi-shared/src/legion-phase-ops.ts#pluginBuildOf` "
+                                 "for `packages/claude-envoy/src/legion-tool.ts#BUILD` take it when a test imports them, and as the "
+                                 "tests' own PLUGIN_CONTRACT takes it"),
         (f"{FIX}/envelope-without-role.json", "`packages/claude-envoy/tests/envelope-role-field.test.ts#envelopeWithoutRole` imports it"),
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: `packages/claude-envoy/tests/legion-tool.test.ts#stateAtPhase` imports it from @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
         (".agents/plugins/marketplace.json", "`packages/claude-envoy/tests/envoy-channel-server.test.ts#codexMarketplace` imports it"),
@@ -546,6 +559,9 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                                                             "version is written into all five manifests\" and \"a manifest jq cannot "
                                                             "parse fails the step before the next manifest is written\" copy it into a "
                                                             "root of their own and run it"),
+        ("scripts/daemon-contract.sh", "packages/claude-envoy/tests/release-version.test.ts's releaseRoot copies it beside "
+                                       ".github/scripts/release-claude-envoy-version.sh, which runs it in the test \"the "
+                                       "release's version is written into all five manifests\""),
         (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's check of the "
                                           "packed tarball passes a listing longer than a pipe holds\" runs it for the repository "
                                           "url, and copies it beside the release's check, which runs it, and release-manifest-repository.test.ts "
@@ -1312,25 +1328,36 @@ LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 # The packages whose skips envoy-go's unit step counts: it runs the module through
 # packages/envoy/scripts/database-skips.sh with --module-except, one `go test -json`, and the
 # script counts the skips of its default table (DEFAULT_PACKAGES there), the broker's tree,
-# internal/cipher and every package under it, and its command, cmd/cipherd, failing on any skip
-# there as on any failed test in the run. They ran in a step of their own after the unit step
+# internal/cipher and every package under it, its command, cmd/cipherd, and
+# DATABASE_SKIPS_PACKAGES, each the package alone: the writer hold's client, internal/holdrecord,
+# whose journal tests run on the broker's own routes over its Postgres. It fails on any skip there
+# as on any failed test in the run. They ran in a step of their own after the unit step
 # until INFRA-1075: cmd/cipherd alone, 714 s, held that step at 15.3 minutes, in which its four -p
 # slots ran 1,817 s of package time, half what they had, while the unit step, 14.8 minutes, ran
 # before it (merge-group run 45048924209, job 137290624677); in one go test the two share the
-# slots. The script's own DEFAULT_EXCEPT, a
-# `grep -Ev` over that table's import paths, leaves out the race lane's packages under the tree
-# (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no database and which
-# the lane's race job runs: counting them would add them to the run, each one's second in the
-# same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
+# slots. The script's own DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out
+# DATABASE_SKIPS_RACE_ONLY: race lane packages under the tree that open no database, which the
+# lane's race job runs, where counting them would add them to the run, each one's second in the
+# same CI run, and would count nothing. It names none today. The auth service's natscallout is in
+# the lane, and its hold rows open the broker's Postgres and skip without it, so the count runs it
+# too, its second run in CI, for the count of its skips. DATABASE_SKIPS_PATTERN is built from the
+# lane's declaration of those packages, as the unit step's is.
 # hold_database_skips_packages() below refuses a script whose table is not this list, or whose
 # DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/cipher"
 DATABASE_SKIPS_COMMAND = "cmd/cipherd"
-DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+DATABASE_SKIPS_PACKAGES = ["internal/holdrecord"]
+DATABASE_SKIPS_PKGS = ([f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+                       + [f"./{p}/" for p in DATABASE_SKIPS_PACKAGES])
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+DATABASE_SKIPS_RACE_ONLY: list = []
+_lane_under_tree = {p.name: p for job in ENVOY_RACE_LANE for p in job.packages
+                    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/")}
+if any(name not in _lane_under_tree for name in DATABASE_SKIPS_RACE_ONLY):
+    raise ValueError(f"DATABASE_SKIPS_RACE_ONLY names {DATABASE_SKIPS_RACE_ONLY}, and only race lane packages under "
+                     f"{DATABASE_SKIPS_TREE} ({sorted(_lane_under_tree)}) can be left to the race job")
 DATABASE_SKIPS_PATTERN = "|".join(
-    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
-    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
+    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for p in _lane_under_tree.values() if p.name in DATABASE_SKIPS_RACE_ONLY)
 # The -timeout of envoy-go's unit step, which bounds each package's test binary.
 UNIT_TEST_TIMEOUT = "20m"
 
@@ -1358,19 +1385,21 @@ def names_pattern(names):
 
 
 # The counter's own test, which envoy-go runs before the unit step: its six controls run the
-# counter on these four packages, each narrowed to its planted and expected tests.
+# counter on these five packages, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
-DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/", "./internal/fold/"]
+DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/holdrecord/", "./internal/dispatch/api/",
+                            "./internal/fold/"]
 
 
 def hold_database_skips_packages():
     """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS, or whose
     DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The unit step counts that table's skips less
-    the lane's packages, and runs every package of the table it counts, so a package the script
-    added without this list would be counted by nothing here that declares it, one it dropped
-    would run uncounted, and a lane package the script kept would be added to the unit step's run,
-    its second in the CI run, with every check green."""
+    DATABASE_SKIPS_RACE_ONLY, and runs every package of the table it counts, so a package the
+    script added without this list would be counted by nothing here that declares it, one it
+    dropped would run uncounted, and a lane package this list leaves to the race job that the
+    script kept would be added to the unit step's run, its second in the CI run, with every check
+    green."""
     text = Path(DATABASE_SKIPS_SCRIPT).read_text()
     found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", text, re.M)
     if found != [" ".join(DATABASE_SKIPS_PKGS)]:
@@ -1380,42 +1409,50 @@ def hold_database_skips_packages():
     excepted = re.findall(r"^DEFAULT_EXCEPT='(.*)'$", text, re.M)
     if excepted != [DATABASE_SKIPS_PATTERN]:
         raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_EXCEPT is {excepted}, and DATABASE_SKIPS_PATTERN here, "
-                         f"the race lane's packages under {DATABASE_SKIPS_TREE}, is '{DATABASE_SKIPS_PATTERN}': make "
-                         f"them one pattern, so the count adds no package the lane's race job runs")
+                         f"the race lane's packages under {DATABASE_SKIPS_TREE} that DATABASE_SKIPS_RACE_ONLY leaves to "
+                         f"the race job, is '{DATABASE_SKIPS_PATTERN}': make them one pattern, so the count adds no "
+                         f"package this list leaves to the lane's race job")
 
 
 hold_database_skips_packages()
 
-# The unit step runs the module less five things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, the text
-# checks, which the text-check job runs, and the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs. Its
-# `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
-# alone, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone. It runs the
-# broker's tree and command too, whose skips it counts (DATABASE_SKIPS_PKGS above).
+# The unit step runs the module less five things: the lane's packages but those under the broker's
+# tree whose skips it counts (DATABASE_SKIPS_RACE_ONLY names none, so the auth service's natscallout
+# runs here), which the three race jobs run under the detector, internal/integration, which
+# envoy-go's integration step runs, the text checks, which the text-check job runs, and the
+# architecture-note and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and
+# internal/wirecheck), which envoy-go-build runs. Its `grep -Ev` is `/integration`, then the text
+# checks, then those packages, each the package alone, then, in the lane's own order, each of the
+# lane's packages it leaves out in the form go list's import paths need - a tree matching the
+# package and everything under it, any other the package alone. It runs the broker's tree, its
+# command and DATABASE_SKIPS_PACKAGES, whose skips it counts (DATABASE_SKIPS_PKGS above):
+# database-skips.sh would add each counted package to the run in any case, and the step's Run must
+# name it (hold_counted_in_unit_run).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
+       if p.name not in _lane_under_tree or p.name in DATABASE_SKIPS_RACE_ONLY])
 
 
 def hold_counted_in_unit_run():
     """Refuse a package whose skips the unit step counts and which its `grep -Ev` takes out:
     database-skips.sh adds each such package to the run, and the step's Run, packages_kept over
     UNIT_TEST_PATTERN, would not name it, so a change to its files would not start this job.
-    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps."""
+    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps; an
+    empty pattern keeps them all, so it is tried only when it names a package."""
     module = next(line.split()[1] for line in (Path(ENVOY) / "go.mod").read_text().splitlines()
                   if line.startswith("module "))
-    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND]
+    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND] + [Path(ENVOY) / p for p in DATABASE_SKIPS_PACKAGES]
     for current, subdirs, names in os.walk(Path(ENVOY) / DATABASE_SKIPS_TREE):
         subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(Path(current), s))
         if any(n.endswith(".go") for n in names):
             counted.append(Path(current))
     for directory in counted:
         path = f"{module}/{directory.relative_to(ENVOY).as_posix()}"
-        if not re.search(DATABASE_SKIPS_PATTERN, path) and re.search(UNIT_TEST_PATTERN, path):
+        left_to_race = bool(DATABASE_SKIPS_PATTERN) and re.search(DATABASE_SKIPS_PATTERN, path)
+        if not left_to_race and re.search(UNIT_TEST_PATTERN, path):
             raise ValueError(f"{path} is a package whose skips the unit step counts, and the step's `grep -Ev "
                              f"'{UNIT_TEST_PATTERN}'` takes it out: keep it in the step's run, or take it out of "
                              f"{DATABASE_SKIPS_SCRIPT}'s table")
@@ -1585,13 +1622,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
-# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The ten static checks of internal/dispatch/api, keyed by their path in this repository: the
+# nine source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all seventeen of their tests in the plain step; they are left out of it instead,
+# below would put all twenty of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so an
-# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so a
+# twenty-first such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1623,6 +1660,10 @@ TEXT_CHECK_TESTS = {
         "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
+    f"{ENVOY}/internal/dispatch/api/spec_writer_route_guard_test.go": {
+        "TestEveryRouteThatWritesADocumentChecksItsWriter",
+        "TestTheSpecWriterExemptionsStillHold",
+        "TestTheSpecWriterGuardSeesAPlantedWriter"},
 }
 
 # The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
@@ -1815,12 +1856,27 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
-# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
+# daemon-go's second run of internal/api's shape gate, stamped with HEAD's contract entries in
+# main's merge order (scripts/daemon-contract-order.sh), in two steps. The first,
+# DAEMON_CONTRACT_ORDER_STEP, fetches the history that script reads and writes the stamp as its
+# output; the gate, DAEMON_STAMPED_GATE_STEP, is one go test of the gate's two tests linked with
+# that output. The gate is one line because go-test-step-expansion.py's step reader refuses a
+# step whose $(…) call is not of go-tagged-tests.sh. -ldflags and -run are no form
+# check-ci-filters.sh reduces, so the gate step's whole script is pinned.
+DAEMON_CONTRACT_ORDER_STEP = "Stamp HEAD's contract entries in main's merge order"
+DAEMON_STAMPED_GATE_STEP = "Test the shape gate in main's merge order"
+DAEMON_STAMPED_GATE_SCRIPT = (
+    "go test -count=1 -timeout 1m ./internal/api/ "
+    "\"-ldflags=-X=github.com/sjawhar/legion/daemon/internal/api.contractOrder=${{ steps.contract-order.outputs.stamp }}\" "
+    "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
+
+
+# The text-check job: the three modules' text checks, and the twenty tests of the Dispatch API's
+# ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.

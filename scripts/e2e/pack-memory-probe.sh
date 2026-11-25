@@ -42,7 +42,9 @@
 #      the original's `du -s`
 #      come first, and the run stops when the volume cannot hold every copy and one fresh root. A
 #      copy hardlinks the clone's objects/pack/* from the original, since git never writes a pack
-#      in place, and copies every other file with `cp -a`; then its workspace's .git is pointed at
+#      in place, and copies every other file with `cp -a`, objects/info/alternates among them, so a
+#      copy of a clone provisioning made with `git clone --shared` reads the feed's objects through
+#      the same alternates as the original; then its workspace's .git is pointed at
 #      its own clone and `git worktree repair` run in it. Each workspace's `git rev-parse
 #      --git-common-dir` must name its own clone's .git, and jj 0.45.1 must read its copied store
 #      (`op log`, exit 0 and no `Reindexing`); the run stops otherwise. Each R10 copy's jj reads
@@ -88,8 +90,10 @@
 #      edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk file>`. The
 #      five copies' HEADs are one commit before the commits, so each commit is one id on all five,
 #      which a verdict checks, and each released row's stdout can equal its control's.
-#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a `git
-#      clone --no-checkout` of the feed, its packs hardlinked, then every jj command the measuring
+#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a plain
+#      `git clone --no-checkout` of the feed, its packs hardlinked into the clone's own object
+#      store, where provisioning's clone is `git clone --shared` and reads them from the feed
+#      through alternates, then every jj command the measuring
 #      jj recorded for the original's provision, in its order and with its argv, run with that jj
 #      and budget. Each path of the original root in an argv is rewritten to the fresh root, and
 #      provisioning's temporary clone (<clone>.clone-<digits>, which it renames into place once
