@@ -58,7 +58,7 @@ func newPodRefusalRigOf(t *testing.T, answers func(pool *store.Pool, records rec
 	shape func(*supervise.Claim)) *podRefusalRig {
 	t.Helper()
 	runner, sup, pool := runnerIn(t, phase.Testing, "testing", &outboxPublisher{}, quietLogger())
-	clock := &heldClock{}
+	clock := microClock()
 	sup.deps.Clock = clock
 	told := answers(pool, runner.records)
 	sup.deps.PodRefused = told.podRefused
