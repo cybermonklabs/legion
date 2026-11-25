@@ -4093,6 +4093,18 @@
         "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
         "files": ["packages/daemon/cmd/legion/decode_answer_test.go"],
         "capture": "legion.decode-answer/map-key"
+      },
+      {
+        "row": "controller-envoy-url-unparsed",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/controller/liveness_url_join_test.go"],
+        "capture": "controller.envoy-url/unparsed"
+      },
+      {
+        "row": "controller-envoy-url-reparsed",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/internal/controller/liveness_url_join_test.go"],
+        "capture": "controller.envoy-url/reparsed"
       }
     ],
     "boundary_fields": {
@@ -8219,8 +8231,8 @@
       "capture": "workspace.git-redirect/fetch-userinfo-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "oauth2call.Field(strings.TrimSpace(result.Stderr))",
-        "replacement": "result.Stderr"
+        "preimage": "held.shown(ran.Stderr)",
+        "replacement": "held.scrub(ran.Stderr)"
       }
     },
     {
@@ -8233,8 +8245,8 @@
       "capture": "workspace.git-redirect/log-userinfo-encoded",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "oauth2call.Field(strings.ReplaceAll(strings.TrimSpace(result.Stderr), \"\\n\", \" | \"))",
-        "replacement": "strings.ReplaceAll(strings.TrimSpace(result.Stderr), \"\\n\", \" | \")"
+        "preimage": "held.shown(strings.ReplaceAll(strings.TrimSpace(ran.Stderr), \"\\n\", \" | \"))",
+        "replacement": "held.scrub(strings.ReplaceAll(strings.TrimSpace(ran.Stderr), \"\\n\", \" | \"))"
       }
     },
     {
@@ -9726,7 +9738,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestAKeptStopsLinePrintsTheListenersWordsAsTheRuleReadsThem",
-      "production": "notify ReadSessionRegistration and DeleteSession, and the daemon's sessionStop.send: the registration's client instance and the delete's reason are the listener's words, decoded through Answer.Decode and printed as the rule reads them"
+      "production": "notify ReadSessionRegistration and DeleteSession, and the daemon's sessionStop.send: the registration's client instance and the delete's reason are the listener's words, decoded through Answer.Decode and printed as the rule reads them; an instance id the rule would change sends no delete, and the stop's line holds none of it"
     },
     {
       "id": "legion-cli-decided-as-it-came",
@@ -12232,13 +12244,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
       "test": "TestAGoogleCallFollowsNoRedirect/iam-pod",
-      "production": "sessionproxy impersonationClient without a writer token: the IAM Credentials client signed with the pod's own credentials follows no redirect (redirects.Refused, kept by oauth2.NewClient), so generateAccessToken's 302 is impersonate's refusal by its status and the host its Location names is sent nothing, neither the pod's bearer nor the Location's query",
+      "production": "sessionproxy impersonationClient without a writer token: the one IAM Credentials client, signed by the pod's own credentials (iamSource), follows no redirect (redirects.Refused), so generateAccessToken's 302 is impersonate's refusal by its status and the host its Location names is sent nothing, neither the pod's bearer nor the Location's query",
       "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.impersonationClient",
       "capture": "sessionproxy.redirect-followed/iam-pod",
       "mutation": {
         "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
-        "preimage": "redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam})",
-        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout(), Transport: endpoints.iam} }()"
+        "preimage": "redirects.Refused(&http.Client{Timeout: endpoints.timeout(), Transport: signed})",
+        "replacement": "func() *http.Client { _ = redirects.Refused; return &http.Client{Timeout: endpoints.timeout(), Transport: signed} }()"
       }
     },
     {
@@ -12246,8 +12258,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
       "test": "TestAGoogleCallFollowsNoRedirect/sts-exchange",
-      "production": "sessionproxy impersonationClient with a writer token: the exchange's client follows no redirect (redirects.Refused), so the security token service's 307 is the exchange's refusal by its status and the host its Location names is sent nothing, neither the form with the writer token nor the Location's query",
-      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.impersonationClient",
+      "production": "sessionproxy iamSource with a writer token: the exchange's client follows no redirect (redirects.Refused), so the security token service's 307 is the exchange's refusal by its status and the host its Location names is sent nothing, neither the form with the writer token nor the Location's query",
+      "function": "github.com/sjawhar/legion/daemon/internal/sessionproxy.iamSource",
       "capture": "sessionproxy.redirect-followed/sts-exchange",
       "mutation": {
         "file": "packages/daemon/internal/sessionproxy/sessionproxy.go",
@@ -16149,6 +16161,253 @@
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestAClaimLineNamesATokenOnlyInAShapeTheDaemonMakes/issue-less",
       "production": "legion claimWord: a token in no shape the daemon makes (legionclaim.Token.Shaped) prints as words, where the command's own grammar took a token naming no issue"
+    },
+    {
+      "id": "dispatch-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchCallGoesToTheRouteJoinedOntoTheDispatchURL/query",
+      "production": "dispatch HTTPClient.answer: a Dispatch URL with a path and a query (http://host/dispatch?sig=...) asks each route joined onto its path, the query kept ahead of the route's own (urljoin.Join: /dispatch/api/v1/issues/<key>?sig=..., /dispatch/api/v1/issues?sig=...&project=...), where the route appended to the URL's text sat inside the query and Dispatch was asked /dispatch"
+    },
+    {
+      "id": "dispatch-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchCallGoesToTheRouteJoinedOntoTheDispatchURL/query-trailing-slash",
+      "production": "dispatch HTTPClient.answer: a Dispatch URL whose path ends in a slash and that has a query asks /dispatch/api/v1/...?sig=..., where the trailing-slash trim left the query in place and the route sat inside it"
+    },
+    {
+      "id": "dispatch-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchCallGoesToTheRouteJoinedOntoTheDispatchURL/no-query",
+      "production": "dispatch HTTPClient.answer: a Dispatch URL with a path and no query asks /dispatch/api/v1/..., as before the join"
+    },
+    {
+      "id": "dispatch-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed Dispatch URL row: http.NewRequest's error for that URL quotes its user information and its query's token"
+    },
+    {
+      "id": "dispatch-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "dispatch HTTPClient.answer: a Dispatch URL url.Parse refuses fails the call in the client's own words, never url.Parse's error, which quotes the URL whole",
+      "capture": "dispatch.dispatch-url/unparsed"
+    },
+    {
+      "id": "dispatch-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Dispatch URL row: http.NewRequest's error for the joined URL quotes its credentials"
+    },
+    {
+      "id": "dispatch-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestADispatchURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "dispatch HTTPClient.answer: a joined URL http.NewRequest refuses is named through oauth2call.Unanswered, which names a URL it cannot read by no part of it",
+      "capture": "dispatch.dispatch-url/reparsed"
+    },
+    {
+      "id": "notify-envoy-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL/query",
+      "production": "notify HTTPPublisher.newRequest: an Envoy URL with a path and a query (http://host/envoy?sig=...) asks each of the publish, registration read, role lookup and delete routes joined onto its path, the query kept ahead of the route's own (urljoin.Join), where the route appended to the URL's text sat inside the query and the listener was asked /envoy"
+    },
+    {
+      "id": "notify-envoy-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL/query-trailing-slash",
+      "production": "notify HTTPPublisher.newRequest: an Envoy URL whose path ends in a slash and that has a query asks /envoy/v1/...?sig=..."
+    },
+    {
+      "id": "notify-envoy-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerCallGoesToTheRouteJoinedOntoTheListenerURL/no-query",
+      "production": "notify HTTPPublisher.newRequest: an Envoy URL with no query asks /envoy/v1/..., as before the join"
+    },
+    {
+      "id": "notify-envoy-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed Envoy URL row: http.NewRequest's error quotes its credentials"
+    },
+    {
+      "id": "notify-envoy-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "notify HTTPPublisher.newRequest: an Envoy URL url.Parse refuses fails the call in the publisher's own words",
+      "capture": "notify.envoy-url/unparsed"
+    },
+    {
+      "id": "notify-envoy-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Envoy URL row"
+    },
+    {
+      "id": "notify-envoy-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "notify HTTPPublisher.newRequest: a joined URL http.NewRequest refuses is named through oauth2call.Unanswered",
+      "capture": "notify.envoy-url/reparsed"
+    },
+    {
+      "id": "controller-envoy-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessLookupGoesToTheRouteJoinedOntoTheEnvoyURL/query",
+      "production": "controller NewProber: an Envoy URL with a path and a query asks the role route joined onto its path, the query kept (urljoin.Join: /envoy/v1/roles/<token>?sig=...), where the route appended to the URL's text sat inside the query and the listener was asked /envoy"
+    },
+    {
+      "id": "controller-envoy-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessLookupGoesToTheRouteJoinedOntoTheEnvoyURL/query-trailing-slash",
+      "production": "controller NewProber: an Envoy URL whose path ends in a slash and that has a query asks /envoy/v1/roles/<token>?sig=..."
+    },
+    {
+      "id": "controller-envoy-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessLookupGoesToTheRouteJoinedOntoTheEnvoyURL/no-query",
+      "production": "controller NewProber: an Envoy URL with no query asks as before"
+    },
+    {
+      "id": "controller-envoy-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAnEnvoyURLThatDoesNotParseIsLoggedByNoneOfIt/twin",
+      "production": "the probe of the unparsed Envoy URL row: http.NewRequest's error quotes its credentials"
+    },
+    {
+      "id": "controller-envoy-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAnEnvoyURLThatDoesNotParseIsLoggedByNoneOfIt/unparsed",
+      "production": "controller Prober.Probe: an Envoy URL that does not parse leaves no lookup, and each probe logs fixed words, where it logged the lookup's text whole",
+      "capture": "controller.envoy-url/unparsed"
+    },
+    {
+      "id": "controller-envoy-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAnEnvoyURLThatDoesNotParseIsLoggedByNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed Envoy URL row"
+    },
+    {
+      "id": "controller-envoy-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAnEnvoyURLThatDoesNotParseIsLoggedByNoneOfIt/reparsed",
+      "production": "controller Prober.Probe: a lookup URL http.NewRequest refuses is logged only through oauth2call.Unanswered, not as its text",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/controller.Prober).Probe",
+      "capture": "controller.envoy-url/reparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/controller/liveness.go",
+        "preimage": "p.log.Warn(\"controller liveness: build the role lookup\", \"error\",",
+        "replacement": "p.log.Warn(\"controller liveness: build the role lookup\", \"url\", p.lookup, \"error\","
+      }
+    },
+    {
+      "id": "cipher-broker-url-join-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/query",
+      "production": "cipher Client.do: a broker URL with a path and a query asks each route joined onto its path, the query kept (urljoin.Join), and the launcher proof names that URL without its query (proofURL), where the route sat inside the query"
+    },
+    {
+      "id": "cipher-broker-url-join-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/query-trailing-slash",
+      "production": "cipher Client.do: a broker URL whose path ends in a slash and that has a query asks /broker/v1/...?sig=..."
+    },
+    {
+      "id": "cipher-broker-url-join-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/no-query",
+      "production": "cipher Client.do: a broker URL with no query asks as before, the proof's htu unchanged"
+    },
+    {
+      "id": "cipher-broker-url-join-user-information",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerCallGoesToTheRouteJoinedOntoTheBrokerURL/user-information",
+      "production": "cipher doProof: a broker URL with user information signs a proof whose htu names none of it (proofURL)"
+    },
+    {
+      "id": "cipher-broker-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/twin",
+      "production": "the probe of the unparsed broker URL row"
+    },
+    {
+      "id": "cipher-broker-url-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/unparsed",
+      "production": "cipher Client.do: a broker URL url.Parse refuses fails the call in the client's own words",
+      "capture": "cipher.broker-url/unparsed"
+    },
+    {
+      "id": "cipher-broker-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed broker URL row"
+    },
+    {
+      "id": "cipher-broker-url-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerURLThatDoesNotParsePrintsNoneOfIt/reparsed",
+      "production": "cipher Client.do: a joined URL http.NewRequest refuses is named through oauth2call.Unanswered",
+      "capture": "cipher.broker-url/reparsed"
+    },
+    {
+      "id": "notify-delete-instance-echoed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestADeleteWhoseInstanceTheRuleWouldChangeIsNotSent/echoed",
+      "production": "notify DeleteSession: a client instance id echoing the request's bearer, which SendBack declines, sends no delete and answers an error naming none of it, where the delete went out with no instance",
+      "capture": "notify.delete-instance/echoed"
+    },
+    {
+      "id": "notify-delete-instance-userinfo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestADeleteWhoseInstanceTheRuleWouldChangeIsNotSent/userinfo",
+      "production": "notify DeleteSession: a client instance id quoting a URL's user information sends no delete",
+      "capture": "notify.delete-instance/userinfo"
+    },
+    {
+      "id": "notify-delete-instance-plain",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestADeleteWhoseInstanceTheRuleWouldChangeIsNotSent/plain",
+      "production": "notify DeleteSession: an id the rule prints as it came is sent back"
+    },
+    {
+      "id": "notify-delete-instance-none",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestADeleteWhoseInstanceTheRuleWouldChangeIsNotSent/none",
+      "production": "notify DeleteSession: an entry naming no instance is deleted on the moment alone, no instance parameter"
     }
   ],
   "bun": [
@@ -19313,6 +19572,31 @@
       "site": "legion claimTokenShape: a copy of the claim token grammar outside package claim, already wider than the tokens the daemon makes",
       "source": "the round-8 quality review",
       "guard": "legion-claim-word-issue-less"
+    },
+    {
+      "site": "packages/daemon/internal/dispatch/client.go HTTPClient.answer (urljoin.Join)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "dispatch-url-join-query"
+    },
+    {
+      "site": "packages/daemon/internal/notify/notify.go HTTPPublisher.newRequest (urljoin.Join)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "notify-envoy-url-join-query"
+    },
+    {
+      "site": "packages/daemon/internal/controller/liveness.go NewProber (urljoin.Join)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "controller-envoy-url-join-query"
+    },
+    {
+      "site": "packages/daemon/internal/cipher/client.go Client.do and doProof (urljoin.Join, proofURL)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "cipher-broker-url-join-query"
+    },
+    {
+      "site": "packages/daemon/internal/notify/notify.go DeleteSession (round 6's finding 6)",
+      "source": "the round-9 decisions of #4368",
+      "guard": "notify-delete-instance-echoed"
     }
   ]
 }
