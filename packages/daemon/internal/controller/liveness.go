@@ -129,8 +129,6 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 				"url", p.lookup, "session", session, "error", readErr)
 			return Unknown
 		}
-		// The reason, the state and the holder are the listener's words, so they are compared as
-		// they came and logged as the rule reads them (listenerwire.RoleRefusalAs).
 		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
 		_ = read.Decode(&refusal)
 		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
