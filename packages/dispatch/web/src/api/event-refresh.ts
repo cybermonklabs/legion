@@ -1148,6 +1148,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
   }
+  if (event.type === "project.access_changed") {
+    // An owner given, or another change of who may see the project: no read of the dashboard
+    // carries a project's owner, visibility or access list yet, so nothing is refreshed.
+    return [];
+  }
   if (event.type === "subscription.remove_requested") {
     return [];
   }
