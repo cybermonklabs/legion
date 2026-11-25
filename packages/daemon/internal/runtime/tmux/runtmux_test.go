@@ -104,10 +104,13 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 // timedOut, and the one on the fake answers only after the move, so a seam wired to the wall
 // clock in both places would fail this row at its first wait.
 //
-// Each half judges a run whose client was running when its deadline came. runTmux arms the
-// deadline before it starts the client, so a deadline that ends the context first gives a start
-// error, which says nothing about who ended a client: the fake moves only once the client has
-// written its marker, and a wall-clock run whose client never started is run again.
+// The fake half judges a run whose client was running when its deadline came: runTmux arms the
+// deadline before it starts the client, so the fake moves only once the client has written its
+// marker, and a move before the start, which would give a start error, cannot happen. The wall
+// half cannot order its timer after the start, so it judges each run by what the run answered:
+// timedOut is the wall clock ending a client it started, whether or not the client's shell got as
+// far as anything of its own, and a start error is a deadline that came before the client started,
+// which says nothing about who ends a running client, so that run is run again.
 func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNone(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -128,18 +131,16 @@ func TestTheCommandTimeoutRunsOnTheConfiguredClockAndOnTheWallClockWhenThereIsNo
 		t.Errorf("a runtime New built with no Options.Clock runs on %T, want clock.Real()", onWall.clock)
 	}
 	onWall.commandTimeout = 200 * time.Millisecond
-	onWall.tmuxPath, onWall.environ = client, []string{"PATH=" + os.Getenv("PATH")}
+	onWall.tmuxPath, onWall.environ = fakeTmuxClient(t, t.TempDir(), "exec sleep 300"), []string{"PATH=" + os.Getenv("PATH")}
+	attempt := 0
 	got := testwait.Until(t, "a run with no clock whose client started before its 200ms deadline", func() (ranTmux, bool) {
-		if err := os.Remove(started); err != nil && !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
+		attempt++
 		res, err := onWall.runTmux(testwait.Context(t), argv)
-		if _, statErr := os.Stat(started); statErr != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("a run with no clock whose client never started = %+v, %v; want the deadline's start error", res, err)
-			}
+		if err != nil && errors.Is(err, context.DeadlineExceeded) && res == (result{}) {
+			t.Logf("run %d with no clock: the 200ms deadline came before the client started (%v); running again", attempt, err)
 			return ranTmux{}, false
 		}
+		t.Logf("run %d with no clock: the client started and the run answered exit %d, timed out %s, error %v", attempt, res.exitCode, res.timedOut, err)
 		return ranTmux{res, err}, true
 	})
 	if got.err != nil || got.res.timedOut != 200*time.Millisecond || got.res.exitCode != -1 {
