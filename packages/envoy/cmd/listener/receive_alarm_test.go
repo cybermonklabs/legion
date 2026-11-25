@@ -249,6 +249,7 @@ func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *tes
 // retried forever and renewed its lease, so no standby ever tried, /healthz answered 200 healthy
 // and no alarm fired.
 func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T) {
+	t.Parallel()
 	const machineID = "box-stuck"
 	granted, denied := consumerInfoUnansweredNATS(t, machineID)
 	// The bound is past one failed read, so /healthz is read between the first failure and the
@@ -319,6 +320,7 @@ func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T
 // as its own would keep the term from settling, and pod-x would deliver the newer message first,
 // the dead pod's one ack wait later.
 func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(t *testing.T) {
+	t.Parallel()
 	const machineID = "box-gave-up"
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, machineID)})
@@ -414,6 +416,7 @@ func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterI
 // lease would keep the term from settling, and pod-x would deliver the newer message first, the
 // dead pod's one ack wait later.
 func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(t *testing.T) {
+	t.Parallel()
 	const machineID = "box-lost-lease"
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, machineID)})

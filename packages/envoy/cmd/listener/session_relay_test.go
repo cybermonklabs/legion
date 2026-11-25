@@ -1349,6 +1349,7 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 // (nextRefusedWait). Once the test closes its two connections, a later try connects, the role
 // lane after it, and the listener is ready. Before, the start exited 1 at the refusal.
 func TestAListenerWhoseAccountRefusesItsSessionConsumersConnectionWaitsForASlotThenServes(t *testing.T) {
+	t.Parallel()
 	config := `jetstream {}
 accounts {
   LISTENER: {

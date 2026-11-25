@@ -185,6 +185,7 @@ func awaitHeldLock(t *testing.T, complaint string, read func()) {
 // /healthz answered 503; and once it released, a pod with no term left would read up and take
 // the lease back, only to subscribe on the closed connection.
 func TestAReplacedConnectionBehindAFailingHookReadsDownAndReleasesTheLease(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-replaced-behind-a-failing-hook"
 	handle, _ := recordingHandler()

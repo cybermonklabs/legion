@@ -37,6 +37,7 @@ func (k hangingSeenKV) Get(string) (natsgo.KeyValueEntry, error) {
 // Before this change that read had no budget at all, so the whole list waited out the JetStream
 // MaxWait once per lapsed row, well past this listener's HTTP write timeout.
 func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *testing.T) {
+	t.Parallel()
 	const lapsed = "ses_interests_last_seen_hangs"
 	released := make(chan struct{})
 	t.Cleanup(func() { close(released) })

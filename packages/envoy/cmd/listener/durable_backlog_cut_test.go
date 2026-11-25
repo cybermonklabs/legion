@@ -65,6 +65,7 @@ const (
 // time on an empty stream with a durable of its own (aimBacklogCut), passes only on an attempt
 // whose cut landed inside the push and whose backlog came back exactly once, and fails when every
 // attempt missed, naming each and how far its push had got.
+// It must not run in parallel: load beside it lets the push end before the cut lands.
 func TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce(t *testing.T) {
 	uri := testnats.URL(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))

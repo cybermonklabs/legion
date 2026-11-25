@@ -229,6 +229,7 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 // (bus.DeliveryExceptionDedupePrefix): neither the core publish the one judgement chose nor the
 // one-copy exception.<reason>.<origin> another listener's JetStream judgement stores it under.
 func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
+	t.Parallel()
 	const (
 		topic  = "notifications.x.judged"
 		lane   = bus.ExceptionTopicPrefix + topic

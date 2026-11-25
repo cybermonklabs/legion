@@ -21,6 +21,7 @@ import (
 // the lease at its next poll, settles, and delivers the stopped pod's messages in the order they
 // were published once the hand-back delay has run, with no ack wait.
 func TestAGracefulStopHandsWhatItHeldBackAndReleasesTheLeaseToTheStandby(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-handover"
 	inHand := make(chan context.Context, 1)
@@ -122,6 +123,7 @@ func (rig *receiverRig) logRecord(t *testing.T, msg string, within time.Duration
 // loses one now and then to nats-server, which drops a message whose first delivery is still in its
 // send queue when the deliver subject's last subscriber goes.
 func TestAGracefulStopOverASlowLinkHandsBackWhatWasOnTheWire(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-slow-link"
 	relay := startListenerRelay(t, uri)
@@ -293,6 +295,7 @@ func TestAGracefulStopMarksTheHandBackForTheRecordItReleased(t *testing.T) {
 // hold would have ended. The successor holds for the ack wait's cap instead, which is what the
 // unwritten mark tells it, and the stop's own line says why it wrote none.
 func TestAStopWhoseHandlerIgnoresItsCancelMarksNoHandBack(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stuck-handler"
 	// The handler answers neither its delivery's cancel nor the stop: it holds the message past
@@ -348,6 +351,7 @@ func TestAStopWhoseHandlerIgnoresItsCancelMarksNoHandBack(t *testing.T) {
 // the linger the mark's first gate reads. In each case the pod that takes the record next must
 // settle for an ack wait, and an unwritten mark is what tells it so.
 func TestAStopMarksNoHandBackWhenItsLingerOrItsTermFellShort(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, machineID string
 		lingerEnd       lingerEnd
@@ -369,6 +373,7 @@ func TestAStopMarksNoHandBackWhenItsLingerOrItsTermFellShort(t *testing.T) {
 		{"the drain's wait ran out", "box-unmarked-drain", lingerEndReceiving, noMarkUndrained, false, true, false, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			handle, _ := recordingHandler()
 			if row.binding {
@@ -462,6 +467,7 @@ func TestAGracefulStopWithNoOtherPodEndsItsLingerUntaken(t *testing.T) {
 // subscription to the linger cap, lingerMax after it handed its messages back, then drains it and
 // returns.
 func TestAGracefulStopLingersToItsCapForATakerThatNeverReceives(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-mute-taker"
 	handle, _ := recordingHandler()
@@ -519,6 +525,7 @@ func TestAStoppingPodsLingerHoldsItsFloorThoughItsCapHasRun(t *testing.T) {
 // what keeps that message in its held batch, delivered in stream order before the newer one
 // published after it subscribed.
 func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-late-subscriber"
 	// A flush and a release that both ran to their bounds leave the linger's deadline in the
@@ -598,6 +605,7 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 // that lands later records the term receiving, which clears no debt, so the record this term
 // releases tells the pod after it to wait an ack wait out too.
 func TestASuccessorWhoseSubscribeTheServerNeverGotSettlesForTheAckWait(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-unflushed-sub"
 	relay := startListenerRelay(t, uri)

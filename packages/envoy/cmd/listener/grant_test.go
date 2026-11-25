@@ -148,6 +148,7 @@ func hasKeyWithPrefix(keys []string, prefix string) bool {
 // (TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen). Each
 // row waits for every refusal its write draws, and fails on any other answer.
 func TestAMachinesGrantRefusesAnotherMachinesLeaseMarkAndLedger(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, "box-a")})
 	errs := make(chan error, 8)
@@ -253,6 +254,7 @@ func awaitRefusals(t *testing.T, errs <-chan error, what string, subjects ...str
 // claim names its holder session and no machine, and any listener answers a lapsed holder's
 // last_seen out of that record (GET /v1/roles/<role>).
 func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEveryLastSeen(t *testing.T) {
+	t.Parallel()
 	seedA, publicA := testnats.User(t)
 	seedB, publicB := testnats.User(t)
 	granted := testnats.StartGranted(t,
@@ -338,6 +340,7 @@ func TestAMachinesGrantRefusesAReadOfAnotherMachinesLeaseMarkAndLedgerAndReadsEv
 //   - a session's last-seen record (session.SessionRegistry): written at its registration and
 //     read once the session lapsed.
 func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	granted := testnats.StartGranted(t, testnats.GrantedUser{Public: public, Grant: testnats.ListenerGrant(t, leaseTestMachine)})
 	errs := make(chan error, 16)

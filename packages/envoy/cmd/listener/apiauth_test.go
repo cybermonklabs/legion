@@ -642,6 +642,7 @@ func TestAPIAuthRefusesHostsAnUnauthenticatedListenerDoesNotServe(t *testing.T) 
 // never "service starting" to every request. Discovery is tried again, and once the issuer answers
 // it, the projected token is admitted with nothing restarted.
 func TestAPIAuthServesWhileDiscoveryFailsAndAdmitsTheTokenOnceItSucceeds(t *testing.T) {
+	t.Parallel()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
@@ -683,6 +684,7 @@ func TestAPIAuthServesWhileDiscoveryFailsAndAdmitsTheTokenOnceItSucceeds(t *test
 // answers, then admits it. /healthz's "google" field reads false until then and true after, beside
 // "oidc", which is true once the projected token has been checked.
 func TestAPIAuthAndHealthzServeWhileGoogleDiscoveryFails(t *testing.T) {
+	t.Parallel()
 	cluster := newClusterIssuer(t)
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
@@ -734,6 +736,7 @@ func TestAPIAuthAndHealthzServeWhileGoogleDiscoveryFails(t *testing.T) {
 // Retry-After, though NATS is up and its stores are open. Once the issuer answers, the projected
 // token is admitted and "oidc" reads true, with no restart.
 func TestAListenerWhoseOIDCIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
+	t.Parallel()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-test-key")
 	projected := issuer.Mint(t, key, issuer.Claims(listenerTestSubject, listenerTestAudience))

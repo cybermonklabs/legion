@@ -126,6 +126,20 @@ func (rig *receiverRig) awaitRecord(t *testing.T, what string, cond func(leaseRe
 	}
 }
 
+// takenIn is how many messages the rig's term has taken in and not settled, as its intake counts
+// each it queues (receiveTerm.intake), and 0 while it has no term.
+func (rig *receiverRig) takenIn() int {
+	rig.receiver.mu.Lock()
+	term := rig.receiver.term
+	rig.receiver.mu.Unlock()
+	if term == nil {
+		return 0
+	}
+	term.mu.Lock()
+	defer term.mu.Unlock()
+	return len(term.unsettled)
+}
+
 // A pod that takes the lease over an expired record nobody released subscribes at once, beside the
 // dead holder's binding the server still counts, and holds what it receives while a message the
 // dead holder had is outstanding: that message comes back once its ack wait runs out, after a newer
@@ -133,6 +147,7 @@ func (rig *receiverRig) awaitRecord(t *testing.T, what string, cond func(leaseRe
 // outstanding message, well before its cap, and the record then says the new holder subscribed
 // beside a stale binding and is no longer unsettled.
 func TestASettleHoldWaitsForAMessageOutstandingWithADeadHolderAndDeliversInStreamOrder(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-expired"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
@@ -216,6 +231,7 @@ func TestASettleHoldWithNothingOutstandingEndsAtOnce(t *testing.T) {
 // durable's ack waits and a second, 7 s, after a hard take-over, and the hand-back delay and a
 // second, 3 s, after a graceful one.
 func TestASettleHoldEndsAtItsCap(t *testing.T) {
+	t.Parallel()
 	if got := productionReceiveConfig().settleCap; got != 7*time.Second {
 		t.Fatalf("the production settle cap is %s, want 7s: a %s ack wait and a second", got, consumerAckWait)
 	}
@@ -273,6 +289,7 @@ func TestASettleHoldEndsAtItsCap(t *testing.T) {
 // went through waits the hand-back delay out and every other take-over an ack wait, rather than
 // both waiting the sum of the two.
 func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, machineID, record string
 		how                     leaseAcquisition
@@ -289,6 +306,7 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 		{"marked beside a stale binding", "box-cap-marked-stale", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true,"stale_binding":true}`, leaseTakenReleased, true, consumerAckWait + settleMargin},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			client := leaveARetryOutstanding(t, uri, row.machineID, "retry")
 			handle, received := recordingHandler()
@@ -342,6 +360,7 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 // binding alike: the mark says a binding this term subscribed beside was the stopping pod's own
 // linger.
 func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-mark-floor"
 	client := leaveARetryOutstanding(t, uri, machineID, "retry")
@@ -389,6 +408,7 @@ func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
 // long too, not the hand-back delay a graceful hand-back allows. The next holder then delivers it
 // before the newer message the stopped pod handed back.
 func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stop-in-ack-wait-hold"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
@@ -414,7 +434,7 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 		return err == nil && info.NumAckPending == 2 && info.NumPending == 0
 	})
-	time.Sleep(200 * time.Millisecond) // past pod-b's intake of what the server sent it
+	waitFor(t, 5*time.Second, "pod-b to take in the newer message the server sent it", func() bool { return stopping.takenIn() >= 1 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)
@@ -445,6 +465,7 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 // so the pod that takes the lease next delivers it after that delay instead of one ack wait later,
 // which its hold, the hand-back delay and a second, does not wait for.
 func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-repeat"
 	inHand := make(chan struct{}, 1)
@@ -494,6 +515,7 @@ func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
 // own linger, and no pod wrote one here. A released record with neither flag still counts a
 // binding as a pre-lease build's, and waits it out.
 func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, machineID, record string
 		settle                  bool
@@ -506,6 +528,7 @@ func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *t
 		{"neither flag", "box-released-plain", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true}`, false, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			uri := testnats.URL(t)
 			var handedBack atomic.Bool
 			client, _ := bindAsAHolder(t, uri, row.machineID, func(msg *natsgo.Msg) {
@@ -557,6 +580,7 @@ func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *t
 // handed-back messages until the message the binding had comes back, and delivers all three in the
 // order they were published.
 func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stop-in-hold"
 	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
@@ -577,7 +601,7 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 			return err == nil && info.NumAckPending == 3 && info.NumPending == 0
 		}()
 	})
-	time.Sleep(200 * time.Millisecond) // past pod-b's intake of what the server sent it
+	waitFor(t, 5*time.Second, "pod-b to take in both newer messages the server sent it", func() bool { return stopping.takenIn() >= 2 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)

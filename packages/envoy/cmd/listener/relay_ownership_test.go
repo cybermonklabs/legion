@@ -460,6 +460,7 @@ func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage
 // (relayNATS), in which the old pod's pull request still waits at the consumer, so the server
 // delivers the message to the old pod.
 func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testing.T) {
+	t.Parallel()
 	old := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	sessionID := "ses_after_term_end_" + id.New()
 	standIn := startSessionStandIn(t, old.url, sessionID, answerDone)

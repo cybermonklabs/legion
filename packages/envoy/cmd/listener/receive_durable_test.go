@@ -253,6 +253,7 @@ func noLeaseConfig(user string) string {
 // one ERROR naming the bucket and the grant, runs without a lease as the machine's one deliverer,
 // delivers, and says in /healthz that the lease is unavailable.
 func TestAListenerWithoutTheLeaseGrantDeliversWithoutALease(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, noLeaseConfig(public), []string{"-js"}, false)
 	held := cmdtest.HoldPort(t)

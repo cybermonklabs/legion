@@ -277,6 +277,7 @@ func TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClai
 // last_seen by every pod, pod B started after it lapsed included. Before, the last-seen time lived
 // in the memory of a pod whose cache had held the session, so pod B reported none.
 func TestARoleHoldersLastSeenIsTheSameOnAPodStartedAfterItLapsed(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_lapsing_holder"
 		ttl    = 3 * time.Second

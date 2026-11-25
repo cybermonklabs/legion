@@ -205,6 +205,7 @@ func (hangingCache) EndWatch(context.Context) {}
 // answered by then, one healthzBudget does not bound among them, makes the answer 503, so a
 // readiness probe never times out on it.
 func TestHealthzAnswers503WhenADependencyHangsPastTheDeadline(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	subscribeRoleLane(t, client)
 	released := make(chan struct{})

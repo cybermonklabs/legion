@@ -171,6 +171,7 @@ func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, wan
 // the machine's active pod, within 10 s. A second pod of the machine started then is ready too,
 // 200 as the standby naming the first.
 func TestAListenerStartedBeforeItsNATSWaitsForItThenServes(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	server.Stop(t)
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -252,6 +253,7 @@ func TestASIGTERMEndsAListenerWaitingForItsNATS(t *testing.T) {
 // the start exited 1 at the refusal (connectListener): the answer is a 400, which
 // natsConnectionError does not retry.
 func TestAListenerWhoseClusterHasTooFewMembersForItsCopiesStaysUnreadyUntilTheyJoin(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartClusterPart(t, 3, 2)
 	urls := cluster.URLs()
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), urls[0]+","+urls[1], "box-cluster-forming",
@@ -350,6 +352,7 @@ func TestAListenerWhoseGrantRefusesAStoreBucketNamesItAtEachTryAndStaysUnready(t
 // restarts with a grant that has them, a later try creates the stream and the listener is ready.
 // Before, the start exited 1 at the refusal, logging "NATS connect failed".
 func TestAListenerWhoseGrantRefusesTheNotificationStreamStaysUnreadyUntilTheGrantHasIt(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	read, create := "$JS.API.STREAM.INFO."+bus.Stream, "$JS.API.STREAM.CREATE."+bus.Stream
 	server, uri := testnats.StartConfig(t, publishDeniedConfig(public, read, create), []string{"-js"}, false)
@@ -388,6 +391,7 @@ func TestAListenerWhoseGrantRefusesTheNotificationStreamStaysUnreadyUntilTheGran
 // (startRetry), and is ready once both have connected. Before, the start exited 1 after either
 // connection's tenth dial.
 func TestAListenerWhoseLaterConnectionsCannotDialWaitsForThemThenServes(t *testing.T) {
+	t.Parallel()
 	gate := startStartGate(t, testnats.URL(t))
 	steps := []struct{ name, line string }{
 		{"envoy-session-consumers", "session consumer connection failed; retrying"},
@@ -430,6 +434,7 @@ func TestAListenerWhoseLaterConnectionsCannotDialWaitsForThemThenServes(t *testi
 // or a session's, so nothing is delivered. Once the relay reports the server's own release, a later
 // try connects and the listener is ready. Before, the start exited 1 at the refusal.
 func TestAListenerWhoseNATSReleaseIsBelowItsFloorServesNothingUntilTheServerIsOneItTakes(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	gate := startStartGate(t, uri)
 	const release = "2.10.29"
@@ -477,6 +482,7 @@ func TestAListenerWhoseNATSReleaseIsBelowItsFloorServesNothingUntilTheServerIsOn
 // each 30 s or more after the first answer and with a wait of 30 s, and stays up and not ready
 // throughout. Before, every such answer was logged at ERROR, the first included.
 func TestAListenerWhoseJetStreamIsTemporarilyUnavailableWarnsForThirtySecondsThenErrsAtEachTry(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	cluster.Servers[1].Stop(t)
 	cluster.Servers[2].Stop(t)

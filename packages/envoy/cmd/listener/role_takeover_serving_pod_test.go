@@ -79,6 +79,7 @@ func servingRequireOnce(t *testing.T, rig *copiesRig, received copiesReceived, e
 // identity: its message id (takenFrameMsgID), which the stream's duplicate window keeps for 72
 // hours, and its minted dedupe key (takenFrameDedupeKey), which names the forward to the holder.
 func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMessageOnce(t *testing.T) {
+	t.Parallel()
 	rig := newCopiesRig(t)
 	met := make(chan struct{})
 	var arrivals sync.WaitGroup
@@ -157,6 +158,7 @@ func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMess
 // then goes on from there, and the new holder receives each message exactly once. The window here is
 // the claimHandoverWindow seam's, 2 s, where the deployed one is roleKeepHandoverWindow.
 func TestAClaimRoutePassCutByItsHandoverWindowLeavesTheRestToTheHoldersSweep(t *testing.T) {
+	t.Parallel()
 	rig := newCopiesRig(t)
 	const window = 2 * time.Second
 	var claimPass atomic.Bool

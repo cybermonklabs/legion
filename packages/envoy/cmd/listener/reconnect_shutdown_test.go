@@ -477,6 +477,7 @@ func (f *listenerRelayFrames) body() []byte {
 // the role lane forwarding, log no error, and then a SIGTERM is an ordered shutdown that leaves the
 // old build's binding alone.
 func TestListenerReconnectWhileWaitingOutABindingShutsDownAfterForwardingRoles(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "reconnect-bind-sigterm"
 		holderID  = "ses_reconnect_bind_sigterm_holder"

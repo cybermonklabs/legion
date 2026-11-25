@@ -293,6 +293,7 @@ func (c heldRewatch) Rewatch(ctx context.Context, conn *natsgo.Conn) error {
 // passes. Readiness that followed the copy at all times would leave the machine's Service with no
 // endpoints after such a blip, and every route would fail, not only the list.
 func TestAReadyListenerStaysReadyWhileItsInterestCopyReadsAgainAfterAReconnect(t *testing.T) {
+	t.Parallel()
 	probes, path := hubProbes(t)
 	requireHubProbeRoutes(t, probes, path)
 	ready := probes["readinessProbe"]
@@ -373,6 +374,7 @@ const hubProbeWindow = 60
 // since /livez answers 204 without reading NATS from the listener's first answer on and /healthz
 // answers 503 "starting" until the start completes, whenever it is asked.
 func TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart(t *testing.T) {
+	t.Parallel()
 	probes, path := hubProbes(t)
 
 	seed, public := testnats.User(t)

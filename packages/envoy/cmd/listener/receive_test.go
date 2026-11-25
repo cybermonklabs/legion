@@ -279,6 +279,7 @@ func putLeaseRecord(t *testing.T, uri, machineID, record string) uint64 {
 // place) drops what it receives with no ack and no NAK, so the durable redelivers it after its ack
 // wait to the pod that holds the lease then.
 func TestADurableMessageReceivedWithoutTheLeaseIsDroppedAndRedeliveredToTheHolder(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-stray"
 	var strayHandled atomic.Int32
@@ -344,6 +345,7 @@ func TestADurableMessageReceivedWithoutTheLeaseIsDroppedAndRedeliveredToTheHolde
 // ones queued behind it, so a delivery that takes longer than the 6 s ack wait is not redelivered
 // while it runs, and neither is anything queued behind it.
 func TestInProgressKeepsTheHoldersMessagesPastTheAckWait(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	release := make(chan struct{})
 	inHand := make(chan struct{})

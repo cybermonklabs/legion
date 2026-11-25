@@ -194,6 +194,7 @@ func TestAFreshListenerAcceptsDispatchsIdentityTokenAtReadinessInsideItsWindow(t
 // production one, unchanged, so what runs is main's own wiring of Google's issuer, reaching a
 // stand-in the way it would reach Google (googleIssuerStandIn).
 func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
+	t.Parallel()
 	google := startGoogleIssuerStandIn(t)
 	googleToken := google.token(t, listenerGoogleAccount)
 	started := time.Now()
