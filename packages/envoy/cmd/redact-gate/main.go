@@ -282,35 +282,23 @@ type census struct {
 // the same way is type-checked once for each set of files its package is compiled from, and
 // answers the same findings each time.
 func (c *census) dedupe() {
-	seenCall := map[entry]bool{}
-	calls := c.Calls[:0]
-	for _, e := range c.Calls {
-		if !seenCall[e] {
-			seenCall[e] = true
-			calls = append(calls, e)
-		}
-	}
-	c.Calls = calls
+	c.Calls = unique(c.Calls)
 	for _, list := range []*[]finding{&c.Box, &c.Holders, &c.Reflect, &c.Whole, &c.Boundary, &c.Fields, &c.Answers} {
-		seen := map[finding]bool{}
-		kept := (*list)[:0]
-		for _, f := range *list {
-			if !seen[f] {
-				seen[f] = true
-				kept = append(kept, f)
-			}
-		}
-		*list = kept
+		*list = unique(*list)
 	}
-	seenUnknown := map[string]bool{}
-	unknown := c.Unknown[:0]
-	for _, u := range c.Unknown {
-		if !seenUnknown[u] {
-			seenUnknown[u] = true
-			unknown = append(unknown, u)
+	c.Unknown = unique(c.Unknown)
+}
+
+func unique[T comparable](list []T) []T {
+	seen := map[T]bool{}
+	kept := list[:0]
+	for _, v := range list {
+		if !seen[v] {
+			seen[v] = true
+			kept = append(kept, v)
 		}
 	}
-	c.Unknown = unknown
+	return kept
 }
 
 // finding is one thing a structural census listed: a use of the box's storage (Box), a type that
