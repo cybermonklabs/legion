@@ -778,7 +778,7 @@ func TestARefusedReplyIsPassedOnWithItsReasonWrittenFirst(t *testing.T) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		_, _ = w.Write([]byte(`{"code":"BODY_TOO_LARGE","error":"the reply is over Dispatch's bound"}`))
 	})
-	r.cfg.Dispatch = dispatch.New(refusing.URL, "dispatch-token")
+	r.cfg.Dispatch = dispatch.New(refusing.URL, dispatch.BearerTransport("dispatch-token", nil))
 	r.restart()
 	r.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
 	r.drain()

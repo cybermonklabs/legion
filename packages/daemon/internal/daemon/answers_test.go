@@ -103,7 +103,7 @@ func TestAClaimStartedDuringAnAnswerGetsTheQuestionAndItsConversationNothing(t *
 	loop := answerloop.New(answerloop.Config{
 		Project: "legion",
 		Answers: config.Answers{Bounds: config.AnswerBounds{Answer: time.Minute, ModelCalls: 1, OutputTokens: 100, Concurrent: 1, DailyUSD: 50}},
-		Store:   st, Dispatch: dispatch.New(dispatchServer.URL, "t"), Envoy: notify.New(listener.URL, "t"), Gate: gate,
+		Store:   st, Dispatch: dispatch.New(dispatchServer.URL, dispatch.BearerTransport("t", nil)), Envoy: notify.New(listener.URL, "t"), Gate: gate,
 		Issues: noFacts{}, Tools: noTool{}, Conversations: answerloop.Harnesses{},
 		PassOn:    controllerPassOn{pool: st.Pool(), records: record.NewStore(), now: func() time.Time { return now }, log: slog.New(slog.NewTextHandler(io.Discard, nil))},
 		Decisions: routedDecisions{},
@@ -803,7 +803,7 @@ func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords
 			Bounds: config.AnswerBounds{Answer: time.Minute, ModelCalls: 2, OutputTokens: 1000, GHCall: 30 * time.Second, GHOutputChars: 60000,
 				GHCalls: 20, Concurrent: 1, DailyUSD: 50},
 		},
-		Store: st, Dispatch: dispatch.New(dispatchServer.URL, "t"), Envoy: notify.New(listener.URL, "t"), Gate: gate,
+		Store: st, Dispatch: dispatch.New(dispatchServer.URL, dispatch.BearerTransport("t", nil)), Envoy: notify.New(listener.URL, "t"), Gate: gate,
 		Issues: issueFacts{Recorded: true, DispatchStatus: "in_progress", Phase: "testing", Repository: ghrepo.MustParse("acme/widgets")},
 		Tools:  recordingTools{st: st, now: now}, Conversations: answerloop.Harnesses{},
 		PassOn:    controllerPassOn{pool: st.Pool(), records: records, now: func() time.Time { return now }, log: quietLogger()},

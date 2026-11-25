@@ -55,7 +55,7 @@ func TestTheBootLineNamesWebSearchOfferedOrWhyNot(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := config.Config{StateDir: t.TempDir(), Answers: &c.answers}
 			var logs bytes.Buffer
-			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil)), answers: &answering{}, dispatch: dispatch.New("https://dispatch.internal.example", "t")}
+			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil)), answers: &answering{}, dispatch: dispatch.New("https://dispatch.internal.example", dispatch.BearerTransport("t", nil))}
 			p := plan{answers: answersReads{leakCheck: machine, dispatch: dispatchFound{absent: noDispatch}}}
 			stop, err := w.attachAnswers(context.Background(), cfg, p, &supervision{}, nil)
 			if err != nil {

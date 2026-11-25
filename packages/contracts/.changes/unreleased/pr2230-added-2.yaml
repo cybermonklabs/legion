@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  Daemon API contract 263. The Legion state carries `questionsForController`: every question to a
+  Daemon API contract 286. The Legion state carries `questionsForController`: every question to a
   stopped agent that the daemon's answer loop passed to the controller in the last seven days
   (id, issue, role, session, asker, ref, reason, passedAt, and writes, each `gh` call that writes
   which the loop ran for the question, as `{seq, command, repository, exit}`), newest first and at

@@ -213,7 +213,7 @@ func newReleasedRig(t *testing.T, stop stopBy) *releasedRig {
 	r.cfg = answerloop.Config{
 		Project: "legion",
 		Answers: config.Answers{Bounds: config.AnswerBounds{Answer: time.Minute, ModelCalls: 1, OutputTokens: 100, Concurrent: 1, DailyUSD: 50}},
-		Store:   st, Dispatch: dispatch.New(dispatchServer.URL, "t"), Envoy: notify.New(listener.URL, "t"), Gate: gate,
+		Store:   st, Dispatch: dispatch.New(dispatchServer.URL, dispatch.BearerTransport("t", nil)), Envoy: notify.New(listener.URL, "t"), Gate: gate,
 		Issues: noFacts{}, Tools: noTool{}, Conversations: answerloop.Harnesses{},
 		PassOn:    controllerPassOn{pool: pool, records: records, now: time.Now, log: quietLogger()},
 		Decisions: routedDecisions{outbox: runner, now: time.Now, log: quietLogger()},

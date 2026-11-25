@@ -311,6 +311,44 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
+	// Every unrecorded contract between the cause times and the Dispatch credential is served at
+	// causeTimesContract, with just the Dispatch credential and the questions stripped, and every
+	// unrecorded contract between the Dispatch credential and the questions is served at
+	// dispatchCredentialContract, with just the questions stripped.
+	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+		state := populatedState(t)
+		highest := stateNarrowings[len(stateNarrowings)-1].contract
+		if highest != questionsForControllerContract {
+			t.Fatalf("the highest narrowing is contract %d, want questionsForControllerContract (%d): name here the key the newer row takes off",
+				highest, questionsForControllerContract)
+		}
+		for _, band := range []struct {
+			above, below int
+			dropped      []string
+		}{
+			{above: causeTimesContract, below: dispatchCredentialContract, dropped: []string{"dispatchCredential", "questionsForController"}},
+			{above: dispatchCredentialContract, below: highest, dropped: []string{"questionsForController"}},
+		} {
+			for caller := band.above + 1; caller < band.below; caller++ {
+				body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), caller)
+				var served struct {
+					Contract struct {
+						Caller int `json:"caller"`
+					} `json:"contract"`
+				}
+				if err := json.Unmarshal(body, &served); err != nil || served.Contract.Caller != band.above {
+					t.Fatalf("caller at %d was served contract %d (%v), want %d", caller, served.Contract.Caller, err, band.above)
+				}
+				for _, key := range band.dropped {
+					if bytes.Contains(body, []byte(`"`+key+`"`)) {
+						t.Errorf("caller at %d was served %s", caller, key)
+					}
+				}
+				wantNarrowings(t, narrowings, caller, band.dropped)
+			}
+		}
+	})
+
 	// The priority narrowing is a row of the table like every other, so a caller below it is told
 	// what it lost: a caller one contract below priorityContract, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
@@ -334,10 +372,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// A caller just below repositoriesLiveContract is served at 199. The log names the
 	// repositories block, the assignments' plan, the intake's give-ups, the pod hold,
-	// the issues' priority, the claim views' cause times and the questions passed to the
-	// controller. The tests below that name their lines as literals catch a strip applied
-	// outside the loop over stateNarrowings.
-	t.Run("the seven highest narrowings write their own lines", func(t *testing.T) {
+	// the issues' priority, the claim views' cause times, the Dispatch credential and the
+	// questions passed to the controller. The tests below that name their lines as literals
+	// catch a strip applied outside the loop over stateNarrowings.
+	t.Run("the eight highest narrowings write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
 			podClaims(repositoriesLiveContract-1), repositoriesLiveContract-1)
@@ -350,8 +388,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// A caller just below assignmentPlanContract is served at OwnerPlanContract. The log
-	// names the plan, the give-ups, the pod hold, the priority, the cause times and the questions.
-	t.Run("the plan narrowing and the five above it write their own lines", func(t *testing.T) {
+	// names the plan, the give-ups, the pod hold, the priority, the cause times, the Dispatch
+	// credential and the questions.
+	t.Run("the plan narrowing and the six above it write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		below := assignmentPlanContract - 1
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
@@ -363,15 +402,15 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 6 {
-			t.Fatalf("a caller at %d expects the lines %v, want only the plan, give-ups, pod hold, priority, cause times and questions lines", below, want)
+		if len(want) != 7 {
+			t.Fatalf("a caller at %d expects the lines %v, want only the plan, give-ups, pod hold, priority, cause times, Dispatch credential and questions lines", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})
 
 	// A caller just below podHoldContract is served at 232. The log names the pod hold,
-	// the priority, the cause times and the questions.
-	t.Run("the pod hold narrowing and the three above it write their own lines", func(t *testing.T) {
+	// the priority, the cause times, the Dispatch credential and the questions.
+	t.Run("the pod hold narrowing and the four above it write their own lines", func(t *testing.T) {
 		state := populatedState(t)
 		below := podHoldContract - 1
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000", podClaims(0), below)
@@ -381,8 +420,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				podHoldContract, body)
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 4 {
-			t.Fatalf("a caller at %d expects the lines %v, want only the pod hold, priority, cause times and questions lines", below, want)
+		if len(want) != 5 {
+			t.Fatalf("a caller at %d expects the lines %v, want only the pod hold, priority, cause times, Dispatch credential and questions lines", below, want)
 		}
 		wantNarrowings(t, narrowings, below, want)
 	})

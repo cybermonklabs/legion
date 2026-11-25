@@ -714,7 +714,7 @@ const legionHeldOutboxRow = z.object({
 });
 
 /** `record.AgentQuestionWrite` (`api.QuestionForController.Writes`) — one `gh` call that writes which the daemon's answer loop ran for a
- * question before it passed the question on (contract 263), a read never one: its seq among the
+ * question before it passed the question on (contract 286), a read never one: its seq among the
  * question's calls, its command words (`pr merge`; for `gh api` its method and endpoint, `api PUT
  * repos/acme/widgets/pulls/7/merge`), the repository its arguments name (`""` for none), and gh's
  * exit status, `null` where gh answered none, since it could not start or the daemon stopped
@@ -728,7 +728,7 @@ const legionQuestionWrite = z.object({
 });
 
 /** `api.QuestionForController` — one question to a stopped agent that the daemon's answer loop
- * passed to the controller (its `agent-question` notice, contract 263): the question's id, the
+ * passed to the controller (its `agent-question` notice, contract 286): the question's id, the
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
@@ -1161,6 +1161,22 @@ const legionAgentSecretsLoginView = z.object({
   state: z.string().optional(),
 });
 
+/** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
+ * (contract 275): `session`, the session its own Dispatch calls run under
+ * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
+ * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
+ * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
+ * the live launches whose start carried a Dispatch token, whichever daemon started them. A
+ * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
+ * that is present is still held to its type. */
+const legionDispatchCredentialView = z.object({
+  session: nonEmptyString.optional(),
+  transitionLaunches: z.number().int().nonnegative().optional(),
+  lastTransitionLaunchAt: timestamp.nullable().optional(),
+  liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
+});
+
 /** `api.CapabilityState` — one row of the deployment's capability report
  * (`capabilities.Deployment.Report`), in the table's order: `present`, `unchecked` (no probe has
  * checked an image row, or no session has reported a live row), `withheld` (the issue that withholds it, cited in
@@ -1477,11 +1493,15 @@ const legionPaused = z.object({
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
  * below 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
  * 228 refuses the key whether its lists are empty or not.
+ * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 275); the
+ * route strips it for a caller below 275, read the same way (`api.stateFor`,
+ * `withoutDispatchCredential`).
  * `questionsForController` is every question the answer loop passed to the controller in the last
  * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
- * only, so a controller that starts later reads here what it missed (contract 263). It is optional
+ * only, so a controller that starts later reads here what it missed (contract 286). It is optional
  * for the same reason `wakesWaiting` is: only a reader built before #2788 refuses the key, and a
- * later one below 263 drops it, so the route strips it for a caller below 263, read the same way,
+ * later one below 286 drops it, so the route strips it for a caller below 286, read the same way,
  * and for that caller alone (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
@@ -1497,6 +1517,7 @@ export const LegionStateResponse = z.object({
   lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
+  dispatchCredential: legionDispatchCredentialView.optional(),
   capabilities: z.array(legionCapabilityState).optional(),
   repositories: legionRepositories.optional(),
   settings: legionSettings.optional(),

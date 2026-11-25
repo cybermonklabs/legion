@@ -1,14 +1,14 @@
 kind: Added
 body: |-
-  Daemon API contract 263: the state the daemon serves (`GET /legion/v1/state`, which
+  Daemon API contract 286: the state the daemon serves (`GET /legion/v1/state`, which
   `legion state --json` prints) carries `questionsForController`, every question to a stopped agent that the daemon's answer loop passed
   to the controller in the last seven days (`id`, `issue`, `role`, `session`, `asker`, `ref`,
   `reason`, `passedAt`, and `writes`, each `gh` call that writes which the loop ran for the
   question), newest first and at most 100. The daemon's `agent-question` notice on the
   controller topic is a live wake only, so a controller that starts later reads what it missed
-  here. The daemon serves the state without the key to a caller below 263, the contract its plugin
+  here. The daemon serves the state without the key to a caller below 286, the contract its plugin
   states in `Legion-Plugin-Contract` or else the highest its pod's claims record below 193, since a
-  plugin built before #2788 refuses the key and a later one below 263 drops it. Install this
+  plugin built before #2788 refuses the key and a later one below 286 drops it. Install this
   release with a `legion` built from the same commit.
 time: 2026-11-06T22:00:00.000000000Z
 custom:

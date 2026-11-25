@@ -1723,7 +1723,8 @@ ARG GH_STACK_TOOL
 # with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It prints the table,
 # one `probe-image: capability <name>: <status> (<detail>)` line per row, then
 # `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
-# agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is
+# agent-models=skipped capabilities=checked model-fallback=on omp-version=omp/<version>
+# omp-session-id=<taken|absent|unread> daemon-api-version=<N>` — `on` here is
 # Oh My Pi's own default for retry.modelFallback, since the build runs under no operator overlay; a
 # probe pod reads the operator's value — and a build whose image lacks a capability fails here, the
 # probe naming every failure. The daemon's probe Sandbox runs it

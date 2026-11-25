@@ -101,6 +101,10 @@ type State struct {
 	// (runtime.kubernetes.agent_secrets), absent when the deployment configures
 	// no broker.
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
+	// the two counts a deployment reads before it removes dispatch_token_transition_file
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
+	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
@@ -124,7 +128,7 @@ type State struct {
 	// QuestionsForController is every question to a stopped agent that the daemon's answer loop
 	// passed to the controller in the last QuestionsForControllerWindow, newest first and at most
 	// QuestionsForControllerLimit of them: the agent-question notice is a live wake only, so a
-	// controller that starts later reads here what it missed. Never null (contract 263), and left
+	// controller that starts later reads here what it missed. Never null (contract 286), and left
 	// off only the body served a caller below that contract (questionsForControllerHidden).
 	QuestionsForController []QuestionForController `json:"questionsForController"`
 	// LowestPluginContract is the lowest plugin contract among the claims of the project whose
@@ -580,6 +584,22 @@ type AgentSecretsLoginView struct {
 	State string `json:"state"`
 }
 
+// DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
+// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// launches since the daemon's boot that carried the transition token of
+// dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
+// null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
+// Dispatch token, whichever daemon started them (sandbox.Runtime.DispatchTokens). A deployment
+// removes dispatch_token_transition_file once the last is zero: a pod started before the setting
+// holds the shared token while a generation started with it runs. Never a token.
+type DispatchCredentialView struct {
+	Session                       string     `json:"session"`
+	TransitionLaunches            int        `json:"transitionLaunches"`
+	LastTransitionLaunchAt        *time.Time `json:"lastTransitionLaunchAt"`
+	LiveLaunchesWithDispatchToken int        `json:"liveLaunchesWithDispatchToken"`
+}
+
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities`, `consumers` and `questionsForController`
 // arrays on the wire: a nil Go map or slice is `null`, which the plugin's reader refuses. The
@@ -593,7 +613,7 @@ type AgentSecretsLoginView struct {
 // non-nil value, including empty lists for `wakesWaiting` and `questionsForController`, a zero
 // `claimsToRefresh` count, or an `intakeGiveUps` with no open records. A slice field by itself
 // could not write an empty array with `omitempty`. The bands compose: a caller below 53 is
-// below 73, 228 and 263 too and is served none of the four keys.
+// below 73, 228 and 286 too and is served none of the four keys.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them

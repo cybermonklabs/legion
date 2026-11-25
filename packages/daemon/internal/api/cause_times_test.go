@@ -290,12 +290,15 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// The questions band (263) also drops its key for a caller below the cause times.
+	// A caller below causeTimesContract is below dispatchCredentialContract (275) and the questions
+	// band (286) too, the two rows above it, so it is told of all three rows, in the table's order.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
+	const droppedCredential = "dispatchCredential"
 	const droppedQuestions = "questionsForController"
-	if len(narrowings) != 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != droppedQuestions {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want %q then %q",
-			narrowings, causeTimesContract-1, dropped, droppedQuestions)
+	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != droppedCredential ||
+		narrowings[2].Dropped != droppedQuestions {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want %q, then %q, then %q",
+			narrowings, causeTimesContract-1, dropped, droppedCredential, droppedQuestions)
 	}
 }

@@ -2800,11 +2800,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
 
   // The mark names the recorded contract below the 201 the caller states, 199. The lowest
   // plugin contract reports the claims in the snapshot (a pod at 201), not the caller's contract.
-  // Seven bands stand above 199: the repositories block at 202; assignments' `plan` at 220;
+  // Eight bands stand above 199: the repositories block at 202; assignments' `plan` at 220;
   // `intakeGiveUps` at 228; issue `podHold` at 246; issue and waiting-line `priority` at 250;
-  // claim-view `lastDeathAt` and `lastStartFailureAt` at 256; and `questionsForController` at 263.
-  // The capability source `caches` arrived at 213 as a value, so that row is served without
-  // `source`. The other fields and rows are as the state golden holds them.
+  // claim-view `lastDeathAt` and `lastStartFailureAt` at 256; `dispatchCredential` at 275; and
+  // `questionsForController` at 286. The capability source `caches` arrived at 213 as a value, so
+  // that row is served without `source`. The other fields and rows are as the state golden holds
+  // them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2826,6 +2827,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     questionsForController: _questions,
     ...rest
@@ -3040,14 +3042,14 @@ test("the state golden names the held lifecycle rows, and the list may be left o
   expect(LegionStateResponse.safeParse(dropped).success).toBeTrue();
 });
 
-// The questions passed to the controller (contract 263): the golden carries the question LEGION-208's
+// The questions passed to the controller (contract 286): the golden carries the question LEGION-208's
 // stopped implementer passed model_calls on after it merged with gh, naming that merge and a
 // comment whose exit gh never answered, and the one LEGION-207's stopped tester could not answer;
 // a state with none carries an empty list rather than none. What is refused is a question of a
 // role this build does not know and a write with no command. No plugin code reads a question's
 // fields, so a question without its `passedAt` or its `writes` is read rather than refused
 // (LEGION_ANSWER_READS). The key is not required, for the reason `wakesWaiting` is not: a daemon
-// at this contract leaves it off the state it serves a caller below 263, since a reader before it
+// at this contract leaves it off the state it serves a caller below 286, since a reader before it
 // refuses the key however empty (`api.stateFor`, `withoutQuestionsForController`). So a body
 // without the key parses, and a reader of it learns nothing about which questions were passed
 // rather than losing the whole state.
@@ -3192,6 +3194,46 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   for (const refused of [-1, 1.5, "4", null]) {
     expect(
       LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
+});
+
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 275): the golden names
+// the daemon's session and the two counts a deployment reads before it removes
+// `dispatch_token_transition_file`, and the time of the last transition launch is null before the
+// first. The key is not required: a daemon without the setting writes none, and a daemon at this
+// contract leaves it off the state it serves a caller older than 275, whether the caller states
+// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
+// reads a field of it, so each field is optional; what is refused is a count that is not a whole
+// number of launches, or an empty session.
+test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).dispatchCredential).toEqual({
+    session: "legion-daemon:LEGION",
+    transitionLaunches: 2,
+    lastTransitionLaunchAt: "2026-09-22T09:17:03Z",
+    liveLaunchesWithDispatchToken: 3,
+  });
+  const credential = state.dispatchCredential as Record<string, unknown>;
+  expect(
+    LegionStateResponse.parse({
+      ...state,
+      dispatchCredential: { ...credential, transitionLaunches: 0, lastTransitionLaunchAt: null },
+    }).dispatchCredential?.lastTransitionLaunchAt
+  ).toBeNull();
+
+  const { dispatchCredential: _withoutTheCredential, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.dispatchCredential).toBeUndefined();
+
+  for (const refused of [
+    { ...credential, liveLaunchesWithDispatchToken: -1 },
+    { ...credential, transitionLaunches: 1.5 },
+    { ...credential, session: "" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
     ).toBeFalse();
   }
 });

@@ -580,6 +580,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: podHoldContract, issue: withoutPodHold, dropped: "the issues' podHold"},
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
+	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
 	{contract: questionsForControllerContract, state: withoutQuestionsForController, dropped: "questionsForController"},
 }
 
@@ -888,6 +889,22 @@ const quietTimeContract = 111
 // moves that constant, and the contract these keys arrived at stays where it is.
 const shapedAnswersContract = 193
 
+// dispatchCredentialContract is the daemon contract that added `dispatchCredential` to the state,
+// the daemon's own Dispatch credential under dispatch_token_broker and the two counts of the
+// Dispatch tokens its launches hand out (version.go's 275, DispatchCredentialView). A caller below
+// it is served the state without the key (withoutDispatchCredential, its row of stateNarrowings):
+// one built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the
+// whole body for a key it does not name, and one built after strips the key instead, so the band
+// keeps the body its own contract's record describes. causeTimesContract's row, 256, stands just
+// below it. Every caller from 193 up states its contract, so callers from 256 through 274 are
+// served the keys of 256 without this object.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only as its own
+// entry in version.go does; answers.go's SupportedContracts names it rather than its number for
+// that reason, and ends with questionsForControllerContract (286).
+const dispatchCredentialContract = 275
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
@@ -1120,22 +1137,22 @@ func withoutPriority(issue Issue) (Issue, bool) {
 const causeTimesContract = 256
 
 // questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 263): every question to a stopped agent that the daemon's answer loop
+// the state (version.go's 286): every question to a stopped agent that the daemon's answer loop
 // passed to the controller in the last QuestionsForControllerWindow. A plugin before it is served
 // the state without the key (withoutQuestionsForController, its row of stateNarrowings): one built
 // before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
 // for a key it does not name, empty as surely as naming a question, and one built after strips the
 // key instead, so the band keeps the body its own contract's record describes.
-// causeTimesContract stands immediately below it, so a caller from 256 to 262 is served the
-// claim views' cause times but not the questions. The one enumerated field it added is
-// `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with the key
-// and ride its band.
+// dispatchCredentialContract stands immediately below it, so a caller from 275 to 285 is served
+// `dispatchCredential` (under its setting) but not the questions. The one enumerated field it
+// added is `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with
+// the key and ride its band.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
 // change's own number, which is why answers.go's SupportedContracts names it rather than its
 // number.
-const questionsForControllerContract = 263
+const questionsForControllerContract = 286
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
@@ -1853,6 +1870,19 @@ func withoutLowestPluginContract(state State) (State, bool) {
 func withoutPause(state State) (State, bool) {
 	moved := state.Paused != nil || state.LastPause != nil
 	state.Paused, state.LastPause = nil, nil
+	return state, moved
+}
+
+// withoutDispatchCredential is state with no `dispatchCredential`, the one key
+// dispatchCredentialContract added to the state; nothing else of that contract is a key of an
+// answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
+// types (answers.go's typedSettings). The key is a pointer with `omitempty`, written only under
+// dispatch_token_broker, so the band reports a move only for a state that carries it. The field is
+// the state's own value, so the state the source answered is left as it was, as withoutPause
+// leaves it.
+func withoutDispatchCredential(state State) (State, bool) {
+	moved := state.DispatchCredential != nil
+	state.DispatchCredential = nil
 	return state, moved
 }
 

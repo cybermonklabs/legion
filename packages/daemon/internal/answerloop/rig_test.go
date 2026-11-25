@@ -333,7 +333,7 @@ func newRig(t *testing.T) *rig {
 		Answers: config.Answers{Bounds: config.AnswerBounds{
 			Answer: 180 * time.Second, ModelCalls: 8, OutputTokens: 4000, GHCall: 30 * time.Second, GHOutputChars: 60000, GHCalls: 20, Concurrent: 4, DailyUSD: 50,
 		}},
-		Store: st, Dispatch: dispatch.New(r.dispatch.URL, "dispatch-token"), Envoy: notify.New(r.listener.URL, "envoy-token"),
+		Store: st, Dispatch: dispatch.New(r.dispatch.URL, dispatch.BearerTransport("dispatch-token", nil)), Envoy: notify.New(r.listener.URL, "envoy-token"),
 		Gate: r.gate, Tools: toolsFunc(func(ghtool.Agent) Tool { return r.tool }), Conversations: Harnesses{},
 		Issues: issuesFunc(func(issue string) IssueFacts {
 			return IssueFacts{Recorded: true, DispatchStatus: "done", Phase: "done", PullRequest: &PullRequestFacts{Number: 7, State: "merged", Head: "abc123"}}

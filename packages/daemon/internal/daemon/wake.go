@@ -503,8 +503,12 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 
 // forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
 // of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
-// its pod is coming. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
+// its pod is coming. It deletes the record of the disks of the issue's pods too
+// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
+// the issue's pods is left to name a role by it. Both records expire together, at the end of the
+// issue's work, which is the one event of every caller, so a change to the idle release here must
+// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
@@ -512,5 +516,8 @@ func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	}
 	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
 		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteIssuePodDisks(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the record of the disks of the pods of a finished issue", "issue", issue, "error", err)
 	}
 }

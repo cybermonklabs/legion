@@ -126,12 +126,17 @@ type dispatchFound struct {
 // script is taken: the Envoy plugin's dispatch is a /bin/sh shim. bun, which that shim starts by
 // name, is LEGION_BUN_PATH or else the first bun on PATH, and the tool runs with its directory on
 // PATH. The tool runs against the daemon's own Dispatch, dispatchURL, with its token, tokenFile.
-// Where the daemon names no dispatch_url, finds no dispatch, or no bun for it, nothing refuses the
-// boot: the loop offers no dispatch tool, and absent says why, which the boot line and
-// `legion config check` name (loopTools).
+// Where the daemon names no dispatch_url, no dispatch_token_file (tokenFile "", as under
+// dispatch_token_broker, whose token acts only as the daemon's own session), finds no dispatch, or
+// no bun for it, nothing refuses the boot: the loop offers no dispatch tool, and absent says why,
+// which the boot line and `legion config check` name (loopTools). An empty tokenFile is never made
+// absolute, which would name the daemon's working directory as the tool's token file.
 func answersDispatch(lookupEnv func(string) (string, bool), dispatchURL, tokenFile, install string) dispatchFound {
 	if dispatchURL == "" {
 		return dispatchFound{absent: "no dispatch_url, so no Dispatch to run it against"}
+	}
+	if tokenFile == "" {
+		return dispatchFound{absent: "no dispatch_token_file, so no Dispatch token for an agent's session"}
 	}
 	dispatch, err := resolveTool(lookupEnv, "dispatch")
 	if err != nil {

@@ -77,6 +77,22 @@ func TestTheDispatchToolsCommandIsFoundAsTheLoopsGhIs(t *testing.T) {
 	}
 }
 
+// Under dispatch_token_broker the daemon names no dispatch_token_file (config's
+// resolveDispatchTokenBroker), and its broker token acts only as its own session, so no Dispatch
+// token exists for an agent's session. With dispatch and bun both found, the loop still offers no
+// dispatch tool, and boot says why; the empty token file never becomes the daemon's working
+// directory, which the dispatch command cannot read as DISPATCH_TOKEN_FILE.
+func TestTheDispatchToolIsAbsentWithNoDispatchTokenFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	executable(t, dir, "dispatch")
+	binary(t, dir, "bun")
+	got := answersDispatch(environLookup([]string{"PATH=" + dir}), "https://dispatch.internal.example", "", filepath.Join(t.TempDir(), "dispatch"))
+	if want := (dispatchFound{absent: "no dispatch_token_file, so no Dispatch token for an agent's session"}); got != want {
+		t.Fatalf("with no dispatch_token_file, found %+v; want %+v", got, want)
+	}
+}
+
 // On Kubernetes the daemon runs from the worker image, whose PATH does not hold the Envoy plugin's
 // bin directory, so a daemon that finds no dispatch on PATH runs the one the image keeps there,
 // /opt/legion/pi-envoy/bin/dispatch (the image build's last step runs its --help); and boot reads
@@ -138,7 +154,7 @@ func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *test
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil)), answers: &answering{}, dispatch: dispatch.New(cfg.DispatchURL, "t")}
+			w := &workflowRuntime{log: slog.New(slog.NewJSONHandler(&logs, nil)), answers: &answering{}, dispatch: dispatch.New(cfg.DispatchURL, dispatch.BearerTransport("t", nil))}
 			p := plan{answers: answersReads{leakCheck: machine, dispatch: c.found}}
 			stop, err := w.attachAnswers(context.Background(), cfg, p, &supervision{}, nil)
 			if err != nil {
