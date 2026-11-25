@@ -1288,7 +1288,7 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 
 // roundReplaced is what each of a round's own replacements owes once it is made: through a process
 // (replacePodForRound), by issue (replaceIssuePodForRound), at a launch (endRoundALaunchReplaced),
-// or one whose call failed or whose daemon stopped once its suspension landed (finishReplacements).
+// or one whose call failed or whose daemon stopped once its suspension landed (endRecordedRound).
 // It logs the bound's own line where the bound let the replacement through (ended, what the last
 // word or the launch read of the round's end under the pod's launch turn), since the replacement
 // is made by then, finishes the replacement's record, recorded, telling the issue's architect what
@@ -1299,8 +1299,9 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // names what the round's claims record — the members that had not answered, and whether the kept
 // volume was still the round's — and the end clears it, so a later sweep finishes the record from
 // the round as it stands, and ends it then (finishReplacements, or the walk's end of a round a
-// launch replaced). It answers what the finish did, and whether the record is finished and the
-// round ended.
+// launch replaced). It answers what the finish did, and whether this finish took the record and
+// the round is over: false where the store refused the finish, and where the finish of another
+// act on the pod took the record first and ended the round as that act (endRecordedRound).
 //
 // yield is a round's call that answered nil without asking its last word (asked false): it found
 // the pod taken already, and took nothing. Where the record of a launch's delete of the issue's
@@ -1351,16 +1352,25 @@ func (s *supervision) roundReplaced(ctx context.Context, issue, round, pod, reas
 	// The round is over only once its replacement's record is finished, in the transaction that
 	// queues the architect's notice: a store that refuses that notice leaves the round open, and
 	// each later sweep tries again, so the line that says the round is over comes once, after the
-	// finish commits.
-	finish, finished := s.finishReplacement(ctx, recorded.Operation, issue, pod, yield, message, "round", round)
+	// finish commits. A record the finish of another act on the pod took is finished already, and
+	// that finish ended the round as its act (endRecordedRound), so it is ended no second time here,
+	// and nor is a round that is over already (roundOver).
+	finish, err := s.finishReplacement(ctx, recorded.Operation, issue, pod, yield, message, "round", round)
 	switch {
-	case !finished:
+	case err != nil:
 		s.log.Info("supervise: the pod of this update round is replaced, and the round stays open: the store refused to finish the replacement's record and to queue the architect's workspace-taken notice with it; a later sweep finishes it",
+			"issue", issue, "round", round, "pod", pod)
+		return finish, false
+	case !finish.Found:
+		s.log.Info("supervise: the record of this update round's replacement was taken by the finish of another act on its pod, which ends the round as that act",
 			"issue", issue, "round", round, "pod", pod)
 		return finish, false
 	case finish.Yielded:
 		s.log.Info("supervise: a launch's delete of the issue's Sandbox and its kept volume took the pod of this update round before the round's call; the call took nothing, and the round is over with no notice of its own, since the launch's finish tells the architect from the read of this record and its own",
 			"issue", issue, "round", round, "pod", pod)
+	case s.roundOver(issue, members, round):
+		s.log.Info("supervise: the record of this update round's replacement is finished, and the round was over already", append(line, read.attrs()...)...)
+		return finish, true
 	default:
 		s.log.Info("supervise: the pod of this update round is replaced and the round is over", append(line, read.attrs()...)...)
 	}
@@ -3036,7 +3046,8 @@ func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim) map[stri
 // roundOver is whether round, a round of the issue, is over as group, the issue's claims, and the
 // sweep's ends read it: no claim of group records it, or the sweep has ended it and a member's
 // machine has not taken the end yet (keepEndedRound). A round's record of a replacement whose round
-// is over holds nothing of the issue (finishReplacements).
+// is over holds nothing of the issue (finishReplacements), and its round is ended no second time
+// (endRecordedRound, roundReplaced).
 func (s *supervision) roundOver(issue string, group []supervise.Claim, round string) bool {
 	if !recordsRound(group, round) {
 		return true
