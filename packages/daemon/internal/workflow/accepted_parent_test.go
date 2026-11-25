@@ -196,14 +196,14 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	}
 }
 
-// The notice of a person's todo beneath an accepted ancestor names the head the daemon accepted
-// as the head the last step of the ancestor's task passed, which is true of each plan: a plan with
-// no reviewer step has no reviewed head, and an issue stands in merging once its task's last step
-// passed whatever that step is (record.Accepted). The ancestor walks today's line in one case and
-// the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
+// The notice of a person's todo beneath an accepted ancestor is the child-status notice of that
+// child and that ancestor (ChildUnderAcceptedParentNotice), whatever the ancestor's plan is: a plan
+// with no reviewer step has no reviewed head, and an issue stands in merging once its task's last
+// step passed whatever that step is (record.Accepted). The ancestor walks today's line in one case
+// and the plan `implementer tester`, which has no reviewer step, in the other; the notice is one,
+// and the child is recorded at admitted in both.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
-	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it while LEGION-208 stands in retro or merging."
+	want := ChildUnderAcceptedParentNotice("LEGION-300", "LEGION-208")
 	for _, tc := range []struct {
 		name  string
 		steps []string
@@ -227,28 +227,29 @@ func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t 
 				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
 					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
 
-			var reason string
+			var kind, role, reason string
 			if err := pool.QueryRow(context.Background(),
-				"select payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&reason); err != nil {
+				"select payload->>'kind', payload->>'role', payload->>'reason' from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").Scan(&kind, &role, &reason); err != nil {
 				t.Fatalf("read the child-status notice: %v", err)
 			}
-			if reason != want {
-				t.Fatalf("the child-status notice = %q, want %q", reason, want)
+			if kind != string(want.Kind) || role != string(want.Role) || reason != want.Reason {
+				t.Fatalf("the child-status notice = %s to %s: %q, want the notice of LEGION-300 beneath LEGION-208: %+v", kind, role, reason, want)
+			}
+			if held := *issueRecord(t, pool, "LEGION-300"); held.Tree != "LEGION-208" || held.Phase != phase.Admitted {
+				t.Fatalf("the person's todo = %#v, want it recorded in LEGION-208's tree at admitted", held)
 			}
 		})
 	}
 }
 
-// The texts the daemon sends an architect about children still in the workflow tell it how a child
-// leaves: by the architect's own status write in Dispatch (record.EndChildRule), and never by an
-// operation the daemon no longer serves or by the old word for the move (dispatch://INFRA-3178 R6).
-// The sign_off and close_root refusals, the pr-merged notice and the retro-held notice of a parent
-// held before its retro for the issues beneath it also say that a status the architect wrote counts
-// only once the daemon has taken it, because the Dispatch event that carries it can reach the
+// The texts the daemon sends an architect about children still in the workflow carry the rules for
+// ending a child by the architect's own status write in Dispatch (record.EndChildRule). The sign_off
+// and close_root refusals, the pr-merged notice and the retro-held notice of a parent held before
+// its retro for the issues beneath it also carry the sentence on a status the daemon has not taken
+// yet (record.StatusNotTakenYet), because the Dispatch event that carries the write can reach the
 // daemon after the architect calls again. The children-first notice ends a child, released or not,
 // by the same write. The why the daemon posts beside a person's todo on a held parent is for that
-// person, and carries none of this (heldParentWait's reason, held in restart_task_test.go). Each
-// row holds only that much of the wording.
+// person, and carries none of this (heldParentWait's reason, held in restart_task_test.go).
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -296,14 +297,11 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			text := tc.text(t)
-			if !strings.Contains(text, "dispatch issue-update") || !strings.Contains(text, "--status done") {
-				t.Errorf("the %s text %q does not name the architect's status write (dispatch issue-update … --status done)", tc.name, text)
+			if !strings.Contains(text, record.EndChildRule) {
+				t.Errorf("the %s text %q does not carry record.EndChildRule", tc.name, text)
 			}
-			if strings.Contains(strings.ToLower(text), "park") {
-				t.Errorf("the %s text %q names a removed operation or the old word for the move", tc.name, text)
-			}
-			if tc.lag && (!strings.Contains(text, "has not taken yet") || !strings.Contains(text, "read_record")) {
-				t.Errorf("the %s text %q does not say that a status the daemon has not taken yet counts only once read_record shows it", tc.name, text)
+			if tc.lag && !strings.Contains(text, record.StatusNotTakenYet) {
+				t.Errorf("the %s text %q does not carry record.StatusNotTakenYet", tc.name, text)
 			}
 		})
 	}

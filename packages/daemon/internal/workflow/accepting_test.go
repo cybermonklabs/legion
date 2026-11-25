@@ -91,9 +91,9 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 
 // The architect's sign_off in accepting moves the issue to retro, since the acceptance is the
 // last step of the default steps this issue walks, with the status retro and starts the
-// implementer there, its task naming the phase, the review's handoff record (the reviewer's
-// completion seeded here reported no commit) and the pull request; the architect that just acted
-// is told nothing.
+// implementer there, its task the one composed for retro from the review's handoff row (the
+// reviewer's completion seeded here reported no commit) and the pull request; the architect that
+// just acted is told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -109,14 +109,10 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), "select payload->>'status' from outbox where kind = 'dispatch_status'").Scan(&written); err != nil || written != "retro" {
 		t.Fatalf("status write = %q, %v; want retro", written, err)
 	}
-	task := startTask(t, pool, claim.RoleImplementer)
-	for _, want := range []string{"Phase: retro.", "Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1).", "Pull request: #42."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("the implementer's retro task %q does not carry %q", task, want)
-		}
-	}
-	if strings.Contains(task, "Handoff commit:") {
-		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
+	issue := *issueRecord(t, pool, "LEGION-208")
+	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "review-1", HandoffVersion: 1}
+	if started, want := startTask(t, pool, claim.RoleImplementer), task(issue, WorkingCopy(issue, nil), review, &record.PullRequest{Number: 42}, ""); started != want {
+		t.Fatalf("the implementer's retro task = %q, want the task composed for %s in %s from the review's handoff row and pull request #42, %q", started, issue.Key, issue.Phase, want)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
 		t.Fatalf("acceptance counted the implementer %d passes, want none: nothing went back", pass)
@@ -143,9 +139,10 @@ func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 
 // The send-back from accepting to implementing or testing, the phases of two earlier steps of
 // the default steps this issue walks, by the architect that owns the issue, is a backward move it
-// requests: that phase's role is started with the reason, and the implementer is counted a pass,
-// as every move back to an earlier step of the task counts one. The review rounds are untouched,
-// since no review requested changes. The move writes no architect phase row.
+// requests: that phase's role is started with the task composed from the reason and the pull
+// request, and the implementer is counted a pass, as every move back to an earlier step of the
+// task counts one. The review rounds are untouched, since no review requested changes. The move
+// writes no architect phase row.
 func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *testing.T) {
 	for _, tc := range []struct {
 		to     phase.Phase
@@ -176,11 +173,9 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *t
 				" at the architect's request: the evidence does not cover the migration."; posted != want {
 				t.Fatalf("the status write posts %q on the issue, want %q", posted, want)
 			}
-			task := startTask(t, pool, tc.role)
-			for _, want := range []string{"Phase: " + string(tc.to) + ".", "Reason: the evidence does not cover the migration.", "Pull request: #42."} {
-				if !strings.Contains(task, want) {
-					t.Fatalf("the %s's task %q does not carry %q", tc.role, task, want)
-				}
+			issue := *issueRecord(t, pool, "LEGION-208")
+			if started, want := startTask(t, pool, tc.role), task(issue, WorkingCopy(issue, nil), record.PhaseRow{}, &record.PullRequest{Number: 42}, "the evidence does not cover the migration"); started != want {
+				t.Fatalf("the %s's task = %q, want the task composed for %s in %s from the reason and pull request #42, %q", tc.role, started, issue.Key, issue.Phase, want)
 			}
 			if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/"+string(tc.role)] != 1 {
 				t.Fatalf("starts = %v, want the %s once and nobody else", started, tc.role)
