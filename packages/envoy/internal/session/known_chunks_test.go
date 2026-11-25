@@ -702,6 +702,84 @@ func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T
 	}
 }
 
+// headLayout is the layout the head under key names, read from the bucket through kv, a raw
+// handle (rawKnown), so no store's copy answers it.
+func headLayout(t *testing.T, kv nats.KeyValue, key string) kvchunk.Layout {
+	t.Helper()
+	head, err := kv.Get(key)
+	if err != nil {
+		t.Fatalf("read %s's head from the bucket: %v", key, err)
+	}
+	layout, err := kvchunk.ReadLayout(head.Value())
+	if err != nil || !layout.Chunked() {
+		t.Fatalf("%s's head holds %.60q (%v), want a manifest", key, head.Value(), err)
+	}
+	return layout
+}
+
+// A known-session write deletes the chunks of the record its listener's copy holds, not those of
+// the bucket's head, and that copy can be behind the bucket (internal/bus/kv_leader_read.go). Each
+// write names its chunks by a generation of its own, so a copy behind the bucket names a generation
+// no head names once the write's own head lands, and the write deletes only chunks no head names.
+// Listener A's copy holds the session's chunked record G0 and its watch is stopped, so it takes
+// nothing more. Listener B, whose watch was stopped before G0 so its copy holds no record of the
+// session and its write deletes nothing, writes G1. A then writes G2 over its copy's G0: the bucket
+// holds every chunk G2's manifest names and the record reads back whole, G1's chunks are still
+// there for the collection, which this row does not run, and G0's are gone. Control: with the
+// write deleting the layout of the bucket's head (G1's, read from the bucket) in place of its
+// copy's, G1's chunks are gone and the row fails.
+func TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames(t *testing.T) {
+	const sessionID = "ses_known_behind"
+	conn := kvchunktest.SmallPayloadNATS(t)
+	known := openKnownOn(t, conn, time.Now)
+	other := openKnownOn(t, conn, time.Now)
+	other.StopWatch()
+	kv := rawKnown(t, conn)
+
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g0", 400)}); err != nil {
+		t.Fatalf("record G0 from listener A: %v", err)
+	}
+	g0 := headLayout(t, kv, sessionID)
+	known.StopWatch()
+	if err := other.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: kvchunktest.Topics("g1", 400)}); err != nil {
+		t.Fatalf("record G1 from listener B: %v", err)
+	}
+	g1 := headLayout(t, kv, sessionID)
+	if g1.Generation == g0.Generation {
+		t.Fatalf("G1's head names G0's generation %s, want one of its own", g0.Generation)
+	}
+	if held, ok := known.cached(sessionID); !ok || held.stored().Generation != g0.Generation {
+		t.Fatalf("once G1 landed listener A's copy holds generation %q (%v), want G0's %s: the row says nothing about a copy behind the bucket",
+			held.stored().Generation, ok, g0.Generation)
+	}
+
+	topics := kvchunktest.Topics("g2", 400)
+	if err := known.RecordWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics}); err != nil {
+		t.Fatalf("record G2 from listener A's copy behind the bucket: %v", err)
+	}
+	g2 := headLayout(t, kv, sessionID)
+	if g2.Generation == g0.Generation || g2.Generation == g1.Generation {
+		t.Fatalf("after G2's write the head names generation %s, want one neither G0 (%s) nor G1 (%s) names", g2.Generation, g0.Generation, g1.Generation)
+	}
+	live := kvchunktest.LiveChunkKeys(t, kv)
+	for _, key := range g2.Keys() {
+		if !slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket holds no %s, a chunk its head names", key)
+		}
+	}
+	requireKnownTopics(t, "a store that read the bucket afresh", openKnownOn(t, conn, time.Now), sessionID, topics)
+	for _, key := range g1.Keys() {
+		if !slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket holds no %s, a chunk of G1, which listener A's copy never held: the write deleted the head's chunks, not its copy's", key)
+		}
+	}
+	for _, key := range g0.Keys() {
+		if slices.Contains(live, key) {
+			t.Fatalf("after G2's write the bucket still holds %s, a chunk of G0, the record listener A's copy held", key)
+		}
+	}
+}
+
 // While builds share the known-session bucket, a listener of an earlier build reads a chunked
 // record's manifest as a KnownSession: every earlier build decodes a value with encoding/json into
 // that type and ignores a member it does not know (origin/main's decodeKnownSession). So the

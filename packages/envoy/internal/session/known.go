@@ -776,12 +776,12 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // written while that one is younger than
 // KnownSessionRefreshAge, so a session's 90-second heartbeat costs one write per refresh age
 // rather than one per heartbeat. What that skip compares is this listener's own copy of the record
-// (cached), never the bucket: the record as this listener's watcher last delivered it, or as this
-// listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored row). A
-// record another listener wrote is therefore compared as this listener's watcher last delivered
-// it: the throttle holds across every listener that serves the session once each one's watcher
-// has delivered the others' writes, and a write made before that compares an older copy, which
-// costs at most one write of a record the bucket already holds.
+// (cachedKeeping), never the bucket: the record as this listener's watcher last delivered it, or
+// as this listener's own write left it (store.Registry.UpsertWithin, by contrast, reads the stored
+// row). A record another listener wrote is therefore compared as this listener's watcher last
+// delivered it: the throttle holds across every listener that serves the session once each one's
+// watcher has delivered the others' writes, and a write made before that compares an older copy,
+// which costs at most one write of a record the bucket already holds.
 //
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
