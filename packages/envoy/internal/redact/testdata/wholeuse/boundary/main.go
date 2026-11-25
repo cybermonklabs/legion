@@ -55,25 +55,25 @@ const (
 	boundaryWrapper  = "BoundTokenSource"
 )
 
+// under reports whether path is the package root or a package below it.
+func under(path, root string) bool { return path == root || strings.HasPrefix(path, root+"/") }
+
 // library reports whether path is a package of a library whose calls cross the boundary.
 func library(path string) bool {
-	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
-		path == impersonatePath || path == cloudSQLConnPath
+	return under(path, oauth2Path) || under(path, goOIDCPath) || path == impersonatePath || path == cloudSQLConnPath
 }
 
 // textOnly reports whether path is a library that hands back only the text of a refusal, with no
 // response or request to read its record from: each call of it must be read under CallScope.
 func textOnly(path string) bool {
-	return path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/") ||
-		path == oauth2Path+"/google" || strings.HasPrefix(path, oauth2Path+"/google/") ||
-		path == impersonatePath || path == cloudSQLConnPath
+	return under(path, goOIDCPath) || under(path, oauth2Path+"/google") || path == impersonatePath || path == cloudSQLConnPath
 }
 
 // dispatchLibrary reports whether library's exported types are used to resolve calls through an
 // interface. cloudsqlconn's Dialer implements io.Closer, so including it would turn every Close of
 // an unrelated io.Closer into a library call; its direct methods are already in the closed API.
 func dispatchLibrary(path string) bool {
-	return path == oauth2Path || strings.HasPrefix(path, oauth2Path+"/") || path == goOIDCPath || strings.HasPrefix(path, goOIDCPath+"/")
+	return under(path, oauth2Path) || under(path, goOIDCPath)
 }
 
 func main() {
