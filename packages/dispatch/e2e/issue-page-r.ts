@@ -142,7 +142,15 @@ export const SEED_WORDS = {
   checkAgent: "A move names the placement it read, or stores nothing.",
   checkShared: "Every edit of the graph is one write.",
   childCheck: "The child checks the first statement.",
+  /** A person's comment on the child, which the c-retype row writes: a prose block of the
+   *  child's own fragment typed under it stands under a comment, so Retype's criterion is grey
+   *  there for the view alone. */
+  childComment: "Which kind may the child's own paragraph take?",
+  /** The paragraph the c-retype row types into the child's own fragment, under that comment. */
   childParagraph: "The child's design paragraph.",
+  /** The child's spec: one paragraph of a role document, which the tree read leaves out
+   *  (INFRA-1253 R2), so it is no node of the child's tree read. */
+  childSpec: "The child views the spec of the issue above it.",
   comment: "Does a refused move store nothing either?",
   criterion: "The reader edits the graph by keyboard alone.",
   decision: "The graph keeps one write for each move.",
@@ -478,7 +486,7 @@ export async function seedGraphEdit(): Promise<GraphEditSeed> {
     force: true,
     parent: key,
     project: GRAPH_PROJECT,
-    spec: `${SEED_WORDS.childParagraph}\n`,
+    spec: `${SEED_WORDS.childSpec}\n`,
     title: "The child, a view of the spec",
   });
   await createIssueArtifact(child.key, {
@@ -522,8 +530,10 @@ export interface GraphEditIds {
   readonly checkShared: string;
   /** The child's check, which stands under the first statement as a node of another issue. */
   readonly childCheck: string;
-  /** The child's own paragraph, a prose block of the view, in the child's tree read. */
-  readonly childParagraph: string;
+  /** The child's own paragraph, a prose block of the child's own fragment, in the child's tree
+   *  read; undefined until a reader types one there, since the child's spec is a role document
+   *  whose prose the tree read leaves out (INFRA-1253 R2) and the seed writes none. */
+  readonly childParagraph: string | undefined;
   readonly comment: string;
   readonly criterion: string;
   readonly decision: string;
@@ -565,9 +575,8 @@ export async function graphEditIds(page: Page, seed: GraphEditSeed): Promise<Gra
       "child's check",
       (node) => node.block_id === "cc1" && node.supertag === "check" && node.issue === seed.child
     ).id,
-    childParagraph: nodeWhere(child, "child's paragraph", (node) =>
-      isProse(node, SEED_WORDS.childParagraph)
-    ).id,
+    childParagraph: (child.nodes ?? []).find((node) => isProse(node, SEED_WORDS.childParagraph))
+      ?.id,
     comment: nodeWhere(
       answer,
       "comment on the third statement",

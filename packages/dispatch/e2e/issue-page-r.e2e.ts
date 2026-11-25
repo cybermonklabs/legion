@@ -51,6 +51,7 @@ import {
   type NodeRequest,
   nextTag,
   nodeOf,
+  nodeWhere,
   nodeWrites,
   nthWrite,
   openRowMenu,
@@ -932,8 +933,9 @@ async function openRetype(page: Page, what: string): Promise<void> {
 // c-retype: a new prose block under the criterion retyped to a statement, and one under the
 // question retyped to a criterion, each from the Retype submenu with no caret in the block; the
 // greys of Retype and of its kinds; and the submenus of the view and of its ancestor.
-// SLOW(>=2s): eight landings, two new rows typed and placed, two retypes written through the room,
-// a paragraph written under the issue, and the child's Graph loaded.
+// SLOW(>=2s): eleven landings, three new rows typed and placed, two of them in the converted
+// issue's room and one in the child's, two retypes written through the room, a paragraph written
+// under the issue, a comment written on the child, and the child's Graph loaded twice.
 test("Retype gives a prose block another kind", async ({ browser }) => {
   test.setTimeout(480_000);
   await phase(browser, seedGraphEdit, async (page, seed) => {
@@ -1032,23 +1034,34 @@ test("Retype gives a prose block another kind", async ({ browser }) => {
     );
     await closeRowMenu(page, "the prose block under the issue");
 
-    // The child, a view of the spec: the editor's schema there makes no statement, and criterion
-    // is grey (decision 359).
-    await landOn(page, seed.child, ids.childParagraph, "the child's paragraph");
+    // The child, a view of the spec (decision 359). The child's own fragment holds a prose block
+    // only after a reader types one there: its spec's paragraph is prose of a role document, which
+    // the tree read leaves out (INFRA-1253 R2), and the seed writes none. So the row writes a
+    // person's comment on the child, as the seed writes the converted issue's, and types a new
+    // row under it in the child's own Graph: a prose block under a comment, where criterion is
+    // grey for the view alone and a statement would be offered by any schema but the view's.
+    const childSent = watchNodeRequests(page, seed.child);
+    const childComment = await createComment(seed.child, { body: SEED_WORDS.childComment });
+    const commentRead = nodeWhere(
+      await requestedTreeRead(page, seed.child),
+      "person's comment on the child",
+      (node) => node.kind === "comment" && node.id === childComment.id
+    );
+    await landOn(page, seed.child, commentRead.id, "the child's comment");
+    await newRowUnder(page, childSent, SEED_WORDS.childParagraph, "the child's comment");
+    const { childParagraph } = await graphEditIds(page, seed);
+    expect(childParagraph, "the child's own fragment holds a prose block to retype").toBeDefined();
+    await landOn(page, seed.child, childParagraph ?? "", "the child's paragraph");
     await openRowMenu(page, "press", "the child's paragraph");
     await openRetype(page, "the child's paragraph");
-    await expect(
-      submenuEntry(page, EDIT_LABELS.retype_check),
-      "the view's Retype submenu offers no check"
-    ).toBeVisible();
-    expect(
-      (await submenuWords(page)).some((words) => words.startsWith(EDIT_LABELS.retype_statement)),
-      "the view offers no statement"
-    ).toBe(false);
     await expect(
       submenuEntry(page, EDIT_LABELS.retype_criterion),
       "the view greys criterion"
     ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      (await submenuWords(page)).some((words) => words.startsWith(EDIT_LABELS.retype_statement)),
+      "the view offers no statement"
+    ).toBe(false);
   });
 });
 
@@ -1632,11 +1645,15 @@ test("a citation of a node deleted in Graph opens the version that last held it 
     const statement3 = ids.statements[2];
     await page.setViewportSize(size);
     const reference = `dispatch://${key}/spec#b-s3`;
-    await createComment(key, { body: `The delete in Graph takes ${reference} with it.` });
-    const citing = (await requestedTreeRead(page, key)).nodes?.find(
-      (node) => node.kind === "comment" && node.text.includes(reference)
+    const second = await createComment(key, {
+      body: `The delete in Graph takes ${reference} with it.`,
+    });
+    // A comment's node is read by the comment's own id, as the fixture's tree read names it.
+    const citing = nodeWhere(
+      await requestedTreeRead(page, key),
+      "second comment of the person",
+      (node) => node.kind === "comment" && node.id === second.id
     );
-    expect(citing, "the tree read holds no second comment of the person").toBeDefined();
     const sent = watchNodeRequests(page, key);
     const traffic = watchApiRequests(page);
 
@@ -1656,7 +1673,7 @@ test("a citation of a node deleted in Graph opens the version that last held it 
       url.pathname === `/issues/${key}/spec` &&
       url.searchParams.get("v") === String(version) &&
       url.hash === "#b-s3";
-    const row = await landOn(page, key, citing?.id ?? "", "the second comment");
+    const row = await landOn(page, key, citing.id, "the second comment");
     const link = rowWords(row).getByRole("link", { exact: true, name: CONTROL_LABELS.target_gone });
     await expect(link, "the reference links to the version that last held it").toHaveAttribute(
       "href",
