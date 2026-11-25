@@ -2767,6 +2767,79 @@ test("offline, a comment edit's save holds the edit through the read it made sta
   }
 });
 
+// A save that lands while the read of the comments it changed goes unanswered: the save holds the
+// edit through that read up to the request deadline and lets it go there, and the comment says
+// why beneath its card, in the words of the error such a read ends with. The line goes once that
+// read settles.
+test("a comment edit's save whose read has not answered by the request deadline lets the edit go there, and the comment says why until that read settles", async () => {
+  const user = userEvent.setup();
+  const root = comment("root-comment", { body: "Root comment" });
+  const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
+  const stub = stubLists({ comments: [root, reply] });
+  const listComments = api.listComments as Mock<typeof api.listComments>;
+  const save = Promise.withResolvers<Comment>();
+  const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
+  const reread = Promise.withResolvers<Comment[]>();
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const why = "The edited comment is not read yet. Dispatch did not answer within 30 seconds.";
+
+  try {
+    const card = await screen.findByTestId("margin-comment-root-comment");
+    const turn = card.closest("[data-turn]");
+    if (!(turn instanceof HTMLElement)) throw new Error("the comment's card is drawn in no turn");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await waitFor(() =>
+      expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
+    );
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const editField = screen.getByLabelText("Edit comment");
+    await user.clear(editField);
+    await user.click(editField);
+    await user.paste("Updated root");
+    listComments.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: "Save" }));
+    await settle();
+    expect(editComment).toHaveBeenCalledWith(
+      "root-comment",
+      { body: "Updated root" },
+      keyedAttempt
+    );
+
+    // The save lands, and the comments' read it starts goes unanswered.
+    await act(async () => {
+      save.resolve({ ...root, body: "Updated root" });
+      await save.promise;
+    });
+
+    // A second short of the request deadline the read is still out, the edit held, and nothing
+    // said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(screen.getByLabelText("Edit comment")).toBeInTheDocument();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the save lets the edit go, and the comment's turn says why.
+    await tick(1_000);
+    expect(screen.queryByLabelText("Edit comment")).not.toBeInTheDocument();
+    expect(within(turn).getByText(why)).toBeInTheDocument();
+
+    // The read answers with the saved words, and the line goes.
+    await act(async () => reread.resolve([{ ...root, body: "Updated root" }, reply]));
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+  } finally {
+    save.resolve(root);
+    reread.resolve([root, reply]);
+    view.unmount();
+    queryClient.clear();
+    realClock();
+    editComment.mockRestore();
+    stub.restore();
+  }
+});
+
 interface ThreadsPage {
   readonly cleanup: () => void;
   readonly mark: Mock<

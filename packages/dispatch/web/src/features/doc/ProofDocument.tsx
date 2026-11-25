@@ -20,7 +20,7 @@ import {
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
-import { readWithinBound } from "../../api/read-bound";
+import { useReadBound } from "../../api/read-bound";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -126,6 +126,10 @@ interface AdmissionBlock {
   readonly kind: "repair" | "rebuild" | "newer" | "failed";
   readonly message: string;
 }
+
+/** What the rebuild offer says beside Rebuild, before why the read of the rebuilt document has
+ *  not settled once its hold ran out (`useReadBound`). */
+const REBUILT_DOCUMENT_NOT_READ = "The rebuilt document is not read yet.";
 
 function admissionBlock(error: unknown): AdmissionBlock {
   const message = error instanceof Error ? error.message : String(error);
@@ -477,6 +481,8 @@ export function ProofDocument({
   });
   const namingVersion = nameVersion.isPending && !nameVersion.late;
   const oneVersion = useOneCreateOut(nameVersion);
+  // Why the read of the rebuilt document has not settled, once the hold over it ran out.
+  const [rebuildUnsettled, holdThrough] = useReadBound();
   const rebuild = useKeyedWrite({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
@@ -485,13 +491,14 @@ export function ProofDocument({
       // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
       // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
       // rebuilt document is read, or until the request deadline where that read has not settled -
-      // one the network paused while the browser is offline (`readWithinBound`) - so no read
-      // holds Rebuild for good, and a text read that succeeds then takes the offer off the page.
+      // one the network paused while the browser is offline - so no read holds Rebuild for good,
+      // and the offer says why beside Rebuild until the read settles (`useReadBound`). A text
+      // read that succeeds then takes the offer off the page.
       if (tooltips) {
         void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
         return;
       }
-      return readWithinBound(invalidateWaitingForPaused(queryClient, ["artifact", artifact.id]));
+      return holdThrough(invalidateWaitingForPaused(queryClient, ["artifact", artifact.id]));
     },
     method: "POST",
     readsLate: true,
@@ -1244,6 +1251,11 @@ export function ProofDocument({
                   : "Could not rebuild this document."}
             </p>
           ) : null}
+          {/* Only inside `NoTooltips` does Rebuild hold through the rebuilt document's read, so
+              only there does a read outlive its hold and say why here, until it settles. */}
+          {rebuildUnsettled === undefined ? null : (
+            <p className={failedText}>{`${REBUILT_DOCUMENT_NOT_READ} ${rebuildUnsettled}.`}</p>
+          )}
         </div>
       )}
       {/* The server admits a socket read-only for a closed issue as it does for a page the

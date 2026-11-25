@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
-import { readWithinBound } from "../../api/read-bound";
+import { useReadBound } from "../../api/read-bound";
 import type { Issue, PriorityRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
@@ -146,6 +146,8 @@ export function IssuePriorityLine({
   });
   const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
   const labels = useMemo(() => priorityLabels(rows), [rows]);
+  // Why the reads a write made stale have not settled, once the hold over them ran out.
+  const [unsettled, holdThrough] = useReadBound();
   const write = useKeyedWrite({
     // The line says why a write was refused, beside the control it came from.
     inline: true,
@@ -170,10 +172,11 @@ export function IssuePriorityLine({
       // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
       // write stops pending: each control of the line stays refused, and keeps the focus, until
       // the issue it draws is the one read after the write, or until the request deadline where
-      // that read has not settled - one the network paused while the browser is offline
-      // (`readWithinBound`) - so no read holds the line for good.
+      // that read has not settled - one the network paused while the browser is offline - so no
+      // read holds the line for good, and the line says why until the reads settle
+      // (`useReadBound`).
       if (page === null) return;
-      return readWithinBound(Promise.all(rereads));
+      return holdThrough(Promise.all(rereads));
     },
   });
   const writeOwn = (ids: string[]) =>
@@ -262,6 +265,10 @@ export function IssuePriorityLine({
       })
     : apiErrorMessage(write.error, notSaved);
   const failureIsPageWords = stopped || saveFailure === notSaved;
+  // What the line says when the priorities could not be read: below the picker and on the line,
+  // and on the line before why the reads a write made stale have not settled (`unsettled`).
+  const prioritiesUnreadable =
+    page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities.";
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
@@ -382,11 +389,7 @@ export function IssuePriorityLine({
                   ? "No priority matches that."
                   : "No priority left to add."
             }
-            error={
-              priorities.isError
-                ? (page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities.")
-                : null
-            }
+            error={priorities.isError ? prioritiesUnreadable : null}
             label={page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
             marks={PICKER_MARKS}
             mode="single"
@@ -472,7 +475,7 @@ export function IssuePriorityLine({
           role="alert"
           {...page?.pageChrome}
         >
-          {page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities."}
+          {prioritiesUnreadable}
         </span>
       ) : null}
       {write.error === null ? null : (
@@ -482,6 +485,17 @@ export function IssuePriorityLine({
           {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >
           {saveFailure}
+        </span>
+      )}
+      {/* Only inside `NoTooltips` does the line hold through the reads its write made stale, so
+          only there does a read outlive its hold and say why here, until it settles. */}
+      {unsettled === undefined ? null : (
+        <span
+          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
+          role="alert"
+          {...page?.pageChrome}
+        >
+          {`${prioritiesUnreadable} ${unsettled}.`}
         </span>
       )}
     </div>

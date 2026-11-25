@@ -33,7 +33,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
-import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -304,6 +304,14 @@ function ChangeComposer({
   // `readingRef` is the same fact for a press that lands before the render shows it.
   const [reading, setReading] = useState(false);
   const readingRef = useRef(false);
+  // Why the latest press's document read had not settled by the request deadline, kept with
+  // that read: the form says why the change it sent named no place until the read settles, as
+  // `useReadBound` keeps its reason. That hook is not used here: its hold on the press's
+  // hand-off would end with the read, before the comment the press sends has answered.
+  const [unread, setUnread] = useState<{
+    readonly read: Promise<unknown>;
+    readonly reason: string;
+  }>();
   // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
   // together: a read that runs to its own deadline followed by an offline comment must not hold
   // Send for a second one. The timer is the press's, and goes once the write settles.
@@ -391,7 +399,9 @@ function ChangeComposer({
         // walks every decision above this one, which no render of a row pays for (decision 92).
         // With no reading - the read failed or timed out - the anchor names no place: Dispatch
         // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // once, which the form says in the page's words with the draft kept. A read the bound
+        // ended is said beside Send change too, in the words the page says for a read of the
+        // decisions document that failed and then why it has not settled (`unread`).
         readingRef.current = true;
         setReading(true);
         setPressLate(false);
@@ -404,9 +414,15 @@ function ChangeComposer({
           },
           () => undefined
         );
-        void readWithinBound(read).then(() => {
+        void readWithinBound(read).then((reason) => {
           readingRef.current = false;
           setReading(false);
+          if (reason !== undefined) {
+            setUnread({ read, reason });
+            void read.then(() =>
+              setUnread((current) => (current?.read === read ? undefined : current))
+            );
+          }
           const anchor = changeAnchor(
             decision,
             queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
@@ -439,6 +455,11 @@ function ChangeComposer({
         rows={3}
         value={body}
       />
+      {unread === undefined ? null : (
+        <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
+          {`${STATE_LINES.decisions_document_unreadable} ${unread.reason}.`}
+        </p>
+      )}
       {send.error === null ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>
           {ANSWER_LINES.change_not_sent}

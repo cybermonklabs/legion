@@ -597,6 +597,70 @@ test("inside NoTooltips, Rebuild stays held through the read after its rebuild u
   }
 });
 
+// Inside `NoTooltips` a read of the rebuilt document that has not answered by the request deadline
+// lets Rebuild go there, with the focus on it, and the offer says why beside Rebuild, in the words
+// of the error such a read ends with. The line goes once that read settles: here it answers with
+// the same refusal, so the offer stays and Rebuild with it.
+test("inside NoTooltips, a rebuild whose read has not answered by the request deadline lets Rebuild go there, and the offer says why until that read settles", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = freshReadsQueryClient();
+  const { view } = renderProofDocument({ noTooltips: true, queryClient });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  const why = "The rebuilt document is not read yet. Dispatch did not answer within 30 seconds.";
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+
+    // The rebuild landed in the step before, which is when the hold's timer started: two seconds
+    // short of the request deadline the read is still out, Rebuild held, and nothing said.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it Rebuild lets go, with the focus on it, and the offer says why beside it.
+    await tick(2_000);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(button).toHaveFocus();
+    expect(screen.getByText(why).parentElement).toBe(button.parentElement);
+
+    // The read settles, refused again: the line goes, and the offer and its Rebuild stay.
+    await act(async () =>
+      reread.reject(new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL }))
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByRole("button", { name })).toBe(button);
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    stopFocusFixup();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
 // A room or store that could not serve the document is not a history to discard: the page says
 // the document could not load, and offers no rebuild.
 test("ProofDocument offers no rebuild for a document service that is unavailable", async () => {

@@ -823,3 +823,68 @@ test("a document read that never answers does not double Send change's deadline,
     createComment.mockRestore();
   }
 });
+
+// A document read that has not answered by the request deadline sends the change with no place
+// counted, and the form says why beside Send change, in the words the page says for a read of the
+// decisions document that failed and then the error such a read ends with: here the quote stands
+// twice, so Dispatch refuses the change, and the reader sees why it named no place. The line goes
+// once that read settles; the refusal and the draft stay.
+test("a Change whose document read has not answered by the request deadline says why beside Send change until that read settles", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    ambiguousQuote("Draw it once.", 2)
+  );
+  const { text, unmount } = renderActions(
+    { ...read, decisions: [ABOVE, OWN] },
+    twoDecisionsText("The decisions this issue made.")
+  );
+  text.mockReturnValue(answer.promise);
+  const why = "Could not load the decisions document. Dispatch did not answer within 30 seconds.";
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(send);
+    await tick(0);
+
+    // A second short of the request deadline the read is still out: no change has gone, and
+    // nothing is said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(createComment).not.toHaveBeenCalled();
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the change goes with no place, and the form says why beside Send change.
+    await tick(1_000);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    expect(
+      createComment.mock.calls[0]?.[1]?.anchor?.occurrence,
+      "a send with no reading named a place"
+    ).toBeUndefined();
+    expect(screen.getByText(why).closest("form")).toBe(send.closest("form"));
+    expect(screen.getByText(ANSWER_LINES.change_not_sent)).toBeInTheDocument();
+
+    // The read answers late, and the line goes; the refusal and the draft stay.
+    await act(async () =>
+      answer.resolve({
+        markdown: DOCUMENT_TEXT,
+        markdown_tree: displayTree(DOCUMENT_TEXT),
+        token: "token",
+        version: 1,
+      })
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByText(ANSWER_LINES.change_not_sent)).toBeInTheDocument();
+    const field = screen.getByLabelText(CONTROL_LABELS.your_change);
+    expect(field instanceof HTMLTextAreaElement ? field.value : "").toBe("Say where.");
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
+});

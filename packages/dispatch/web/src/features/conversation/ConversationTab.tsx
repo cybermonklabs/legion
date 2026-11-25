@@ -15,7 +15,7 @@ import { Link } from "react-router-dom";
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import { readWithinBound } from "../../api/read-bound";
+import { useReadBound } from "../../api/read-bound";
 import type {
   Agent,
   Artifact,
@@ -676,6 +676,10 @@ function CommentDeliveryList({
   );
 }
 
+/** What a comment's turn says beneath its card, before why the read of the comments its landed
+ *  edit started has not settled once its hold ran out (`useReadBound`). */
+const EDITED_COMMENT_NOT_READ = "The edited comment is not read yet.";
+
 function CommentTurn({
   actionFailure,
   agents,
@@ -762,23 +766,26 @@ function CommentTurn({
   const queryClient = useQueryClient();
   const agentText = useAgentText();
   const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
+  // Why the read of the comments a landed edit started has not settled, once its hold ran out.
+  const [editUnsettled, holdThrough] = useReadBound();
   /** One attempt of a comment edit's save, under the composer's key (`sendRequest`). The attempt
    *  holds the edit - its editor, and every Edit of the card (`savingCommentEditId`) - until the
    *  comments are read again with the saved words, or until the request deadline where that read
-   *  has not settled - one the network paused while the browser is offline (`readWithinBound`) -
-   *  so no read holds the edit for good. */
+   *  has not settled - one the network paused while the browser is offline - so no read holds
+   *  the edit for good, and the turn says why beneath the card until the read settles
+   *  (`useReadBound`). */
   const editComment = useCallback(
     async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
       setSavingCommentEditId(id);
       try {
         const comment = await api.editComment(id, { body, ...carried }, bounds);
-        await readWithinBound(queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }));
+        await holdThrough(queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }));
         return comment;
       } finally {
         setSavingCommentEditId(undefined);
       }
     },
-    [issueKey, queryClient]
+    [holdThrough, issueKey, queryClient]
   );
   const replySendKey = useMemo(
     () => threadReplySendKey(sendKey, item.root.id),
@@ -882,6 +889,11 @@ function CommentTurn({
         thread={thread}
         viewerLogin={viewerLogin}
       />
+      {editUnsettled === undefined ? null : (
+        <p className={`ml-3 text-sm ${dangerText}`} role="alert">
+          {`${EDITED_COMMENT_NOT_READ} ${editUnsettled}.`}
+        </p>
+      )}
       {item.root.anchor === null || anchorArtifact === undefined ? null : (
         <Link
           className={`ml-3 text-sm ${linkText}`}

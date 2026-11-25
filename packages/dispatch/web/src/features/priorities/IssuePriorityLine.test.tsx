@@ -367,6 +367,57 @@ test("offline, inside NoTooltips, a priority's Remove is held through the reads 
   }
 });
 
+// Inside `NoTooltips` a write that lands while the reads it made stale go unanswered: the line
+// holds its controls through them up to the request deadline, lets them go there, with the focus
+// on the Remove pressed, and says why, in the words it says for a read of the priorities that
+// failed and then the error such a read ends with. The line goes once those reads settle.
+test("inside NoTooltips, a landed write whose reads have not answered by the request deadline lets Remove go there, and the line says why until they settle", async () => {
+  const view = renderLine([{ id: "evals-now", inherited: false }], { page: true });
+  const answer = Promise.withResolvers<never>();
+  view.patchIssue.mockImplementation(() => answer.promise);
+  const reread = Promise.withResolvers<Priorities>();
+  const name = "Remove P1 Evals collecting data now from CORE-9";
+  const why = "Could not load the priorities. Dispatch did not answer within 30 seconds.";
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const remove = (await view.q.findByRole("button", { name })) as HTMLButtonElement;
+    view.listPriorities.mockImplementation(() => reread.promise);
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), remove, {
+      name,
+      sent: () => view.patchIssue.mock.calls.length,
+    });
+    await act(async () => answer.resolve({} as never));
+    await tick(0);
+    expect(view.listPriorities).toHaveBeenCalledTimes(2);
+
+    // A second short of the request deadline the priorities' read is still out, Remove held, and
+    // nothing said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(remove, name)).toBe(true);
+    expect(view.q.queryByText(why)).toBeNull();
+
+    // At it the line lets Remove go, with the focus on it, and says why.
+    await tick(1_000);
+    expect(heldNotDisabled(remove, name)).toBe(false);
+    expect(remove).toHaveFocus();
+    expect(view.q.getByRole("alert").textContent).toBe(why);
+
+    // The read answers, and the line goes.
+    await act(async () => reread.resolve(body));
+    await tick(0);
+    expect(view.q.queryByText(why)).toBeNull();
+    expect(view.q.queryByRole("alert")).toBeNull();
+  } finally {
+    reread.resolve(body);
+    cleanup();
+    view.unmountAll();
+    view.queryClient.clear();
+    stopFocusFixup();
+    realClock();
+  }
+});
+
 test("a closed issue reads its priorities and writes none of them", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }], { closed: true });
   try {

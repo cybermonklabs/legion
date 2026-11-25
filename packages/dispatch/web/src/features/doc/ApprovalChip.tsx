@@ -8,7 +8,7 @@ import {
   isCapExceeded,
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
-import { readWithinBound } from "../../api/read-bound";
+import { useReadBound } from "../../api/read-bound";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { heldField, heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
@@ -101,6 +101,10 @@ interface ReviewPress {
 /** Dispatch's refusal of a review whose version moved after the page read it (`409
  *  REVIEW_VERSION_MOVED`): its words name the version a review would now record. */
 const VERSION_MOVED: ReadonlySet<string> = new Set(["REVIEW_VERSION_MOVED"]);
+
+/** What the chip says beside its actions, before why the reads its landed review made stale have
+ *  not settled once their hold ran out (`useReadBound`). */
+const APPROVAL_NOT_READ = "The new approval is not read yet.";
 
 /** The reads each page draws `reviewed`'s approval from: its own (the Inbox's reading pane), and
  *  its owner's - an issue document's issue and that issue's documents (both issue pages' header,
@@ -476,6 +480,8 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
+  // Why the reads a landed review made stale have not settled, once the hold over them ran out.
+  const [unsettled, holdThrough] = useReadBound();
 
   const review = useKeyedWrite({
     // The press carries the document it reviews: the indicator names it, the route takes its id,
@@ -506,13 +512,14 @@ export function ApprovalChip({
       // second press - a second `a`, a held key's repeat, a second click - records a second
       // approval while the page still draws the request as waiting. A read that has not settled
       // by the request deadline - one the network paused while the browser is offline - ends the
-      // wait there (`readWithinBound`), so no read holds the actions for good. Outside
-      // `NoTooltips` the dialog closes as the write lands, as on `main`. Inside, it closes once
-      // the reads are in, and a dialog the reader has not closed (`onClose`) then gives the focus
-      // back to the button that opened it. The reads are the reviewed document's, from the press.
+      // wait there, so no read holds the actions for good, and the chip says why beside them
+      // until the reads settle (`useReadBound`). Outside `NoTooltips` the dialog closes as the
+      // write lands, as on `main`. Inside, it closes once the reads are in, and a dialog the
+      // reader has not closed (`onClose`) then gives the focus back to the button that opened it.
+      // The reads are the reviewed document's, from the press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
-      const rereads = readWithinBound(
+      const rereads = holdThrough(
         Promise.all([
           queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
           queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
@@ -700,6 +707,14 @@ export function ApprovalChip({
               role="alert"
             >
               {movedRefusal}
+            </p>
+          )}
+          {unsettled === undefined ? null : (
+            <p
+              className={`basis-full text-sm ${page === null ? dangerText : ON_PAGE.failure}`}
+              role="alert"
+            >
+              {`${APPROVAL_NOT_READ} ${unsettled}.`}
             </p>
           )}
         </>

@@ -784,6 +784,71 @@ test("offline, Approve is held through the reads its landed review made stale on
   }
 });
 
+// A review that lands while the reads it made stale go unanswered: the chip holds its actions
+// through them up to the request deadline, lets them go there, with the focus on the Approve the
+// reader pressed, and says why beside them, in the words of the error such a read ends with. The
+// line goes once those reads settle.
+test("a landed review whose reads have not answered by the request deadline lets Approve go there, and the chip says why until they settle", async () => {
+  const answer = Promise.withResolvers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockReturnValue(
+    answer.promise
+  );
+  const readAgain = Promise.withResolvers<{ readonly artifacts: readonly Artifact[] }>();
+  let reads = 0;
+  const view = render(
+    <QueryClientProvider client={chipClient()}>
+      <IssueReadChip
+        read={() => {
+          reads += 1;
+          return reads === 1
+            ? Promise.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+            : readAgain.promise;
+        }}
+      />
+    </QueryClientProvider>
+  );
+  const approve = (await screen.findByRole("button", { name: "Approve" })) as HTMLButtonElement;
+  const why = "The new approval is not read yet. Dispatch did not answer within 30 seconds.";
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    await pressHeld(userOnFakeClock(), approve, {
+      name: "Approve",
+      sent: () => createArtifactVersionReview.mock.calls.length,
+    });
+    await act(async () => answer.resolve(approvedReview(3)));
+    await tick(0);
+    expect(reads).toBe(2);
+
+    // A second short of the request deadline the issue's read is still out, Approve held, and
+    // nothing said.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(approve, "Approve")).toBe(true);
+    expect(screen.queryByText(why)).toBeNull();
+
+    // At it the chip lets Approve go, with the focus on it, and says why.
+    await tick(1_000);
+    expect(heldNotDisabled(approve, "Approve")).toBe(false);
+    expect(approve).toHaveFocus();
+    expect(screen.getByRole("alert").textContent).toBe(why);
+
+    // The read answers with the request still waiting, and the line goes.
+    await act(async () =>
+      readAgain.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+    );
+    await tick(0);
+    expect(screen.queryByText(why)).toBeNull();
+    expect(screen.getByRole("button", { name: "Approve" })).toBe(approve);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+  } finally {
+    readAgain.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] });
+    view.unmount();
+    stopFocusFixup();
+    realClock();
+    createArtifactVersionReview.mockRestore();
+  }
+});
+
 test("Request changes requires a reason before it can submit, then posts it", async () => {
   const user = userEvent.setup();
   const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
