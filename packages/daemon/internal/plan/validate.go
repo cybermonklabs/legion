@@ -9,14 +9,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
-// The two checks a plan passes before Legion takes it. Both run on every plan, and each gives a
-// reason for each cause it finds, up to the bound of its kind, so a plan with two causes gets two
-// reasons, and the owner reads every cause at once rather than one for each try. Each reason names
-// its task where it has one. One refusal names at most MostReasons causes of each kind and counts
-// the rest (reasons), and each reason quotes the plan within a bound of bytes: a task id of at
-// most steprecord.TaskIDMax (FromBlocks refuses one outside Dispatch's task form), a word of at
-// most MostQuotedBytes (quoted), a list of at most MostReasons ids (listed) and a chain of at most
-// MostReasons needs, of two ids each (chainOf).
+// The two checks a plan passes before Legion takes it. Both run on every plan (Refusals), and each
+// gives a reason for each cause it finds, up to the bound of its kind, so a plan with two causes
+// gets two reasons, and the owner reads every cause at once rather than one for each try. Each
+// reason names its task where it has one. One refusal names at most MostReasons causes of each
+// kind and counts the rest (reasons), and each reason quotes the plan within a bound of bytes: a
+// task id of at most steprecord.TaskIDMax (FromBlocks refuses one outside Dispatch's task form), a
+// word of at most MostQuotedBytes (quoted), a list of at most MostReasons ids (listed) and a chain
+// of at most MostReasons needs, of two ids each (chainOf).
+
+// Refusals is every reason Legion does not take p: Supported's, what this release does not carry
+// out yet, then Validate's, what no release can. Each check bounds its own kinds (reasons), and the
+// two share none, so joining their reasons bounds each kind of the refusal. Every caller that takes
+// or refuses a plan reads it here: register_plan, the configuration loader's check of a project's
+// default steps, and MovesBackPairs.
+func Refusals(p Plan, d Deployment) []Refusal {
+	return append(Supported(p), Validate(p, d)...)
+}
 
 // MostReasons is the most causes of one kind that one refusal of a plan names; one more reason
 // counts the rest of that kind (reasons). It bounds a list and a chain as well: a reason lists at

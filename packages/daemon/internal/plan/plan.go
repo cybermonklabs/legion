@@ -217,7 +217,7 @@ var movesBackPairs = sync.OnceValue(func() []string {
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
-		if len(steps) > 0 && len(Supported(p)) == 0 && len(Validate(p, d)) == 0 {
+		if len(steps) > 0 && len(Refusals(p, d)) == 0 {
 			line := Line(steps, d)
 			for at, from := range line {
 				for _, to := range line[:at] {
