@@ -8,7 +8,7 @@
 // narrower still (`endsGrant`). A person's sign-in (`person-identity.ts`) and a machine's device
 // login (`device-login.ts`) read their answers through these, so each of these rules has one
 // definition in this language; the broker's wording of a refusal (`brokerRefusal`,
-// `token-client.ts`) makes any 4xx OAuth error a `BrokerRefusedError`, as Go's broker client makes
+// `broker-request.ts`) makes any 4xx OAuth error a `BrokerRefusedError`, as Go's broker client makes
 // it a `RefusedError`, and leaves whether it is final to `outage`. The library under these reads
 // fewer answers as an OAuth error than Go's x/oauth2 does: oauth4webapi does not read the body of
 // an answer carrying `WWW-Authenticate`, and reads only a JSON body (oauth4webapi 3.8.8,
