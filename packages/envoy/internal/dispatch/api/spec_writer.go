@@ -345,12 +345,8 @@ func (refusal *specWriterRefusal) reason() string {
 // message is the one wording of the check's refusal, in plain short sentences: what the session
 // cannot do, on which issue and to which document, who can, the role the session holds on the
 // issue, and each architect session Dispatch records on the chain with its issue. It ends with the
-// sentence of the write's act (specWriteAct.refusalEnding): the refusal of a move or of a write
-// that takes the issue out of Legion ends "A suggestion or a comment cannot carry this write: ask
-// one of the writers this message names, a person by `dispatch ask`.", and the refusal of a
-// document write, a create, a close and a reopen ends "Propose the change with a suggestion or a
-// comment.". The proof refusal names the project and says that the request's credential does not
-// prove the session, and ends with neither sentence.
+// sentence of the write's act (specWriteAct.refusalEnding). The proof refusal names the project,
+// says that the request's credential does not prove the session, and ends with neither sentence.
 func (refusal *specWriterRefusal) message() string {
 	write, session, read := refusal.write, refusal.session, refusal.read
 	chain, document := write.chainIssue(), write.documentName()
