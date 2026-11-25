@@ -45,12 +45,12 @@ func githubEventEnvelope(t *testing.T, id string, fields map[string]any) []byte 
 	return envelopeJSON(t, "github-inventory-"+id, "github", string(payload))
 }
 
-// No fact type keeps redelivery without a bound: one message of each of the 18 fact types
+// No fact type keeps redelivery without a bound: one message of each of the 19 fact types
 // decodeMessage returns, on the Dispatch, GitHub and wake subjects, and one message that does not
 // decode, each failing where its handling can fail, is terminated at the bound once a given-up
 // record of it has committed. Each fails in the handler; a review and a checks settlement name a
 // pull request the daemon records, since one of any other is acknowledged with no transaction.
-// The count at the end holds the table to the 18 distinct fact types decode.go returns today; it
+// The count at the end holds the table to the 19 distinct fact types decode.go returns today; it
 // counts the table, not decode.go, so a fact type decode.go returns later is added to the table,
 // and to the count, by hand.
 func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
@@ -88,6 +88,8 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			"approval": map[string]any{"artifact_id": "plan-md", "version": 3, "requested_version": 2}}), "intake.DispatchApprovalMoved"},
 		{dispatch, issue + "issue.claimed", dispatchEventEnvelope(t, 8, "issue.claimed", map[string]any{
 			"claim": map[string]any{"actor": map[string]string{"kind": "session", "id": "ses-1"}}}), "intake.DispatchClaim"},
+		{dispatch, issue + "result.recorded", dispatchEventEnvelope(t, 9, "result.recorded", map[string]any{"result_id": "result-1",
+			"issue": "CAPTURE-3", "check_issue": "CAPTURE-3", "check_block_id": "c-close", "verdict": "fail"}), "intake.DispatchResultChanged"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "opened", pr("opened", nil)), "intake.PullRequestOpened"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "synchronize", pr("synchronize", map[string]any{"before": "head-1"})), "intake.PullRequestSynchronized"},
 		{github, repo + "pr.42", githubEventEnvelope(t, "merged", pr("closed", map[string]any{"merged": "true", "merge_commit_sha": "merge-1"})), "intake.PullRequestMerged"},
@@ -156,7 +158,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			}
 		})
 	}
-	if len(types) != 18 {
-		t.Fatalf("the inventory holds %d fact types, want the 18 decodeMessage returns", len(types))
+	if len(types) != 19 {
+		t.Fatalf("the inventory holds %d fact types, want the 19 decodeMessage returns", len(types))
 	}
 }
