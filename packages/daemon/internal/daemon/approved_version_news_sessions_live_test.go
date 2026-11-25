@@ -532,7 +532,7 @@ func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.Desig
 		s: s, name: name, arm: arm, repo: "acme/" + strings.ToLower(cfg.Project), launchable: map[claim.Token]bool{},
 	}
 	r.dispatchAs(http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news sessions"}, nil)
-	r.dispatchAs(http.MethodPut, "/api/v1/settings/repo-projects/"+r.repo, map[string]any{"project": cfg.Project, "default": true}, nil)
+	r.dispatchAs(http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": r.repo}, nil)
 	r.rt = newLocalRuntime(t, cfg.StateDir, s.legion, s.omp, s.home, s.profile)
 	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = cfg.DaemonURL, s.listener, []string{s.natsURL}
 	r.rt.overlays = func(claim.Token) []string { return s.overlays }

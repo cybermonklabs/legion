@@ -1,13 +1,22 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { ReferencedBy } from "./ReferencedBy";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const createdAt = "2026-10-20T10:00:00Z";
 
@@ -37,9 +46,18 @@ function blockEdge(
   } satisfies GraphEdge;
 }
 
+/** The panel over a client that already holds CORE-1's summary: an excerpt that is the head of
+ *  a stored body is drawn by the renderer, which reads a reference in it as its target's name. */
 function renderPanel(read: GraphReferences, reference = "dispatch://CORE-1") {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(read);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["issue-summary", "CORE-1"], {
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Fix the thing",
+  });
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -48,6 +66,14 @@ function renderPanel(read: GraphReferences, reference = "dispatch://CORE-1") {
     </MemoryRouter>
   );
   return { client, getReferences, view };
+}
+
+/** Each row of `source` as [its excerpt's words, the first link it holds]. */
+function excerptRows(source: Element): (string | null | undefined)[][] {
+  return [...source.querySelectorAll(":scope > ul > li")].map((row) => [
+    row.querySelector("p")?.textContent,
+    row.querySelector("a")?.getAttribute("href"),
+  ]);
 }
 
 let restore: (() => void) | undefined;
@@ -113,7 +139,7 @@ test("two blocks of one document version citing the node are two rows under that
   };
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
-  await within(panel).findByText("Ship it as dispatch://CORE-1 says.");
+  await within(panel).findByRole("link", { name: "Artifact · OPS-1" });
   expect(within(panel).getByRole("heading").textContent).toBe("Referenced by (2)");
   // One source: the document, its header linked to the document itself.
   const sources = panel.querySelectorAll(":scope > ul > li");
@@ -124,18 +150,15 @@ test("two blocks of one document version citing the node are two rows under that
     "/issues/OPS-1/artifacts/notes-md"
   );
   // Each block its own row, with its own excerpt and a link to that block, its id encoded as
-  // encodeBlockId writes it.
-  const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
-  expect(rows).toHaveLength(2);
-  expect(
-    [...rows].map((row) => [
-      row.querySelector("p")?.textContent,
-      row.querySelector("a")?.getAttribute("href"),
+  // encodeBlockId writes it. The excerpt is the head of the block's text, drawn by the renderer:
+  // the address in it reads as the issue's name, never as the characters `dispatch://CORE-1`.
+  expect(sources[0]?.querySelectorAll(":scope > ul > li")).toHaveLength(2);
+  await waitFor(() =>
+    expect(excerptRows(sources[0] as HTMLElement)).toEqual([
+      ["Ship it as CORE-1 Fix the thing says.", "/issues/OPS-1/artifacts/notes-md#b-ship%5Fit"],
+      ["And hold the rest for CORE-1 Fix the thing.", "/issues/OPS-1/artifacts/notes-md#b-p2"],
     ])
-  ).toEqual([
-    ["Ship it as dispatch://CORE-1 says.", "/issues/OPS-1/artifacts/notes-md#b-ship%5Fit"],
-    ["And hold the rest for dispatch://CORE-1.", "/issues/OPS-1/artifacts/notes-md#b-p2"],
-  ]);
+  );
   // Rows written in one version share their time, and still have keys of their own.
   expect(consoleError.mock.calls.some((call) => String(call[0]).includes("same key"))).toBeFalse();
 });
@@ -320,23 +343,91 @@ test("blocks of one comment citing the node are rows under that comment, labelle
     "href",
     `/issues/OPS-1/comments/${comment}`
   );
-  const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
-  expect(
-    [...rows].map((row) => [
-      row.querySelector("p")?.textContent,
-      row.querySelector("a")?.getAttribute("href"),
+  await waitFor(() =>
+    expect(excerptRows(sources[0] as HTMLElement)).toEqual([
+      ["Alpha cites CORE-1 Fix the thing.", `/issues/OPS-1/comments/${comment}#b-b1`],
+      ["Beta cites it too.", `/issues/OPS-1/comments/${comment}#b-b2`],
     ])
-  ).toEqual([
-    ["Alpha cites dispatch://CORE-1.", `/issues/OPS-1/comments/${comment}#b-b1`],
-    ["Beta cites it too.", `/issues/OPS-1/comments/${comment}#b-b2`],
-  ]);
+  );
   // A message's one block is a source of one node: its header opens the message at the block.
   const messageSource = within(sources[1] as HTMLElement);
   expect(messageSource.getByRole("link", { name: "Message · OPS-1" })).toHaveAttribute(
     "href",
     `/issues/OPS-1/messages/${message}#b-b1`
   );
-  expect(messageSource.getByText("The message cites dispatch://CORE-1.")).toBeTruthy();
+  await waitFor(() =>
+    expect(sources[1]?.querySelector("p")?.textContent).toBe(
+      "The message cites CORE-1 Fix the thing."
+    )
+  );
+});
+
+// A citing comment or message carries its post's marks, as every read of the post does: a
+// deleted one has no excerpt left and its row prints the deleted line, an edited one carries
+// ` · edited` beside its time, and one that stands carries neither.
+test("a row of a deleted citing post reads as deleted, an edited one says so, and a standing one neither", async () => {
+  const postEdge = (
+    kind: "comment" | "message",
+    id: string,
+    marks: Partial<GraphEdge["node"]>,
+    excerpt?: string
+  ): GraphEdge => ({
+    created_at: createdAt,
+    direction: "in",
+    ...(excerpt === undefined ? {} : { excerpt: { text: excerpt } }),
+    kind: "mentions",
+    node: {
+      ...graphNodeFields(),
+      id,
+      issue_key: "OPS-1",
+      kind,
+      project: "OPS",
+      ref: `dispatch://OPS-1/${kind}/${id}`,
+      ...marks,
+    },
+    source_seq: 11,
+  });
+  const { getReferences, view } = renderPanel({
+    edges: [
+      // The deleted post was edited first, so ` · edited` can be drawn, and only the row's own
+      // reading of the delete keeps it off.
+      postEdge("comment", "11111111-1111-4111-8111-111111111111", {
+        deleted_at: "2026-10-20T11:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
+        edited_at: "2026-10-20T10:00:00Z",
+      }),
+      postEdge(
+        "message",
+        "33333333-3333-4333-8333-333333333333",
+        { edited_at: "2026-10-20T10:30:00Z" },
+        "The message cites dispatch://CORE-1."
+      ),
+      postEdge("comment", "44444444-4444-4444-8444-444444444444", {}, "A comment cites it."),
+    ],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("A comment cites it.");
+  const sources = [...panel.querySelectorAll<HTMLElement>(":scope > ul > li")];
+  expect(sources).toHaveLength(3);
+  const [deleted, edited, standing] = sources as [HTMLElement, HTMLElement, HTMLElement];
+  expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain("Deleted by alice");
+  expect(deleted.textContent).not.toContain("edited");
+  expect(edited.textContent).toContain("· edited");
+  expect(edited.querySelector("[data-post-deleted]")).toBeNull();
+  expect(standing.textContent).not.toContain("edited");
+  expect(standing.querySelector("[data-post-deleted]")).toBeNull();
 });
 
 test("parts of one ask citing the node are rows under that ask, named as the ask rather than as an artifact", async () => {
@@ -360,7 +451,7 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
   };
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
-  await within(panel).findByText("Hold — dispatch://CORE-1 is not ready.");
+  await within(panel).findByRole("link", { name: "Ask · OPS-1" });
   const sources = panel.querySelectorAll<HTMLElement>(":scope > ul > li");
   expect(sources).toHaveLength(1);
   // The ask is the source: the question and the option are its rows, each linked to its part.
@@ -369,16 +460,12 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
     `/issues/OPS-1/asks/${ask}`
   );
   expect(within(panel).queryByRole("link", { name: /^Artifact/ })).not.toBeInTheDocument();
-  const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
-  expect(
-    [...rows].map((row) => [
-      row.querySelector("p")?.textContent,
-      row.querySelector("a")?.getAttribute("href"),
+  await waitFor(() =>
+    expect(excerptRows(sources[0] as HTMLElement)).toEqual([
+      ["Ship it once CORE-1 Fix the thing lands?", `/issues/OPS-1/asks/${ask}#b-b1`],
+      ["Hold — CORE-1 Fix the thing is not ready.", `/issues/OPS-1/asks/${ask}#b-b3`],
     ])
-  ).toEqual([
-    ["Ship it once dispatch://CORE-1 lands?", `/issues/OPS-1/asks/${ask}#b-b1`],
-    ["Hold — dispatch://CORE-1 is not ready.", `/issues/OPS-1/asks/${ask}#b-b3`],
-  ]);
+  );
 });
 
 // A project document's comment opens on its document's page (`?comment=`), where a `#b-`
@@ -420,11 +507,165 @@ test("a block of a project document's comment links to its comment, with no frag
   };
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
-  await within(panel).findByText("Beta cites dispatch://CORE-1.");
+  await waitFor(() =>
+    expect(panel.querySelector("li li p")?.textContent).toBe("Beta cites CORE-1 Fix the thing.")
+  );
   expect(within(panel).getByRole("link", { name: "Comment · CORE" })).toHaveAttribute(
     "href",
     `/projects/CORE/documents/handbook-md?comment=${comment}`
   );
+});
+
+// The server cuts a block's excerpt where no reference crosses the cut, so a block whose text
+// opens with a reference longer than the cut has an empty excerpt, which still names the block
+// the row links to. The row then draws no excerpt at all, not an empty paragraph.
+test("a block whose excerpt the cut left empty is linked to its block and draws no excerpt", async () => {
+  const { getReferences, view } = renderPanel({
+    edges: [blockEdge("dispatch://CORE-2/artifact/spec-md", "CORE-2", "b1", "b1", "")],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  const row = await waitFor(() => {
+    const found = panel.querySelector("li li");
+    expect(found).not.toBeNull();
+    return found as HTMLElement;
+  });
+  expect(row.querySelector("p")).toBeNull();
+  expect(row.querySelector("[data-markdown-preview], .dispatch-markdown")).toBeNull();
+});
+
+// An excerpt is one of two things, and the panel draws each as what it is: the head of a stored
+// body - a citing comment's here - goes through the renderer, so its markdown is read; a citing
+// issue's title is one line of text already, and is shown as the characters it is.
+test("a citing comment's excerpt is rendered, and a citing issue's title is shown as written", async () => {
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const written = "See [the plan](https://example.test/plan) **first**";
+  const { getReferences, view } = renderPanel({
+    edges: [
+      {
+        created_at: createdAt,
+        direction: "in",
+        excerpt: { text: written },
+        kind: "mentions",
+        node: {
+          ...graphNodeFields(),
+          id: comment,
+          issue_key: "OPS-1",
+          kind: "comment",
+          project: "OPS",
+          ref: `dispatch://OPS-1/comment/${comment}`,
+        },
+        source_seq: 11,
+      },
+      {
+        created_at: createdAt,
+        direction: "in",
+        excerpt: { text: written },
+        kind: "blocked_by",
+        node: {
+          ...graphNodeFields(),
+          id: "OPS-2",
+          issue_key: "OPS-2",
+          kind: "issue",
+          project: "OPS",
+          ref: "dispatch://OPS-2",
+        },
+        source_seq: 12,
+      },
+    ],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  const sources = panel.querySelectorAll<HTMLElement>(":scope > ul > li");
+  expect(sources).toHaveLength(2);
+  const fromComment = within(sources[0] as HTMLElement);
+  expect(await fromComment.findByRole("link", { name: "the plan" })).toHaveAttribute(
+    "href",
+    "https://example.test/plan"
+  );
+  expect(fromComment.getByText("first", { selector: "strong" })).toBeDefined();
+  expect(within(sources[1] as HTMLElement).getByText(written)).toBeDefined();
+});
+
+// A citing block of a document is a block of that document, which its node carries as its
+// `parent`: its excerpt is the document's text, so a `#id` in it names the question of that
+// document. And the excerpt is drawn from the reading the server cut it into, never parsed in
+// the page: the row shows the tree's `later` where the excerpt's markdown says `now`.
+test("a document block's excerpt is drawn from its tree and reads a #id against its document", async () => {
+  await warmMarkdownRenderer();
+  const answers = answerQuestionOf("artifact", "plan-artifact");
+  const { getReferences, view } = renderPanel({
+    edges: [
+      {
+        created_at: createdAt,
+        direction: "in",
+        excerpt: {
+          block_id: "b1",
+          text: "Decide #q2 now.",
+          text_tree: displayTree("Decide #q2 later."),
+        },
+        kind: "mentions",
+        node: {
+          ...graphNodeFields(),
+          block_id: "b1",
+          document: "dispatch://CORE-2/artifact/plan-md",
+          id: "CORE-2/plan-md#b1",
+          issue_key: "CORE-2",
+          kind: "block",
+          parent: {
+            id: "plan-artifact",
+            kind: "artifact",
+            ref: "dispatch://CORE-2/artifact/plan-md",
+          },
+          project: "CORE",
+          ref: "dispatch://CORE-2/artifact/plan-md#b-b1",
+        },
+        source_seq: 13,
+      },
+    ],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    answers.restore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await waitFor(() =>
+    expect(panel.querySelector(`[data-dispatch-ref="${NAMED_ASK}"]`)?.textContent).toBe(
+      NAMED_QUESTION
+    )
+  );
+  expect(panel.textContent).toContain(`Decide ${NAMED_QUESTION} later.`);
 });
 
 // `serves` and `needs` are the edge kinds a typed block's `block[]` attributes make

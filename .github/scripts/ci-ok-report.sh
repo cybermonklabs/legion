@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Posts the failing ci-ok of a merge-group run from the job whose own result decides the group, in
-# that job's last step, the moment it ends. Every other verdict is ci.yaml's `ci-ok` job's: that
+# that job's last step, the moment it ends. Every other verdict is `.github/workflows/ci.yaml#ci-ok` job's: that
 # job needs every job of the run, fails when ci-ok.sh's verdict over their results is failure, and
 # its own check run is the ci-ok main's ruleset reads.
 #
@@ -24,19 +24,24 @@
 # 2026-11-22: #4812 left the queue at 07:17:29Z, one second after #4878 in front of it merged,
 # though its early post went up at about 06:39Z). So for a group behind the front, an early post
 # buys one thing: the entry leaves the moment the groups in front of it end, where without it the
-# entry leaves when its own run ends, or when a later job of that run fails once the group is the
-# front, whichever comes first. That wait is the cost of posting nothing here; in the two cases of
-# 2026-11-22 it was nothing, since #4812's run ended at 07:00Z, before #4878 merged, and #4785's at
-# 07:47Z, before #4842 merged at 08:07Z. The early post costs the queue far more: the queue counts
-# a group whose ci-ok failed as no longer building, so it builds the next entry at once, on top of
-# the failed one. With one entry that broke every group built on it, that built 41 groups in 28
-# minutes (06:37Z to 07:05Z) under a limit of five building, every run kept its runners to its
-# end, and the installation's API budget for the hour ran out at 07:21Z. So a group whose base,
-# the merge group's parent commit, is not the tip of the queue's branch posts nothing here: its
-# run's ci-ok job posts the verdict at the end of the run, and until then the group counts as
-# building. That tip is read once, and only on a run this job's result would decide; a read
-# GitHub refuses three times leaves the group treated as the front and the post made, as every
-# other refusal here prefers the failing verdict.
+# entry leaves once its own run has ended as well, or when a later job of that run fails once the
+# group is the front, whichever comes first. That wait is the cost of posting nothing here.
+# Measured over the 8 groups that failed from #4983 to 2026-11-23T02:23Z, it was nothing for the
+# 6 whose runs ended before they became the front, and 1.9 and 5.6 minutes for #4999 and #4900,
+# which became the front before their runs ended; this job holding its runner until the group is
+# the front would have cost 17 to 41 minutes of that runner per failing job to buy those minutes.
+# The early post costs the queue far more: the queue counts a group whose ci-ok failed as no
+# longer building, so it builds the next entry at once, on top of the failed one. With one entry
+# that broke every group built on it, that built 41 groups in 28 minutes (06:37Z to 07:05Z) under
+# a limit of five building, every run kept its runners to its end, and the installation's API
+# budget for the hour ran out at 07:21Z. So a group whose base, the merge group's parent commit,
+# is not the tip of the queue's branch posts nothing here: its run's ci-ok job reaches the verdict
+# at the end of the run and holds a failing one until the group is the front (ci-ok-hold.sh, whose
+# header measures the groups a failing verdict concluded behind the front still built), so the
+# group counts as building until the verdict can take it out. That tip is read once, and only on
+# a run this job's result would decide; a read GitHub refuses three times leaves the group
+# treated as the front and the post made, as every other refusal here prefers the failing
+# verdict.
 #
 # The post carries the external_id ci-ok-post:<this run's id>, which is the marker
 # ci-ok-reconcile.sh looks for: that step rewrites a ci-ok check run whose external_id carries
@@ -151,7 +156,7 @@ if [ "$EVENT" = merge_group ]; then
   case "$JOB_STATUS/$(jq -r .result <<<"$CHANGES")" in
     failure/* | cancelled/* | */failure | */cancelled)
       if ! front_of_queue; then
-        echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job posts this run's verdict at the end of the run"
+        echo "$JOB ended $JOB_STATUS (changes ended $(jq -r .result <<<"$CHANGES")) on a merge-group run whose group stands behind the front of the queue: its base $BASE_SHA is not $tip, the tip of $BASE_REF. The queue takes its pull request out only once the groups in front of it have ended, and an early post would let the queue build another group on this one, so nothing is posted from here; the ci-ok job reaches this run's verdict at the end of the run and holds a failing one until the group is the front"
         exit 0
       fi
       ;;

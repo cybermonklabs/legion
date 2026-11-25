@@ -34,6 +34,7 @@ func launchesSince(rt *fake.Runtime, token claim.Token, after int) []fake.Call {
 // process from the session file the claim recorded, and no fresh one is spawned. Its ready tells
 // it the child at the generation the rerun opened.
 func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsRerunResumesItsSession(t *testing.T) {
+	t.Parallel()
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
 	rig.drain()

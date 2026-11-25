@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // A child's architect's first start that reaches the outbox while its tree does not run waits for
@@ -28,6 +29,7 @@ import (
 // re-admitted root waits in the line for a slot, since its tree is opened only by the promotion
 // that gives it one.
 func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a reopen inside the linger", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		token := mustClaimToken(t, doorChild, claim.RoleArchitect)
@@ -127,6 +129,7 @@ func TestAChildsArchitectFirstStartWaitsForItsTreeToRunAgain(t *testing.T) {
 // it finishes as a news-only start that reaches no claim (newsOnlyRefusal). Neither creates the
 // child's architect claim. Read as a first start, each returns the wait instead.
 func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotRun(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		root func(*record.Issue)
@@ -157,7 +160,7 @@ func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishesWhileItsTreeDoesNotR
 					t.Fatalf("clear the design gate of the re-admitted %s: %v", doorRoot, err)
 				}
 				// A setup guard: the case is the root waiting in the line, or it tests nothing.
-				if !record.QueuedRoot(*root, record.TreeGate{Steps: rig.runner.gatedSteps}) {
+				if !record.QueuedRoot(*root, treelifecycle.Lifecycle{}, record.TreeGate{Steps: rig.runner.gatedSteps}) {
 					t.Fatalf("the re-admitted root %+v with no gate does not wait in the line, want it waiting (record.QueuedRoot)", root)
 				}
 			}

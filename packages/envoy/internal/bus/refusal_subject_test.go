@@ -29,6 +29,13 @@ func seedLookup(seed string) func(string) (string, bool) {
 // (unansweredRelay). The client is a bus client, so the server's refusals are recorded for it.
 func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
 	t.Helper()
+	return deniedRelayedClientWith(t, nil, dropped, deny...)
+}
+
+// deniedRelayedClientWith is deniedRelayedClient whose client connects with options too, such as
+// the stream message reads an edge listener's client takes (WithStreamMessageReads).
+func deniedRelayedClientWith(t *testing.T, options []ConnectOption, dropped string, deny ...string) (*nats.Conn, *Client, *unansweredRelay) {
+	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyDenied(t, public, deny...)
 	admin, err := nats.Connect(uri)
@@ -37,7 +44,7 @@ func deniedRelayedClient(t *testing.T, dropped string, deny ...string) (*nats.Co
 	}
 	t.Cleanup(admin.Close)
 	relay := startUnansweredRelayOn(t, uri, dropped)
-	client, err := Connect([]string{relay.url}, WithEnvironment(seedLookup(seed)))
+	client, err := Connect([]string{relay.url}, append([]ConnectOption{WithEnvironment(seedLookup(seed))}, options...)...)
 	if err != nil {
 		t.Fatalf("connect as the denied user through the relay: %v", err)
 	}
@@ -152,9 +159,12 @@ func readModeBucket(t *testing.T, admin *nats.Conn, client *Client, bucket, key 
 // A read of a key or of a revision takes only the refusal of the request its handle sends. nats.go
 // sends a read through a handle on a stream that allows direct gets as a direct get, and through
 // one on a stream that does not as a get from the stream's leader, never the other (readsDirect).
-// So a read whose own request lost its answer, while the connection earned the refusal of the
-// request the other kind of handle sends, reports its own silence and leaves that refusal in the
-// record; and a read whose own request the grant refuses names that refusal.
+// A handle of a client that reads with stream message gets (WithStreamMessageReads), an edge
+// listener's, sends every read as a get from the stream's leader, on a stream that allows direct
+// gets too (streamMessageReads). So a read whose own request lost its answer, while the connection
+// earned the refusal of the request the other kind of handle sends, reports its own silence and
+// leaves that refusal in the record; and a read whose own request the grant refuses names that
+// refusal.
 //
 // Each row starts a server of its own, whose user may publish to anything but the one subject the
 // row refuses, and the server's admin makes the bucket there. The handle under test is the user's,
@@ -168,20 +178,24 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 	fromLeader := jsAPI("STREAM.MSG.GET", stream)
 	get := func(kv KeyValue, _ uint64) (nats.KeyValueEntry, error) { return kv.Get(key) }
 	getRevision := func(kv KeyValue, revision uint64) (nats.KeyValueEntry, error) { return kv.GetRevision(key, revision) }
+	messageReads := []ConnectOption{WithStreamMessageReads()}
 	for _, read := range []struct {
 		name       string
 		direct     bool
 		own, other string
 		call       func(KeyValue, uint64) (nats.KeyValueEntry, error)
+		client     []ConnectOption
 	}{
-		{"direct Get", true, directByKey, fromLeader, get},
-		{"direct GetRevision", true, directBySequence, fromLeader, getRevision},
-		{"leader Get", false, fromLeader, directByKey, get},
-		{"leader GetRevision", false, fromLeader, directBySequence, getRevision},
+		{"direct Get", true, directByKey, fromLeader, get, nil},
+		{"direct GetRevision", true, directBySequence, fromLeader, getRevision, nil},
+		{"leader Get", false, fromLeader, directByKey, get, nil},
+		{"leader GetRevision", false, fromLeader, directBySequence, getRevision, nil},
+		{"stream message Get", true, fromLeader, directByKey, get, messageReads},
+		{"stream message GetRevision", true, fromLeader, directBySequence, getRevision, messageReads},
 	} {
 		t.Run(read.name+" lost beside a refusal of a request it does not send", func(t *testing.T) {
 			t.Parallel()
-			admin, client, relay := deniedRelayedClient(t, read.own, read.other)
+			admin, client, relay := deniedRelayedClientWith(t, read.client, read.own, read.other)
 			kv, revision := readModeBucket(t, admin, client, bucket, key, read.direct)
 			// The grant covers the handle's own request, so a read the relay lets through is answered.
 			if entry, err := read.call(kv, revision); err != nil || string(entry.Value()) != "value" {
@@ -199,7 +213,7 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 		})
 		t.Run(read.name+" whose own request is refused", func(t *testing.T) {
 			t.Parallel()
-			admin, client, relay := deniedRelayedClient(t, read.own, read.own)
+			admin, client, relay := deniedRelayedClientWith(t, read.client, read.own, read.own)
 			kv, revision := readModeBucket(t, admin, client, bucket, key, read.direct)
 
 			relay.arm(0)
@@ -340,6 +354,7 @@ func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 // lost, which the call answers with its own silence, and once with the read held and then
 // answered over a consumer the server's admin made, which the call answers with that consumer.
 func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
+	t.Parallel()
 	const stream, name = "ENVOY_ADD_CONSUMER_STEP", "step"
 	read := jsAPI("CONSUMER.INFO", stream, name)
 	create := jsAPI("CONSUMER.CREATE", stream, name)
@@ -395,6 +410,7 @@ func TestAnAddConsumerTakesOnlyTheRefusalOfTheRequestItIsOn(t *testing.T) {
 // lost its answer. The start sends its create again, as it sends any request the server left
 // unanswered, and goes on.
 func TestABucketCreateTakesOnlyTheRefusalOfTheStepItIsOn(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, bucket string
 		lost         func(bucket string) string

@@ -208,6 +208,7 @@ const judgeRefusedText = "the model judge refused this request: the guidance ask
 // and the exec form exit 77, as any denial does, printing the judge's sentence and running no
 // child. Nothing either prints tells the agent to try again or names a person to ask.
 func TestAJudgedRefusalIsFinal(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -228,6 +229,7 @@ func TestAJudgedRefusalIsFinal(t *testing.T) {
 // and handed to its person while the exec form waits prints the judge's line first and then, at
 // the first status read that shows the hand-over, the line naming the person and the page.
 func TestTheExecFormSaysWhenTheJudgeHandsARequestOver(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, _ := fakeBroker(t)
@@ -538,11 +540,12 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
 // stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
 // fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
-// leak into (or shadow) a granted secret.
+// leak into (or shadow) a granted secret. The binary runs in a world of its own (hostIsolation),
+// so a person's sign-in or settings file on the machine running the tests is not a source.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
@@ -556,6 +559,21 @@ func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []str
 	}
 	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, out.String(), errOut.String())
 	return "", "", -1
+}
+
+// hostIsolation is the environment a binary runAgentSecrets runs gets over the test process's own,
+// before the test's extraEnv: a home, a config, a state and a runtime directory of its own, and
+// no sign-in store, machine identity or helper socket, as the harness of startCall gives them. So
+// a developer's own sign-in (`agent-secrets login`), settings file, machine cache or helper on the
+// machine running the tests is no source a test's command takes; a test that wants one names it
+// in extraEnv.
+func hostIsolation(t *testing.T) []string {
+	t.Helper()
+	env := []string{"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY=", "AGENT_SECRETS_HELPER_SOCK="}
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
+		env = append(env, name+"="+shortTempDir(t))
+	}
+	return env
 }
 
 // oneJSONObject parses stdout as exactly one JSON object (one line, nothing else) and returns
@@ -604,6 +622,7 @@ func redactSecrets(s string) string {
 }
 
 func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -633,6 +652,7 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 // ending in a line feed ends that way because the stored value holds a line ending inside it, and the agent
 // running the command could not store it differently in any case.
 func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	broker, counters := fakeBroker(t)
@@ -699,6 +719,7 @@ var pendingSentences = map[string]string{
 // them through the real binary in the two tests below; the other two have no fixture of their
 // own, and this is what holds their wording.
 func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
+	t.Parallel()
 	person, anyone := "ada@example.com", record.AnyoneApprover
 	for _, row := range []struct {
 		name     string
@@ -724,6 +745,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 // The fake broker holds the first status poll until the test has read those two lines from the
 // command's stderr, so lines printed only once the wait ends never arrive in time.
 func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -746,7 +768,7 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 				defer release()
 
 				cmd := exec.Command(binary, name, "--wait", "200ms", "--", "sh", "-c", "echo ran-the-child")
-				cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
+				cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
 					"AGENT_SECRETS_APPROVE_URL="+approveURL)
 				c := startCall(t, cmd)
 				want := "agent-secrets: request " + requestID + " to " + fakeSourceText(broker) + " is waiting for approval; waiting up to 200ms\n" +
@@ -781,6 +803,7 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 // the approver the broker names and the page on the broker where they decide it, which a broker
 // that names none leaves out; request exits 75 and status 0, as before.
 func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -811,6 +834,7 @@ func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
 // AGENT_SECRETS_APPROVE_URL. status --json prints the broker's answer byte for byte, approver
 // included.
 func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -835,6 +859,7 @@ func TestADecidedRequestSaysNothingOfWaiting(t *testing.T) {
 }
 
 func TestExecFormDeniedExitsSeventySevenWithNoChild(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -857,6 +882,7 @@ func TestExecFormDeniedExitsSeventySevenWithNoChild(t *testing.T) {
 }
 
 func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -878,6 +904,7 @@ func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
 // approve; before the command was looked up first, its request reached that person and the run
 // exited 75, still waiting.
 func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -905,6 +932,7 @@ func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
 // for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
 // naming the code and saying to ask again, and the command never runs.
 func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -918,6 +946,7 @@ func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
 // 0 and prints usage(), the conventional exit code for an explicit help request; only the
 // zero-argument form (no NAME, no --help) remains a usage error exiting 2.
 func TestTopLevelHelpExitsZero(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -942,6 +971,7 @@ func TestTopLevelHelpExitsZero(t *testing.T) {
 // exit 0, flags or none, before it needs a broker, a key or a helper; the docs site's CLI
 // reference is built from these answers.
 func TestEveryFormAnswersHelp(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	for _, c := range commands {
 		if c.name == "--version" {
@@ -965,6 +995,7 @@ func TestEveryFormAnswersHelp(t *testing.T) {
 // finding 3: a granted request whose values come back without one of its names must never exec,
 // since silently execing without it would be a silent partial grant.
 func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -991,6 +1022,7 @@ func TestExecFormRefusesToRunWhenAGrantedNameHasNoValue(t *testing.T) {
 // must not survive into the child's environment alongside (and potentially before) the
 // broker-released value.
 func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1017,6 +1049,7 @@ func TestExecFormDoesNotLetInheritedEnvShadowAGrantedValue(t *testing.T) {
 // poll GET /v1/requests/{id} (proof that neither invocation ever entered the pending-wait loop,
 // whether the broker minted the grant fresh or handed back a reused one).
 func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -1042,6 +1075,7 @@ func TestExecFormSecondInvocationReusesGrantTransparently(t *testing.T) {
 // helper under `agent-secrets K -- omp`) reaches the broker as that session instead of failing
 // with "AGENT_SECRETS_URL is required".
 func TestExecFormNestedCallKeepsTheSessionIdentity(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1076,6 +1110,7 @@ var testAirlockFiles = airlockFiles{bundle: "/run/user/1000/agent-secrets/airloc
 // CLI sets — the stale proxy, the inherited trust file — is gone, as an inherited copy of a
 // released name is.
 func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
+	t.Parallel()
 	identity := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
@@ -1154,6 +1189,7 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 // broker's decision, taken from the stored value itself (policy.TrimLineEnding), so the exec form hands
 // the child what the broker sent, byte for byte, line endings and all.
 func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
+	t.Parallel()
 	for name, value := range map[string]string{
 		"one trailing newline":   "sk-live-abc\n",
 		"trailing CRLF":          "sk-live-abc\r\n",
@@ -1243,16 +1279,14 @@ func (c *call) end(t *testing.T) int {
 }
 
 // startExecForm starts the exec form of GRANT_ME against broker from keyDir with no helper to
-// fall back to (the runtime dir is empty and AGENT_SECRETS_HELPER_SOCK is empty). extraEnv comes
-// last, so it can override any of that. Its home and state directory are the test's own, so no
-// sign-in or machine cache of the machine running the test answers for a key dir a row leaves
-// empty.
+// fall back to (hostIsolation: an empty runtime dir and no AGENT_SECRETS_HELPER_SOCK). extraEnv
+// comes last, so it can override any of that. Its home, config and state directories are the
+// test's own, so no sign-in or machine cache of the machine running the test answers for a key
+// dir a row leaves empty.
 func startExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string) *call {
 	t.Helper()
 	cmd := exec.Command(binary, "GRANT_ME", "--", "sh", "-c", "exit 0")
-	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir,
-		"AGENT_SECRETS_HELPER_SOCK=", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir(), "XDG_STATE_HOME="+t.TempDir(),
-		"AGENT_SECRETS_SIGNIN_DIR=", "AGENT_SECRETS_MACHINE_IDENTITY="), extraEnv...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
 	return startCall(t, cmd)
 }
 
@@ -1372,6 +1406,7 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 // before it says so, and one that stops waiting once key.pem is there never says that it waits
 // for both files again, which fails the row whatever the load.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1406,6 +1441,7 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 // things that end a wait earlier are checked absent: the marker is still fresh, and key.pem never
 // came.
 func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1445,6 +1481,7 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 // that read its deadline before it said so would give up with no first line; this row decides by
 // the order the call prints, which no load changes.
 func TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1467,6 +1504,7 @@ func TestEnrollWaitSaysItWaitsBeforeItReadsItsDeadline(t *testing.T) {
 // that waited without saying so would not come back within the shared wait, which would fail
 // naming it.
 func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1506,6 +1544,7 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 // TestEnrollWaitRefusesAnInvalidBound pins that a malformed AGENT_SECRETS_ENROLL_WAIT is an
 // error naming the variable, never a silent fall back to the default.
 func TestEnrollWaitRefusesAnInvalidBound(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1518,6 +1557,7 @@ func TestEnrollWaitRefusesAnInvalidBound(t *testing.T) {
 }
 
 func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1541,6 +1581,7 @@ func TestRequestJSONPrintsExactlyOneContractObject(t *testing.T) {
 // finding 2: --json must print the broker's exact bytes, never appending a newline (or anything
 // else) the response didn't already end with.
 func TestRequestJSONIsByteIdenticalToTheBrokerResponse(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1557,6 +1598,7 @@ func TestRequestJSONIsByteIdenticalToTheBrokerResponse(t *testing.T) {
 }
 
 func TestSelfJSONPrintsExactlyOneContractObjectNamingTheIssuedEnrollment(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
@@ -1584,6 +1626,7 @@ func TestSelfJSONPrintsExactlyOneContractObjectNamingTheIssuedEnrollment(t *test
 // exactly the argv secret names with the reason carried inside the signed object rather than as
 // a top-level field.
 func TestRequestSignsARequestObject(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 
@@ -1698,6 +1741,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1745).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -1716,6 +1760,7 @@ func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
 // contract: with AGENT_SECRETS_APPROVE_URL set, the second line names it instead of the generic
 // "Dispatch credential page" fallback.
 func TestMachineLoginPrintsTheDispatchURLWhenApproveURLIsSet(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"issued"})
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1734,6 +1779,7 @@ func TestMachineLoginPrintsTheDispatchURLWhenApproveURLIsSet(t *testing.T) {
 // second line names the page the broker's device authorization named, which the helper relays;
 // with it set, that setting still wins.
 func TestMachineLoginPrintsTheBrokersVerificationURI(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelperAt(t, "KQ7M-X4PZ", "https://dispatch.example/credentials/machine", []string{"issued"})
 	for _, tc := range []struct{ approve, want string }{
@@ -1751,6 +1797,7 @@ func TestMachineLoginPrintsTheBrokersVerificationURI(t *testing.T) {
 // TestMachineLoginExitsOneOnDenied pins the terminal-failure half of the poll loop: a
 // login-status answer of "denied" exits 1 and names the state, never retrying past it.
 func TestMachineLoginExitsOneOnDenied(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"denied"})
 	_, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1775,6 +1822,7 @@ func TestMachineLoginExitsOneOnDenied(t *testing.T) {
 // credential the broker rejected becomes) says on stderr to run the login again, and a login in
 // flight outranks a refused credential.
 func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	const held = "the helper still holds the launcher credential an earlier login issued"
 	const prefix = "agent-secrets machine login-status: "
@@ -1842,6 +1890,7 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 // credential already past its expiry (the helper has not dropped it yet) with the hint of the
 // helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	machineLogin, identity := cipherclient.FailureNoMachineLogin, cipherclient.FailureIdentityLapsed
 	for _, tc := range []struct {
@@ -1872,6 +1921,7 @@ func TestCredentialExpiryLine(t *testing.T) {
 // reads it back, and prints the enrollment id alone on stdout — the contract scripts/agentbox
 // parses.
 func TestEnrollHelperPrintsEnrollmentID(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true, EnrollmentID: "enr-box-1", LeaseExpires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)})
 	keyDir := t.TempDir()
@@ -1893,6 +1943,7 @@ func TestEnrollHelperPrintsEnrollmentID(t *testing.T) {
 // TestUnenrollHelperSucceeds pins unenroll --helper's exit-code-only contract: it asks the local
 // helper to revoke the enrollment over its unix socket and prints nothing on success.
 func TestUnenrollHelperSucceeds(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, _ := fakeHelper(t, helper.Response{OK: true})
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", t.TempDir(),
@@ -1909,6 +1960,7 @@ func TestUnenrollHelperSucceeds(t *testing.T) {
 // v9 dropped launcher bearer tokens entirely: --helper is the only enrollment path left, so it
 // is required (not merely one of two mutually exclusive options).
 func TestEnrollHelperFlagValidation(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := t.TempDir()
 
@@ -1931,6 +1983,7 @@ func TestEnrollHelperFlagValidation(t *testing.T) {
 // level by TestRequestSessionIDFallbackOrder, below; this test is the proof that both real call
 // sites actually call it rather than os.Getenv("OMP_SESSION_ID") directly.
 func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
@@ -1975,6 +2028,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2048); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2053).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -2006,6 +2060,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2077).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string

@@ -4,18 +4,27 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 )
 
-// DisplayCacheBytes is how much of the display trees' JSON one process keeps: the bytes of the
-// encodings themselves, not of the markdown they were read from or of the keys that find them.
-// 64 MiB holds the stored text a busy dashboard reads over and over - an issue's comment list
-// re-read on every event, an inbox's asks - and is a bound a server can carry beside its pools,
-// not a target to fill.
+// DisplayCacheBytes is how much memory the display trees one process keeps may hold. Each tree is
+// charged what keeping it costs the heap - its whole array, its key and the cache's entry for it
+// (displayCacheEntrySize) - so a full cache holds about this much and no more. The markdown the
+// trees were read from is not counted. 64 MiB holds the stored text a busy dashboard reads over
+// and over - an issue's comment list re-read on every event, an inbox's asks - and is a bound a
+// server can carry beside its pools, not a target to fill.
 const DisplayCacheBytes = 64 << 20
+
+// DisplayTreeLongestKept is the longest tree the display cache keeps at all: a tree whose array
+// is this long is charged the whole of DisplayCacheBytes (displayCacheEntrySize), and a longer
+// one is never kept.
+const DisplayTreeLongestKept = DisplayCacheBytes - int(unsafe.Sizeof(displayCacheKey{})) - displayCacheEntryBytes
 
 // TextSum names one stored text: its SHA-256, which is what the display cache keys a reading of
 // that text by (displayCacheKey) and what the stored trees are keyed by too (texttrees). A
@@ -57,7 +66,7 @@ func DisplayJSONOf(sum [32]byte, markdown string, mode DisplayMode) json.RawMess
 	if tree == nil {
 		return nil
 	}
-	displayCache.Put(key, tree)
+	keepDisplayTree(key, tree)
 	return tree
 }
 
@@ -125,11 +134,14 @@ func HeldDisplayTree(sum [32]byte, mode DisplayMode) (json.RawMessage, bool) {
 // text has no tree and no row, so no caller holds a sum to put for one, and a row holding no
 // bytes is no tree either and is ignored: nothing a caller passes can shadow a reading with
 // nothing.
+//
+// The tree is kept as it is handed over and charged its array's capacity (displayCacheEntrySize),
+// so the caller hands over an array of its own grown by append, as texttrees.Read does.
 func PutStoredDisplayTree(sum [32]byte, mode DisplayMode, tree json.RawMessage) {
 	if len(tree) == 0 {
 		return
 	}
-	displayCache.Put(displayCacheKey{sum: sum, mode: mode}, tree)
+	keepDisplayTree(displayCacheKey{sum: sum, mode: mode}, tree)
 }
 
 // displayTreeBuilds counts what DisplayTreeBuilds answers.
@@ -155,22 +167,26 @@ func DisplayTreeBuilds() uint64 { return displayTreeBuilds.Load() }
 // markTypes, which is the schema of what Dispatch keeps.
 const DisplayHighlightMark = "searchHighlight"
 
-// DisplaySnippetJSON is the display tree of a search hit's snippet: the headline balanced as the
-// cut left it (SearchSnippetMarkdown), read for display, with DisplayHighlightMark over every
-// range the sentinels start and stop named. The sentinels ride through the read rather than being
-// taken out before it, because they are private-use characters, which the parser reads as
-// ordinary word characters and leaves in the text nodes they fall in: a tree walk then has their
-// exact places, where an offset into the markdown would have had to survive both the balancing
-// and the parse.
+// DisplaySnippetJSON is the display tree of a search hit's snippet: markdown, the snippet already
+// read out of its source and balanced where it is a cut (SearchSnippet), read for display as it
+// stands, with DisplayHighlightMark over every range the sentinels start and stop named. It does
+// not balance the markdown again: SearchSnippet decided where the snippet is a cut and where it is
+// code, which no balancing of the snippet alone can see. The sentinels ride through the read
+// rather than being taken out before it, because they are private-use characters, which the
+// parser reads as ordinary word characters and leaves in the text nodes they fall in: a tree walk
+// then has their exact places, where an offset into the markdown would have had to survive both
+// the snippet's reading and the parse. The same reading leaves the ones the query matched in an
+// address or a caption in the attribute they fall in, and the walk takes those out
+// (highlightSnippet).
 //
 // The snippet is read fresh rather than from the cache: every query cuts its own headline, so a
 // cached snippet would be a tree nothing asks for again, taking the room of a body many readers
 // do share.
-func DisplaySnippetJSON(headline, start, stop string) json.RawMessage {
-	if headline == "" {
+func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
+	if markdown == "" {
 		return nil
 	}
-	tree := ReadForDisplay(SearchSnippetMarkdown(headline), DisplayLatest)
+	tree := ReadForDisplay(markdown, DisplayLatest)
 	highlightSnippet(tree, start, stop, false)
 	encoded, err := json.Marshal(tree.toDisplayJSON())
 	if err != nil {
@@ -183,13 +199,26 @@ func DisplaySnippetJSON(headline, start, stop string) json.RawMessage {
 // highlightSnippet rewrites node's text children into the runs the sentinels cut them into, the
 // runs between a start and a stop carrying DisplayHighlightMark, and answers whether the walk is
 // inside a highlight when it leaves. The state carries across nodes in document order, since a
-// headline may start a highlight in one text node and stop it in the next; a sentinel the parse
-// put somewhere no text node holds - a link's destination the query matched - leaves the state
-// where it was, which shows the reader one highlight too many or too few and never a refusal.
+// headline may start a highlight in one text node and stop it in the next.
+//
+// Only text carries a highlight, so the walk takes the sentinels out of every attribute of every
+// node it passes and of every mark on it (withoutSentinels), and those leave the state where it
+// was. ts_headline marks the words of an address as it marks any other words: a document stores
+// the autolink `<dispatch://CORE-1>` as `[dispatch://CORE-1](dispatch://CORE-1)` (text's
+// referenceEnd), and a search for CORE answers `<b>CORE</b>-1](dispatch://<b>CORE</b>-1)`, which
+// SearchSnippet widens back to the whole link (measured on PostgreSQL 18 with headlineOptions).
+// Left in the href, the sentinels make an address the browser cannot read as a
+// reference, so it takes the link away and shows the raw address; left in an image's src, the
+// picture names no file. An attribute holds no run a mark can sit on, so a sentinel there has
+// nothing to mark: a caption drawn from an image's alt is drawn plain. ts_headline marks one word
+// at a time, so a start and its stop fall in the same attribute, and toggling the state on them
+// would only have marked the words after the link, or left the ones the query matched plain.
 func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 	if node == nil {
 		return inside
 	}
+	node.Attrs, _ = withoutSentinels(node.Attrs, start, stop)
+	node.Marks = marksWithoutSentinels(node.Marks, start, stop)
 	if node.Type == "text" {
 		return inside
 	}
@@ -203,10 +232,83 @@ func highlightSnippet(node *Node, start, stop string, inside bool) bool {
 			rewritten = append(rewritten, child)
 			continue
 		}
+		child.Attrs, _ = withoutSentinels(child.Attrs, start, stop)
+		child.Marks = marksWithoutSentinels(child.Marks, start, stop)
 		rewritten, inside = appendHighlightRuns(rewritten, child, start, stop, inside)
 	}
 	node.Children = rewritten
 	return inside
+}
+
+// withoutSentinels is attrs with start and stop taken out of every string value and every string
+// of a list value, which are the shapes of every attribute the schema carries that text can
+// reach: a link's href and title, an image's src, alt and title, a code block's language, an
+// inline HTML node's value, a footnote's label, and a typed block's string and list attributes.
+// It answers whether it took anything out. The answer is a map of its own where it did and attrs
+// itself where it did not, since one link's attributes are shared by every text node the link
+// spans, so attrs is never written to.
+func withoutSentinels(attrs Attrs, start, stop string) (Attrs, bool) {
+	var cleaned Attrs
+	for name, value := range attrs {
+		var stripped any
+		switch typed := value.(type) {
+		case string:
+			if !holdsSentinel(typed, start, stop) {
+				continue
+			}
+			stripped = stripSentinels(typed, start, stop)
+		case []string:
+			if !slices.ContainsFunc(typed, func(item string) bool { return holdsSentinel(item, start, stop) }) {
+				continue
+			}
+			list := make([]string, len(typed))
+			for index, item := range typed {
+				list[index] = stripSentinels(item, start, stop)
+			}
+			stripped = list
+		default:
+			continue
+		}
+		if cleaned == nil {
+			cleaned = maps.Clone(attrs)
+		}
+		cleaned[name] = stripped
+	}
+	if cleaned == nil {
+		return attrs, false
+	}
+	return cleaned, true
+}
+
+// marksWithoutSentinels is marks with withoutSentinels applied to each mark's attributes, in a
+// slice of its own where any mark changed and marks itself where none did: the runs a text node
+// is cut into share the node's marks, so the slice is never written to.
+func marksWithoutSentinels(marks []Mark, start, stop string) []Mark {
+	var cleaned []Mark
+	for index, mark := range marks {
+		attrs, changed := withoutSentinels(mark.Attrs, start, stop)
+		if !changed {
+			continue
+		}
+		if cleaned == nil {
+			cleaned = slices.Clone(marks)
+		}
+		cleaned[index].Attrs = attrs
+	}
+	if cleaned == nil {
+		return marks
+	}
+	return cleaned
+}
+
+// holdsSentinel answers whether value holds start or stop.
+func holdsSentinel(value, start, stop string) bool {
+	return strings.Contains(value, start) || strings.Contains(value, stop)
+}
+
+// stripSentinels is value with every start and every stop taken out.
+func stripSentinels(value, start, stop string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(value, start, ""), stop, "")
 }
 
 // appendHighlightRuns appends the runs text is cut into at its sentinels, each carrying the text
@@ -262,6 +364,43 @@ type displayCacheKey struct {
 
 // displayCache is the process's one display-tree cache, held for the process's life: a tree is
 // the reading of the text its key hashes, so nothing in it ever goes stale, and an entry leaves
-// only to make room for another (DisplayCacheBytes). It counts the bytes of the encodings it
-// holds and nothing else, which is what a reader of DisplayCacheBytes is promised.
+// only to make room for another (DisplayCacheBytes). Every tree is put through keepDisplayTree,
+// which charges it what it holds, so the bound is on the heap the cache holds, which is what a
+// reader of DisplayCacheBytes is promised.
 var displayCache = bytelru.New[displayCacheKey, json.RawMessage](DisplayCacheBytes)
+
+// displayCacheEntryBytes is what one entry costs beyond its tree's array and its key's own bytes:
+// bytelru's entry (which holds the key again, the tree's slice header and the charge), its list
+// element, and its slot in the cache's map with that slot's share of the map's empty slots.
+//
+// A copy of bytelru on go1.27.3 linux/amd64 was fed SHA-256 keys and trees within 200 bytes of one
+// length, each length from 1,000 to 8,000 bytes in steps of 200, until it had taken 60 times what
+// it holds. Each reading measured the live heap of an entry beyond its tree, its key included.
+// While bytelru never made its map afresh, the map kept the slots of evicted keys and split its
+// tables for them: an entry held about 200 to 250 bytes when the cache was first full and up to
+// 440 bytes after 60 turnovers, so at this charge 19 of the 36 lengths ended past the bound, by up
+// to 3.77 MB (trees of 1,000 bytes); after 210 turnovers an entry held up to 525 bytes. Now that
+// bytelru makes its map afresh each time it has evicted half as many entries as it holds, the most
+// an entry held at any reading was 287 bytes (trees of 5,200 bytes), every run ended 0.89 MB or
+// more under the bound, the cache's heap moved by at most 0.06 MB over its last 20 turnovers, and
+// runs of 200 turnovers held at most 284 bytes an entry. The charge, this and the key's 40 bytes,
+// is 360 bytes, 73 above the worst of those.
+const displayCacheEntryBytes = 320
+
+// keepDisplayTree puts tree into the display cache under key, charged what keeping it costs
+// (displayCacheEntrySize). Both ways a tree enters the cache, a tree this process read
+// (DisplayJSONOf) and a tree it read back from the table (PutStoredDisplayTree), go through this.
+func keepDisplayTree(key displayCacheKey, tree json.RawMessage) {
+	displayCache.PutSize(key, tree, displayCacheEntrySize(tree))
+}
+
+// displayCacheEntrySize is what keeping tree costs this process: the tree's whole array, not
+// only the part its JSON fills, the key's own bytes, and the entry itself
+// (displayCacheEntryBytes). Both ways in hand over an array grown by append, whose capacity is
+// the whole allocation the runtime rounded it up to and which shares no larger buffer: a tree
+// this process read is json.Marshal's, and a tree read back from the table is the copy
+// texttrees.Read appends from the row's bytes. An array made exactly a tree's length would hide
+// that rounding, 46 bytes a tree on average for trees of comment length.
+func displayCacheEntrySize(tree json.RawMessage) int64 {
+	return int64(cap(tree)) + int64(unsafe.Sizeof(displayCacheKey{})) + displayCacheEntryBytes
+}

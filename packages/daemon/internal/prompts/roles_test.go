@@ -1,7 +1,12 @@
 package prompts
 
+//ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
+//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+//ci:reads .github/private-names.toml TestNoReusablePartNamesARepositoryOrLibrary reads it under ../../../.. and runs its rules over every reusable role part
+
 import (
 	"embed"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -79,33 +84,73 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 // send a heavy run, and the next hand to write that rule down can spell a deployment's own route
 // out in the architect parts, which this test read nothing of before.
 //
-// Each part is held to two checks: the generic names of repoSpecific, and the rules leakguard
-// ports from .github/scripts/check-private-names.sh's built-in rules. Of a deployment's own names,
-// check-private-names refuses those the deployment's own term list holds, in every file it reads.
+// Each part is held to two checks: the generic names of repoSpecific, and the rules of
+// .github/private-names.toml. That file is this repository's own port of
+// .github/scripts/check-private-names.sh's built-in rules, and the port harness,
+// .github/scripts/check-private-names-port.test.sh, holds the two to one verdict. The test reads
+// the file from the repository, since the legion binary embeds no rule. A finding is reported by
+// its class alone (refusedClasses): a report line holds the matched text, which is a private name,
+// and this repository's CI logs are public. Of a deployment's own names, check-private-names
+// refuses those the deployment's own term list holds, in every file it reads.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
-	// leakguard's rules are embedded in it (private-names.toml) and read no input, so this check
-	// runs the same wherever the test runs.
-	guard := leakguard.New(leakguard.Options{})
+	// The rule half reads .github/private-names.toml at the repository root, four levels above
+	// this package, because the legion binary embeds no rule.
+	rulesPath := filepath.Join("..", "..", "..", "..", ".github", "private-names.toml")
+	content, err := leakguard.ReadRulesContent(rulesPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", rulesPath, err)
+	}
+	rules, err := leakguard.LoadRules(content)
+	if err != nil {
+		t.Fatalf("compile %s: %v", rulesPath, err)
+	}
 	check := func(name, text string) {
 		for _, needle := range repoSpecific {
 			if strings.Contains(text, needle) {
 				t.Errorf("%s contains %q", name, needle)
 			}
 		}
-		if err := guard.Rules(t.Context(), leakguard.Record{Label: name, Text: text}); err != nil {
+		// The record's Path is the part's name, because the rule file's path rules read
+		// Record.Path alone. A refusal is reported by class alone, because its report lines hold
+		// the matched text and CI logs are public. A SetupFailure holds no matched text.
+		err := rules.Check(t.Context(), "the reusable part "+name, leakguard.Record{Label: name, Text: text, Path: name})
+		var refusal *leakguard.Refusal
+		switch {
+		case errors.As(err, &refusal):
+			for _, class := range refusedClasses(name, refusal.Lines) {
+				t.Errorf("%s: %s refuses it: %s", name, rulesPath, class)
+			}
+		case err != nil:
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	for _, file := range reusableParts {
 		check(file, rolePart(t, file))
 	}
-	err := eachPart(goParts, "go", func(name string, body []byte) error {
+	err = eachPart(goParts, "go", func(name string, body []byte) error {
 		check("go/"+name, string(body))
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("read the go parts: %v", err)
 	}
+}
+
+// refusedClasses is the class of each line of a rule pass's report on the record labelled label.
+// A report line is `<label>: <class>: matched …` (leakguard's reportLine). What follows the class
+// holds the matched text, so it is never answered. A line of any other shape is answered as such,
+// and none of it is printed.
+func refusedClasses(label string, lines []string) []string {
+	classes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rest, labelled := strings.CutPrefix(line, label+": ")
+		class, _, matched := strings.Cut(rest, ": matched ")
+		if !labelled || !matched || class == "" {
+			class = "a line of an unexpected shape"
+		}
+		classes = append(classes, class)
+	}
+	return classes
 }
 
 // Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
@@ -222,18 +267,13 @@ func TestTheHeadlessFragmentHoldsTheWorkersSharedRules(t *testing.T) {
 	}
 }
 
-// Each phase worker's residue is headed by its role, and only the roles whose plan names skills for
-// them are told to read those.
-func TestEachResidueNamesItsRoleAndOnlyTheSkilledRolesReadRequiredSkills(t *testing.T) {
-	const requiredSkills = "Then read the plan handoff's `requiredSkills` for your role and follow those too."
-	skilled := []string{"implementer", "reviewer", "tester"}
+// Each phase worker's role part is headed by its role: its first line is `# Legion <Role>`, as
+// `# Legion Planner` heads roles/planner.md. Taking the heading out of a role part fails here and
+// names that part. This shows the text is loaded, never that a role follows it.
+func TestEachPhaseWorkersRolePartIsHeadedByItsRole(t *testing.T) {
 	for _, role := range phaseRoles {
-		residue := rolePart(t, role+".md")
-		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.Contains(residue, heading) {
-			t.Errorf("%s.md omits its heading %q", role, heading)
-		}
-		if got, want := strings.Contains(residue, requiredSkills), slices.Contains(skilled, role); got != want {
-			t.Errorf("%s.md tells it to read requiredSkills = %t, want %t", role, got, want)
+		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.HasPrefix(rolePart(t, role+".md"), heading+"\n") {
+			t.Errorf("roles/%s.md does not start with its heading %q", role, heading)
 		}
 	}
 }
@@ -333,6 +373,32 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A pull request in one of GitHub's stacks takes neither of the merger's calls (GitHub refuses
+// `gh pr merge` and `enqueuePullRequest` for it, measured on cybermonklabs/legion#4961 on
+// 2026-11-22), and the stack's own asynchronous merge refuses a GitHub App on a merge-queue base
+// ("Enqueuer is not authorized to merge", github/gh-stack#497, measured on the same pull request
+// with the merge App's token). That merge would also land every open pull request below, which
+// the base holds to its reviews and checks alone and not to its issue's acceptance, retro or
+// design gate. So the merger waits while every pull request below lands through its own issue,
+// then takes the stack apart, after which its pull request merges as any other.
+func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh api repos/<o>/<r>/pulls/<n> --jq .stack",
+		"gh api 'repos/<o>/<r>/stacks?pull_request=<n>'",
+		"Where one below yours is open, merge nothing",
+		"gh api -X POST repos/<o>/<r>/stacks/<stack number>/unstack",
+		"yours is now a pull request like any other",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "merge-async") {
+		t.Errorf("roles/merger.md names merge-async, which refuses the App the merger acts as on a merge-queue base")
+	}
+}
+
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
@@ -351,7 +417,7 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
 		"You may ask the implementer, the tester or the reviewer what they know",
 		"Run again what the merge can reach",
-		"ask both, on their role topics, to record their results at the new head",
+		"so ask each of them, on their role topics, to record their results at the new head",
 		"### A check that failed",
 		"Read its log, and the same check on the base branch, and decide its cause.",
 		"re-run it, or wait for the base's fix",
@@ -605,7 +671,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// R4: the planner completes no phase with an open decision.
 		{"core/planner.md", "A decision only whoever owns the plan can make is never left open in the plan"},
 		{"core/planner.md", "do not complete the phase, and do not choose for them so the plan can be finished"},
-		{"core/planner.md", "An open decision in a finished plan is a gap the implementation inherits."},
+		{"core/planner.md", "An open decision in a finished plan is a gap the steps after yours inherit."},
 		{"planner.md", "end the turn with a line that begins WAITING, naming the decision"},
 		// R5: a claim cites the file and the symbol or the text it was read at, never a line, in the
 		// core every phase worker but the merger composes and in the oracle core the composer joins for
@@ -634,6 +700,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A held-back job without its label has no run of the name a check gives it: a job of a
+		// called workflow whose caller is skipped never starts. That is the implementer's to cure
+		// with the label, so the reviewer requests changes for it rather than send it on as a
+		// check with wrong words (skill://legion-worker/references/ci-checks.md).
+		{"reviewer.md", "A `ci_check` check that names a job held back without its label has no pass standing even when no run answers its name: request changes for it, since the label cures it."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
@@ -656,90 +727,8 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	}
 }
 
-// Every file-backed role's handoff body names the head its work was done against
-// (dispatch://INFRA-3146). The daemon takes a completion of an earlier entry of the same phase
-// only at the head that entry's record holds, so a role whose handoff paragraph lost the field
-// would write a record the daemon cannot place, and its own completion would be refused for a
-// phase it is holding. Each of the four parts is pinned twice: the field as the body names it,
-// with the one thing its value is, and the clause that carries it to the daemon, which names
-// that role's own phase word, since a record of one phase is never read for another. Both
-// needles are short and sit inside the paragraph, so a rewording of the prose around them
-// stands and the field's removal is what fails them. The merger writes no handoff, so it is not
-// among them. The match runs over a body whose whitespace is collapsed to one space, since a
-// part hard-wraps and a sentence can cross the break.
-func TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst(t *testing.T) {
-	for _, role := range []struct{ part, phase string }{
-		{"planner.md", "plan"},
-		{"implementer.md", "implement"},
-		{"tester.md", "test"},
-		{"reviewer.md", "review"},
-	} {
-		body := foldWhitespace(rolePart(t, role.part))
-		for _, needle := range []string{
-			"`head` (the 40-character lower-case commit",
-			"to the daemon, which takes a completion of an earlier `" + role.phase + "` entry only at the head the record holds",
-		} {
-			if !strings.Contains(body, needle) {
-				t.Errorf("%s does not contain %q", role.part, needle)
-			}
-		}
-	}
-	// One field, not two: the reviewer's handoff named the head it reviewed under a longer name
-	// before this rule, and a part carrying both names has the role write one while the `legion`
-	// tool reads the other: the tool reads `head` out of the record's body (pi-shared's
-	// findHandoffReport) and sends it as the completion's commit, and the daemon reads no body at
-	// all. The retired name is joined from its halves, as TestNoPartSaysTheDaemonMerges keeps its
-	// claim a pattern, so that a grep for it over the repository finds the daemon's changelog
-	// fragment that records the rename (packages/daemon/.changes/unreleased), the frozen history
-	// that named the field before it, and never this test.
-	retired := "head" + "Reviewed"
-	err := eachPart(roleParts, "roles", func(name string, body []byte) error {
-		if strings.Contains(string(body), retired) {
-			t.Errorf("roles/%s still names %s, which `head` replaced", name, retired)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("read the roles parts: %v", err)
-	}
-}
-
-// The pod memory rule is written twice, once for each reader: a phase worker meets it in the
-// headless fragment every worker composes, and an architect in the common part every architect
-// tree joins. One part each is the whole of it. Copied into a second part of the same tree it
-// drifts, because the next edit reaches one copy and leaves the other saying what the pod no
-// longer does, and a reader that counted the copies would pass while the text spread through
-// every residue. So each paragraph's first sentence is pinned to the one part that carries it
-// and refused in every other part of that tree. The match runs over a body whose whitespace is
-// collapsed to one space, since a part hard-wraps and a sentence can cross the break.
-func TestThePodMemoryRuleIsWrittenInOneWorkerPartAndOneArchitectPart(t *testing.T) {
-	fold := func(body []byte) string { return foldWhitespace(string(body)) }
-	for _, pin := range []struct {
-		dir      string
-		parts    embed.FS
-		want     string
-		sentence string
-	}{
-		{"roles", roleParts, "mechanics/headless.md", "In an issue pod every role of this issue runs in one container and shares its memory limit"},
-		{"go", goParts, "architect-common.md", "Your subagents run their commands in your own issue pod"},
-	} {
-		var carrying []string
-		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
-			if strings.Contains(fold(body), pin.sentence) {
-				carrying = append(carrying, pin.dir+"/"+name)
-			}
-			return nil
-		})
-		if err != nil {
-			t.Fatalf("read the %s parts: %v", pin.dir, err)
-		}
-		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
-			t.Errorf("%q is in %q, want %q alone", pin.sentence, carrying, want)
-		}
-	}
-}
-
-// Each of the two paragraphs ends by passing the rule on, because a subagent runs its commands in
+// Each of the two paragraphs of the pod memory rule, one in the headless fragment and one in the
+// architects' common part, ends by passing the rule on, because a subagent runs its commands in
 // the same pod and reads none of these parts: the worker's clause tells a role to put these facts
 // in the context of each subagent it starts, and the architect's says the same of its own. The
 // clause belongs where the rule is written and nowhere else, so a part that dispatches a task

@@ -1,5 +1,8 @@
 package testnats
 
+//ci:builds packages/envoy ./... go list -f ... ./... in packages/envoy
+//ci:reads packages/envoy/**/*.go !packages/envoy/infra/** !packages/envoy/testdata/** containerImporters and dockerDriverFiles walks packages/envoy but infra, node_modules and testdata, and reads every .go file it finds, test files included (dockerDriverFiles, called by TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime)
+
 import (
 	"context"
 	"errors"
@@ -23,6 +26,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -565,7 +571,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 						return
 					default:
 					}
-					if _, err := conn.Request("$JS.API.INFO", nil, 5*time.Second); err != nil {
+					if _, err := conn.Request("$JS.API.INFO", nil, requestWait(t)); err != nil {
 						failures <- err
 						return
 					}
@@ -626,7 +632,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
 		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
 	}
-	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+	if _, err := conn.Request("more.echo", nil, requestWait(t)); !errors.Is(err, natsgo.ErrNoResponders) {
 		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
 	}
 }
@@ -723,6 +729,61 @@ func TestAFrozenServerTimesOutARequestWithoutDroppingTheConnection(t *testing.T)
 	}
 	if string(answer.Data) != "answer" {
 		t.Errorf("the answer after the thaw is %q, want %q", answer.Data, "answer")
+	}
+}
+
+// natsDefaultWait is how long nats.go waits for the answer to a JetStream request a test's context
+// makes without MaxWait or RequestTimeout: the legacy context's MaxWait default and the
+// JetStream client's DefaultTimeout, five seconds each (nats.go v1.55.0).
+const natsDefaultWait = 5 * time.Second
+
+// A JetStream request of a context a test makes with MaxWait or RequestTimeout waits past
+// nats.go's own five seconds for a server that answers late: each context's account info, sent to
+// a frozen server, is answered once the server is thawed a second after nats.go's own wait would
+// have ended it, and neither request fails. The second is counted from the moment the connection
+// has published both requests (Stats().OutMsgs), and each request's wait began before its publish:
+// nats.go makes both contexts' timeouts before it sends (nats.go v1.55.0 jsm.go getJSContextOpts,
+// jetstream/jetstream.go wrapContextWithoutDeadline).
+func TestAJetStreamRequestOfATestsContextOutwaitsNatsGosFiveSeconds(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	legacy, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("the legacy JetStream context: %v", err)
+	}
+	client, err := jetstream.New(conn, RequestTimeout(t))
+	if err != nil {
+		t.Fatalf("the JetStream client: %v", err)
+	}
+
+	sentBefore := conn.Stats().OutMsgs
+	thaw := server.Freeze(t)
+	defer thaw()
+	type answer struct {
+		context string
+		err     error
+	}
+	answers := make(chan answer, 2)
+	go func() {
+		_, err := legacy.AccountInfo()
+		answers <- answer{"the legacy context (MaxWait)", err}
+	}()
+	go func() {
+		_, err := client.AccountInfo(context.Background())
+		answers <- answer{"the JetStream client (RequestTimeout)", err}
+	}()
+	testwait.Until(t, "the connection to publish both requests", func() (uint64, bool) {
+		sent := conn.Stats().OutMsgs - sentBefore
+		return sent, sent >= 2
+	})
+	time.Sleep(natsDefaultWait + time.Second)
+	thaw()
+	for range 2 {
+		got := testwait.Receive(t, "the answer to a request sent to the frozen server", answers)
+		if got.err != nil {
+			t.Errorf("%s: the account info sent to a server thawed %s later: %v, want its answer", got.context, natsDefaultWait+time.Second, got.err)
+		}
 	}
 }
 

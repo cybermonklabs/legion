@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -50,8 +51,8 @@ import (
 // would be an open relay for anyone who can reach the pod.
 func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 	r := newRig(t, Options{})
-	ended := requests.PlaceholderPrefix + "endedendedendedendedendedended01"
-	noNames := requests.PlaceholderPrefix + "nonamesnonamesnonamesnonames0001"
+	ended := placeholder.Prefix + "endedendedendedendedendedended01"
+	noNames := placeholder.Prefix + "nonamesnonamesnonamesnonames0001"
 	r.grants.refusals[ended] = requests.ErrGrantNotLive
 	r.grants.refusals[noNames] = requests.ErrAirlockNoNames
 
@@ -59,7 +60,7 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 		{"no credential at all", "", "carries none"},
 		{"a credential that is not Basic", "Proxy-Authorization: Bearer " + workerPlaceholder + "\r\n", "not Basic"},
 		{"a Bas" + "ic credential that is not base64", "Proxy-Authorization: Bas" + "ic not-base-64-at-all\r\n", "not base64"},
-		{"a password no grant holds", basic(requests.PlaceholderPrefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
+		{"a password no grant holds", basic(placeholder.Prefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
 		{"an empty password", basic(""), requests.ErrGrantNotLive.Error()},
 		{"a grant that has ended", basic(ended), requests.ErrGrantNotLive.Error()},
 		{"a grant holding no name this session may have", basic(noNames), requests.ErrAirlockNoNames.Error()},
@@ -394,6 +395,7 @@ func TestTheProxyRefusesTheAddressesItMustNeverDial(t *testing.T) {
 		{"169.254.169.254", "a link-local IPv4 address"},
 		{"fe80::1", "a link-local IPv6 address"},
 		{"100.64.1.2", "a cluster IPv4 address"},
+		{"0.1.2.3", "an IPv4 address of 0.0.0.0/8"},
 		{"224.0.0.1", "a link-local IPv4 address"},
 		{"239.1.2.3", "not a global unicast IPv4 address"},
 		{"::", "not a global unicast IPv6 address"},
@@ -597,6 +599,55 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		for _, addr := range r.dialedAddresses() {
 			if strings.HasPrefix(addr, clusterIP.String()+":") {
 				t.Fatalf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+	})
+
+	t.Run("a bound host other than the private destination is refused when its name resolves to a ClusterIP at the dial", func(t *testing.T) {
+		// The row above with a destination set for another host, whose name resolves to the same
+		// ClusterIP: the destination takes its own host's requests and no other host's, so this
+		// request goes out on the proxy's own transport and is refused at its dial as before.
+		withDestination := options
+		withDestination.PrivateUpstreams = []PrivateUpstream{privateDestination()}
+		r := newRig(t, withDestination)
+		r.addresses[privateName] = []netip.Addr{clusterIP}
+		r.answers[boundHost] = [][]netip.Addr{{netip.MustParseAddr("93.184.216.34")}, {clusterIP}}
+		r.dialTo[net.JoinHostPort(clusterIP.String(), "443")] = r.service.Addr()
+		r.dialTo[net.JoinHostPort(clusterIP.String(), privatePort)] = r.service.Addr()
+		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+		for _, addr := range r.dialedAddresses() {
+			if strings.HasPrefix(addr, clusterIP.String()+":") {
+				t.Errorf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+		if answer.StatusCode == http.StatusOK || !strings.Contains(body, clusterRangeRule) {
+			t.Errorf("the request answered %d %q; want it refused naming %q", answer.StatusCode, body, clusterRangeRule)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Errorf("the service at the ClusterIP was sent %d requests; want none", len(seen))
+		}
+	})
+
+	t.Run("the private destination's bound host is sent its allowed request at a ClusterIP", func(t *testing.T) {
+		// BROKER_PROXY_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
+		// to a ClusterIP inside them, and the allowed write to its bound host reaches the service
+		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused: by a
+		// secret grant, which may tunnel to a host its names do not bind, naming the ranges, and by
+		// the minted grant, which reaches its bound host alone, by that rule.
+		r, standIn := newPrivateRig(t, clusterIP, options.ClusterRanges)
+		answer, body, err := r.writeMinted()
+		if err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
+			t.Fatalf("the allowed write answered %v %v and the service received %+v; want 201 and one write", answer, err, standIn.writes())
+		}
+		if dialed := r.dialedAddresses(); len(dialed) != 1 || dialed[0] != net.JoinHostPort(clusterIP.String(), privatePort) {
+			t.Fatalf("the proxy dialled %v; want the ClusterIP %s:%s alone (%s)", dialed, clusterIP, privatePort, body)
+		}
+		for _, target := range []string{net.JoinHostPort(clusterIP.String(), privatePort), net.JoinHostPort(privateName, privatePort)} {
+			if _, refusal := connectRefused(t, r, target, workerPlaceholder); !strings.Contains(refusal, clusterRangeRule) {
+				t.Errorf("the refusal of a secret grant's CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
+			}
+			if code, refusal := connectRefused(t, r, target, mintedPlaceholder); code != codeMintedHostOnly {
+				t.Errorf("the minted grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeMintedHostOnly)
 			}
 		}
 	})
@@ -880,8 +931,8 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 		betaName         = "BETA_TOKEN"
 		alphaValue       = "the-real-alpha"
 		betaValue        = "the-real-beta"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
@@ -1009,6 +1060,9 @@ func TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy(t *testing.T) {
 	}{
 		{"a target outside the live profile", fmt.Errorf("%w: PROOFS_READ: the target ada/site is outside the profile, which names the account ada and the repositories ada/lean", requests.ErrTargetRefused), "TARGET_REFUSED", "ada/site"},
 		{"a scope the minter refuses", fmt.Errorf("%w: github app 42: GitHub answered HTTP 422 to the profile's token for ada: likely a repository it names (missing) that the installation does not reach", secrets.ErrMintNarrowingRefused), "PROFILE_MINT_REFUSED", "(missing)"},
+		// A stored secret under a dpop block: the API port answers its release MINTED_ONLY, and
+		// so does this port, under the same code.
+		{"a stored secret under a dpop block", fmt.Errorf("release %s behind the airlock: %w", workerName, requests.ErrMintedOnly), "MINTED_ONLY", "never a stored secret's release"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRig(t, Options{})
@@ -1208,8 +1262,8 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 	const (
 		alphaName        = "ALPHA_TOKEN"
 		betaName         = "BETA_TOKEN"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
@@ -1319,7 +1373,7 @@ func TestAPolicyChangeTheReloadTookReachesTheValuesThisPodHolds(t *testing.T) {
 // has proved the switch is what the behaviour hangs on. Dropping the name and then holding what
 // is left would read the grant again and find the new value, which is the defect this row pins.
 func TestKeepValuesHoldsAValueAcrossAReread(t *testing.T) {
-	const placeholder = requests.PlaceholderPrefix + "keepkeepkeepkeepkeepkeepkeepke01"
+	const placeholder = placeholder.Prefix + "keepkeepkeepkeepkeepkeepkeepke01"
 	r := newRig(t, Options{KeepValues: true})
 	r.grants.connections[placeholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
@@ -1357,8 +1411,8 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 		appName    = "GITHUB_APP_KEY"
 		acmeSlot   = requests.SlotGitHubPrefix + "acme"
 		zedSlot    = requests.SlotGitHubPrefix + "zed"
-		acmeHolder = requests.PlaceholderPrefix + "acmeacmeacmeacmeacmeacmeacmeac01"
-		zedHolder  = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed01"
+		acmeHolder = placeholder.Prefix + "acmeacmeacmeacmeacmeacmeacmeac01"
+		zedHolder  = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed01"
 		acmeToken  = "ghs_the-real-acme-installation-token"
 		zedToken   = "ghs_the-real-zed-installation-token"
 	)
@@ -1538,8 +1592,8 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 			betaName         = "BETA_TOKEN"
 			alphaValue       = "the-real-alpha"
 			betaValue        = "the-real-beta"
-			alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-			betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+			alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+			betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 		)
 		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 			{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},

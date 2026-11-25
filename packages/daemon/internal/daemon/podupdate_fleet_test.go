@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -27,6 +28,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -90,7 +93,14 @@ type fleetClaim struct {
 }
 
 type fleetRig struct {
-	t       *testing.T
+	t *testing.T
+	// ctx is the rig's own calls' context — its sweeps, ticks and reads — with a
+	// hold mark of its own, as the orphan sweep's goroutine has in production
+	// (store.ForConcurrentWorker(s.supervisor.ctx)), so the pool refuses one of those calls a
+	// second connection while another holds one (store.ErrNestedAcquire). It is the mark of one
+	// sequential flow: a goroutine a test starts beside it takes worker() instead. On an unmarked
+	// context the pool refuses nothing, and a rig built on one passes whatever its calls do
+	// (TestTheFleetRigsGuardRefusesASecondConnectionOfItsOwnContext).
 	ctx     context.Context
 	s       *supervision
 	sup     *supervisor
@@ -155,7 +165,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 			tokens[fleetClaim{issue: issue.key, role: role}] = token
 			seeded := supervise.Claim{
 				Token: token, Project: podUpdateProject, Tree: issue.key, Issue: issue.key, Role: role,
-				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion,
+				Generation: 1, State: supervise.StateReady, PluginContract: api.DaemonAPIVersion(),
 				Session: "ses_" + issue.key + "_" + string(role), SessionFile: "/sessions/" + issue.key + "-" + string(role) + ".jsonl",
 				CapabilityHash: []byte(issue.key + ":" + string(role)), ServingGeneration: 1,
 				Locator: podUpdateLocator(token, issue.key, issue.pod),
@@ -190,8 +200,13 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
+		// Each goroutine a machine starts — a timer's firing, a prompt's send — takes a mark of its
+		// own, as the daemon gives it (daemon.go's supervise.Deps). A restart copies these Deps
+		// onto a supervisor built on the rig's own mark (restart), where a machine without it would
+		// share that mark (Machine.worker) and collide with the rig's own reads.
+		Worker: store.ForConcurrentWorker,
 	}
 	if wire != nil {
 		wire(sup)
@@ -210,7 +225,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		conns.Register(token, workers[token])
 	}
 	records := record.NewStore()
-	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, records: records, clock: clock,
+	rig := &fleetRig{t: t, ctx: store.ForConcurrentWorker(ctx), sup: sup, rt: rt, pool: pool, records: records, clock: clock,
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
 	rig.s = &supervision{
@@ -257,6 +272,63 @@ func (r *fleetRig) tick() {
 		}
 	}
 	r.s.reconcilePodUpdates(r.ctx, claims)
+}
+
+// worker is the context of a goroutine a test starts beside the rig's own calls — a machine's
+// Handle while the runtime holds its Resume — with a hold mark of its own
+// (store.ForConcurrentWorker), as each of production's goroutines takes. On r.ctx the two would
+// share one mark: the goroutine's transaction would set it, and the pool would refuse the rig's
+// next read a connection the read does not hold (store.ErrNestedAcquire).
+func (r *fleetRig) worker() context.Context {
+	return store.ForConcurrentWorker(r.ctx)
+}
+
+// The fleet rig's own context carries a hold mark, so the pool refuses a second connection to a
+// caller that already holds one of its connections: a goroutine a test starts on r.ctx rather
+// than on worker() collides with the rig's own reads, as #5396's pod-update tests did. On the
+// unmarked context this rig used to run on, the pool refused nothing and no test of it could
+// catch that. Here a planted holder takes a connection on the rig's context, and the rig's own
+// read must be refused; so must a read on the restarted supervisor's context, which every
+// machine's goroutine would run on with no Deps.Worker (Machine.worker). The same read on
+// worker(), and on the context Deps.Worker gives a machine's goroutine, is allowed.
+func TestTheFleetRigsGuardRefusesASecondConnectionOfItsOwnContext(t *testing.T) {
+	t.Parallel()
+	// A restart builds its supervisor on the rig's own mark and copies the first one's Deps.
+	rig := newFleetRig(t, limitIssue(1, "LEGION-1")).restart()
+	held := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		// A holder of the rig's own mark: the transaction holds a connection until release.
+		_ = store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	// The mark is set when the transaction takes its connection, before the body this waits for.
+	<-held
+
+	for _, shared := range []struct {
+		what string
+		ctx  context.Context
+	}{{"the rig's own read", rig.ctx}, {"a read on the restarted supervisor's context, a machine goroutine's with no Deps.Worker", rig.sup.ctx}} {
+		if _, err := rig.pool.Exec(shared.ctx, "select 1"); !errors.Is(err, store.ErrNestedAcquire) {
+			t.Fatalf("%s while the planted holder holds a connection = %v, want %v: that context carries no hold mark, so no test of this rig can catch a goroutine that shares it",
+				shared.what, err, store.ErrNestedAcquire)
+		}
+	}
+	if rig.sup.deps.Worker == nil {
+		t.Fatal("the restarted supervisor sets no Deps.Worker, so each goroutine a machine starts shares the rig's mark")
+	}
+	for _, own := range []struct {
+		what string
+		ctx  context.Context
+	}{{"a read on a goroutine's own mark (worker)", rig.worker()}, {"a read on a machine goroutine's mark (Deps.Worker)", rig.sup.deps.Worker(rig.sup.ctx)}} {
+		if _, err := rig.pool.Exec(own.ctx, "select 1"); err != nil {
+			t.Fatalf("%s while the holder holds one = %v, want it allowed: each goroutine's mark is its own", own.what, err)
+		}
+	}
 }
 
 // podless makes every later sweep read the claims of issue as recording no pod, which is what a
@@ -469,6 +541,9 @@ func (d *fleetHandoffs) PutStep(context.Context, string, string, dispatch.StepWr
 func (d *fleetHandoffs) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *fleetHandoffs) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *fleetHandoffs) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -630,6 +705,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // is replaced after, which is what the round is for. And nothing of any of it moves a root out
 // of the workflow: no root waits on a person, none is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}},
@@ -735,6 +811,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // the same claim is refused the stale-caller 409 — the negative control — and the round is what
 // turns that refusal into the 200 a completion needs.
 func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueB, phase: phase.Planning, pod: fleetPodB,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner}},
@@ -748,7 +825,7 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 	// deployment's own release leaves running until each pod is replaced.
 	if err := m.Handle(rig.ctx, supervise.RequestRegister{
 		Claim: before.Token, Generation: before.Generation, Session: before.Session, SessionFile: before.SessionFile,
-		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion - 1,
+		CapabilityHash: []byte("previous-contract"), PluginContract: api.DaemonAPIVersion() - 1,
 	}); err != nil {
 		t.Fatalf("register the planner on the previous contract: %v", err)
 	}
@@ -797,6 +874,7 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 // as the daemon wires its supervisor (adoptingAsTheDaemonDoes), so who is in a turn is the
 // daemon's own answer (claimInTurn), read from the machines the round posts to.
 func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testing.T) {
+	t.Parallel()
 	rig := newWiredFleetRig(t, adoptingAsTheDaemonDoes,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer}},

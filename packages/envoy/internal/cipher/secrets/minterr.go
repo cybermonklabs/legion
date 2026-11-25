@@ -37,12 +37,13 @@ type MintRequest struct {
 
 	// Check asks the minter whether it could serve this request, without serving it; only the
 	// github-app minter reads it. A check mints exactly what a release would mint, by the same
-	// calls in the same order but for a token request that may have reached GitHub and failed,
-	// which it does not send again where a release does, so such a request that GitHub served
-	// leaves one token live at GitHub, which nothing can name, until it lapses; a token request
+	// calls in the same order but for a token request that was sent and got no answer, which it
+	// does not send again where a release does, so such a request that GitHub served leaves one
+	// token live at GitHub, which nothing can name, until it lapses. A token request GitHub
+	// answered with a failure (a 5xx, a 408, a rate limit), whose answer names no token, and one
 	// known to have failed before a connection (a name that did not resolve, a failed dial, a
-	// proxy's refused tunnel, a certificate the broker did not trust) is sent again. It releases no
-	// token: it sends GitHub the revoke of every token GitHub answers it with as soon as GitHub
+	// proxy's refused tunnel, a certificate the broker did not trust) are sent again. It releases
+	// no token: it sends GitHub the revoke of every token GitHub answers it with as soon as GitHub
 	// answers, among them a token whose answer it cannot use (cut off, past its cap, undecodable,
 	// with no expiry) wherever the part that arrived names it, and answers Minted{} with the error
 	// the release would have answered, nil where the release would have succeeded. The revoke of a
@@ -103,10 +104,11 @@ var (
 	ErrMintStoredValue = errors.New("the stored value cannot be minted from")
 	// ErrMintRefused: the minter refuses the release (an Azure login that is not the configured
 	// human-tier secret, a github-app release that carries no profile's scope), or GitHub or
-	// Google refused (a 4xx other than GitHub's 422 to a profile's token, a Google login that needs
-	// a new sign-in, an App with no installation on an account the scope names, a 401 to the
-	// App's own JWT). A refusal of the profile's scope is ErrMintNarrowingRefused, and the one
-	// refusal that is about the account alone is ErrMintNoInstallation.
+	// Google refused (a 4xx that is no 408 and no rate limit, other than GitHub's 422 to a
+	// profile's token: a Google login that needs a new sign-in, an App with no installation on an
+	// account the scope names, a 401 to the App's own JWT). A refusal of the profile's scope is
+	// ErrMintNarrowingRefused, and the one refusal that is about the account alone is
+	// ErrMintNoInstallation.
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the profile's scope in effect for the release cannot be served: its
 	// permissions, cut to what an installation holds, leave none but metadata (ErrMintEmptyCut); it
@@ -119,9 +121,10 @@ var (
 	// still matches (packages/daemon's appauth).
 	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
 	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
-	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes
-	// as holding more than its request asked, which GitHubApp.Mint revokes at GitHub before it
-	// refuses), or the broker's Azure projected token is unreadable, malformed or expired.
+	// a 5xx, a 408, a rate limit, a body past its cap or one that does not decode, a token GitHub
+	// describes as holding more than its request asked, which GitHubApp.Mint revokes at GitHub
+	// before it refuses), or the broker's Azure projected token is unreadable, malformed or
+	// expired.
 	// The broker's operator looks at the projected volume, egress and the upstream's status.
 	ErrMintUpstream = errors.New("the upstream could not be asked")
 	// ErrMintNotBound: the google-service-account secret this release names is not bound to the

@@ -65,6 +65,7 @@ func holdOne(ctx context.Context, t *testing.T, s *Store, project string, token 
 // second claim as the holder; a call that commits the names it could take answers a third claim
 // as refused a name the second never held.
 func TestTheFirstClaimHoldsASessionId(t *testing.T) {
+	t.Parallel()
 	const first, second, third = claim.Token("legion-LEGION-209-implementer"), claim.Token("legion-LEGION-209-tester"), claim.Token("legion-LEGION-209-reviewer")
 	const project = "legion"
 
@@ -394,6 +395,7 @@ func TestTheFirstClaimHoldsASessionId(t *testing.T) {
 // The control (the pull request records the run): HoldSessions with no count after its inserts;
 // the calls past the cap are admitted, and the claim's rows grow past it.
 func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
+	t.Parallel()
 	const holder, other = claim.Token("legion-LEGION-401-implementer"), claim.Token("legion-LEGION-402-implementer")
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -457,6 +459,7 @@ func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
 // The control (the pull request records the run): the delete without its `h.claim = $2` clause
 // frees the other claim's names too, and the test fails naming them.
 func TestReleaseHoldsFreesOnlyItsOwnClaimsNames(t *testing.T) {
+	t.Parallel()
 	const holder, other = claim.Token("legion-LEGION-501-implementer"), claim.Token("legion-LEGION-502-implementer")
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -509,6 +512,7 @@ func TestReleaseHoldsFreesOnlyItsOwnClaimsNames(t *testing.T) {
 // transaction, two commits, frees the names although the claim write was refused, and the test
 // fails counting them.
 func TestAReleaseWhoseClaimWriteIsRefusedFreesNoName(t *testing.T) {
+	t.Parallel()
 	const holder = claim.Token("legion-LEGION-701-implementer")
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -579,6 +583,7 @@ func TestAReleaseWhoseClaimWriteIsRefusedFreesNoName(t *testing.T) {
 // whatever its released mark holds the released session's names for the claim again at boot, and
 // the test fails counting them.
 func TestTheBootHoldsNoNameOfAReleasedAbandonedSession(t *testing.T) {
+	t.Parallel()
 	const holder, other = claim.Token("legion-LEGION-601-implementer"), claim.Token("legion-LEGION-602-implementer")
 	for _, tc := range []struct {
 		name     string
@@ -780,6 +785,7 @@ const productionClaims = 7508
 // as 723aa7826a's join, which the planner runs over this table as a hash join over a sequential
 // scan, reading every stale row.
 func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
+	t.Parallel()
 	const (
 		statementBound = 10
 		timeBound      = 10 * time.Second
@@ -864,7 +870,7 @@ func TestTheBootHoldsAProjectOfProductionSizeInAFewStatements(t *testing.T) {
 	// of claim_sessions are counted too: at most twice the names the claims record. The planner's
 	// choice is not asserted, since it follows the table's statistics; the plan is logged.
 	var kinds, recordedNamesOf []string
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		current, abandoned, _, err := recordedNames(ctx, tx, "legion")
 		for _, h := range sortedHolds(current, abandoned) {
 			kinds, recordedNamesOf = append(kinds, string(h.Kind)), append(recordedNamesOf, h.Name)

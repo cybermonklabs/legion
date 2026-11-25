@@ -107,6 +107,7 @@ func requireStopEndedHandOver(t *testing.T, rig *relayRig, sessionID string, rea
 // naming what the server had not confirmed. The frozen relay leaves every connection CONNECTED, so
 // nothing but that wait ends the hand-over before nats.go's own 10 s bound on the drain's flush.
 func TestAStopOnASilentHubEndsItsHandOversAtTheStopsWait(t *testing.T) {
+	t.Parallel()
 	rig, srv, sessionID, ends := stopRig(t, "ses_stop_silent_", func(*sessionRelays) {})
 	t.Cleanup(srv.Freeze(t))
 	stopRelays(t, rig)
@@ -119,6 +120,7 @@ func TestAStopOnASilentHubEndsItsHandOversAtTheStopsWait(t *testing.T) {
 // cause), and its hand-over waits under the same context the stop ends. The row waits for that
 // hand-over to begin (handOverBegins) before it stops the relays.
 func TestAStopEndsAHandOverAnotherCancellationBegan(t *testing.T) {
+	t.Parallel()
 	began := make(chan string, 1)
 	rig, srv, sessionID, ends := stopRig(t, "ses_stop_under_way_", func(relays *sessionRelays) {
 		relays.handOverBegins = func(sessionID string, reason relayCancelReason) {
@@ -142,6 +144,7 @@ func TestAStopEndsAHandOverAnotherCancellationBegan(t *testing.T) {
 // (handOverWait) past its own deadline, so its verdict does not turn on how fast the machine
 // answers; the silent hub's row above holds the production wait.
 func TestAStopOnALiveHubConfirmsItsHandOvers(t *testing.T) {
+	t.Parallel()
 	rig, _, sessionID, ends := stopRig(t, "ses_stop_live_", func(relays *sessionRelays) { relays.handOverWait = 24 * time.Hour })
 	stopRelays(t, rig)
 	ends.require(t, bus.SessionPullFlushAnswered)

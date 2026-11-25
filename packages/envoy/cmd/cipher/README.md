@@ -116,8 +116,8 @@ final line feed, which it has always done, so `echo` and a file that ends in a n
 value without one.
 
 `--type` names what the broker mints a release from rather than releasing the stored value as it
-is: `github-app`, `google-login`, `azure-login`, `google-service-account` or
-`anthropic-federation`, or `none` for a stored secret. The docs site's
+is: `github-app`, `github-installations`, `google-login`, `azure-login`, `google-service-account`
+or `anthropic-federation`, or `none` for a stored secret. The docs site's
 [Concepts](https://cybermonklabs.github.io/legion/broker/concepts/#requests-and-grants) page says
 what each type's value holds and what its release returns.
 
@@ -178,7 +178,14 @@ this order, and needs no registered agent session:
    `key.pem` after `AGENT_SECRETS_ENROLL_WAIT` (a launcher still enrolling), stops the command.
    While it waits on a fresh `enrollment.pending`, the command says so on stderr, naming the files
    it waits for, and again once `key.pem` is there and `enrollment` is not.
-2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in.
+2. `sign-in`: a person's `agent-secrets login` on this machine. Absent when nobody signed in, and
+   when this machine cannot renew the sign-in (no `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+   `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, or another client than the person signed in with)
+   and it holds no live enrollment: none in its record, or one that `GET /v1/enrollments/self`,
+   signed with the sign-in's key, answers not live. That read is made only for such a sign-in.
+   The command then says so on stderr, in one line ending `; using the <source> source` where a
+   later source serves, or `; tried the <source> source next` before that source's own refusal.
+   `renew` never passes a sign-in over: it reports the ended enrollment (exit 76).
 3. `helper`: `agent-secrets-helper`, asked first whether the caller is in a session it registered.
    Absent when there is no socket and no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset, no
    helper unit installed), or the helper answers `NOT_A_SESSION`, as it does for a process that
@@ -187,10 +194,12 @@ this order, and needs no registered agent session:
    other refusal stops the command.
 4. `machine`: the machine's own cloud identity, found with no setting from the Google exchange
    audience the broker answers in `GET /v1/settings`: an `external_account` file
-   `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata server
-   (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead; `kubernetes` is refused,
-   exit 2, since the broker mints no launcher credential for a Kubernetes identity, and a pod
-   enrolls through its launcher or `enroll --pod`). The settings are read only from an `https`
+   `GOOGLE_APPLICATION_CREDENTIALS` names, of any `credential_source` (an X.509 certificate's
+   among them, whose configuration must name a workload certificate and key), or the Compute
+   Engine metadata server (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead;
+   `kubernetes` is refused, exit 2, since the broker mints no launcher credential for a
+   Kubernetes identity, and a pod enrolls through its launcher or `enroll --pod`). The settings
+   are read only from an `https`
    broker, or an `http` one on loopback. Once an identity is found, and before a token is minted
    for it, the audience is kept in the cache's `google-exchange-audience` (a machine with no
    identity keeps none): a broker that later names another is refused before any token is minted
@@ -202,7 +211,7 @@ this order, and needs no registered agent session:
    once register one session between them. A broker that names no exchange audience is skipped
    with that reason; a broker that refuses the exchange stops the command.
 
-A source that is present but broken, and any broker refusal, stop the command with that error
+A source that is present but broken, and any other broker refusal, stop the command with that error
 (exit 1); with no source, one refusal names each source and why it had nothing:
 `no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`. Since the
 cache is read below the sign-in, a person who runs `agent-secrets login` acts as themselves from

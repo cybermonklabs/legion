@@ -57,6 +57,10 @@ func (d *gatePublishDispatch) PutStepRating(context.Context, string, string, dis
 	return nil
 }
 
+func (d *gatePublishDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
+
 func (d *gatePublishDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -168,7 +172,7 @@ func (r *gatePublishRig) clock() time.Time { return time.Now().UTC().Add(r.ahead
 // already run would hold, and how they read those records back.
 func (r *gatePublishRig) inTx(fn func(ctx context.Context, tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error { return fn(r.ctx, tx) }); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error { return fn(r.ctx, tx) }); err != nil {
 		r.t.Fatalf("the rig's transaction: %v", err)
 	}
 }
@@ -324,6 +328,7 @@ func wire(pairs ...record.DesignGateDocument) []dispatch.DesignGateDocument {
 //     readmit). It is the one path that gives an issue a gate without its architect registering
 //     anything, so what Dispatch learns of the child's documents, it learns here or nowhere.
 func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
+	t.Parallel()
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
 	r := newGatePublishRig(t, 2, gatePublishSteps)
 	r.seedRoot(root, phase.Admitted, "A")
@@ -416,6 +421,7 @@ func TestGateChangeQueuesItsDispatchPublication(t *testing.T) {
 // the project's list as it answered every row before, so the daemon and Dispatch deploy in either
 // order.
 func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
+	t.Parallel()
 	const root, criteria, spec = "LEGION-100", "artifact-criteria", "artifact-spec"
 	// registerBoth registers the criteria document and then the spec of a root waiting at
 	// admitted, and answers what Dispatch was told of both: one publication, since the second
@@ -476,6 +482,7 @@ func TestDesignGatesPublishSaysWhetherEachRowHoldsItsTree(t *testing.T) {
 // one member, so a clear that published the issue it was keyed by rather than the issues it
 // emptied would be caught.
 func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
+	t.Parallel()
 	empty := []dispatch.DesignGateDocument{}
 	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
 	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
@@ -575,6 +582,7 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 // INVALID_ISSUE, a coded refusal the shared rule calls final (dispatch.PermanentRefusal), keeps
 // the row too: an operator repairs it by changing the gate whose document is missing.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-208"
 	r := newGatePublishRig(t, 1, gatePublishSteps)
 	set := []record.DesignGateDocument{

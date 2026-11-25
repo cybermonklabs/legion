@@ -77,10 +77,11 @@ func ValidID(id string) bool {
 
 // CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
 // before people were named by email keeps the GitHub login it was decided under), and lowers its
-// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
-// this form on both sides.
+// ASCII letters and nothing else: fold.Login, the one spelling of that rule, which Dispatch's
+// model.CanonicalLogin reads too. Every login comparison in the module goes through this form on
+// both sides.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -276,6 +277,92 @@ func validateLocations(locations []string) error {
 		return fmt.Errorf("locations mix the account form %s<account> with other entries", gitHubLocationPrefix)
 	}
 	return nil
+}
+
+// TargetLocations reads the targets a run names for its secrets, each ACCOUNT or
+// ACCOUNT/REPOSITORY as a person types it, as the locations of the request's one detail: the
+// account lowered (fold.ASCII), since a caller passes a login in whatever case GitHub gives it,
+// then each location held to parseLocation, the rule the broker reads it by; the locations
+// sorted, as Target sorts a record's repositories, and each once, so two runs of one target sign
+// the same locations and match the same grant. It answers nil for no target. Each refusal names
+// the rule a target breaks: the account or the repository a location cannot hold, a target
+// narrows one secret, all targets name one account, the account form stands alone, and there are
+// at most MaxTargetLocations once each is folded. A value a location cannot hold is not printed,
+// since a value in the wrong flag may be a pasted credential; the accounts and repositories the
+// other refusals name have passed GitHub's rules first.
+func TargetLocations(names, targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	if len(names) != 1 {
+		return nil, fmt.Errorf("--target narrows a run of one secret name, and this run names %d: %s", len(names), strings.Join(names, ", "))
+	}
+	var account string
+	accountForm := false
+	locations := make([]string, 0, len(targets))
+	for i, target := range targets {
+		owner, repository, named := githubname.SplitEntry(target)
+		owner = fold.ASCII(owner)
+		location := gitHubLocationPrefix + owner
+		if named {
+			location = gitHubLocationPrefix + githubname.Entry(owner, repository)
+		}
+		_, _, ok := parseLocation(location)
+		switch {
+		case !ok && !githubname.ValidLogin(owner):
+			return nil, errors.New("--target names no GitHub login as its account: 1 to 39 letters, digits, '-' and '_', the first a letter or a digit (the value is not printed)")
+		case !ok:
+			return nil, errors.New("--target names no repository name GitHub can hold: 1 to 100 letters, digits, '.', '-' and '_', neither . nor .. (the value is not printed)")
+		case i > 0 && owner != account:
+			return nil, fmt.Errorf("--target names two accounts, %s and %s: all targets of one run name one account", account, owner)
+		}
+		account = owner
+		accountForm = accountForm || !named
+		locations = append(locations, location)
+	}
+	slices.Sort(locations)
+	locations = slices.Compact(locations)
+	if accountForm && len(locations) > 1 {
+		return nil, fmt.Errorf("--target mixes the account form %s with repository forms of it: give ACCOUNT alone, or ACCOUNT/REPOSITORY for each repository", account)
+	}
+	if len(locations) > MaxTargetLocations {
+		return nil, fmt.Errorf("--target names %d targets, more than %d", len(locations), MaxTargetLocations)
+	}
+	return locations, nil
+}
+
+// SecretDetails is the authorization_details of a request for names: one agent_secret detail
+// for each name, to inject, and locations, the target TargetLocations read, on the first, nil
+// for none. Every signer of a session's request builds its details here, so each carries the
+// target the same way.
+func SecretDetails(names, locations []string) []AuthorizationDetail {
+	details := make([]AuthorizationDetail, len(names))
+	for i, name := range names {
+		details[i] = AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
+	}
+	if len(details) > 0 {
+		details[0].Locations = locations
+	}
+	return details
+}
+
+// SignedLocations is the locations of the one detail the request object compact signs, nil when
+// it signs none or more than one detail. It reads them without checking the signature or any
+// claim, so it serves a signer's check of an object another process signed for it to send,
+// never a decision about the request.
+func SignedLocations(compact string) ([]string, error) {
+	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return nil, fmt.Errorf("not an ES256 JWS: %w", err)
+	}
+	var c requestClaims
+	if err := json.Unmarshal(sig.UnsafePayloadWithoutVerification(), &c); err != nil {
+		return nil, fmt.Errorf("decode the request object: %w", err)
+	}
+	if len(c.AuthorizationDetails) != 1 {
+		return nil, nil
+	}
+	return c.AuthorizationDetails[0].Locations, nil
 }
 
 // RequestObject is the verified claims of a credential-request object plus the verbatim compact
@@ -944,9 +1031,11 @@ func ReasonProjects(reason string) []string {
 
 // CheckReasonProjects refuses, as ErrRequestInvalid, the reason of a request being created whose
 // issue keys name more than MaxReasonProjects projects (ReasonProjects). It is a rule for a new
-// request alone — requests.Machine.Create and the machine login's creation call it — and never
-// part of VerifyRequestObject, so a request stored before the rule keeps verifying wherever it is
-// read again.
+// request alone, on a broker that holds a project-access client — requests.Machine.Create and the
+// machine login's creation call it there, and a broker with none, which reads no reason's
+// projects, takes any reason — and never part of VerifyRequestObject, so a request stored before
+// the rule, or by a broker with no such client, keeps verifying wherever it is read again, and its
+// reader asks Dispatch about every project it names (requests.Machine.maySee).
 func CheckReasonProjects(reason string) error {
 	if n := len(ReasonProjects(reason)); n > MaxReasonProjects {
 		return fmt.Errorf("%w: the reason names issue keys of %d projects; a request may name at most %d", ErrRequestInvalid, n, MaxReasonProjects)

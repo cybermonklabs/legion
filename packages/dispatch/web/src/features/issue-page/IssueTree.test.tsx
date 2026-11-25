@@ -1,4 +1,13 @@
-import { afterEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeAll,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
@@ -12,22 +21,25 @@ import {
 } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
 import type {
   Artifact,
   Comment,
   Decision,
+  DisplayTree,
   IDCandidate,
   IssueDecisions,
   IssueDetails,
@@ -37,6 +49,11 @@ import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor"
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import {
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../refs/reference-names";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -51,11 +68,12 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import type { TreeNode } from "./issue-tree";
+import type { NodeChip, TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
-import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
+import { lineOrKindWord } from "./node-line";
+import { framesByHand, readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -78,13 +96,13 @@ import {
   type Preset,
   STATE_LINES,
 } from "./page-words";
+import { nodeLineOf, Publisher, publishedNames, publishedTree } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
 import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
-import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
@@ -184,6 +202,19 @@ afterEach(() => {
   window.matchMedia = originalMatchMedia;
 });
 
+// The rows, their chips and the crumbs draw through the shared engine, which loads lazily, and
+// the rows run in random order, so the file loads the engine before its first row.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** A reading of `markdown`, as the server sends one: what a chip names its target by. */
+function readingOf(markdown: string): DisplayTree {
+  const tree = displayTree(markdown);
+  if (tree === undefined) throw new Error(`the engine read no tree of "${markdown}"`);
+  return tree;
+}
+
 /** The page's own `issue` scope, which every one of the tree's keys is registered in. */
 function IssueScope(): ReactNode {
   useKeymapScope("issue");
@@ -200,6 +231,13 @@ function AddressProbe({ seen }: { seen: { path?: string } }): ReactNode {
 function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode {
   seen.node = useFocusedNode();
   return null;
+}
+
+/** What the panel names the focused node by: its one line, as every place that names a node by
+ *  one draws it (`node-line.tsx`'s `useNodeLine`), and its kind's word where its words hold none
+ *  (`lineOrKindWord`); `""` where nothing has the focus. */
+function panelWords(focused: FocusedNode | undefined): string {
+  return focused === undefined ? "" : lineOrKindWord(nodeLineOf(focused), focused.type);
 }
 
 /** How the page's row editor reports what a document's room admitted the page to
@@ -288,7 +326,10 @@ function EditedDocument({
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
  *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
  *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`). */
+ *  admitted the page to (`document-admission.tsx`). `published` is what the page publishes of
+ *  its batched names read, to the store and to the tree (`Publisher`): where it is not given,
+ *  what the page publishes for the chips of the tree it draws (`publishedTree`), each time it
+ *  draws one. `publish` publishes another value, as a later answer of that read does. */
 function renderTree(
   root: TreeNode,
   {
@@ -297,6 +338,7 @@ function renderTree(
     editor,
     emptyLine,
     isClosed = false,
+    published,
     readsHeld = true,
     readsSettled = true,
     reveal,
@@ -306,6 +348,7 @@ function renderTree(
     editor?: StandInEditor;
     emptyLine?: string;
     isClosed?: boolean;
+    published?: PublishedReferences;
     readsHeld?: boolean;
     readsSettled?: boolean;
     reveal?: readonly TreeNode[];
@@ -317,6 +360,10 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld, settled: readsSettled };
+  const names = {
+    follows: published === undefined,
+    published: published ?? publishedTree(root),
+  };
   const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
@@ -334,6 +381,7 @@ function renderTree(
                   <IssueScope />
                   <FocusedNodeProbe seen={focused} />
                   <AdmissionProbe held={admission} />
+                  <Publisher published={names.published} />
                   <IssueTree
                     artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
                     context={new Set()}
@@ -346,6 +394,7 @@ function renderTree(
                       edited.push(artifactId);
                       editedDocument.set?.(artifactId, onEditor);
                     }}
+                    published={names.published}
                     readsHeld={reads.held}
                     readsSettled={reads.settled}
                     reveal={reveal}
@@ -363,7 +412,8 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(draw());
+  // Under the names store, as the shell draws every page (`app.tsx`).
+  const view = render(draw(), { wrapper: ReferenceNamesProvider });
   return {
     address: () => seen.path,
     admit: (artifactId: string, readOnly: boolean) =>
@@ -375,13 +425,22 @@ function renderTree(
       view.rerender(draw());
     },
     redraw: () => view.rerender(draw()),
+    /** Publishes `next` in place of what the page published, as its batched read answering
+     *  again does. */
+    publish: (next: PublishedReferences) => {
+      names.follows = false;
+      names.published = next;
+      view.rerender(draw());
+    },
     reread: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       view.rerender(draw());
     },
     /** Draws `next` with every read answered, as the last read to answer draws it. */
     settle: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       reads.held = true;
       reads.settled = true;
       view.rerender(draw());
@@ -401,7 +460,8 @@ interface PageHold {
 }
 
 /** The tree as `slots/body.tsx` draws it: from the last request of the page's
- *  `OutlineRequestProvider`, under the page's row writer, while it is shown. */
+ *  `OutlineRequestProvider`, under the page's row writer, while it is shown, with what the page
+ *  publishes for its chips published to the store and handed to it (`publishedTree`). */
 function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNode {
   held.ask = useAskOutline();
   held.focusBranch = useFocusBranch()[1];
@@ -409,6 +469,8 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
   const request = useOutlineRequest();
   const [shown, setShown] = useState(true);
   held.show = setShown;
+  const published = useMemo(() => publishedTree(drawn), [drawn]);
+  usePublishReferenceNames(published);
   return shown ? (
     <IssueTree
       artifacts={new Map()}
@@ -419,6 +481,7 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
       holdsEscape={false}
       isClosed={false}
       onEditing={() => {}}
+      published={published}
       {...(request === undefined ? {} : { request })}
       reveal={undefined}
       root={drawn}
@@ -458,7 +521,8 @@ function renderPageTree(root: TreeNode, reader = "alice") {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(draw(root));
+  // Under the names store, as the shell draws every page (`app.tsx`).
+  const view = render(draw(root), { wrapper: ReferenceNamesProvider });
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
       act(async () => held.ask?.(id, focusBranch)),
@@ -561,41 +625,6 @@ async function nextFrame(): Promise<void> {
   await act(async () => frame.promise);
 }
 
-/** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
- *  still asked for - as the next frame would; a frame cancelled first is not run. `asked` names
- *  the frames asked for and not run yet, and `restore` gives the frames back to happy-dom. */
-function framesByHand(): {
-  readonly asked: () => number[];
-  readonly restore: () => void;
-  readonly run: (frames?: readonly number[]) => Promise<void>;
-} {
-  const asked = new Map<number, FrameRequestCallback>();
-  let last = 0;
-  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-    last += 1;
-    asked.set(last, callback);
-    return last;
-  });
-  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
-    asked.delete(frame);
-  });
-  return {
-    asked: () => [...asked.keys()],
-    restore: () => {
-      request.mockRestore();
-      cancel.mockRestore();
-    },
-    run: (frames = [...asked.keys()]) =>
-      act(async () => {
-        for (const frame of frames) {
-          const callback = asked.get(frame);
-          asked.delete(frame);
-          callback?.(performance.now());
-        }
-      }),
-  };
-}
-
 /** Stands in for the browser's size observers, since happy-dom lays nothing out and observes no
  *  size: each observer still observing is held with what it observes, and `resized` calls by hand
  *  the ones observing `target`, or every one where it names none, as a change of size would.
@@ -653,7 +682,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
           {
             answered: true,
             gone: false,
-            name: "The spec block",
+            reading: { tree: readingOf("The spec block") },
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
@@ -1131,11 +1160,20 @@ test("a press outside the outline that leaves the focus on no control keeps the 
 // row's chips, then the links its words hold, then each control of the row that no key of the
 // keymap presses - Change answer, Copy reference, a command's Copy - in the row's order, and the
 // last stop comes back round to the first. Enter on the one it stopped on follows it or presses
-// it.
+// it. The link to CORE-7 reads as that issue's key and title, which its own read gives, since
+// the tree is drawn here with no batched read beside it (issue page decision 350: a reference
+// reads as its name, the short form gone).
 test("f steps through a row's chips, links and then the controls no key presses", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const writeText = spyOn({ writeText: async (_text: string) => undefined }, "writeText");
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-7",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the flag",
+  });
   const original = navigator.clipboard;
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   const reference = buildDispatchReference({ id: "ask-1", key: KEY, kind: "ask" });
@@ -1155,7 +1193,7 @@ test("f steps through a row's chips, links and then the controls no key presses"
           {
             answered: true,
             gone: false,
-            name: "The spec block",
+            reading: { tree: readingOf("The spec block") },
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
@@ -1178,8 +1216,9 @@ test("f steps through a row's chips, links and then the controls no key presses"
   try {
     const { container } = renderPageTree(root, "alice").view;
     await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+    await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
     expect(await stop()).toBe("The spec block");
-    expect(await stop()).toBe("CORE-7");
+    expect(await stop()).toBe("CORE-7 Ship the flag");
     expect(await stop()).toBe(CONTROL_LABELS.change_answer);
     expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
     await user.keyboard("{Enter}");
@@ -1187,6 +1226,7 @@ test("f steps through a row's chips, links and then the controls no key presses"
     expect(await stop()).toBe("The spec block");
   } finally {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
+    summary.mockRestore();
   }
 });
 
@@ -1204,7 +1244,7 @@ test("Home from a chip of the first row brings the row back on screen after the 
           {
             answered: true,
             gone: false,
-            name: "The spec block",
+            reading: { tree: readingOf("The spec block") },
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
@@ -6354,7 +6394,7 @@ test("z holds the focused row on screen as the page grows, with the focus on a c
           {
             answered: true,
             gone: false,
-            name: "The spec block",
+            reading: { tree: readingOf("The spec block") },
             ref: `dispatch://${KEY}/spec#b-r1`,
           },
         ],
@@ -6686,7 +6726,7 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
       node({ id: "ask-1", question: true, text: "Which flag?", type: "ask" }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -6698,9 +6738,10 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
 });
 
-// The focused node is named in the panel by its own first line, and a node with no words - a
-// plan task whose block holds none - by the page's word for its kind, never by its id, which is
-// no name a reader reads (the rule a parent line already follows).
+// The focused node is named in the panel by its own first line, as every place that names a node
+// by one names it, and a node with no words - a plan task whose block holds none - by the page's
+// word for its kind, never by its id, which is no name a reader reads (the rule a parent line
+// already follows). The tree hands the panel the node's words, which it projects (`panelWords`).
 test("a focused row whose node has no words names it by its kind, not its id", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -6714,12 +6755,12 @@ test("a focused row whose node has no words names it by its kind, not its id", a
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  expect(view.focusedNode()?.title).toBe("The first words.");
+  expect(panelWords(view.focusedNode())).toBe("The first words.");
 
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("plan#b-t1"));
   expect(view.focusedNode()?.id).toBe("plan#b-t1");
-  expect(view.focusedNode()?.title).toBe("plan task");
+  expect(panelWords(view.focusedNode())).toBe("plan task");
 });
 
 // The page opens with the focus on the first open question that waits on the reader, in the
@@ -8596,7 +8637,7 @@ test("a crumb is its node's first line cut at a word, and the issue's is its key
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8635,7 +8676,7 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8653,22 +8694,150 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
   expect(crumbs[1]?.textContent).toBe(NODE_TYPE_NAMES.plan_task);
 });
 
-// The focused node's title in the panel and a crumb each draw one line for a node, cut from
-// `lineWords`, so a comment whose words are only a bare address is named by that address's short
-// form, as a link to it draws it, and never by the address as written.
-test("a node whose words are only a bare address is named by its short form, in the panel and in its crumb", async () => {
+// R8 and issue page decision 350: a reference reads as its target's name, the short form gone. A
+// crumb draws one line for a node as every place that names a node by one does (`useNodeLine`):
+// a reference in it reads as the words its author wrote while the page's batched read has not
+// answered for it, and as its target's current name once it has, and it reads none itself. The
+// panel is handed the node's own words to name it by under the same rule (`FocusedNode.text`),
+// never a line cut from them, which could read no name.
+test("a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves", async () => {
   setViewport(1000);
   const user = userEvent.setup();
-  const address = `dispatch://${KEY}/spec#b-r1`;
-  const short = addressesAsShortForms(address);
-  expect(short, "the address has no short form to name the node by").not.toContain("dispatch://");
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const words = `See ${address} first.`;
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
   const root = node({
     children: [
       node({
         children: [node({ id: "comment-2", text: "Under it.", type: "comment" })],
         held: 1,
         id: "comment-1",
-        text: address,
+        text: words,
+        type: "comment",
+      }),
+    ],
+    id: KEY,
+    text: "The issue's own title",
+    type: "issue",
+  });
+  const view = renderTree(root, { published: publishedNames(new Map(), { asked: [address] }) });
+  const crumb = () => view.container.querySelector<HTMLElement>('[data-crumb="comment-1"]');
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    expect(view.focusedNode()?.text, "the panel is handed a line cut from the node's words").toBe(
+      words
+    );
+    await user.keyboard(".");
+    await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard(".");
+    // The crumb is drawn holding its line, in the commit that draws it: the engine is loaded, so
+    // its projection answers before the screen paints, and no crumb is drawn blank to fill in
+    // later and move the outline under the reader.
+    await waitFor(() => expect(crumb()).not.toBeNull());
+    expect(crumb()?.textContent, "the crumb was drawn blank, to fill in later").toBe(words);
+    view.publish(publishedNames(new Map([[address, name]])));
+    await waitFor(() =>
+      expect(crumb()?.textContent, "the crumb did not name the target").toBe(`See ${name} first.`)
+    );
+    expect(getReferences, "the crumb read the reference the page asks for").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// R8 and issue page decision 350 over the outline's rows: the page hands the rows what it
+// publishes of its batched names read in the render that draws them (`IssueTree`'s
+// `published`), so a reference the page asks the read for waits on the page's answer from a
+// row's first render, drawn as its author wrote it meanwhile, and is never read by the row. The
+// page publishes to the names store only after the rows have rendered, as the body does beside
+// the tree (`Publisher`), so a row that read the store alone mounted a read of its own first. A
+// row drawn once the page's read has named its target reads the name in the render that draws it.
+test("a row of the outline waits on the page's read for a reference the page asks for, and draws the page's name in the render that draws it", async () => {
+  setViewport(1440);
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const name = "the queue's drain";
+  const words = `See ${address} first.`;
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const comment = (id: string) => node({ id, text: words, type: "comment" });
+  const tree = (...children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const view = renderTree(tree(comment("comment-1")), {
+    published: publishedNames(new Map(), { asked: [address] }),
+  });
+  const rowWords = (id: string) => rowsFor(view.container, id)[0]?.textContent ?? "";
+  try {
+    await waitFor(() => expect(rowWords("comment-1")).toContain(words));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.publish(publishedNames(new Map([[address, name]])));
+    await waitFor(() => expect(rowWords("comment-1")).toContain(`See ${name} first.`));
+    view.reread(tree(comment("comment-1"), comment("comment-2")));
+    expect(rowWords("comment-2"), "a row drawn after the name came drew it later").toContain(
+      `See ${name} first.`
+    );
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// The architect's ruling on a block chip's line: a tie's chip names a block by the line the names
+// store projects beside the block's name from what the page published (`KnownReferences.lines`),
+// as a block drawn as a chip in a node's words is named, and projects none of its own. The page
+// hands its rows what it publishes in the render that draws them, the store's lines with it
+// (`PublishedReferenceNames`), so a row drawn once the store holds a block's line draws its chip
+// by that line in the very render that draws it: a block that opens on a heading by the heading.
+test("a chip drawn once the store holds its block's line draws it in the render that draws it", async () => {
+  setViewport(1440);
+  const chip: NodeChip = {
+    answered: true,
+    gone: false,
+    reading: { tree: readingOf("## Keep it\n\nKeep the model pure.") },
+    ref: `dispatch://${KEY}/spec#b-r1`,
+  };
+  const row = (id: string) => node({ chips: [chip], id, text: "The words.", type: "comment" });
+  const tree = (...children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const view = renderTree(tree(row("comment-1")));
+  const chipOf = (id: string) =>
+    rowsFor(view.container, id)[0]?.querySelector("[data-chip-name]")?.textContent;
+  try {
+    await waitFor(() => expect(chipOf("comment-1"), "the chip drew no line").toBe("Keep it"));
+    view.reread(tree(row("comment-1"), row("comment-2")));
+    expect(chipOf("comment-2"), "a chip drawn after its line came drew it later").toBe("Keep it");
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523: a crumb draws a node's one line where its own row is not
+// drawn, so it holds a corrected post's marks, as a filter's parent line does (`ParentLink`): a
+// deleted comment is drawn as its deleted line, from the delete, never as the model's text holds
+// it with the time as stored; an edited one says ` · edited` after its line.
+test("a crumb of a deleted comment draws its deleted line, and an edited one's says edited", async () => {
+  setViewport(1000);
+  const user = userEvent.setup();
+  const deletedAt = "2026-11-05T12:00:00Z";
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "comment-3", text: "Under it.", type: "comment" })],
+            editedAt: "2026-11-05T13:00:00Z",
+            held: 1,
+            id: "comment-2",
+            text: "Ship it.",
+            type: "comment",
+          }),
+        ],
+        deletedAt,
+        deletedBy: { id: "alice", kind: "user" },
+        held: 2,
+        id: "comment-1",
+        text: `Deleted by alice · ${deletedAt}`,
         type: "comment",
       }),
     ],
@@ -8678,20 +8847,26 @@ test("a node whose words are only a bare address is named by its short form, in 
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
-  expect(view.focusedNode()?.title, "the panel names the node by its address as written").toBe(
-    short
-  );
-  await user.keyboard(".");
-  await waitFor(() => expect(rowsFor(view.container, "comment-2")).toHaveLength(1));
-  await user.keyboard("j");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  for (const next of ["comment-2", "comment-3"]) {
+    await user.keyboard(".");
+    await waitFor(() => expect(rowsFor(view.container, next)).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(next));
+  }
   await user.keyboard(".");
   const crumbs = await waitFor(() => {
     const found = [...view.container.querySelectorAll<HTMLElement>("[data-crumb]")];
-    if (found.length < 2) throw new Error("the breadcrumb holds no crumb of the comment");
+    if (found.length < 3) throw new Error("the breadcrumb holds no crumb of both comments");
     return found;
   });
-  expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
+  const deleted = crumbs[1];
+  expect({
+    deletedLine: deleted
+      ?.querySelector("[data-post-deleted]")
+      ?.textContent?.startsWith("Deleted by alice · "),
+    edited: crumbs[2]?.textContent,
+    storedTime: deleted?.textContent?.includes(deletedAt),
+  }).toEqual({ deletedLine: true, edited: "Ship it. · edited", storedTime: false });
 });
 
 /** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
@@ -8959,7 +9134,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
   ];
   const sent = () => reads.reduce((all, read) => all + read.mock.calls.length, 0);
-  // The reader, whom the rows read under the app's `staleTime`, and the names, answered so that
+  // The reader, whom the rows read with the tree's freshness, and the names, answered so that
   // neither reaches the network.
   const others = [
     spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
@@ -9966,6 +10141,63 @@ test("a failed asks read draws its line over the tree and opens the page on its 
     messages.mockRestore();
     names.mockRestore();
   }
+});
+
+/** Draws the stage under the view `preset`, whose body is `[data-<preset>-body]`, with the names
+ *  read refused once, and reads the outline's names line there: in the outline's words, over the
+ *  view's tree, and gone once its Retry has read the names again. `view` names the view in a
+ *  failure. */
+async function namesLineOverView(preset: "plan" | "verification", view: string): Promise<void> {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  try {
+    const body = renderAddressedBody(presetPath(KEY, preset), TWO_THREADS, StageSlot);
+    const { container } = body.view;
+    const lineSelector = `[data-${preset}-body] [data-${preset}-unreadable="names"]`;
+    const line = await waitFor(() => {
+      const drawn = container.querySelector<HTMLElement>(lineSelector);
+      expect(drawn, `the ${view} drew no line for the names read`).not.toBeNull();
+      return drawn as HTMLElement;
+    }, OWN_WORDS);
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.names_unreadable);
+    const tree = container.querySelector(`[data-${preset}-body] [role="tree"]`);
+    if (tree === null) throw new Error(`the ${view} drew no tree`);
+    expect(
+      (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      `the ${view}'s names line is not drawn over its tree`
+    ).toBe(true);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error(`the ${view}'s names line drew no Retry`);
+
+    await user.click(retry);
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector(lineSelector),
+          `the ${view}'s names line stayed once the names answered`
+        ).toBeNull(),
+      OWN_WORDS
+    );
+    expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
+  } finally {
+    names.mockRestore();
+  }
+}
+
+// The Verification view drew its rows from the page's names and said nothing when their read
+// failed: every reference in a row and a parent line stayed its raw address, and every "Also
+// under" line went, with no word of why and no Retry. It draws the outline's names line over the
+// view, after its own reads' lines, and its Retry reads the names again.
+test("under the Verification view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("verification", "Verification view");
+});
+
+// The Plan view, the same: its bars, chips and steps wait on the page's names, and said nothing
+// when their read failed.
+test("under the Plan view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("plan", "Plan view");
 });
 
 /** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry
@@ -11591,6 +11823,78 @@ test("a Retry whose read answers that the id names several items leaves the focu
         "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
       ).toBe(list)
     );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Census row 8.54 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches stays drawn while its read runs again (`Following.settled`), and what it
+// draws then is the refusal the cache holds, which every correction is written into
+// (`markCorrectedPost`), never a list kept from before one. A match deleted while the list is
+// drawn is drawn deleted, with none of its first line, while a later read is out; and so is one
+// deleted while that read is out, which TanStack holds no refusal for: the delete gives the read
+// up, writes its mark into the refusal that puts back, and holds it beside the read it asks again.
+test("a match deleted after the list of an id's matches was drawn is drawn deleted while the list's read runs again", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const short = GONE_COMMENT.slice(0, 8);
+  const other = `${short}-0000-4000-8000-000000000002`;
+  const third = `${short}-0000-4000-8000-000000000003`;
+  const match = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: KEY,
+    kind: "comment",
+    ref: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+  });
+  const read = spyOn(api, "getReferences").mockRejectedValueOnce(
+    new ApiError(409, {
+      candidates: [
+        match(GONE_COMMENT, "The first note"),
+        match(other, "The other note"),
+        match(third, "The third note"),
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${short}" names 3 items; write more of the id`,
+    })
+  );
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: short, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    const drawn = () => ({
+      deleted: container.querySelectorAll("[data-post-deleted]").length,
+      list: container.textContent?.includes("Several items match that link"),
+      words: ["The first note", "The other note", "The third note"].filter((words) =>
+        container.textContent?.includes(words)
+      ),
+    });
+    await waitFor(() => expect(container.textContent).toContain("The first note"));
+
+    act(() => markCorrectedPost(body.client, correction("comment", GONE_COMMENT, false)));
+    await waitFor(() => expect(container.textContent).not.toContain("The first note"));
+    // The read runs again, as window focus reads a read in error again, and stays out.
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise as never);
+    act(() => {
+      void body.client.refetchQueries({ queryKey: ["references", "to"] });
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const whileOut = drawn();
+
+    const asked = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(asked.promise as never);
+    act(() => markCorrectedPost(body.client, correction("comment", other, false)));
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(container.textContent).not.toContain("The other note"));
+    expect({ whileOut, deletedWhileOut: drawn() }).toEqual({
+      whileOut: { deleted: 1, list: true, words: ["The other note", "The third note"] },
+      deletedWhileOut: { deleted: 2, list: true, words: ["The third note"] },
+    });
   } finally {
     names.mockRestore();
     read.mockRestore();

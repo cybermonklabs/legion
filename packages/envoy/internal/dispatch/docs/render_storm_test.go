@@ -68,6 +68,7 @@ var stormMarks = []string{"strong", "emphasis", "inlineCode", "strike_through", 
 // noteChangedTypes, the replica's own record of what its document's transactions changed, not
 // from the test, which is what the pmdoc differential cannot reach.
 func TestRenderReuseARandomisedEditStorm(t *testing.T) {
+	t.Parallel()
 	seeds, edits := []uint64{1, 2, 3, 4, 5, 6, 7, 8}, 320
 	if raceEnabled || testing.Short() {
 		seeds, edits = []uint64{1, 2}, 80
@@ -83,11 +84,7 @@ func stormRound(t *testing.T, seed uint64, edits int) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	// The peers apply their updates to the room's document directly, never through a ygo
-	// connection or Server.Apply, so ygo's idle sweep counts the room idle from its load and would
-	// retire it after roomIdleTimeout - which a seed on a loaded machine outlasts. ygo's sweeper
-	// reads the timeout when the first room starts it, so it is set before any room loads.
-	service.srv.RoomIdleTimeout = time.Hour
+	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
 	seedServiceText(t, service, artifactID, stormDocument())
 	sent := map[string]bool{}

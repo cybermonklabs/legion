@@ -289,7 +289,7 @@ func TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne(t *testing.T)
 		t.Run(secretType, func(t *testing.T) {
 			const name = "TYPED_KEY"
 			var apps []string
-			if secretType == policy.TypeGitHubApp {
+			if policy.ServesGitHubTokens(secretType) {
 				apps = []string{name}
 			}
 			machine, enrollmentID, key, approver := newAppFixture(t, apps...)

@@ -12,9 +12,9 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v31's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// from, leak-check-v33's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
 // ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370ce571c2eafde3fe7c"
+const ghPinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
@@ -47,6 +47,12 @@ const ghPinnedCheckPortSHA256 = "b1dc67a3bfc1bebf6347f06c9197a27a72b7c8e593bd370
 // missing or unreadable file an argument names (file_ok), which this never looks for, so
 // `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
 // tests count as a read meets any of the five.
+//
+// The guard calls the check as `gh-guard -- <argv>`, and `gh-guard` alone for a call of no words
+// (leakguard's modeArgv). The check's main() takes out the one `--` the guard writes after the mode
+// word, so gh_guard gets argv unchanged, a leading `--` of the call's own among it; a call of no
+// words returns 0 in mode_gh before gh_guard, and this reads it as is_read reads an empty first
+// word.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
@@ -377,7 +383,9 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			}
 		}
 	})
-	run := ghGuardRig(t)
+	// The guard's own lookup is a whole guard's, which reads the visibility only where the
+	// deployment names its rule file.
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, tc := range []struct {
 		args                   []string
 		checkLooks, guardLooks bool
@@ -412,7 +420,7 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", tc.args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; !strings.HasPrefix(got.checked, want) {
+			if want := ghGuardRun(tc.args); !strings.HasPrefix(got.checked, want) {
 				t.Errorf("the shared check recorded %q, want its run of the call first, %q", got.checked, want)
 			}
 			looked := strings.Contains(got.checked, "lookup acme/widgets\n")

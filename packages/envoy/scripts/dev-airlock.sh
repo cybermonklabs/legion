@@ -466,7 +466,7 @@ echo "dev-airlock: starting dev-airlock-stands..." >&2
   --address "microsoft=$MICROSOFT_ADDRESS" \
   --host "microsoft=$MICROSOFT_HOST" --host "microsoft=$AZURE_RESOURCE_HOST" \
   --address "aws=$AWS_ADDRESS" --host "aws=$AWS_HOST" \
-  --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
+  --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION" \
   --google-lifetime 7m \
   --aws-session-token "$AWS_SESSION_TOKEN" \
   --ask-answered-by "$APPROVER_LOGIN" \

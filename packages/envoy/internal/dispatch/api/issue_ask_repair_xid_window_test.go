@@ -23,6 +23,7 @@ import (
 // withdrawal closed while it held a decision block's ask and a plain ask: the repair withdraws
 // both in its latest closer's name and gives the spec the close's final sweep.
 func TestXidWindowIssueAskRepairWithdrawal(t *testing.T) {
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	tracer := storetest.NewXidTracer()
 	f := newRepairFixtureOn(t, 20*time.Millisecond, tracer)
 	spec, _ := xidSpec(1)
@@ -45,6 +46,7 @@ func TestXidWindowIssueAskRepairWithdrawal(t *testing.T) {
 // decision block's ask and a plain ask and which a release older than the restoration reopened:
 // the repair restores both in its reopener's name and writes the block open into the spec.
 func TestXidWindowIssueAskRepairRestoration(t *testing.T) {
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	tracer := storetest.NewXidTracer()
 	f := newRepairFixtureOn(t, 20*time.Millisecond, tracer)
 	spec, _ := xidSpec(1)

@@ -243,7 +243,7 @@ func (s *server) legionManagedStatusAdvice(ctx context.Context, tx pgx.Tx, route
 	}
 	var managed bool
 	if row != nil {
-		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.parent, row.labels)
+		managed, err = legionManagedStatusOfRow(ctx, walk, issueKey, row.project, row.parent, row.labels)
 	} else {
 		managed, err = legionManagedStatus(ctx, walk, issueKey)
 	}
@@ -400,12 +400,13 @@ func (s *server) writeAdvice(
 	return s.adviseWrite(ctx, tx, route, issueKey, actor, asks, status, appending, opensAQuestion, nil)
 }
 
-// adviceIssueRow is the part of an issue row a write's advice reads - its parent and its labels,
-// which the walk for who owns the issue's status starts from (legionManagedStatusOfRow) - as the
-// write leaves the row.
+// adviceIssueRow is the part of an issue row a write's advice reads - its project, its parent and
+// its labels, which the walk for who owns the issue's status starts from
+// (legionManagedStatusOfRow) - as the write leaves the row.
 type adviceIssueRow struct {
-	parent *string
-	labels []string
+	project string
+	parent  *string
+	labels  []string
 }
 
 // writeAdviceBefore is writeAdvice for a write that reads its advice before it writes the issue
@@ -1039,15 +1040,11 @@ func (response advisedResponse) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(advice)+11)
-	encoded = append(encoded, payload[:len(payload)-1]...)
+	key := `"advice":`
 	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+		key = "," + key
 	}
-	encoded = append(encoded, `"advice":`...)
-	encoded = append(encoded, advice...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(payload[:len(payload)-1], []byte(key), advice, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {

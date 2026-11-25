@@ -22,6 +22,7 @@ const releasedForWaitVersion = 20261111214351
 // wait yet. A mark written reads back as the moment it was written, and clearing it reads null
 // again, which is what the grant of a slot and the ordinary release of a row both write.
 func TestAnIssueRecordsItsReleaseForAWaitWith20261111214351(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, releasedForWaitVersion-1)

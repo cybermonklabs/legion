@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -63,7 +62,7 @@ func askAnchoredStandingReview(t *testing.T, handler http.Handler, issueKey stri
 // markdown into the live document the same way.
 func approveThenEditLive(t *testing.T, project string) (http.Handler, string, string, func(markdown string)) {
 	t.Helper()
-	handler, database, documents := settlingCarryDocuments(t, time.Hour)
+	handler, database, documents := settlingCarryDocuments(t, pastTheRun)
 	issue := createInteractionIssue(t, handler, project, "Edited live", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
 	editLive := func(markdown string) {
@@ -81,6 +80,7 @@ func approveThenEditLive(t *testing.T, project string) (http.Handler, string, st
 // asked for changes: the reviewer, the time the review was recorded, the state, the version and
 // the reason.
 func TestAskAdviceNamesThePersonsReviewOfTheCurrentVersion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		key   string
@@ -119,6 +119,7 @@ func TestAskAdviceNamesThePersonsReviewOfTheCurrentVersion(t *testing.T) {
 // An approval carries no reason of its own when the person gave none, and the advice carries the
 // review all the same: the reader says so rather than quoting nothing.
 func TestAskAdviceNamesAReviewThatCarriesNoReason(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDBARE")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -137,6 +138,7 @@ func TestAskAdviceNamesAReviewThatCarriesNoReason(t *testing.T) {
 // The reason the advice carries is cut at standingReviewReasonLimit characters, so a reviewer who
 // wrote pages does not put them in every question's result.
 func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDLONG")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -157,6 +159,7 @@ func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
 // 1, and does it again, which carries that carry to version 5 naming version 3. The newest carry
 // names version 3, and that is what the advice must carry.
 func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "STANDCARRY", "Carried twice", restoreSpec)
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
@@ -200,6 +203,7 @@ func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 // (docs.Ledger.PendingVersionNumber); read off the table, it would name alice's approval of the
 // text this very write moved past.
 func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, _, _ := approveThenEditLive(t, "STANDSNAP")
 
 	version, review := askAnchoredStandingReview(t, handler, issueKey)
@@ -219,6 +223,7 @@ func TestAskAdviceNamesNoReviewOfTheVersionAnAnchorsSnapshotSupersedes(t *testin
 // would set against the carry's version 3 and so name nothing. The carry's time is its row's: the
 // advice is read before the write phase stores that row, and names the time the row then holds.
 func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, artifactID, editLive := approveThenEditLive(t, "STANDBACK")
 	if version, _ := askAnchoredStandingReview(t, handler, issueKey); version != 2 {
 		t.Fatalf("the first anchor is pinned to version %d, want 2, the version its snapshot of the live edit writes", version)
@@ -257,6 +262,7 @@ func TestAskAdviceNamesTheApprovalAnAnchorsSnapshotCarries(t *testing.T) {
 // The cases that name no review. Each writes a question on an issue and reads the advice back,
 // and each must carry none.
 func TestAskAdviceNamesNoStandingReview(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		key   string
@@ -307,6 +313,7 @@ func TestAskAdviceNamesNoStandingReview(t *testing.T) {
 // An issue created with no specification has no primary document to read, and the question is
 // written as it always was.
 func TestAskAdviceNamesNoReviewWhenTheIssueHasNoSpecification(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDBLANK")
 	issue := createAdviceIssue(t, handler, "STANDBLANK", "No spec at all", nil)
@@ -319,6 +326,7 @@ func TestAskAdviceNamesNoReviewWhenTheIssueHasNoSpecification(t *testing.T) {
 // A review an agent wrote under its person's scope is not a person's review: the actor is of kind
 // user with the agent named beside it (Actor.Act), and the question names nothing.
 func TestAskAdviceNamesNoReviewWrittenByAnAgentUnderAPersonsScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "STANDACT")
 	spec := "# Transport\n\nThe design, as read.\n"
@@ -343,6 +351,7 @@ func TestAskAdviceNamesNoReviewWrittenByAnAgentUnderAPersonsScope(t *testing.T) 
 // A question on a project document is not on an issue, so there is no specification to read and
 // the advice carries no review at all.
 func TestAskAdviceOnAProjectDocumentNamesNoReview(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "STANDPROJ")
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/STANDPROJ/artifacts", map[string]string{
@@ -371,6 +380,7 @@ func TestAskAdviceOnAProjectDocumentNamesNoReview(t *testing.T) {
 // the rule refuses it all the same, because what the line claims is that a person read the
 // document, and a plan review is not a person.
 func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createAdviceProject(t, handler, "STANDKIND")
 	spec := "# Transport\n\nThe design, as read.\n"

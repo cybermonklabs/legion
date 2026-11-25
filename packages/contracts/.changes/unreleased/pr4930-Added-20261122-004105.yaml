@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The daemon API schemas describe contract 220: each assignment of an issue carries `plan`, the
+  group its experiment's arm set at the draw (`owner` or `default`), and `register_plan` and
+  `stop_task` say they answer `409 PLAN_NOT_TAKEN` on an issue whose group takes no plan from its
+  owner. The Dispatch schemas say a plan of the source `default` also covers such an issue.
+time: 2026-11-22T00:41:05Z
+custom:
+    Issue: pr4930

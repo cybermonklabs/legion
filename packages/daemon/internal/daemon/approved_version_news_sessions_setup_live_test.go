@@ -188,8 +188,8 @@ func sessionsAwait(t *testing.T, what string, within time.Duration, ready func()
 }
 
 // seed records every member as the daemon holds it mid-run and starts each role the run seeds
-// through the daemon's own start path, in one transaction under a commit scope
-// (intake.WithCommitHooks), as a fact the daemon applies writes them, as part one's seed does. Each
+// through the daemon's own start path, in one transaction whose commit runs the hooks its writes
+// register (store.Transact), as a fact the daemon applies writes them, as part one's seed does. Each
 // member is recorded in its tree, in its phase, holding an admission slot, on an open pull request
 // unless it stands in admitted, and its tree's lifecycle is opened under the workflow. A root whose
 // deployment gates spec holds its gate open at version 1, which the person approved on Dispatch
@@ -208,7 +208,7 @@ func sessionsAwait(t *testing.T, what string, within time.Duration, ready func()
 func (r *sessionsRun) seed() {
 	t := r.t
 	t.Helper()
-	ctx, committed := intake.WithCommitHooks(context.Background())
+	ctx := context.Background()
 	gated := len(r.cfg.Gates.Design) > 0
 	if gated {
 		for _, member := range r.members {
@@ -228,7 +228,7 @@ func (r *sessionsRun) seed() {
 	var starts map[claim.Token]record.SuperviseRequest
 	var differences []string
 	var firstPhase map[string][]string
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		starts, differences, firstPhase = map[claim.Token]record.SuperviseRequest{}, nil, map[string][]string{}
 		issues := make([]record.Issue, len(r.members))
 		for i, member := range r.members {
@@ -318,7 +318,6 @@ func (r *sessionsRun) seed() {
 	}); err != nil {
 		t.Fatalf("seed the trees through the daemon's start path: %v", err)
 	}
-	committed()
 	if len(differences) > 0 {
 		t.Fatalf("setup: %s", strings.Join(differences, "; "))
 	}

@@ -226,7 +226,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				// on is the release's alone: the ordinary refusal of every token request.
 				f.stand.Answers(proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensRefused})
 			},
-			reason: "this enrollment has reached GitHub for more checks than its bound allows",
+			reason: "this enrollment has made more checks than its bound allows",
 			want:   secrets.ErrMintNarrowingRefused,
 			status: "422 PROFILE_MINT_REFUSED",
 		},

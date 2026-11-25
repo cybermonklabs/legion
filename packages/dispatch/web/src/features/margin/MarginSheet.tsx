@@ -2,6 +2,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 
 import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -224,6 +225,11 @@ export function MarginSheet({
   });
   // What the margin's own tabs give way to: the rail it collapses to, or a phone margin thread.
   const covered = collapsed || (isPhoneViewport && phoneThread !== undefined);
+  // Collapsed below `xl`, the sheet is a bar fixed at the foot of the screen, in the foot's page
+  // layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each), so the hook
+  // holds its band, its box on the screen, and the floats keep clear of it. Expanded, it is a
+  // modal sheet over the page, and adds nothing. The dialog's container is this same `<aside>`.
+  useFootInset(dialog.containerRef, compactSheet && owner !== undefined && !sheet.expanded, "page");
 
   return (
     <>
@@ -471,7 +477,7 @@ export function MarginSheet({
                 actionFailure={actionFailure?.id === phoneThread.key ? actionFailure : undefined}
                 artifactSlug={visibleArtifact.slug}
                 className="min-h-full pb-32"
-                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                composerClassName={`fixed inset-x-0 bottom-0 z-10 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 expanded
                 hovered={selection.hoveredMarkId === phoneThread.anchor?.mark_id}
                 editingCommentId={selection.editingCommentId}
