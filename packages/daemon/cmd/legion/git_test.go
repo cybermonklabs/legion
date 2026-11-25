@@ -45,15 +45,17 @@ func writeTrailerScript(t *testing.T, path, body string) {
 
 // trailerEnv is the whole environment of a command these tests run, alone or through the wrapper:
 // only what the case sets, so no DISPATCH_*, ENVOY_SESSION_ID, CLAUDE_CODE_* or LEGION_* variable
-// reaches it but the case's own. HOME is a directory of the test's own and GIT_CONFIG_NOSYSTEM is
-// set, so no configuration of the host's applies, and the identity is the test's.
+// reaches it but the case's own. HOME is a directory of the test's own and GIT_CONFIG_SYSTEM is
+// /dev/null, so no configuration of the host's applies, and the identity is the test's. It sets
+// neither GIT_CONFIG_NOSYSTEM nor GIT_CONFIG_GLOBAL=/dev/null: those ask git for an isolated
+// configuration, under which legion git adds no trailer (gitIsolated).
 func trailerEnv(t *testing.T, path string, set ...string) []string {
 	t.Helper()
 	return append([]string{
 		"PATH=" + path,
 		"HOME=" + t.TempDir(),
 		"TMPDIR=" + t.TempDir(),
-		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
 		"GIT_AUTHOR_NAME=Legion test", "GIT_AUTHOR_EMAIL=legion-test@example.invalid",
 		"GIT_COMMITTER_NAME=Legion test", "GIT_COMMITTER_EMAIL=legion-test@example.invalid",
 		"GIT_EDITOR=true",

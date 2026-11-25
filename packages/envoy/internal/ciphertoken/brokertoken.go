@@ -182,8 +182,9 @@ var proofAlgorithmNames = func() []string {
 	return names
 }()
 
-// Caller is who a verified token names and whether that token only reads: what a writer is
-// recorded under, and nothing else the broker's answer carries. It never carries the token.
+// Caller is who a verified token names, whether that token only reads, and whether it holds the
+// scope legion-status: what a writer is recorded under, and nothing else the broker's answer
+// carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -232,6 +233,11 @@ type Caller struct {
 	// token narrowed to reading carries one: an answer that names a cut in any other shape, the
 	// read entry's none included, or a cut that is not an RFC 3339 time, is ErrNotASession.
 	Cut time.Time
+	// LegionStatus is true when the broker's answer's Scope holds the word ScopeLegionStatus.
+	// The broker grants that scope to a Legion daemon's own token alone. This package reads the
+	// word and decides nothing with it: the reader decides what it allows (Dispatch,
+	// brokerTokenActor). A reader that ignores it reads the token as it reads one without it.
+	LegionStatus bool
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origins, Replay and Address are required.

@@ -60,16 +60,23 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
 service, and Dispatch records its writes under that account. An entry of that setting that names a
-project names its person. A job entry, of `BROKER_EXCHANGE_JOB_ACCOUNTS`, gives it its projects and
-no person: the token names the account as its service and holds no OAuth scope, so a route that
-needs one refuses it before Dispatch's project check runs. For an entry that names one project,
-that check judges the token as it judges a person's named token for that project; for an entry that
-names `public`, the token reaches every public project and the private projects the entry lists.
-That list is the broker's grant: at this release Dispatch does not read a `public` token's list, so
-such a token writes wherever a token that names no project may. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`,
-gives it a service and a fixed session instead, and no person and no project: the token holds the OAuth scope
-`read` alone. Dispatch serves such a token on the GET routes it classes as reads, and refuses it on
-every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
+project names its person. An entry of that setting whose fixed session is
+`legion-daemon:<its own project>` is a Legion daemon's own, and its token holds the OAuth scope
+`legion-status` too. Dispatch reads that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that setting
+is on, a write of a Legion issue's status needs it or the `person` scope, but for a status write of
+the architect of an issue above, which writes with its own broker token. No other token the exchange
+mints holds `legion-status`, whatever session it carries. A job entry, of
+`BROKER_EXCHANGE_JOB_ACCOUNTS`, gives the pod's token its projects and no person: the token names
+the account as its service and holds no OAuth scope, so a route that needs one refuses it before
+Dispatch's project check runs. For an entry that names one project, that check judges the token as
+it judges a person's named token for that project; for an entry that names `public`, the token
+reaches every public project and the private projects the entry lists. That list is the broker's
+grant: at this release Dispatch does not read a `public` token's list, so such a token writes
+wherever a token that names no project may. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives
+the pod's token a service and a fixed session instead, and no person and no project: the token holds
+the OAuth scope `read` alone. Dispatch serves such a token on the GET routes it classes as reads,
+and refuses it on every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with
+`401`, and the
 NATS auth service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
 needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
@@ -82,7 +89,8 @@ machine's Google identity, a person's sign-in and a machine login. A job entry's
 for `read` is refused `invalid_request`: a job's token is minted whole, with no OAuth scope. The token keeps the session, the person or the service, and
 the projects that the same trade would have named, and it writes nothing. Its project scope is
 the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It
-holds `read`, and `person` beside it when it acts for a person, never `approve`. The trade may
+holds `read`, and `person` beside it when it acts for a person, never `approve` and never
+`legion-status`, so a Legion daemon's read token writes no status either. The trade may
 also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
 trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
 `GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the

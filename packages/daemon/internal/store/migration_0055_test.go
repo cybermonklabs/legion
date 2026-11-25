@@ -12,6 +12,7 @@ import (
 // daemon, which writes approved_version alone, can still clear an approval on a gate that has a
 // mark: the daemon keeps that shape itself (record.Postgres.PutGate).
 func TestTheGatesReviewMarksArriveWith0055(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 54)

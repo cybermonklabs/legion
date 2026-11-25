@@ -476,22 +476,30 @@ func TestWhoamiNamesHumanPersonalTokenOwnerAndSharedToken(t *testing.T) {
 
 // GET /whoami answers every caller the OAuth scopes its own credential holds, which is what
 // decides the routes it may call (gateRouteScopes): both for a person at a browser, the set its own
-// row names for a personal token, and none at all for the two credentials a deployment
-// configures rather than a person. A credential holding none is answered an empty array and
+// row names for a personal token, none at all for the two credentials a deployment
+// configures rather than a person, and legion-status alone for a Legion daemon's own broker
+// token, whose broker granted it. A named broker token that names a person and no project holds
+// none, even when its answer holds legion-status: Dispatch reads that scope only on a token
+// scoped to one project. A credential holding none is answered an empty array and
 // never null, so a reader need not tell "this credential holds no scope" from "this build does
 // not say". A personal token holding the person scope is still kind `agent`, since the kind
-// names the credential and the owner names the person it acts for. None of these credentials is
-// an access token the secrets broker issued, so none is answered a project_scope, which the
-// dispatch command reads as the credential carrying none.
+// names the credential and the owner names the person it acts for. Only an access token the
+// secrets broker issued is answered a project_scope, its own: the two broker rows answer named,
+// and every other row answers none, which the dispatch command reads as the credential carrying
+// none. The server reads broker tokens through a stub broker (newBrokerTokenRigOn), so one server
+// answers every row.
 func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
-	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
+	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	handler, database := rig.handler, rig.database
 	for _, test := range []struct {
 		name   string
 		call   func() *httptest.ResponseRecorder
 		kind   string
 		scopes []string
+		// projectScope is the project_scope the answer carries, empty for none.
+		projectScope string
 	}{
 		{
 			name: "a person signed in at a browser",
@@ -535,6 +543,30 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			kind:   "agent",
 			scopes: []string{},
 		},
+		{
+			name: "a Legion daemon's own broker token, named, whose broker granted legion-status",
+			call: func() *httptest.ResponseRecorder {
+				caller := newBrokerCaller(t)
+				rig.broker.Says("the-daemon-token", liveDaemonToken(caller.jkt))
+				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-daemon-token", nil))
+			},
+			kind:         "agent",
+			scopes:       []string{"legion-status"},
+			projectScope: ciphertoken.ProjectScopeNamed,
+		},
+		{
+			name: "a named broker token whose answer holds legion-status and names a person and no project",
+			call: func() *httptest.ResponseRecorder {
+				caller := newBrokerCaller(t)
+				token := liveDaemonToken(caller.jkt)
+				token.Projects = nil
+				rig.broker.Says("the-projectless-token", token)
+				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-projectless-token", nil))
+			},
+			kind:         "agent",
+			scopes:       []string{},
+			projectScope: ciphertoken.ProjectScopeNamed,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := test.call()
@@ -557,8 +589,11 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			if !slices.Equal(*got.Scopes, test.scopes) {
 				t.Fatalf("whoami as %s = scopes %v, want %v", test.name, *got.Scopes, test.scopes)
 			}
-			if got.ProjectScope != nil {
+			switch {
+			case test.projectScope == "" && got.ProjectScope != nil:
 				t.Fatalf("whoami as %s = project_scope %q, want none: only a broker-issued token carries one: %s", test.name, *got.ProjectScope, response.Body.String())
+			case test.projectScope != "" && (got.ProjectScope == nil || *got.ProjectScope != test.projectScope):
+				t.Fatalf("whoami as %s = project_scope %v, want %q: %s", test.name, got.ProjectScope, test.projectScope, response.Body.String())
 			}
 		})
 	}

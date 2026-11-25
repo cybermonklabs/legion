@@ -395,6 +395,17 @@ type Claims struct {
 	// exchange reads it to refuse a job's trade that asks for read (oauth's decide), since the
 	// broker narrows no job's token.
 	Job bool
+	// LegionStatus is true for the token of a Legion daemon's own entry: an account entry that
+	// names a project and fixes the session oauthwire.LegionDaemonSessionPrefix + that project, compared
+	// exactly, case included. Such a token is ProjectScopeNamed and holds the OAuth scope
+	// oauthwire.ScopeLegionStatus too (oauth.writeProjectScope), which Dispatch reads as leave to
+	// write a Legion issue's status. Pod alone sets it, and reads the session the entry fixes,
+	// never Session: an entry that fixes no session takes Session from the request, which may
+	// name any session. So a pod whose request names legion-daemon:<its project> gets no
+	// LegionStatus, and neither does an entry that fixes the daemon session of another project or
+	// that names no project. No other decision sets it: a read entry, a workflow, a machine, a
+	// person's sign-in and a dev box never do, whatever session they carry.
+	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
 	// token naming a session another principal writes under, unless the broker pairs the caller's
@@ -463,6 +474,8 @@ type AccountEntry struct {
 	// request naming any other is refused. It is how a long-running service keeps writing under
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
+	// oauthwire.LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
+	// (Claims.LegionStatus).
 	Session string
 }
 
@@ -941,6 +954,8 @@ func checkGrant(where, person, project string, job JobProjects, session string, 
 // person, with the entry's scope and whole list whatever the request names (jobProjects), and
 // Instance as any entry's: the pod uid where the entry fixes no session, so a job pod registers
 // as a person's pod does, and none where it fixes one.
+//
+// Pod answers LegionStatus for a Legion daemon's own entry alone (Claims.LegionStatus).
 func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
@@ -967,10 +982,17 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 	if err := claims.grant(account, account, entry.Person, entry.Project, entry.Job, projects); err != nil {
 		return Claims{}, err
 	}
+	claims.LegionStatus = isLegionDaemon(entry)
 	if entry.Session == "" {
 		claims.Instance = uid
 	}
 	return claims, nil
+}
+
+// isLegionDaemon reports whether entry is a Legion daemon's own entry (Claims.LegionStatus).
+func isLegionDaemon(entry AccountEntry) bool {
+	project, fixesDaemonSession := strings.CutPrefix(entry.Session, oauthwire.LegionDaemonSessionPrefix)
+	return fixesDaemonSession && entry.Project != "" && project == entry.Project
 }
 
 // podListing is the entry that lists a pod's account: its AccountEntry, or, when readOnly is set,

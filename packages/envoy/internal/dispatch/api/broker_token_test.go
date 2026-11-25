@@ -154,6 +154,16 @@ func readOnlyToken(jkt string) ciphertoken.Introspection {
 	}
 }
 
+// liveDaemonToken is the broker's answer for a Legion daemon's own token: liveNamedToken, of the
+// session the daemon of brokerTestProject writes as (the daemon spells it legion-daemon:<PROJECT>,
+// DaemonSession in packages/daemon/internal/dispatch/client.go), holding legion-status, the scope
+// the broker grants to a daemon's token alone.
+func liveDaemonToken(jkt string) ciphertoken.Introspection {
+	token := liveNamedToken(jkt)
+	token.Session, token.Scope = legionDaemonSessionPrefix+brokerTestProject, ciphertoken.ScopeLegionStatus
+	return token
+}
+
 // machineLoginToken is the broker's answer for a machine login's own access token: the
 // credential the agent-secrets helper holds to ask the broker for everything else. It is live
 // and bound to the caller's key like any other, and the broker names no session, no person and

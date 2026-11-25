@@ -52,9 +52,12 @@ export interface AuthenticatedUser {
  *  `[]` for the shared token and a verified service token, which act as nobody. A read-only
  *  credential, a broker's or a person's, is answered `read` after the scopes it holds
  *  (`DISPATCH_TOKEN_SCOPES`), and `cut` names the past time it reads at, null for none and for
- *  every credential that writes. A Dispatch older than read-only tokens names neither. The kind
- *  stays `agent` for a personal token holding `person`, because the kind names the credential and
- *  not the act; the person it acts for is `owner`. */
+ *  every credential that writes. A Dispatch older than read-only tokens names neither. A Legion
+ *  daemon's own broker token answers `["legion-status"]`: where Dispatch runs with
+ *  `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential write a Legion
+ *  issue's status, take its `legion` label off, and move it out from under every labelled issue.
+ *  The kind stays `agent` for a personal token holding `person`, because the kind names the
+ *  credential and not the act; the person it acts for is `owner`. */
 export type WhoamiResponse = WhoamiUser | WhoamiAgent;
 
 export const UserIssueStateSchema = z
