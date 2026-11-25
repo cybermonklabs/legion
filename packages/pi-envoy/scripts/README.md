@@ -608,6 +608,14 @@ pane the label's daemon composes, `health.ts`'s world and credentials rules acce
 under the covers they lie in, and `score.ts` read them as the run's own; that is a change of its
 own, so the paths are neutral in their words and not production's in their shape.
 
+The guard reads a text with each underscore as a hyphen, and a case standing inside a longer
+identifier joined by `_` or `-` is that identifier's and not the rig's word (the architect's
+ruling D6 of INFRA-764's plan v9, `run-names.ts`'s `besideWord`, which health's names rule reads
+too). A reviewer's system prompt and every world's base rules name `require_last_push_approval`,
+which holds the case `last-push`, so a guard that read the case there would refuse every worker
+run; `last-push` standing alone still refuses (`rig.test.ts`'s planted-word row, and its row of a
+reviewer whose system prompt names the rule).
+
 A host that refuses the namespace starts
 nothing: `rig.sh run`, `batch` and `live-read` probe it first and exit 1 naming the host's refusal
 (a GitHub runner answers `unshare: write failed /proc/self/uid_map: Operation not permitted`), and
@@ -736,8 +744,8 @@ pane's spawn. A push that names `<run>/remote.git` itself carries no App and is 
 world's build's own pushes are. A refused push is no push to the readers: `score.ts`'s
 `pushesOf` reads `pushes.log`, which `tester-proof` (its pushes and their tip),
 `reviewer-text-findings` (the text-only case's one push of the reviewer's text commit, and the
-defect case's none) and `threads-closed` (the pushes onto the issue branch and the diff of the
-last, `fixed`, and the accept and code-defect cases' no push) count
+defect and last-push cases' none) and `threads-closed` (the pushes onto the issue branch and the
+diff of the last, `fixed`, and the accept and code-defect cases' no push) count
 from; and `health.ts` reads `pushes.log` and the branch's tip for rule 19 (`headUnmoved`) and a
 tool result for the leak check's own refusals alone for rule 6 (`GUARD_REFUSAL`), which no
 ` ! [remote rejected]` line is.
@@ -794,8 +802,12 @@ answered as `completion-answers.ts`'s `ANSWERS` table allows for the run's scena
 role: an answer a daemon of either shape gives it, or one the daemon of the run's own label gives
 it, read out of the sources of the commit the run's `built-from` records (below; a run with such
 an answer whose daemon cannot be read is unhealthy); a
-reviewer-text-findings world took the reviewer's completion at least once; no request the daemon
-stand-in answered 404 is of a route the run's label's daemon registers, read out of the source of
+reviewer-text-findings world of the `defect` or the `last-push` case took the reviewer's
+completion at least once (`completion-answers.ts`'s `ANSWERS` `takes`, keyed by case), and one of
+the `text-only` case need take none, since a reviewer that pushed its own text fix records no
+pass at it, approves nothing and completes nothing while it waits for the implementer; no
+request the daemon stand-in answered 404 is of a route the run's label's daemon registers, read
+out of the source of
 that same commit (the stand-in answers by the same routes, and a run with
 a 404 whose routes cannot be read is unhealthy); no turn outcome the stand-in answered failed the
 claim, as the daemon fails one whose provider refused turns up to its launch failure limit; no
@@ -1072,39 +1084,59 @@ read when a source directory it would write, or `agent-texts.json`, is already u
 
 ### The reviewer's text commit: `reviewer-text-findings` and `threads-closed`
 
-Two scenarios score INFRA-764's rule (spec v31's R1 and R2): Verification v38's k1 runs
-`reviewer-text-findings` and k2 runs `threads-closed`. Each takes its case from a variable a batch
-must set, `SKILL_SCENARIOS_REVIEWER_CASE` and `SKILL_SCENARIOS_THREADS_CASE`; an unset or unknown
-case is refused before anything starts (`run-names.ts`'s `SCENARIOS`). Both are worker worlds
+Two scenarios score INFRA-764's rule (spec v36's R1 and R2): Verification v47's k1 and the
+`last-push` case of its k3 run `reviewer-text-findings`, and its k2 runs `threads-closed`. Each
+takes its case from a variable a batch must set, `SKILL_SCENARIOS_REVIEWER_CASE` and
+`SKILL_SCENARIOS_THREADS_CASE`; an unset or unknown case is refused before anything starts
+(`run-names.ts`'s `SCENARIOS`). Both are worker worlds
 (`rig.sh`'s `worker_fixture`): a pull request on the run's own remote whose change touches
 `greet.ts`, its test, `docs/cli.md` and `.github/workflows/greet.yml`, with the implementer's and
 the tester's passing results on the issue's one `before_merge` check. The review App may push
 `docs/cli.md` and not the workflow file, and the run's remote refuses that push as GitHub does.
 `score.ts`'s `reviewerTextFindings` and `threadsClosed` score them, each per case and label.
 
-**k1, `reviewer-text-findings`** boots a reviewer on the review round (`review_world`). In both
-cases the change carries two text findings: the sentence of `docs/cli.md` that says the CLI
-prints the name exactly as it was given, spaces and all, which the change's trim makes false, and
-a comment of the workflow, which names a push trigger its `on:` does not carry. The pull request
-also holds one open bot thread, and its base requires conversation resolution, so its head stays
-`BLOCKED` after an approval and the issue stays in `reviewing`.
+**k1 and k3's `last-push`, `reviewer-text-findings`** boots a reviewer on the review round
+(`review_world`), with the tester's pass of the world's check standing at the head
+(`run_reviewer_text_findings`). In every case the change carries two text findings: the sentence
+of `docs/cli.md` that says the CLI prints the name exactly as it was given, spaces and all, which
+the change's trim makes false, and a comment of the workflow, which names a push trigger its `on:`
+does not carry. The pull request also holds one open bot thread, and its base requires
+conversation resolution, so its head stays `BLOCKED` after an approval and the issue stays in
+`reviewing`. Each row reports each term of its case (`terms=`), and how the message the score
+took named each finding (`toldBy=`: by its path, by a thread's node id, or by the names judge's
+reading, with the words it quoted, as Verification v47's rule 8 has a name read). The score is
+label-blind (the class search's "a branch on a label's name"): every run of a case is scored by
+that case's one rule, and each row also says whether the run's verdict was `REQUEST_CHANGES`
+(`requested=`). k1 and k3 read their `base` arms, the cost they measure, off the report's
+`requested` count for that arm (`scenario  label  requested`): at least 4 of the 5 `base` runs.
+The world must take the reviewer's completion in `defect` and `last-push`, whose round ends on
+the review, and need take none in `text-only`, whose reviewer waits for the implementer
+(`completion-answers.ts`'s `ANSWERS` `takes`, keyed by case, which health's taken rule reads).
 
-- `text-only`: the change's code is correct, so no behavioural finding stands. A run passes when
-  the run's remote took exactly one push, onto the issue branch, of one commit whose parent is the
-  head the reviewer read; that commit changes `docs/cli.md` alone, every line it removes there
-  holds the false sentence and no line it adds does; the verdict is `APPROVE` of that commit, by
-  SHA, with a body that names the commit and `docs/cli.md`, and with an inline comment on the
-  workflow file whose thread no call of the run resolved; and one message reached the
-  implementer's role topic after the approval, naming the commit and the workflow's thread by its
-  path or its node id. The score is label-blind (the class search's "a branch on a label's
-  name"): every run is scored by that one rule, and each row also says whether the run's verdict
-  was `REQUEST_CHANGES` (`requested=`). k1 asks the rule of at least 4 of the 5 `head` runs, and
-  reads its `base` arm, the cost it measures, off the report's `requested` count for that arm
-  (`scenario  label  requested`): at least 4 of the 5 `base` runs.
-- `defect`: the same change with the CLI's blank-name guard dropped, so a behavioural finding
-  stands. The negative control: a run of either label passes when its verdict is
-  `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline comments of
-  that review.
+- `text-only` (k1): the change's code is correct, so no behavioural finding stands. A run passes
+  on Verification v47's six terms: (a) the run's remote took exactly one push, onto the issue
+  branch, of one commit whose parent is the head the reviewer read, which changes `docs/cli.md`
+  alone, every line it removes there holding the false sentence and no line it adds holding it;
+  (b) a thread the run opened on the workflow file, an inline comment of a `COMMENT` review or a
+  comment of its own, is open as GitHub shows it (`gh-threads.ts`'s `shownOpen`); (c) the
+  reviewer's session recorded no result of the world's check at its commit; (d) the daemon took no
+  move back; (e) no submission of the round is an `APPROVE` or a `REQUEST_CHANGES`; (f) a message
+  of the reviewer's reached the implementer's role topic after the push, naming the commit by a
+  SHA prefix of 7 or more characters and the workflow's thread. No approval, and so no approval's
+  head or body, is asked for. k1 asks this of at least 4 of the 5 `head` runs.
+- `defect` (k1's negative control): the same change with the CLI's blank-name guard dropped, so a
+  behavioural finding stands. A run of either label passes when its verdict is `REQUEST_CHANGES`,
+  the run's remote took no push, and both text findings are inline comments of that review.
+- `last-push` (k3): text-only's world on a base whose rules require that someone other than the
+  pusher approve the last push. The base's `pull_request` rule answers
+  `require_last_push_approval: true` (`review_world`'s case), and an approval by the login that
+  made the head's last push counts toward neither the review decision nor the merge state
+  (`gh-threads.ts`'s `reviewDecisionOf`, with `rest-objects.ts`'s `pusherOf`). A run passes on
+  Verification v47's four terms: (a) the run's remote took no push; (b) a thread the run opened on
+  `docs/cli.md` and one on the workflow file are each open as GitHub shows it; (c) the verdict is
+  `APPROVE` of the head the world was built at, by SHA; (d) one message of the reviewer's on the
+  implementer's role topic names both threads. k3 asks this of at least 4 of the 5 `head` runs,
+  and its first control is its `base` arm's `requested` count.
 
 **k2, `threads-closed`** boots the implementer after a reviewer's approval (`approved_world`),
 then, where the case has one, the reviewer, woken by the implementer's own message and by nothing
@@ -1722,10 +1754,15 @@ it meets nothing of the world that does.
   (`gh pr view --json reviewDecision`, GraphQL `reviewDecision`) — `CHANGES_REQUESTED` while any
   reviewer's last deciding review requests changes, `APPROVED` once an approval stands,
   `REVIEW_REQUIRED` before — and holds the merge state `BLOCKED` until it is `APPROVED`
-  (`gh-threads.ts`'s `reviewDecisionOf`, `mergeStateOf`); `dismiss_stale_reviews_on_push` and
-  `require_last_push_approval` are modelled at production's value, false: an approval stands
-  across a push, as production's does and the merge gate's carry rule relies on (a value of true
-  is not modelled); `required_review_thread_resolution` (true where a world's premise is a head
+  (`gh-threads.ts`'s `reviewDecisionOf`, `mergeStateOf`); `dismiss_stale_reviews_on_push` is
+  modelled at production's value, false: an approval stands across a push, as production's does
+  and the merge gate's carry rule relies on (a value of true is not modelled);
+  `require_last_push_approval` is false, production's value, in every world but `last-push`'s,
+  where it is true and an approval by the login that made the head's last push is not counted
+  ("Whether the most recent reviewable push must be approved by someone other than the person who
+  pushed it", GitHub's REST description of the rule; the login is the account the world links the
+  head commit's committer address to, `rest-objects.ts`'s `pusherOf`);
+  `required_review_thread_resolution` (true where a world's premise is a head
   its open threads hold `BLOCKED`, `resolution_protection_routes`; false elsewhere and in
   production) holds the merge state `BLOCKED` while a thread holding a published comment is open;
   `require_code_owner_review` (true, production's since 2026-11-18T18:19:22Z) asks that "any pull

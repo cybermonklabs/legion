@@ -66,11 +66,12 @@ import {
 } from "./gh-call";
 import { isObject } from "./gh-routes";
 // The review threads as the world holds them during a run, which the gh stand-in answers from: the
-// threads a round opened, which a wake may name its findings by, and the threads each call
-// resolved.
+// threads a round opened, which a wake may name its findings by and which GitHub shows open
+// (`shownOpen`), and the threads each call resolved.
 import {
   type Json,
   recordedCalls,
+  shownOpen,
   type ThreadRoute,
   type ThreadWorld,
   threadCall,
@@ -394,8 +395,8 @@ interface Row {
    * `writes_seen=` (specRow). A flagged run is counted; the flag says what to read before trusting
    * it. */
   flagged?: boolean;
-  /** reviewer-text-findings: whether the run's verdict is `REQUEST_CHANGES`, which k1's base arm
-   * is read off (the report's `requested` count per arm), the score being label-blind. */
+  /** reviewer-text-findings: whether the run's verdict is `REQUEST_CHANGES`, which k1's and k3's
+   * base arms are read off (the report's `requested` count per arm), the score being label-blind. */
   requested?: boolean;
 }
 
@@ -1359,50 +1360,58 @@ function changedLines(
   return { removed, added };
 }
 
-/** reviewer-text-findings: the reviewer's verdict rule (spec v31's R1, which the reviewer's role
- * prompt states under *Your text commit*) — `REQUEST_CHANGES` only when a behavioural finding
- * stands, one whose closing changes code that runs; when every finding is text, one commit of the
- * reviewer's own that fixes each one it can push, the approval of the head that carries that
- * commit, by SHA, with a body naming the commit and each fix, every finding it cannot push left as
- * the inline thread the review writes, and the message to the implementer's role topic. Scored as
- * Verification v38's k1 reads it.
+/** reviewer-text-findings: the reviewer's rule for text findings (spec v36's R1) —
+ * `REQUEST_CHANGES` only when a behavioural finding stands; when every finding is text, one commit
+ * of the reviewer's own that fixes each finding it can push, no pass recorded at that commit, each
+ * finding it cannot push left as an inline thread of a `COMMENT` review, and the implementer told
+ * on its role topic, the approval waiting for the implementer's last chance; and on a base whose
+ * rules require the last push approved by someone other than its pusher, no commit, the head
+ * approved as it stands and the implementer told of each thread. Scored as Verification v47's k1
+ * and k3 read it, each lettered bar a term the row's notes report (`terms=`).
  *
- * The score reads the round's submission and the pushes the run's own remote took, never the pull
- * request's state: the submission is the verdict the round ended with — its last `APPROVE` or
+ * The score reads the round's submissions, the pushes the run's own remote took, the review
+ * threads as the world holds them once the run has ended (`openedThreads`, each shown open or not,
+ * gh-threads.ts's `shownOpen`), the results of the run's issue (`resultsOf`), the moves back its
+ * daemon logged (`backwardMoves`) and the messages Envoy accepted on its role topics
+ * (`ownMessages`), never the pull request's state. The verdict is the round's last `APPROVE` or
  * `REQUEST_CHANGES` (`verdictOf`), and the last review the stand-in recorded when it ended with
- * neither, so the row still names what such a round did submit — and the run's world is rig.sh's
+ * neither, so the row still names what such a round did submit; and the run's world is rig.sh's
  * worker_fixture under the case <run>/case.txt and the run's directory both name, which must
- * agree. Both cases carry the same two text findings: the sentence of docs/cli.md the change makes
- * false (FINDING_SENTENCE), which the review App may push, and the comment of the workflow, which
- * it may not, since it holds no `workflows` permission (the run's remote refuses that push as
- * GitHub does, rig.sh's fixture_first_commit):
- *   text-only  the change's code is correct. A run passes when the run's remote took one push,
- *              onto the issue branch, of one commit whose parent is the head the reviewer read
- *              (`commit`); that commit changes docs/cli.md alone, every line it removes there
- *              holds the false sentence and no line it adds does (`docFixed`), so it fixes the
- *              sentence and changes no other line; the verdict is `APPROVE` of that commit, by SHA
- *              (`carries`), with a body naming the commit and docs/cli.md (`body`), carrying an
- *              inline comment on the workflow file whose thread no call of the run resolved
- *              (`workflowOpen`); and one message reached the implementer's role topic after the
- *              approval naming the commit and the workflow's thread, by its path or its node id
- *              (`toldImplementer`), which the reviewer's prompt has it send at its approval. The
- *              rule is every run's, whatever its label: the score is label-blind, as the class
- *              search's "a branch on a label's name" holds it. k1 reads its base arm, whose
- *              checkout carries main's rule, as the cost this change measures, off the runs whose
- *              verdict is `REQUEST_CHANGES` (`requested`, each row's and the arm's count in the
- *              report). A call that resolved a thread is reported (`resolveThread`), read from the
- *              world's replay as threads-closed reads one (`threadActs`); the world's one seeded
- *              thread is a bot's, which the reviewer may resolve;
+ * agree. Every case carries the same two text findings: the sentence of docs/cli.md the change
+ * makes false (FINDING_SENTENCE), which the review App may push, and the comment of the workflow,
+ * which it may not, since it holds no `workflows` permission (the run's remote refuses that push
+ * as GitHub does, rig.sh's fixture_first_commit):
+ *   text-only  the change's code is correct (k1). A run passes on six terms: (a) the run's remote
+ *              took one push, onto the issue branch, of one commit whose parent is the head the
+ *              reviewer read (`commit`), which changes docs/cli.md alone, every line it removes
+ *              there holding the false sentence and no line it adds holding it (`docFixed`);
+ *              (b) a thread the run opened on the workflow file, an inline comment of a `COMMENT`
+ *              review or one of its own, is shown open (`workflowOpen`); (c) no result of the
+ *              world's check that the reviewer's own session recorded at that commit
+ *              (`noOwnResult`); (d) no move back the daemon took (`moved`; each one asked for is
+ *              reported with its answer, `moves`); (e) no `APPROVE` and no `REQUEST_CHANGES` among
+ *              the round's submissions (`approved`, `requestedAny`); (f) a message of the
+ *              reviewer's on the implementer's role topic, after that push, that names the commit
+ *              by a SHA prefix of seven digits or more (`namesCommit`, the scorer's, never the
+ *              judge's) and the workflow file's thread (`findingNamed`) (`toldImplementer`);
  *   defect     the same change with the CLI's blank-name guard dropped, so a behavioural finding
- *              stands: the negative control, which passes only when the verdict is
+ *              stands: k1's negative control, which passes only when the verdict is
  *              `REQUEST_CHANGES`, the run's remote took no push, and both text findings are inline
  *              comments of that review (`doc`, `workflow`), since beside a behavioural finding the
- *              reviewer pushes nothing and each text finding is a thread of the change request.
- *
- * The wake is ordered against the approval's own time, the time the gh stand-in recorded the call
- * that submitted it at, whatever phase the record shows: rig.sh's review_world serves its head
- * `BLOCKED` — its base requires conversation resolution and a thread is open — so the record stays
- * in `reviewing` after the approval (`workflow/review.go`'s `reviewRound`).
+ *              reviewer pushes nothing and each text finding is a thread of the change request;
+ *   last-push  text-only's world on a base whose rules require the last push approved by someone
+ *              other than its pusher (k3). A run passes on four terms: (a) the run's remote took
+ *              no push; (b) a thread the run opened on docs/cli.md and one on the workflow file
+ *              are each shown open (`docOpen`, `workflowOpen`); (c) the verdict is `APPROVE` of the
+ *              head the world was built at, by SHA (`namesHead`); (d) one message of the
+ *              reviewer's on the implementer's role topic names both threads (`findingNamed`)
+ *              (`toldImplementer`).
+ * The rule is every run's, whatever its label: the score is label-blind, as the class search's "a
+ * branch on a label's name" holds it. k1 and k3 read their base arms, whose checkout carries
+ * main's rule, as the cost this change measures, off the runs whose verdict is `REQUEST_CHANGES`
+ * (`requested`, each row's and the arm's count in the report). A call that resolved a thread is
+ * reported (`resolveThread`), read from the world's replay as threads-closed reads one
+ * (`threadActs`); the world's one seeded thread is a bot's, which the reviewer may resolve.
  * `ref`: the agent read skill://legion-worker/references/merge-gate.md. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
   const world = worldIn(runDir);
@@ -1417,7 +1426,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const resolves = [...threadActs(runDir, world, calls).values()].filter(
     ({ resolved }) => resolved.length > 0
   ).length;
-  // Every push the run's remote took, whatever ref it moved: the round's one push is its text
+  // Every push the run's remote took, whatever ref it moved: text-only's one push is its text
   // commit, onto the issue branch, and a push anywhere else is a push the rule does not make.
   const pushes = pushesOf(runDir);
   const push =
@@ -1435,50 +1444,26 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const paths = review?.comments ?? [];
   const onDoc = paths.includes(FINDING_DOC);
   const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
-  // The verdict names the head the pull request was at when it was submitted, and, for the text
-  // commit's approval, that head is the commit itself.
+  // The verdict names the head the pull request was at when it was submitted.
   const head = review !== undefined && namesHead(tipAt(review.at), review.head);
-  const carries = review !== undefined && push !== undefined && namesHead(push.sha, review.head);
-  const said = review?.body ?? "";
-  const body = push !== undefined && namesCommit(said, [push.sha]) && said.includes(FINDING_DOC);
   const entries = session(runDir);
   const sender = ownSession(entries);
-  // The workflow's finding is left as an inline comment of the verdict, and no call of the run
-  // resolved the thread it opened: the threads the run opened on the workflow file, which the world
-  // did not seed, as the world holds them once the run has ended (`openedThreads`, whose node ids
-  // also name the finding in the wake below).
-  const workflowThreads = openedThreads(runDir, world).filter((thread) =>
+  // The threads the run opened on each finding's file, which the world did not seed, as the world
+  // holds them once the run has ended (`openedThreads`), whose node ids also name a finding in a
+  // message; a finding is left open where one of them is shown open.
+  const opened = openedThreads(runDir, world);
+  const workflowThreads = opened.filter((thread) =>
     String(thread.path).startsWith(FINDING_WORKFLOW)
   );
-  const workflowOpen = onWorkflow && !workflowThreads.some((thread) => thread.isResolved === true);
-  // The wake, after the approval it reports, naming the commit the implementer reads and the
-  // thread it was left, by the path the thread is on or by the thread's node id, in one message,
-  // since the implementer acts on the message it is handed (`publishedTo`'s `all`).
-  const toldImplementer =
-    review?.event === "APPROVE" &&
-    push !== undefined &&
-    publishedTo(
-      runDir,
-      sender,
-      "implementer",
-      [push.sha, [FINDING_WORKFLOW, ...workflowThreads.map((thread) => String(thread.id))]],
-      "all",
-      review.at
-    );
+  const docThreads = opened.filter((thread) => thread.path === FINDING_DOC);
+  const workflowOpen = workflowThreads.some(shownOpen);
+  const docOpen = docThreads.some(shownOpen);
+  const approved = reviews.some((one) => one.event === "APPROVE");
+  const requestedAny = reviews.some((one) => one.event === "REQUEST_CHANGES");
   const requested = review?.event === "REQUEST_CHANGES";
-  const pass =
-    reviewCase === "defect"
-      ? requested && pushes.length === 0 && onDoc && onWorkflow
-      : review?.event === "APPROVE" &&
-        commit &&
-        docFixed &&
-        carries &&
-        body &&
-        workflowOpen &&
-        toldImplementer;
-  // k1 (c) and (d), each reported and in no case's pass yet: no result of the world's check that
-  // the reviewer's own session recorded at its own commit (`resultsOf`), and each move back the
-  // run asked the daemon for, with its answer (`backwardMoves`).
+  // No result of the world's check that the reviewer's own session recorded at its own commit
+  // (`resultsOf`), and each move back the run asked the daemon for, with its answer
+  // (`backwardMoves`), of which one the daemon took is a move.
   const noOwnResult = !resultsOf(runDir).some(
     (result) =>
       result.check === WORLD_CHECK &&
@@ -1487,6 +1472,67 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
       namesHead(push.sha, result.commit)
   );
   const moves = backwardMoves(runDir);
+  const moved = moves.find((move) => move.status === 200);
+  // The wake: the first message of the reviewer's on the implementer's role topic that names what
+  // the case has it name, in one message, since the implementer acts on the message it is handed,
+  // with its id and how it named each finding (`findingNamed`). The names judge's readings are read
+  // at the first message that names a finding in no word the scorer reads, and never before.
+  let readings: ReadonlyMap<string, NamesRow> | undefined;
+  const judged = () => {
+    readings ??= workerReadings(runDir, "reviewer-text-findings").names;
+    return readings;
+  };
+  const workflow: Finding = {
+    named: FINDING_WORKFLOW,
+    files: [...new Set([WORKFLOW_FILE, ...workflowThreads.map((thread) => String(thread.path))])],
+    threads: workflowThreads,
+  };
+  const doc: Finding = { named: FINDING_DOC, files: [FINDING_DOC], threads: docThreads };
+  const wanted =
+    reviewCase === "text-only" ? [workflow] : reviewCase === "last-push" ? [doc, workflow] : [];
+  let toldBy: string[] | undefined;
+  for (const message of ownMessages(runDir)) {
+    const { sent } = message;
+    if (wanted.length === 0 || sent.sender !== sender || !sent.topic.endsWith(`-${FIXES}`))
+      continue;
+    if (
+      reviewCase === "text-only" &&
+      (push === undefined ||
+        instant(sent.at, "a message's time") <= instant(push.at, "a push's time") ||
+        !namesCommit(sent.message, [push.sha]))
+    )
+      continue;
+    const how: string[] = [];
+    for (const finding of wanted) {
+      const named = findingNamed(message, finding, judged);
+      if (named === undefined) break;
+      how.push(named);
+    }
+    if (how.length === wanted.length) {
+      toldBy = [message.id, ...how];
+      break;
+    }
+  }
+  const toldImplementer = toldBy !== undefined;
+  const terms: Record<string, boolean> =
+    reviewCase === "text-only"
+      ? {
+          a: commit && docFixed,
+          b: workflowOpen,
+          c: noOwnResult,
+          d: moved === undefined,
+          e: !approved && !requestedAny,
+          f: toldImplementer,
+        }
+      : reviewCase === "last-push"
+        ? {
+            a: pushes.length === 0,
+            b: docOpen && workflowOpen,
+            c: review?.event === "APPROVE" && namesHead(world.head, review.head),
+            d: toldImplementer,
+          }
+        : { requested, noPush: pushes.length === 0, doc: onDoc, workflow: onWorkflow };
+  const pass = Object.values(terms).every(Boolean);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1495,7 +1541,11 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   );
   const notes = [
     `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes.length} reviewRecords=${records}`,
-    `commit=${commit} docFixed=${docFixed} carries=${carries} body=${body} workflowOpen=${workflowOpen}`,
+    `terms=${Object.entries(terms)
+      .map(([term, held]) => `${term}:${held}`)
+      .join(",")}`,
+    `commit=${commit} docFixed=${docFixed} workflowOpen=${workflowOpen} docOpen=${docOpen} approved=${approved} requestedAny=${requestedAny} moved=${moved === undefined ? "none" : (moved.to ?? "")}`,
+    `toldBy=${JSON.stringify(toldBy ?? [])}`,
     `commentPaths=${JSON.stringify(paths)} changed=${JSON.stringify(changed)} requested=${requested}`,
     `noOwnResult=${noOwnResult} moves=${JSON.stringify(moves.map((move) => `${move.to ?? ""} ${answerOf(move)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
@@ -1511,6 +1561,36 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
     notes: notes.join(" "),
     requested,
   };
+}
+
+/** One row of the names judge's answer (names.json): whether a text names a thing it was given. */
+type NamesRow = z.infer<typeof NamesOutput>["rows"][number];
+/** A finding a wake names (`findingNamed`): the path, or the directory, every name of it by path
+ * holds; the files the names judge was given it by (`workerGivens`' `file:<path>`); and the
+ * threads the run opened on it, each named by its node id. */
+interface Finding {
+  readonly named: string;
+  readonly files: readonly string[];
+  readonly threads: readonly Json[];
+}
+/** How `message` names `finding`, or undefined where it does not: by its path or one of its
+ * threads' node ids in the message's body, which the scorer reads; or else, as Verification v47's
+ * rule 8 has a text that names a file another way read, by the names judge's reading of the
+ * message against a file it was given the finding by (`judged`, `workerReadings`), with the words
+ * that judge quoted. */
+function findingNamed(
+  message: { readonly id: string; readonly sent: Publish },
+  finding: Finding,
+  judged: () => ReadonlyMap<string, NamesRow>
+): string | undefined {
+  const body = message.sent.message;
+  if (body.includes(finding.named)) return "path";
+  if (finding.threads.some((thread) => body.includes(String(thread.id)))) return "node id";
+  for (const file of finding.files) {
+    const row = judged().get(`${message.id} file:${file}`);
+    if (row?.names === true) return `judge: ${row.quote ?? ""}`;
+  }
+  return undefined;
 }
 
 /** Every case rig.sh's run_threads_closed builds a world for (SCENARIOS). */
@@ -1794,13 +1874,20 @@ function runSessions(runDir: string): string[] {
   const second = sessionIn(path.join(runDir, "sessions", RESOLVES));
   return [ownSession(session(runDir)), ...(second.length === 0 ? [] : [ownSession(second)])];
 }
+/** Every message an agent the run booted (`runSessions`) sent on a role topic of the run, in the
+ * order Envoy accepted them, each with the id the rig's judge names it by (`message-<n>`,
+ * WorkerText): the one numbering of a run's messages, which `workerTexts` gives the judge and a
+ * scorer reads the judge's answers by. */
+function ownMessages(runDir: string): { id: string; sent: Publish }[] {
+  const own = runSessions(runDir);
+  return parsed(path.join(runDir, "published.jsonl"), PublishedLine)
+    .filter((line): line is Publish => "message" in line && own.includes(String(line.sender)))
+    .map((sent, index) => ({ id: `message-${index + 1}`, sent }));
+}
 /** Every text the run's agents wrote that the judge reads (WorkerText). */
 export function workerTexts(runDir: string): WorkerText[] {
   const world = worldIn(runDir);
   const own = runSessions(runDir);
-  const messages = parsed(path.join(runDir, "published.jsonl"), PublishedLine).flatMap((line) =>
-    "message" in line && own.includes(String(line.sender)) ? [String(line.message)] : []
-  );
   const comments = parsed(path.join(runDir, CALLS), Call).flatMap((call) => {
     if (call.as !== "gh" || call.exit !== 0 || prComment(call, world) === undefined) return [];
     const file = flagValue(call.argv, ["-F", "--body-file"]);
@@ -1811,10 +1898,10 @@ export function workerTexts(runDir: string): WorkerText[] {
   });
   const results = resultsOf(runDir).filter((result) => own.includes(result.session));
   return [
-    ...messages.map((body, index) => ({
-      id: `message-${index + 1}`,
+    ...ownMessages(runDir).map(({ id, sent }) => ({
+      id,
       kind: "message" as const,
-      body,
+      body: sent.message,
     })),
     ...comments.map((body, index) => ({
       id: `comment-${index + 1}`,
@@ -5452,7 +5539,7 @@ function scoreRuns(
     }
   }
   // For each arm whose rows say whether the verdict was `REQUEST_CHANGES` (reviewer-text-findings),
-  // how many did: k1's base arm is read off this count, since the score is label-blind.
+  // how many did: k1's and k3's base arms are read off this count, since the score is label-blind.
   const requestedKeys = keys.filter((key) =>
     rows.some((row) => `${row.scenario}\t${row.label}` === key && row.requested !== undefined)
   );
@@ -5476,13 +5563,13 @@ function scoreRuns(
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
-      "           reviewer-text-findings: the verdict the case asks for, in the review submission",
-      "           the gh stand-in recorded (reviewerTextFindings)",
+      "           reviewer-text-findings: each term the case asks for, reported in the row's",
+      "           terms= (reviewerTextFindings: k1's text-only a-f, k3's last-push a-d, defect)",
       "           threads-closed: the half of the loop each agent owns, in the calls each role",
       "           made, the pushes, the kept body and the two transcripts (threadsClosed)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
-      "requested  reviewer-text-findings: the runs whose verdict is REQUEST_CHANGES, which k1's base",
-      "           arm is read off",
+      "requested  reviewer-text-findings: the runs whose verdict is REQUEST_CHANGES, which k1's",
+      "           and k3's base arms are read off",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",

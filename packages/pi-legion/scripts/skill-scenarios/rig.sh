@@ -160,12 +160,15 @@
 #                   which moves the pull request's head, and refuses one that changes the
 #                   workflow with GitHub's line (fixture_first_commit).
 #                   SKILL_SCENARIOS_REVIEWER_CASE names the world: `text-only`, the change above,
-#                   whose code is correct, and `defect`, that change with the CLI's blank-name
-#                   guard dropped — a finding whose closing changes code that runs — which is the
-#                   negative control. The case is in the run's record (cmd_run), whose name,
+#                   whose code is correct, which k1 measures; `defect`, that change with the CLI's
+#                   blank-name guard dropped — a finding whose closing changes code that runs —
+#                   which is k1's negative control; and `last-push`, text-only's world whose base
+#                   rules require someone other than the last push's pusher to approve it
+#                   (`require_last_push_approval: true`, base_ruleset_routes), which k3 measures.
+#                   The case is in the run's record (cmd_run), whose name,
 #                   reviewer-text-findings-<case>-<label>-<n>, keeps each case's batch's runs
 #                   numbered apart, and never in its world. `base`, main's checkout, is the arm k1
-#                   reads as the cost: a base run's `REQUEST_CHANGES` on these text findings.
+#                   and k3 read as the cost: a base run's `REQUEST_CHANGES` on these text findings.
 #                   Scored by reviewerTextFindings, counted per case and label.
 #   threads-closed  The implementer's last chance at a reviewer's text commit, and the reviewer's
 #                   answer to its push (spec v31's R2). One run boots its agents against one
@@ -328,8 +331,8 @@
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
-#   SKILL_SCENARIOS_REVIEWER_CASE reviewer-text-findings: text-only or defect (required for that
-#                                 scenario)
+#   SKILL_SCENARIOS_REVIEWER_CASE reviewer-text-findings: text-only, defect or last-push (required
+#                                 for that scenario)
 #   SKILL_SCENARIOS_THREADS_CASE  threads-closed: accept, correct or code-defect (required for that
 #                                 scenario)
 #   SKILL_SCENARIOS_POSTGRES_URL  a Postgres the batch uses in place of the container it would
@@ -3173,20 +3176,20 @@ worker_routes() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail. What a push to legion/<key> means is each world's
 # own, said below: tester-proof's ends with no commit of the tester's own and fails one; the
-# review round's text-only world asks for the reviewer's one text commit, and its defect world
-# fails any push; and the threads-closed worlds ask for the implementer's one push of text in
-# correct and for none in accept and code-defect.
+# review round's text-only world asks for the reviewer's one text commit, and its defect and
+# last-push worlds fail any push; and the threads-closed worlds ask for the implementer's one push
+# of text in correct and for none in accept and code-defect.
 #
-# <case>, empty for tester-proof, is the cased scenario's case: reviewer-text-findings' text-only
-# and defect, and threads-closed's accept, correct and code-defect. Each names one of the three
-# worlds below, and whether the CLI's blank-name guard, which R2 of the seeded spec asks for, is
-# dropped (case_guard).
+# <case>, empty for tester-proof, is the cased scenario's case: reviewer-text-findings' text-only,
+# defect and last-push, and threads-closed's accept, correct and code-defect. Each names one of the
+# three worlds below, the case it is built for, and whether the CLI's blank-name guard, which R2
+# of the seeded spec asks for, is dropped (case_guard).
 worker_fixture() {
   local index=$1 start=$2 case_name=${3:-} guard
   guard=$(case_guard "$case_name")
   case $case_name in
   '') tester_proof_world "$index" "$start" ;;
-  text-only | defect) review_world "$index" "$start" "$guard" ;;
+  text-only | defect | last-push) review_world "$index" "$start" "$guard" "$case_name" ;;
   accept | correct | code-defect) approved_world "$index" "$start" "$guard" "$case_name" ;;
   *) fail "worker_fixture: '$case_name' is no case of reviewer-text-findings or threads-closed" ;;
   esac
@@ -3194,7 +3197,8 @@ worker_fixture() {
 
 # case_guard CASE prints fixture_cli's GUARD for CASE's world: `dropped` for the two negative
 # controls, defect and code-defect, whose CLI greets a blank name, and nothing for every other
-# world. It is one answer for two readers, because the world's code and the issue's check go
+# world, text-only's and last-push's among them. It is one answer for two readers, because the
+# world's code and the issue's check go
 # together: worker_fixture builds the code with it, and worker_run_world gives the issue the check
 # that missed the blank name where the code dropped the guard (seed.ts tester-proof's `no-name`),
 # since a check that covered the blank name would hold a recorded pass the head fails.
@@ -3264,8 +3268,9 @@ round_world() {
   fixture_workspace
 }
 
-# The world a review round reads, which reviewer-text-findings' two cases build: the round's base
-# world (round_world), whose two findings this round is the first to read, and the pull request's
+# review_world INDEX START GUARD [CASE] builds the world a review round reads, which
+# reviewer-text-findings' three cases build: the round's base world (round_world), whose two
+# findings this round is the first to read, and the pull request's
 # one unresolved bot thread, whose finding is a wording nit the reviewer answers and closes
 # nothing for. The bot left it as GitHub leaves every inline comment, in a review of its own
 # (COMMENTED, with no body), so the reviews list holds that review and the thread's comment is a
@@ -3285,9 +3290,14 @@ round_world() {
 # owns at the approval is the one step that starts the fix (review 5887659447, finding 3). The
 # thread's comment names its bot as GitHub's GraphQL names one, a `Bot` by its App's slug with no
 # `[bot]`, and its review names it as the REST API does, with its `[bot]` (gh-threads.ts's
-# `actorOf`, measured on 2026-11-18).
+# `actorOf`, measured on 2026-11-18). CASE `last-push` is text-only's world (GUARD empty) on a
+# base whose rules require the last push approved by someone other than its pusher
+# (`require_last_push_approval: true`, resolution_protection_routes): there the reviewer pushes no
+# fix, and the world's head is the implementer's push, which the tester's pass stands at. Every
+# other CASE, and none, is a base that asks no approval of the last push, production's.
 review_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body threads reviews
+  local index=$1 start=$2 guard=$3 last_push=false src when worker_pr worker_pr_url C1 body threads reviews
+  [ "${4:-}" != last-push ] || last_push=true
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
   threads=$(jq -n '[{id:"PRRT_kwDOrig0001", isResolved:false, path:"greet.test.ts", line:4, review:4001,
@@ -3295,7 +3305,7 @@ review_world() {
       body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}]')
   reviews=$(jq -n --arg head "$C1" '[{id:4001, state:"COMMENTED", commit_id:$head,
     author:{login:"style-bot[bot]"}, user:{login:"style-bot[bot]"}, body:""}]')
-  fixture_write "$(resolution_protection_routes)" "$reviews" '{}' "$threads"
+  fixture_write "$(resolution_protection_routes "$last_push")" "$reviews" '{}' "$threads"
 }
 
 # The world a reviewer's approval leaves behind, which threads-closed's three cases build: the
@@ -4355,30 +4365,35 @@ concluded_checks() {
        summary:("[View all branch alerts](/" + $repo + "/security/code-scanning?query=pr%3A" + $pr + "+tool%3ACodeQL+is%3Aopen).")}}]'
 }
 
-# base_ruleset_routes [RESOLUTION] prints the routes of the one repository ruleset that protects
-# every world's base ($worker_base of $worker_repo), as a ruleset alone protects production's
-# `main`: active on the default branch, holding production's seven rules in production's order,
-# each with production's parameters in production's kinds and at production's values
-# (production-shapes.json's ruleset reads of 2026-11-19T05:35:00Z: a rule's parameters are the
-# deployment's configuration, not a value that names production), but for the checks and the
-# tool, which are the ones the world's head reports, and RESOLUTION. RESOLUTION, `true` or
-# `false` (the default, production's), is whether the base requires review threads resolved,
+# base_ruleset_routes [RESOLUTION [LAST_PUSH]] prints the routes of the one repository ruleset that
+# protects every world's base ($worker_base of $worker_repo), as a ruleset alone protects
+# production's `main`: active on the default branch, holding production's seven rules in
+# production's order, each with production's parameters in production's kinds and at production's
+# values (production-shapes.json's ruleset reads of 2026-11-19T05:35:00Z: a rule's parameters are
+# the deployment's configuration, not a value that names production), but for the checks and the
+# tool, which are the ones the world's head reports, RESOLUTION and LAST_PUSH. RESOLUTION, `true`
+# or `false` (the default, production's), is whether the base requires review threads resolved,
 # which a world whose premise is a head its open threads hold `BLOCKED` asks for
-# (resolution_protection_routes). The rules, and what the world does with each
+# (resolution_protection_routes). LAST_PUSH, `true` or `false` (the default, production's), is the
+# `pull_request` rule's `require_last_push_approval`, which last-push's world asks for
+# (review_world): the answer keeps the shape of those reads, and only that parameter's value
+# changes. The rules, and what the world does with each
 # (packages/pi-envoy/scripts/README.md lists every rule and every parameter nothing acts on):
 #   - `deletion`, `non_fast_forward`, `required_linear_history`: the run's remote refuses a
 #     deletion of the base, a push to it that is no fast-forward and one carrying a merge commit,
 #     as GitHub refuses them, and every other update of it (fixture_first_commit);
 #   - `pull_request`: one approval required, which decides the review decision and holds the merge
-#     state `BLOCKED` until it stands; no approval dismissed on a push and none asked of the last
-#     push, so an approval stands across the implementer's push; threads resolved where RESOLUTION
-#     says so (gh-threads.ts's `reviewDecisionOf`, `mergeStateOf`). Its code owner review, true as
-#     production's has been since 2026-11-18T18:19:22Z, asks the approval of a code owner of each
-#     changed file a CODEOWNERS file of the base names one for, and the world's repository holds
-#     none, so it asks no approval of its own (`reviewDecisionOf`). Its extra approval for
-#     unattributed changes is asked only of a pull request Copilot opened with no human
-#     collaborator (GitHub's REST description), which no world's is: the implement App's bot opens
-#     it, so nothing acts on it;
+#     state `BLOCKED` until it stands; no approval dismissed on a push, so an approval stands
+#     across the implementer's push; where LAST_PUSH says so, no approval by the account that made
+#     the head's last push counts (GitHub's REST description: "the most recent reviewable push
+#     must be approved by someone other than the person who pushed it"); threads resolved where
+#     RESOLUTION says so (gh-threads.ts's `reviewDecisionOf`, `mergeStateOf`). Its code owner
+#     review, true as production's has been since 2026-11-18T18:19:22Z, asks the approval of a
+#     code owner of each changed file a CODEOWNERS file of the base names one for, and the world's
+#     repository holds none, so it asks no approval of its own (`reviewDecisionOf`). Its extra
+#     approval for unattributed changes is asked only of a pull request Copilot opened with no
+#     human collaborator (GitHub's REST description), which no world's is: the implement App's bot
+#     opens it, so nothing acts on it;
 #   - `required_status_checks`: the checks GitHub Actions reports on the head (concluded_checks,
 #     `test` and `lint`), by its integration id, which hold the merge state `BLOCKED` until they
 #     pass;
@@ -4398,13 +4413,13 @@ concluded_checks() {
 # node id and times are the world's own.
 base_ruleset_routes() {
   jq -n --arg repo "$worker_repo" --arg base "$worker_base" --argjson runs "$(concluded_checks)" \
-    --argjson resolution "${1:-false}" '
+    --argjson resolution "${1:-false}" --argjson last_push "${2:-false}" '
     {id:1, name:$base, target:"branch", source_type:"Repository", source:$repo, enforcement:"active",
      conditions:{ref_name:{exclude:[], include:["~DEFAULT_BRANCH"]}},
      rules:[{type:"deletion"}, {type:"non_fast_forward"}, {type:"required_linear_history"},
        {type:"pull_request", parameters:{required_approving_review_count:1,
          dismiss_stale_reviews_on_push:false, required_reviewers:[], require_code_owner_review:true,
-         dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:false,
+         dismissal_restriction:{enabled:false, allowed_actors:[]}, require_last_push_approval:$last_push,
          required_review_thread_resolution:$resolution,
          require_extra_approval_for_unattributed_changes:true, allowed_merge_methods:["squash"]}},
        {type:"required_status_checks", parameters:{strict_required_status_checks_policy:false,
@@ -4428,13 +4443,13 @@ base_ruleset_routes() {
     ]'
 }
 
-# resolution_protection_routes prints the routes of a base whose ruleset requires review threads
-# resolved beside every other rule every world's base holds (base_ruleset_routes), which a world
-# puts ahead of fixture_write's own, so that with its approval standing and every check green the
-# one rule that holds its head `BLOCKED` is an open review thread (gh-threads.ts's
-# `mergeStateOf`).
+# resolution_protection_routes [LAST_PUSH] prints the routes of a base whose ruleset requires
+# review threads resolved beside every other rule every world's base holds (base_ruleset_routes,
+# LAST_PUSH its `require_last_push_approval`, `false` by default), which a world puts ahead of
+# fixture_write's own, so that with its approval standing and every check green the one rule that
+# holds its head `BLOCKED` is an open review thread (gh-threads.ts's `mergeStateOf`).
 resolution_protection_routes() {
-  base_ruleset_routes true
+  base_ruleset_routes true "${1:-false}"
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.
@@ -4729,16 +4744,18 @@ run_tester_proof() {
 }
 
 # The reviewer's round on the world worker_fixture's <review> case builds: two text findings and no
-# behavioural one (text-only), or those two and a blank-name guard that is gone (defect). The
-# issue carries the implementer's passing result on its one before_merge check and the tester's
-# own at the same head, so no gate of the reviewer's refuses an approval and its verdict rests on
-# what it found. The case is in the run's name and in <run>/case.txt, which reviewerTextFindings
-# reads back and holds to the name. The reviewer is booted in `reviewing`, its own phase, and its
-# review moves the issue (daemon-standin.ts's `servedPhase`), so a completion after that is a late
-# one, answered as the run's label's daemon answers it. What each label's daemon may answer it
-# here, and that the world must take at least one of the reviewer's completions, is
-# completion-answers.ts's ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score
-# read.
+# behavioural one (text-only), those two and a blank-name guard that is gone (defect), or
+# text-only's two on a base whose rules require another approver of the last push (last-push).
+# The issue carries the implementer's passing result on its one before_merge check and the
+# tester's own at the same head, in every case, so no gate of the reviewer's refuses an approval
+# and its verdict rests on what it found. The case is in the run's name and in <run>/case.txt,
+# which reviewerTextFindings reads back and holds to the name. The reviewer is booted in
+# `reviewing`, its own phase, and its review moves the issue (daemon-standin.ts's `servedPhase`),
+# so a completion after that is a late one, answered as the run's label's daemon answers it. What
+# each label's daemon may answer it here, and in which cases the world must take at least one of
+# the reviewer's completions (defect and last-push; a text-only reviewer that pushed its fix waits
+# for the implementer and completes nothing), is completion-answers.ts's
+# ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score read.
 run_reviewer_text_findings() {
   local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version round
   start_recorder "$project"

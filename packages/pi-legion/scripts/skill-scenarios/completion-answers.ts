@@ -222,8 +222,9 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  *     (`allows`). A 4xx answer in neither is a refusal the world should not have given
  *     (`refusedCompletion`). The run's daemon is read out of its label's checkout only for an
  *     answer outside `answers`, the one place its shape decides anything;
- *   - `takes`, the role whose completion the world must take, at least once, with an answer its
- *     entries allow (health's third rule). A scenario with no `takes` requires no completion.
+ *   - `takes`, by the run's case ("" for a scenario that takes none), the role whose completion
+ *     the world must take, at least once, with an answer its entries allow (health's third rule).
+ *     A case `takes` does not name, and a scenario with no `takes`, requires no completion.
  * Health judges what the world can accept, never what an agent should do: no entry counts the
  * completions an agent makes or forbids one.
  *
@@ -242,9 +243,13 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * completion, which no world of this rig should. A reviewer refused HANDOFF_RECORD_REQUIRED (a
  * plugin that names no record once the issue has left `reviewing`) is a refusal this table does
  * not allow either. The review reaches `implementing` on a change request, and the approval of
- * the head the reviewer's own text commit made leaves it in `reviewing`: GitHub reports that head
- * `BLOCKED` while a thread is open (rig.sh's review_world), and the workflow's thread the review
- * App cannot push a fix for stays open.
+ * the head leaves it in `reviewing`: GitHub reports that head `BLOCKED` while a thread is open
+ * (rig.sh's review_world), and the workflow's thread the review App cannot push a fix for stays
+ * open. The reviewer's completion is required in defect, whose change request ends its round,
+ * and in last-push, whose approval of the head as it stands does; in text-only the reviewer that
+ * pushed its own text fix records no pass at it, approves nothing and waits for the implementer's
+ * last chance (spec v36's R1, steps 2 and 3, and Verification v47's k1), so it completes nothing
+ * while it waits, and the world requires no completion of it.
  *
  * threads-closed boots the implementer in `reviewing` (correct) or `accepting` (accept and
  * code-defect), and then the reviewer in that phase where the case has a second half
@@ -280,7 +285,7 @@ export const ANSWERS: Readonly<
       readonly byShape: Readonly<
         Partial<Record<DaemonShape, Readonly<Record<string, readonly string[]>>>>
       >;
-      readonly takes?: string;
+      readonly takes?: Readonly<Record<string, string>>;
     }
   >
 > = {
@@ -291,7 +296,7 @@ export const ANSWERS: Readonly<
       "recorded left": { reviewer: [`409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
       "refused issue": { reviewer: [`409 ${NOT_CURRENT_PHASE}`] },
     },
-    takes: "reviewer",
+    takes: { defect: "reviewer", "last-push": "reviewer" },
   },
   "threads-closed": {
     boots: ["implementer", "reviewer"],
@@ -418,15 +423,16 @@ export function refusedCompletion(
   return undefined;
 }
 
-/** The completions of the role the scenario's world must take (`takes`) that were answered with
- * an answer its world allows (`answered`, `daemon` read as `refusedCompletion` reads it);
- * undefined for a scenario that requires none. */
+/** The completions of the role the scenario's world must take in the run's case `runCase`
+ * (`takes`) that were answered with an answer its world allows (`answered`, `daemon` read as
+ * `refusedCompletion` reads it); undefined for a scenario and case that require none. */
 export function takenCompletions(
   lines: readonly DaemonLine[],
   scenario: string,
+  runCase: string,
   daemon: () => LabelDaemon
 ): { readonly role: string; readonly count: number } | undefined {
-  const role = ANSWERS[scenario]?.takes;
+  const role = ANSWERS[scenario]?.takes?.[runCase];
   if (role === undefined) return undefined;
   const shaped = once(daemon);
   const count = lines.filter(

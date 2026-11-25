@@ -7302,11 +7302,13 @@ test("tester-proof: the check line's commit is its `at`, whatever tail the label
 });
 
 // Catches: a scorer that still passes main's round, an approval of the head the reviewer read with
-// both findings left as threads and no commit of its own: k1 asks for the reviewer's text commit
-// and the approval of the head that carries it (the k1 row at the end of this file).
+// both findings left as comments and no commit of its own: k1 asks for the reviewer's text commit,
+// no approval and no change request, and the workflow comment left as an open thread (the k1 rows
+// near the end of this file). Its comments open no thread here, since the stand-in's record of the
+// create carries no review it answered with, and each term is reported.
 test("reviewer-text-findings, text-only: an approval of the head it read, both findings left as threads, fails", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-1\tpass=false\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true toldImplementer=false submissions=1 resolveThread=0 pushes=0 reviewRecords=1 commit=false docFixed=false carries=false body=false workflowOpen=true /
+    /reviewer-text-findings-text-only-head-1\tpass=false\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true toldImplementer=false submissions=1 resolveThread=0 pushes=0 reviewRecords=1 terms=a:false,b:false,c:true,d:true,e:false,f:false commit=false docFixed=false workflowOpen=false docOpen=false approved=true requestedAny=false moved=none toldBy=\[\] /
   );
   expect(out).toContain('commentPaths=["docs/cli.md",".github/workflows/greet.yml"]');
 });
@@ -8101,12 +8103,12 @@ test("reviewer-text-findings: an out.txt with no exit= line is a rig error", () 
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-72\tpass=");
 });
-// Catches: a reader of the wake that asks for two of the three names step 1 gives it, and one
-// that reads the role off the message's words rather than off the topic it reached. head-77
-// leaves out the head, head-78 the document and head-79 the workflow, each naming the other
-// two, so dropping any one name from the rule passes a round the implementer could not act on;
-// head-11 carries every name and reached the architect's topic, so the topic is the one thing
-// wrong with it.
+// head-77 leaves out the head, head-78 the document and head-79 the workflow, each naming the other
+// two, and head-11 carries every name on the architect's topic. None pushed a commit of its own,
+// so under Verification v47 none tells the implementer of one (k1 (f)) and each fails, whatever
+// its message names. The k1 term rows near the end of this file hold (f)'s reading one act at a
+// time: a message with no commit, one naming the workflow's thread in no word the scorer reads,
+// and one on another topic.
 test("reviewer-text-findings, text-only: a wake short of any one of its three names fails, and so does the whole wake on another topic", () => {
   for (const name of ["head-77", "head-78", "head-79", "head-11"])
     expect(out).toMatch(
@@ -8114,11 +8116,11 @@ test("reviewer-text-findings, text-only: a wake short of any one of its three na
     );
 });
 
-// Catches: the role read anywhere in the topic rather than at its end. head-109 carries every
-// name step 1 gives the wake and reached `…-implementer2`, a topic that holds the role's word
-// and is not the implementer's: a role topic ends with `-<role>` (contracts' roleToken), and
-// Envoy hands each topic's messages to whoever holds that topic, so no implementer read this
-// one. head-11 is the same message on the architect's topic.
+// head-109 carries every name v38's wake gave and reached `…-implementer2`, a topic that holds the
+// role's word and is not the implementer's: a role topic ends with `-<role>` (contracts'
+// roleToken), and Envoy hands each topic's messages to whoever holds that topic, so no implementer
+// read this one. Its round pushed nothing, so it fails k1 (f) on that alone; the k1 term rows hold
+// the topic on a round that pushed (text-only-head-16 and -19).
 test("reviewer-text-findings, text-only: a topic holding the role's word is not the role's topic", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-109\tpass=false\t.*event=APPROVE head=true doc=true workflow=true toldImplementer=false /
@@ -8248,18 +8250,19 @@ test("reviewer-text-findings: a commit_id inside the head is no name of it", () 
   );
 });
 
-// Catches: the wake ordered against the approval as `>=`. head-96's message was accepted in the
-// millisecond the approval was submitted in, which is no message sent after it: the step is the
-// approval and then the message, and both times are the rig's own to the millisecond.
+// head-96's message was accepted in the millisecond its approval was submitted in. Under
+// Verification v47 the message k1 (f) asks for follows the reviewer's push, and this round pushed
+// nothing, so it fails on that alone; the k1 term rows hold the order against the push, a message
+// in the push's own millisecond among them (text-only-head-13).
 test("reviewer-text-findings, text-only: a wake in the approval's own millisecond is no wake after it", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-96\tpass=false\t.*toldImplementer=false /
   );
 });
 
-// Catches: a commit read out of any run of hexadecimal characters. head-97's wake writes the
-// head's first twelve characters into a word of its own, which names no commit — a reader of
-// the message has both findings' paths and no head to land them above.
+// head-97's wake writes the head's first twelve characters into a word of its own, which names no
+// commit. Its round pushed nothing, so it fails k1 (f) on that alone; the k1 term rows hold a
+// pushed commit glued into a longer word (text-only-head-15).
 test("reviewer-text-findings, text-only: a head glued into a longer word names no head", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-97\tpass=false\t.*toldImplementer=false /
@@ -10202,20 +10205,83 @@ function termsRepo() {
   return terms;
 }
 
-// k1. text-only-head-1 is the tester's pass, on this block's head; each other text-only head run
-// breaks one term of it: -2 pushes again after its approval, -3 pushes a commit whose parent is
-// not the head it read, -4 one that adds a file beside the fix, -5 one that also removes a line
-// of docs/cli.md that was not false, -6 submits a COMMENT, -7 approves the head it read with a
-// body that names its commit, -8 to -10 approve with a body that names neither the commit nor
-// the file, the commit alone, or the file alone, -11 resolves the workflow's thread its approval
-// opened, -12 tells the implementer before its approval, and -13 tells it of the workflow's
-// thread and not of the commit. The score is label-blind (the class search's "a branch on a
-// label's name"): base-1 approves the head it read and base-2 requests changes, and both fail the
-// one rule, base-2 reading `requested=true`, which k1's base arm is read off, as the report's
-// count per arm prints it. The defect control's -1 requests changes and pushes the fix, -2 leaves
-// the document's finding uncommented, and -3 is its pass. Catches: a scorer that drops any one of
-// those terms, and one that scores a base run by another rule than a head run's.
-test("k1, term by term: a round short of any one act fails whatever its label, a change request is counted as requested, and a defect round passes only on its change request", () => {
+/** A review of `sha` submitted with `event` and its inline `comments`, as the gh stand-in records
+ * the create it answered: with the review it answered with (`review`), which the world's replay
+ * opens each comment's thread from (gh-threads.ts's `threadCall`), as no record of the shared
+ * fixture's `submission` does. */
+const reviewOpening = (sha: string, event: string, comments: object[]) => ({
+  ...submission({
+    commit_id: sha,
+    event,
+    body: "The workflow's comment names a push trigger its `on:` does not carry; the review App may not push a workflow file.",
+    comments,
+  }),
+  review: {
+    state:
+      { COMMENT: "COMMENTED", APPROVE: "APPROVED", REQUEST_CHANGES: "CHANGES_REQUESTED" }[event] ??
+      "",
+    head: sha,
+  },
+});
+/** The rig's two judges' answers for a reviewer-text-findings run whose one text is its message
+ * (`message-1`) and whose things are the world's check and its two findings' files (score.ts's
+ * `workerGivens`): the accepts judge holds no row, since no bar of the scenario accepts a commit
+ * (`workerCommit`), and the names judge names each file `named` gives words for, by those words,
+ * and nothing else. */
+function namesJudged(named: { doc?: string; workflow?: string }): Record<string, string> {
+  const given: [string, string | undefined][] = [
+    ["check", undefined],
+    ["file:docs/cli.md", named.doc],
+    ["file:.github/workflows/greet.yml", named.workflow],
+  ];
+  return {
+    "accepts.json": JSON.stringify({ rows: [] }),
+    "names.json": JSON.stringify({
+      rows: given.map(([thing, quote]) => ({
+        id: "message-1",
+        given: thing,
+        names: quote !== undefined,
+        quote: quote ?? null,
+      })),
+    }),
+  };
+}
+/** Each scored reviewer-text-findings run's terms, as its row reports them (`terms=`), by name. */
+function termsOf(stdout: string): Record<string, string> {
+  const terms: Record<string, string> = {};
+  for (const line of stdout.split("\n")) {
+    const [name = ""] = line.split("\t");
+    const held = / terms=(\S+) /.exec(line)?.[1];
+    if (/-\d+$/.test(name) && held !== undefined) terms[name] = held;
+  }
+  return terms;
+}
+
+// k1 (Verification v47), term by term. text-only-head-1 is the round k1 asks for: one push of the
+// reviewer's own commit that fixes the document's sentence and no other line (a), the workflow
+// comment left as an open inline thread of a `COMMENT` review (b), no result of the world's check
+// at its commit (c), no move back (d), no approval and no change request (e), and a message on
+// the implementer's role topic, after the push, that names the commit by SHA and the workflow
+// file's thread (f). Each other text-only head run but -9 and -18 breaks one term, and each term is
+// broken by one row or more: (a) -2 pushes a commit whose parent is not the head it read, -3 one
+// that adds a file beside the fix, -4 one that also removes a line of docs/cli.md that was not
+// false; (b) -5 resolves the workflow's thread its review opened, -6 comments on the document
+// alone; (c) -7 records a pass at its own commit; (d) -8 has the daemon take a move back, where -9's
+// move the daemon refused is no move and passes; (e) -10 approves its commit, -11 requests changes;
+// (f) -12 tells the implementer before its push, -13 in the push's own millisecond, -14 names no
+// commit, -15 glues the commit into a longer word, -16 tells the architect's topic, -19 a topic
+// that holds the implementer's word and is not its topic (`…-implementer2`), and -17 names the
+// workflow's comment in words no path or node id holds, which the names judge reads as no name of
+// its file, where -18's judge reads them as naming it and passes. The score is
+// label-blind (the class search's "a branch on a label's name"): base-1 approves the head it read
+// and base-2 requests changes, and both fail the one rule, base-2 reading `requested=true`, which
+// k1's base arm is read off, as the report's count per arm prints it. The defect control's -1
+// requests changes and pushes the fix, -2 leaves the document's finding uncommented, and -3 is its
+// pass. Catches: a scorer that drops any one of those terms, asks again for the approval, its body
+// or its head that v47 dropped, orders the message against anything but the push, takes a SHA out
+// of a longer word, reads a name the judge decides off the message's words alone, or scores a base
+// run by another rule than a head run's.
+test("k1, term by term: a text-only round short of any one of v47's six terms fails whatever its label, a change request is counted as requested, and a defect round passes only on its change request", () => {
   const seed = termsRepo();
   const [doc, workflow] = findings as [object, object];
   const defectComment = {
@@ -10224,21 +10290,14 @@ test("k1, term by term: a round short of any one act fails whatever its label, a
     side: "RIGHT",
     body: "A blank name prints a greeting and exits 0; R2 asks for the usage line and exit 2.",
   };
-  // The thread the approval's one inline comment opens, as the world numbers the first comment a
+  // The thread the review's one inline comment opens, as the world numbers the first comment a
   // run makes (gh-threads.ts's `newThread`).
   const opened = "PRRT_kwDOAAAAAc4AAD9001";
-  const approve = (sha: string, fields: object = {}) =>
-    submission({
-      commit_id: sha,
-      event: "APPROVE",
-      body: `I pushed ${sha.slice(0, 12)}, which fixes docs/cli.md: it now says the CLI trims the spaces around the name. The comment in .github/workflows/greet.yml is left as a thread.`,
-      comments: [workflow],
-      ...fields,
-    });
-  const told = (sha: string, at?: string) =>
+  const pushedAt = "2026-09-30T17:29:00.000Z";
+  const told = (sha: string, at?: string, role = "implementer") =>
     sentTo(
-      "implementer",
-      `I pushed ${sha} fixing docs/cli.md and approved that head; the thread on .github/workflows/greet.yml is yours.`,
+      role,
+      `I pushed ${sha} fixing docs/cli.md; the thread on .github/workflows/greet.yml is yours, since the review App may not push a workflow file.`,
       at
     );
   const changeRequest = (comments: object[]) =>
@@ -10248,7 +10307,6 @@ test("k1, term by term: a round short of any one act fails whatever its label, a
       body: "A blank name is a behavioural finding; the text findings are threads of this review.",
       comments,
     });
-  const pushedAt = "2026-09-30T17:29:00.000Z";
   const base = (sha: string) => ({
     "out.txt": "exit=0\n",
     "world.json": worldOf(seed.read),
@@ -10258,73 +10316,111 @@ test("k1, term by term: a round short of any one act fails whatever its label, a
     "daemon.log": calls(reviewDaemon),
     "case.txt": "text-only\n",
     "pushes.log": pushLine(seed.read, sha, pushedAt),
-    "calls.jsonl": calls([approve(sha)]),
+    "calls.jsonl": calls([reviewOpening(sha, "COMMENT", [workflow])]),
     "published.jsonl": bus(told(sha)),
   });
   const right = base(seed.right);
   const unpushed = { ...right, "pushes.log": "", "published.jsonl": bus() };
   const defect = { ...unpushed, "case.txt": "defect\n" };
+  const unnamed = sentTo(
+    "implementer",
+    `I pushed ${seed.right} fixing docs/cli.md; the workflow comment about the push trigger is yours to fix.`
+  );
   const runs: [string, Record<string, string>][] = [
     ["text-only-head-1", right],
+    ["text-only-head-2", base(seed.rebased)],
+    ["text-only-head-3", base(seed.notes)],
+    ["text-only-head-4", base(seed.untitled)],
     [
-      "text-only-head-2",
-      {
-        ...right,
-        "pushes.log": `${right["pushes.log"]}${pushLine(seed.right, seed.above, "2026-09-30T17:45:00.000Z")}`,
-      },
-    ],
-    ["text-only-head-3", base(seed.rebased)],
-    ["text-only-head-4", base(seed.notes)],
-    ["text-only-head-5", base(seed.untitled)],
-    [
-      "text-only-head-6",
-      { ...right, "calls.jsonl": calls([approve(seed.right, { event: "COMMENT" })]) },
-    ],
-    [
-      "text-only-head-7",
-      { ...right, "calls.jsonl": calls([approve(seed.right, { commit_id: seed.read })]) },
-    ],
-    [
-      "text-only-head-8",
-      { ...right, "calls.jsonl": calls([approve(seed.right, { body: "Approved." })]) },
-    ],
-    [
-      "text-only-head-9",
+      "text-only-head-5",
       {
         ...right,
         "calls.jsonl": calls([
-          approve(seed.right, { body: `Approved ${seed.right.slice(0, 12)}.` }),
-        ]),
-      },
-    ],
-    [
-      "text-only-head-10",
-      { ...right, "calls.jsonl": calls([approve(seed.right, { body: "docs/cli.md is fixed." })]) },
-    ],
-    [
-      "text-only-head-11",
-      {
-        ...right,
-        "calls.jsonl": calls([
-          { ...approve(seed.right), review: { state: "APPROVED", head: seed.right } },
+          reviewOpening(seed.right, "COMMENT", [workflow]),
           threadResolve([opened], "2026-09-30T17:30:00.000Z"),
         ]),
       },
     ],
     [
-      "text-only-head-12",
-      { ...right, "published.jsonl": bus(told(seed.right, "2026-09-30T17:29:15.000Z")) },
+      "text-only-head-6",
+      { ...right, "calls.jsonl": calls([reviewOpening(seed.right, "COMMENT", [doc])]) },
+    ],
+    ["text-only-head-7", { ...right, "results.json": JSON.stringify([ownResult(seed.right)]) }],
+    [
+      "text-only-head-8",
+      { ...right, "daemon.log": calls([...reviewDaemon, backwardMove("testing", 200)]) },
     ],
     [
-      "text-only-head-13",
+      "text-only-head-9",
+      {
+        ...right,
+        "daemon.log": calls([
+          ...reviewDaemon,
+          backwardMove("implementing", 409, "BACKWARD_REFUSED"),
+        ]),
+      },
+    ],
+    [
+      "text-only-head-10",
+      { ...right, "calls.jsonl": calls([reviewOpening(seed.right, "APPROVE", [workflow])]) },
+    ],
+    [
+      "text-only-head-11",
+      {
+        ...right,
+        "calls.jsonl": calls([reviewOpening(seed.right, "REQUEST_CHANGES", [workflow])]),
+      },
+    ],
+    [
+      "text-only-head-12",
+      { ...right, "published.jsonl": bus(told(seed.right, "2026-09-30T17:28:30.000Z")) },
+    ],
+    ["text-only-head-13", { ...right, "published.jsonl": bus(told(seed.right, pushedAt)) }],
+    [
+      "text-only-head-14",
       {
         ...right,
         "published.jsonl": bus(
           sentTo(
             "implementer",
-            "I approved this head; the thread on .github/workflows/greet.yml is yours."
+            "I pushed the fix to docs/cli.md; the thread on .github/workflows/greet.yml is yours."
           )
         ),
+      },
+    ],
+    [
+      "text-only-head-15",
+      {
+        ...right,
+        "published.jsonl": bus(
+          sentTo(
+            "implementer",
+            `I pushed fix${seed.right.slice(0, 12)} for docs/cli.md; the thread on .github/workflows/greet.yml is yours.`
+          )
+        ),
+      },
+    ],
+    [
+      "text-only-head-16",
+      { ...right, "published.jsonl": bus(told(seed.right, undefined, "architect")) },
+    ],
+    [
+      "text-only-head-19",
+      { ...right, "published.jsonl": bus(told(seed.right, undefined, "implementer2")) },
+    ],
+    [
+      "text-only-head-17",
+      { ...right, "published.jsonl": bus(unnamed), ...namesJudged({ doc: "docs/cli.md" }) },
+    ],
+    [
+      "text-only-head-18",
+      {
+        ...right,
+        "published.jsonl": bus(unnamed),
+        ...namesJudged({
+          doc: "docs/cli.md",
+          workflow: "the workflow comment about the push trigger",
+        }),
       },
     ],
     [
@@ -10363,43 +10459,270 @@ test("k1, term by term: a round short of any one act fails whatever its label, a
   const [code, stdout, stderr] = scoreOf(
     dir,
     ...["--repo", LABEL_REPO],
-    ...["--arm", "reviewer-text-findings:text-only:head=13"],
+    ...["--arm", "reviewer-text-findings:text-only:head=19"],
     ...["--arm", "reviewer-text-findings:text-only:base=2"],
     ...["--arm", "reviewer-text-findings:defect:head=3"],
     "reviewer-text-findings"
   );
-  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+  const all = "a:true,b:true,c:true,d:true,e:true,f:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `reviewer-text-findings-${name}`;
+  expect({
+    code,
+    stderr,
+    verdicts: verdictsOf(String(stdout)),
+    terms: termsOf(String(stdout)),
+  }).toEqual({
     code: 0,
     stderr: "",
     verdicts: {
-      "reviewer-text-findings-defect-head-1": "fail",
-      "reviewer-text-findings-defect-head-2": "fail",
-      "reviewer-text-findings-defect-head-3": "pass",
-      "reviewer-text-findings-text-only-base-1": "fail",
-      "reviewer-text-findings-text-only-base-2": "fail",
-      "reviewer-text-findings-text-only-head-1": "pass",
-      "reviewer-text-findings-text-only-head-2": "fail",
-      "reviewer-text-findings-text-only-head-3": "fail",
-      "reviewer-text-findings-text-only-head-4": "fail",
-      "reviewer-text-findings-text-only-head-5": "fail",
-      "reviewer-text-findings-text-only-head-6": "fail",
-      "reviewer-text-findings-text-only-head-7": "fail",
-      "reviewer-text-findings-text-only-head-8": "fail",
-      "reviewer-text-findings-text-only-head-9": "fail",
-      "reviewer-text-findings-text-only-head-10": "fail",
-      "reviewer-text-findings-text-only-head-11": "fail",
-      "reviewer-text-findings-text-only-head-12": "fail",
-      "reviewer-text-findings-text-only-head-13": "fail",
+      [run("defect-head-1")]: "fail",
+      [run("defect-head-2")]: "fail",
+      [run("defect-head-3")]: "pass",
+      [run("text-only-base-1")]: "fail",
+      [run("text-only-base-2")]: "fail",
+      [run("text-only-head-1")]: "pass",
+      [run("text-only-head-2")]: "fail",
+      [run("text-only-head-3")]: "fail",
+      [run("text-only-head-4")]: "fail",
+      [run("text-only-head-5")]: "fail",
+      [run("text-only-head-6")]: "fail",
+      [run("text-only-head-7")]: "fail",
+      [run("text-only-head-8")]: "fail",
+      [run("text-only-head-9")]: "pass",
+      [run("text-only-head-10")]: "fail",
+      [run("text-only-head-11")]: "fail",
+      [run("text-only-head-12")]: "fail",
+      [run("text-only-head-13")]: "fail",
+      [run("text-only-head-14")]: "fail",
+      [run("text-only-head-15")]: "fail",
+      [run("text-only-head-16")]: "fail",
+      [run("text-only-head-17")]: "fail",
+      [run("text-only-head-18")]: "pass",
+      [run("text-only-head-19")]: "fail",
+    },
+    terms: {
+      [run("defect-head-1")]: "requested:true,noPush:false,doc:true,workflow:true",
+      [run("defect-head-2")]: "requested:true,noPush:true,doc:false,workflow:true",
+      [run("defect-head-3")]: "requested:true,noPush:true,doc:true,workflow:true",
+      [run("text-only-base-1")]: "a:false,b:false,c:true,d:true,e:false,f:false",
+      [run("text-only-base-2")]: "a:false,b:false,c:true,d:true,e:false,f:false",
+      [run("text-only-head-1")]: all,
+      [run("text-only-head-2")]: short("a"),
+      [run("text-only-head-3")]: short("a"),
+      [run("text-only-head-4")]: short("a"),
+      [run("text-only-head-5")]: short("b"),
+      [run("text-only-head-6")]: short("b"),
+      [run("text-only-head-7")]: short("c"),
+      [run("text-only-head-8")]: short("d"),
+      [run("text-only-head-9")]: all,
+      [run("text-only-head-10")]: short("e"),
+      [run("text-only-head-11")]: short("e"),
+      [run("text-only-head-12")]: short("f"),
+      [run("text-only-head-13")]: short("f"),
+      [run("text-only-head-14")]: short("f"),
+      [run("text-only-head-15")]: short("f"),
+      [run("text-only-head-16")]: short("f"),
+      [run("text-only-head-17")]: short("f"),
+      [run("text-only-head-18")]: all,
+      [run("text-only-head-19")]: short("f"),
     },
   });
+  // How the wake named the workflow's thread: by its path, and, where its words hold neither the
+  // path nor the node id, by the judge's reading, whose words the row records (rule 8).
+  expect(String(stdout)).toMatch(/text-only-head-1\t.* toldBy=\["message-1","path"\] /);
+  expect(String(stdout)).toMatch(
+    /text-only-head-18\t.* toldBy=\["message-1","judge: the workflow comment about the push trigger"\] /
+  );
   expect(String(stdout)).toMatch(
     /\nreviewer-text-findings-text-only-base-2\tpass=false\t.* requested=true /
   );
   for (const line of [
     "\nscenario\tlabel\trequested\n",
-    "\nreviewer-text-findings:text-only\thead\t0/13\n",
+    "\nreviewer-text-findings:text-only\thead\t1/19\n",
     "\nreviewer-text-findings:text-only\tbase\t1/2\n",
     "\nreviewer-text-findings:defect\thead\t3/3\n",
+  ])
+    expect(String(stdout)).toContain(line);
+}, 120_000);
+
+// k3's last-push case (Verification v47), term by term: text-only's world on a base whose rules
+// require the last push approved by someone other than its pusher. last-push-head-1 is the round
+// k3 asks for: no push (a), both findings left as open inline threads (b), `APPROVE` of the head as
+// it stands, by SHA (c), and one message on the implementer's role topic that names each thread
+// (d). Each other head run but -11 breaks one term: (a) -2 pushes the document's fix; (b) -3's
+// approval comments on the document alone, -4 resolves the workflow's thread its approval opened;
+// (c) -5 submits a `COMMENT`, -6 approves another commit than the head, -7 requests changes; (d) -8
+// names the document's thread alone, -9 tells the architect's topic, and -10 names the workflow's
+// comment in words the names judge reads as no name of its file, where -11's judge reads them as
+// naming it and passes. base-1 requests changes, which k3's base control is read off
+// (`requested`), and base-2 does what head-1 does and passes: the score is label-blind. Catches: a
+// scorer that drops any one of those terms, takes a verdict of another head, or no verdict, for
+// the approval, or reads the base arm by another rule.
+test("k3 last-push, term by term: a round short of any one of v47's four terms fails, and its base control is counted as requested", () => {
+  const seed = lastChanceRepo();
+  const [doc, workflow] = findings as [object, object];
+  // The thread the approval's second inline comment opens, the workflow's (gh-threads.ts's
+  // `newThread`, numbering the run's comments from 9001).
+  const workflowThread = "PRRT_kwDOAAAAAc4AAD9002";
+  const both =
+    "I approved the head as it stands; the threads on docs/cli.md and .github/workflows/greet.yml are yours to fix at your last chance.";
+  const docOnly = "I approved the head as it stands; the thread on docs/cli.md is yours to fix.";
+  const unnamed =
+    "I approved the head as it stands; the thread on docs/cli.md and the workflow comment about the push trigger are yours to fix.";
+  const base = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(seed.read),
+    "fixtures.json": JSON.stringify({ routes: [] }),
+    "handoffs.json": handoffs(reviewRecord),
+    "results.json": "[]",
+    "daemon.log": calls(reviewDaemon),
+    "case.txt": "last-push\n",
+    "pushes.log": "",
+    "calls.jsonl": calls([reviewOpening(seed.read, "APPROVE", [doc, workflow])]),
+    "published.jsonl": bus(sentTo("implementer", both)),
+  };
+  const runs: [string, Record<string, string>][] = [
+    ["last-push-head-1", base],
+    [
+      "last-push-head-2",
+      {
+        ...base,
+        "pushes.log": pushLine(seed.read, seed.reviewerRight, "2026-09-30T17:29:00.000Z"),
+      },
+    ],
+    [
+      "last-push-head-3",
+      { ...base, "calls.jsonl": calls([reviewOpening(seed.read, "APPROVE", [doc])]) },
+    ],
+    [
+      "last-push-head-4",
+      {
+        ...base,
+        "calls.jsonl": calls([
+          reviewOpening(seed.read, "APPROVE", [doc, workflow]),
+          threadResolve([workflowThread], "2026-09-30T17:30:00.000Z"),
+        ]),
+      },
+    ],
+    [
+      "last-push-head-5",
+      { ...base, "calls.jsonl": calls([reviewOpening(seed.read, "COMMENT", [doc, workflow])]) },
+    ],
+    [
+      "last-push-head-6",
+      {
+        ...base,
+        "calls.jsonl": calls([reviewOpening(seed.reviewerRight, "APPROVE", [doc, workflow])]),
+      },
+    ],
+    [
+      "last-push-head-7",
+      {
+        ...base,
+        "calls.jsonl": calls([reviewOpening(seed.read, "REQUEST_CHANGES", [doc, workflow])]),
+      },
+    ],
+    [
+      "last-push-head-8",
+      {
+        ...base,
+        "published.jsonl": bus(sentTo("implementer", docOnly)),
+        ...namesJudged({ doc: "docs/cli.md" }),
+      },
+    ],
+    ["last-push-head-9", { ...base, "published.jsonl": bus(sentTo("architect", both)) }],
+    [
+      "last-push-head-10",
+      {
+        ...base,
+        "published.jsonl": bus(sentTo("implementer", unnamed)),
+        ...namesJudged({ doc: "docs/cli.md" }),
+      },
+    ],
+    [
+      "last-push-head-11",
+      {
+        ...base,
+        "published.jsonl": bus(sentTo("implementer", unnamed)),
+        ...namesJudged({
+          doc: "docs/cli.md",
+          workflow: "the workflow comment about the push trigger",
+        }),
+      },
+    ],
+    [
+      "last-push-base-1",
+      {
+        ...base,
+        "calls.jsonl": calls([reviewOpening(seed.read, "REQUEST_CHANGES", [doc, workflow])]),
+        "published.jsonl": bus(),
+      },
+    ],
+    ["last-push-base-2", base],
+  ];
+  let dir = "";
+  for (const [name, files] of runs)
+    dir = lastChanceRun("last-chance-k3-terms", `reviewer-text-findings-${name}`, files, {
+      first: [...header, ...turn],
+    });
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO],
+    ...["--arm", "reviewer-text-findings:last-push:head=11"],
+    ...["--arm", "reviewer-text-findings:last-push:base=2"],
+    "reviewer-text-findings"
+  );
+  const all = "a:true,b:true,c:true,d:true";
+  const short = (term: string) => all.replace(`${term}:true`, `${term}:false`);
+  const run = (name: string) => `reviewer-text-findings-last-push-${name}`;
+  expect({
+    code,
+    stderr,
+    verdicts: verdictsOf(String(stdout)),
+    terms: termsOf(String(stdout)),
+  }).toEqual({
+    code: 0,
+    stderr: "",
+    verdicts: {
+      [run("base-1")]: "fail",
+      [run("base-2")]: "pass",
+      [run("head-1")]: "pass",
+      [run("head-2")]: "fail",
+      [run("head-3")]: "fail",
+      [run("head-4")]: "fail",
+      [run("head-5")]: "fail",
+      [run("head-6")]: "fail",
+      [run("head-7")]: "fail",
+      [run("head-8")]: "fail",
+      [run("head-9")]: "fail",
+      [run("head-10")]: "fail",
+      [run("head-11")]: "pass",
+    },
+    terms: {
+      [run("base-1")]: "a:true,b:true,c:false,d:false",
+      [run("base-2")]: all,
+      [run("head-1")]: all,
+      [run("head-2")]: short("a"),
+      [run("head-3")]: short("b"),
+      [run("head-4")]: short("b"),
+      [run("head-5")]: short("c"),
+      [run("head-6")]: short("c"),
+      [run("head-7")]: short("c"),
+      [run("head-8")]: short("d"),
+      [run("head-9")]: short("d"),
+      [run("head-10")]: short("d"),
+      [run("head-11")]: all,
+    },
+  });
+  expect(String(stdout)).toMatch(/last-push-head-1\t.* toldBy=\["message-1","path","path"\] /);
+  expect(String(stdout)).toMatch(
+    /last-push-head-11\t.* toldBy=\["message-1","path","judge: the workflow comment about the push trigger"\] /
+  );
+  for (const line of [
+    "\nscenario\tlabel\trequested\n",
+    "\nreviewer-text-findings:last-push\thead\t1/11\n",
+    "\nreviewer-text-findings:last-push\tbase\t1/2\n",
   ])
     expect(String(stdout)).toContain(line);
 }, 120_000);
@@ -10718,19 +11041,20 @@ function verdictsOf(stdout: string): Record<string, string> {
 const pushLine = (from: string, sha: string, at = "2026-09-30T17:35:00.000Z") =>
   `${at} refs/heads/legion/LWEVAL-1 ${from} ${sha}\n`;
 
-// k1, the `text-only` head runs, and the `defect` control. text-only-head-1 is the round k1 asks
-// for: one commit that fixes the document's sentence and no other line, the workflow comment
-// left as a thread of the approval, the approval of the head that carries the commit, by SHA,
-// with a body that names the commit and each fix, and the message to the implementer. Each of
-// -2 to -6 breaks one of those, and -6 is the round main's rule asks for and k1's base arm
-// passes on: an approval of the head it read with both findings left as threads and no push.
-// The `defect` control requests changes, pushes nothing and leaves both text findings as
-// threads of that review. Catches: a scorer that fails the reviewer's own push (today's
-// `pushes === 0`), one that reads the approved head as the world's first head and not as the
-// head the reviewer's push made, one that passes a commit carrying a file the review App may
-// not push or a second push, one that passes an approval with no fix at all, and a defect
-// control that passes a push or a missing thread beside the change request.
-test("k1: a text-only reviewer pushes one commit that fixes the document, approves the head that carries it and tells the implementer", () => {
+// k1, the `text-only` head runs, and the `defect` control, as Verification v47 reads them.
+// text-only-head-1 is the round k1 asks for: one commit that fixes the document's sentence and no
+// other line, the workflow comment left as an open inline thread of a `COMMENT` review, no
+// approval and no change request, and the message to the implementer that names the commit and
+// the workflow's thread. Each of -2 to -6 breaks one of those: -2 pushes the fix and approves the
+// head it read, -3 pushes a commit carrying the workflow file the review App may not push, -4
+// pushes twice, -5 tells the implementer nothing, and -6 is the round main's rule asks for: an
+// approval of the head it read with both findings left as comments and no push. The `defect`
+// control requests changes, pushes nothing and leaves both text findings as threads of that
+// review. Catches: a scorer that fails the reviewer's own push (main's `pushes === 0`), one that
+// passes an approval beside the fix, a commit carrying a file the review App may not push or a
+// second push, or a round that tells the implementer nothing, and a defect control that passes a
+// push or a missing thread beside the change request.
+test("k1: a text-only reviewer pushes one commit that fixes the document, approves nothing, leaves the workflow comment open and tells the implementer", () => {
   const seed = lastChanceRepo();
   const [doc, workflow] = findings as [object, object];
   const defectComment = {
@@ -10739,17 +11063,12 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
     side: "RIGHT",
     body: "A blank name prints a greeting and exits 0; R2 asks for the usage line and exit 2.",
   };
-  const approve = (sha: string, comments: object[] = [workflow]) =>
-    submission({
-      commit_id: sha,
-      event: "APPROVE",
-      body: `I pushed ${sha.slice(0, 12)}, which fixes docs/cli.md: it now says the CLI trims the spaces around the name. The comment in .github/workflows/greet.yml is left as a thread, since the review App may not push a workflow file.`,
-      comments,
-    });
+  const comment = (sha: string, comments: object[] = [workflow]) =>
+    reviewOpening(sha, "COMMENT", comments);
   const told = (sha: string) =>
     sentTo(
       "implementer",
-      `I pushed ${sha} fixing docs/cli.md and approved that head; the thread on .github/workflows/greet.yml is yours.`
+      `I pushed ${sha} fixing docs/cli.md and approved nothing; the thread on .github/workflows/greet.yml is yours.`
     );
   const base = (sha: string) => ({
     "out.txt": "exit=0\n",
@@ -10769,15 +11088,15 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
       {
         ...base(seed.reviewerRight),
         "pushes.log": pushLine(seed.read, seed.reviewerRight, pushedAt),
-        "calls.jsonl": calls([approve(seed.reviewerRight)]),
+        "calls.jsonl": calls([comment(seed.reviewerRight)]),
       },
     ],
     [
       "reviewer-text-findings-text-only-head-2",
       {
-        ...base(seed.read),
+        ...base(seed.reviewerRight),
         "pushes.log": pushLine(seed.read, seed.reviewerRight, pushedAt),
-        "calls.jsonl": calls([approve(seed.read)]),
+        "calls.jsonl": calls([reviewOpening(seed.read, "APPROVE", [workflow])]),
       },
     ],
     [
@@ -10785,7 +11104,7 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
       {
         ...base(seed.reviewerWorkflow),
         "pushes.log": pushLine(seed.read, seed.reviewerWorkflow, pushedAt),
-        "calls.jsonl": calls([approve(seed.reviewerWorkflow, [])]),
+        "calls.jsonl": calls([comment(seed.reviewerWorkflow, [])]),
       },
     ],
     [
@@ -10795,7 +11114,7 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
         "pushes.log":
           pushLine(seed.read, seed.reviewerRight, pushedAt) +
           pushLine(seed.reviewerRight, seed.aboveRight, "2026-09-30T17:29:10.000Z"),
-        "calls.jsonl": calls([approve(seed.aboveRight, [])]),
+        "calls.jsonl": calls([comment(seed.aboveRight, [])]),
       },
     ],
     [
@@ -10803,7 +11122,7 @@ test("k1: a text-only reviewer pushes one commit that fixes the document, approv
       {
         ...base(seed.reviewerRight),
         "pushes.log": pushLine(seed.read, seed.reviewerRight, pushedAt),
-        "calls.jsonl": calls([approve(seed.reviewerRight)]),
+        "calls.jsonl": calls([comment(seed.reviewerRight)]),
         "published.jsonl": bus(),
       },
     ],

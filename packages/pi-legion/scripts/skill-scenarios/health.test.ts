@@ -17,10 +17,12 @@ import {
   unfinished,
   unmergedHead,
   unmodelledWrite,
+  untaken,
   writtenBy,
 } from "./health";
 import { labelPersonRoutes } from "./person-routes";
 import {
+  casesOf,
   REMOVED_NAMES,
   systemPromptOf,
   vocabulary,
@@ -1585,6 +1587,72 @@ describe("health: rule 1, finished, on the run's boot record", () => {
   });
 });
 
+// Rule 3, taken, read for the run's case (completion-answers.ts's ANSWERS' `takes`): a text-only
+// reviewer that pushed its fix records no pass at it, approves nothing and waits for the
+// implementer's last chance (Verification v47's k1), so it completes nothing while it waits, and a
+// defect or last-push reviewer completes its round. Each row is a run directory named as cmd_run
+// named a run before the names left the world, which is its record of its scenario, case and label.
+// Catches: a world that calls a waiting text-only reviewer unhealthy, and one that requires no
+// completion of the cases whose round ends with one.
+describe("health: rule 3, taken, by the run's case", () => {
+  const runs = temporaryDirectories("health-taken");
+  const COMPLETED = JSON.stringify({
+    at: "2026-11-14T00:05:00.000Z",
+    path: "/legion/v1/handoff/complete",
+    status: 200,
+    role: "reviewer",
+    grantId: "g-1",
+  });
+  /** Rule 3's reason for the run `name` whose daemon stand-in logged its own opening line and, with
+   * `completed`, the reviewer's completion taken 200. */
+  const taken = (name: string, completed: boolean) => {
+    const dir = path.join(runs(), name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "daemon.log"),
+      [
+        JSON.stringify({ at: "2026-11-14T00:00:00.000Z", opened: "daemon.log" }),
+        ...(completed ? [COMPLETED] : []),
+        "",
+      ].join("\n")
+    );
+    return untaken({ dir, scenario: scenarioOf(dir) ?? "", label: labelOf(dir), repos: [] });
+  };
+  const NONE =
+    "no completion taken: no completion of the reviewer was answered as the head label's daemon answers one it takes";
+
+  test("a text-only reviewer that completed nothing is no unhealthy run", () => {
+    expect(taken("reviewer-text-findings-text-only-head-1", false)).toBe(undefined);
+    expect(taken("reviewer-text-findings-text-only-head-2", true)).toBe(undefined);
+  });
+
+  test("a defect reviewer whose completion the world took none of is unhealthy", () => {
+    expect(taken("reviewer-text-findings-defect-head-1", false)).toBe(NONE);
+    expect(taken("reviewer-text-findings-defect-head-2", true)).toBe(undefined);
+  });
+
+  test("a last-push reviewer whose completion the world took none of is unhealthy", () => {
+    expect(taken("reviewer-text-findings-last-push-head-1", false)).toBe(NONE);
+    expect(taken("reviewer-text-findings-last-push-head-2", true)).toBe(undefined);
+  });
+
+  // Catches: a `takes` keyed by a word that is no case of its scenario, which would require a
+  // completion of no run at all.
+  test("each case `takes` names is a case of its scenario", () => {
+    for (const [scenario, { takes }] of Object.entries(ANSWERS))
+      for (const named of Object.keys(takes ?? {}))
+        expect([scenario, named, casesOf(scenario).includes(named)]).toEqual([
+          scenario,
+          named,
+          true,
+        ]);
+    expect(ANSWERS["reviewer-text-findings"]?.takes).toEqual({
+      defect: "reviewer",
+      "last-push": "reviewer",
+    });
+  });
+});
+
 // Rule 15, service provenance, on the run's Dispatch server: the server a run's agents call is
 // the one built from the run's label's own checkout (rig.sh's services_up), since what an agent
 // reads of it differs across versions. Catches: a base run on a server the head checkout built,
@@ -1983,6 +2051,33 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
         ) === undefined
     );
     expect(missed).toEqual([]);
+  });
+
+  // Catches: a case word read inside a longer identifier an input held, joined by `_` or `-`, as
+  // that input's giving it (the architect's ruling D6 of INFRA-764's plan v9): every reviewer
+  // world's rules read answers `require_last_push_approval` (rig.sh's base_ruleset_routes), and a
+  // reviewer that writes of last-push approval in words of its own wrote the case word itself. The
+  // same word standing alone in the input is still the input's.
+  test("a case word an input held only inside a longer identifier is the agent's own, and one it held alone is the input's", () => {
+    const thought = "This base asks for last-push approval, so another account must approve it.";
+    const rules = '[{"type":"pull_request","parameters":{"require_last_push_approval":true}}]';
+    const inside = runWith({
+      [FILE]: [
+        call("bash", { command: "gh api repos/fernbrook/widgets/rules/branches/main" }, 0),
+        result("bash", rules, 1),
+        says("thinking", thought, 2),
+      ],
+    });
+    expect(namesSaid(inside)).toBe(undefined);
+    expect(namesOf(inside).own).toEqual([
+      `a thinking part in ${FILE} says "last-push": "${thought}"`,
+    ]);
+    const alone = runWith({
+      [FILE]: [result("bash", "the last-push case", 1), says("thinking", thought, 2)],
+    });
+    expect(namesSaid(alone)).toBe(
+      `names: a thinking part in ${FILE} says "last-push": "${thought}", which the result of bash in ${FILE} held before any agent of the run wrote it`
+    );
   });
 
   // Catches: a health that reads a web search's result, or a page an agent fetched, as no input

@@ -2422,8 +2422,8 @@ describe("scenario_case", () => {
     );
 
   // Catches: a reviewer case the rig takes in one place and refuses in another.
-  test("reviewer-text-findings takes text-only and defect", () => {
-    for (const name of ["text-only", "defect"])
+  test("reviewer-text-findings takes text-only, defect and last-push", () => {
+    for (const name of ["text-only", "defect", "last-push"])
       expect(cases("reviewer-text-findings", { SKILL_SCENARIOS_REVIEWER_CASE: name })).toEqual({
         code: 0,
         stdout: `${name}\n`,
@@ -2433,14 +2433,14 @@ describe("scenario_case", () => {
 
   // Catches: a batch that runs the wrong world because the variable is unset or misspelt, which
   // would score as the reviewer's own verdict.
-  test("an unset or unknown reviewer case fails, naming the variable and both cases", () => {
+  test("an unset or unknown reviewer case fails, naming the variable and every case", () => {
     const unset: Record<string, string> = {};
     for (const env of [unset, { SKILL_SCENARIOS_REVIEWER_CASE: "text" }]) {
       const result = cases("reviewer-text-findings", env);
       expect(result.code).toBe(1);
       expect(result.stdout).toBe("");
       expect(result.stderr).toContain("SKILL_SCENARIOS_REVIEWER_CASE");
-      expect(result.stderr).toContain("not text-only or defect");
+      expect(result.stderr).toContain("not text-only, defect or last-push");
     }
   });
 
@@ -2565,6 +2565,14 @@ describe("round_world and the worlds' own text findings", () => {
       "1",
       "100",
       "dropped",
+      "THE-DOC-LINE",
+      "THE-TRIGGER",
+    ]);
+    // last-push's world is text-only's on another base, with text-only's two findings.
+    expect(built("review_world", "", "last-push")).toEqual([
+      "1",
+      "100",
+      "",
       "THE-DOC-LINE",
       "THE-TRIGGER",
     ]);
@@ -3581,24 +3589,26 @@ describe("health", () => {
   // records holds no daemon (RUN_CHECKOUT's): a reviewer refused 409 HANDOFF_NOT_CURRENT_PHASE
   // with no earlier 200 is an answer one shape gives and the other does not, so whose world the
   // run met is unknown, while the implementer's refusal and the reviewer's 200 are every daemon's
-  // answers. The verdict names the commit, never the directory health rebuilt it in. A source
-  // that is not there is refused with no Go run: the `go` on health's PATH here records a call
-  // and refuses it, so a health that compiled the reader to say a file is missing, which cost the
-  // tester's fixture of 2026-11-14 a minute, fails this row on any host.
+  // answers. The run is a defect run, whose world must take the reviewer's completion (rule 3,
+  // read by the run's case), so both rules read that answer. The verdict names the commit, never
+  // the directory health rebuilt it in. A source that is not there is refused with no Go run: the
+  // `go` on health's PATH here records a call and refuses it, so a health that compiled the reader
+  // to say a file is missing, which cost the tester's fixture of 2026-11-14 a minute, fails this
+  // row on any host.
   test("a run whose answer turns on a daemon that cannot be read is unhealthy, naming why", () => {
     const bin = freshDir("no-go");
     const ran = path.join(bin, "ran");
     writeFileSync(path.join(bin, "go"), `#!/bin/sh\necho "$*" >>'${ran}'\nexit 1\n`, {
       mode: 0o755,
     });
-    const dir = run("reviewer-text-findings-text-only-head-2", [
+    const dir = run("reviewer-text-findings-defect-head-2", [
       [complete(409, NOT_CURRENT, "reviewer")],
     ]);
     const { code, stdout } = healthIn({ PATH: `${bin}:${childEnv.PATH}` }, dir);
     expect(code).toBe(1);
     const commit = `<commit ${builtCommit(RUN_CHECKOUT)}>`;
     expect(verdict(stdout, dir)).toBe(
-      `reviewer-text-findings-text-only-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${commit}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${commit} takes a completion is unknown (daemon-completion.go reads it)`
+      `reviewer-text-findings-defect-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${commit}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${commit} takes a completion is unknown (daemon-completion.go reads it)`
     );
     expect(stdout).toContain("health: completions: 1 of 1 runs\n");
     expect(stdout).toContain("health: taken: 1 of 1 runs\n");
@@ -6112,7 +6122,9 @@ describe("health", () => {
   // at <step> after …`: read for this checkout's opening only, a base agent refused at its boot
   // was never relaunched (`health.ts --boot-refusal`) and its run read as one whose claim boot met
   // nothing. Each run is read for the wording of the checkout its built-from names, and a head
-  // sentence in a base run is none its plugin prints.
+  // sentence in a base run is none its plugin prints: that run is read on past the claim boot, to
+  // the reviewer's completion it never made, which a defect run's world must take (rule 3, read by
+  // the run's case).
   test("a claim boot sentence is read in the wording of the run's own label's plugin", () => {
     const baseCheckout = freshDir("base-claim-checkout");
     const core = path.join(baseCheckout, "packages", "pi-shared", "src", "legion-claim-core.ts");
@@ -6133,7 +6145,7 @@ describe("health", () => {
     };
     const base = refused("reviewer-text-findings-text-only-base-9", baseCheckout, baseLine);
     const head = refused("reviewer-text-findings-text-only-head-9", CHECKOUT, headLine);
-    const crossed = refused("reviewer-text-findings-text-only-base-10", baseCheckout, headLine);
+    const crossed = refused("reviewer-text-findings-defect-base-10", baseCheckout, headLine);
     const never =
       "and the agent was not relaunched: the rig relaunches an agent once when its claim boot is refused before its first turn, and never after it";
     const { stdout } = health(base, head, crossed);
@@ -6144,7 +6156,7 @@ describe("health", () => {
       `reviewer-text-findings-text-only-head-9  unhealthy: claim boot refused: ${headLine} (<run>/out.txt), ${never}`
     );
     expect(verdict(stdout, crossed)).toStartWith(
-      "reviewer-text-findings-text-only-base-10  unhealthy: no completion taken: "
+      "reviewer-text-findings-defect-base-10  unhealthy: no completion taken: "
     );
     // The relaunch rig.sh's boot_agent asks for, of the base agent refused before its first turn.
     const asked = spawnChecked(
@@ -8301,8 +8313,13 @@ describe("what the rig writes into a run's world", () => {
   }
   /** WORLD built for real under a run directory of its own, with rig.sh's own functions and
    * values: no step stubbed, the issue workspace cloned with jj, and fixture_cli read whole
-   * (`definition`). */
-  function builtWorld(world: string, guard: string): string {
+   * (`definition`). `worldCase` is the case the world's function builds (worker_fixture passes
+   * it). */
+  function builtWorld(
+    world: string,
+    guard: string,
+    worldCase = guard === "" ? "correct" : "code-defect"
+  ): string {
     const dir = freshDir(`world-words-${world}`);
     const values = [
       "worker_repo",
@@ -8346,7 +8363,7 @@ describe("what the rig writes into a run's world", () => {
         `R=$1 worker_key=${WORLD_PROJECT}-1`,
         `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard, guard === "" ? "correct" : "code-defect"]
+      [dir, guard, worldCase]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return dir;
@@ -8357,18 +8374,22 @@ describe("what the rig writes into a run's world", () => {
   // or message, which `git log` and `jj log` show the agent (the worker world's `Fixture`, the
   // brainstorm repository's `rig` and the issue workspace's `Rig Worker`), and one in any answer
   // the world's gh routes serve, which the agent reads as GitHub's: the world's user was
-  // `rig[bot]`, in `gh api user` and in each review the run created.
+  // `rig[bot]`, in `gh api user` and in each review the run created. last-push's world is read
+  // too: its base's rules answer `require_last_push_approval: true`, an identifier that holds the
+  // case `last-push` and names no word of the rig's (run-names.ts's `besideWord`, the architect's
+  // ruling D6 of INFRA-764's plan v9), as every other world's `false` does.
   test("no file, commit, commit identity or gh answer of a run's world holds a word of the rig's", () => {
     const read = new Map<string, string>();
-    for (const [world, guard] of [
-      ["tester_proof_world", ""],
-      ["review_world", ""],
-      ["review_world", "dropped"],
-      ["approved_world", ""],
-      ["approved_world", "dropped"],
+    for (const [world, guard, worldCase] of [
+      ["tester_proof_world", "", undefined],
+      ["review_world", "", undefined],
+      ["review_world", "", "last-push"],
+      ["review_world", "dropped", undefined],
+      ["approved_world", "", undefined],
+      ["approved_world", "dropped", undefined],
     ] as const) {
-      const name = `${world}${guard === "" ? "" : ` ${guard}`}`;
-      const dir = builtWorld(world, guard);
+      const name = `${world}${guard === "" ? "" : ` ${guard}`}${worldCase === undefined ? "" : ` ${worldCase}`}`;
+      const dir = builtWorld(world, guard, worldCase);
       const clone = `repos/github.com/${WORLD_REPO}`;
       for (const [where, text] of texts(dir, ["src", "remote.git", "ws", clone]))
         read.set(`${name}: ${where}`, text);
@@ -8436,12 +8457,25 @@ describe("what the rig writes into a run's world", () => {
     // And the gh answers: every world's routes, `gh api user` (GitHub's 403 to a role App, its
     // route `^gh api (.* )?/?user…`) among them, so a world whose fixtures.json the walk did not
     // read is no answer read as clean.
-    for (const world of ["tester_proof_world", "review_world", "approved_world dropped"])
+    for (const world of [
+      "tester_proof_world",
+      "review_world",
+      "review_world last-push",
+      "approved_world dropped",
+    ])
       expect([...read.keys()]).toEqual(
         expect.arrayContaining([
           expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api \\(\\.\\* \\)\\?/\\?user`)),
         ])
       );
+    // last-push's base rules, which the walk read, answer the identifier that holds its case.
+    expect(
+      [...read].some(
+        ([where, text]) =>
+          where.startsWith("review_world last-push: route ") &&
+          text.includes('"require_last_push_approval":true')
+      )
+    ).toBe(true);
     for (const [where, text] of read)
       if (where.endsWith("history"))
         expect([where, text]).toEqual([where, expect.stringMatching(/@example\.invalid>/)]);
@@ -8458,7 +8492,7 @@ describe("what the rig writes into a run's world", () => {
       ];
     });
     expect(words).toEqual([]);
-    // It builds five worlds for real: the file ran it in 37 s alone on a quiet pod, and past the
+    // It builds six worlds for real: the file ran five in 37 s alone on a quiet pod, and past the
     // file's 60 s default beside a second suite (INFRA-764, 2026-11-19), so it is bounded at three
     // minutes.
   }, 180_000);
@@ -10456,7 +10490,7 @@ describe("identity", () => {
     });
     // A model call rewrites the route's live files, and the tree digest stays.
     appendFileSync(path.join(I, "key", "anthropic-key.calls"), "a call\n");
-    writeFileSync(path.join(I, "cache", "hawk-token.key"), "another token\n");
+    writeFileSync(path.join(I, "cache", "hawk-token.key"), `${fixtureSecret("hawk")}\n`);
     expect(identity().stdout.toString().split("\n")[0]).toBe(tree);
     // A plugin that changes moves it.
     writeFileSync(path.join(I, "pi-envoy", "dist", "index.js"), "export const a = 1;\n");
@@ -11637,6 +11671,21 @@ sleep() { command sleep 0.05; }`;
         options: () => ({ files: { "jj.toml": '[user]\nname = "rig-worker"\n' } }),
       },
       {
+        // The case beside the identifier that holds it, the base rule a reviewer's system prompt
+        // names: the identifier names no word of the rig's (the architect's ruling D6 of
+        // INFRA-764's plan v9, run-names.ts's `besideWord`), and the case standing alone still does.
+        what: "a case standing alone beside a rule's name that holds it",
+        word: "last-push",
+        place: "<run>/state/secrets/system-prompt.md",
+        options: (work) => ({
+          files: {
+            "system-args": `--append-system-prompt ${runDirOf(work, name)}/state/secrets/system-prompt.md`,
+            "state/secrets/system-prompt.md":
+              "Read `require_last_push_approval`, then review the last-push round.\n",
+          },
+        }),
+      },
+      {
         // A file cmd_profile writes into the label's HOME, which base_env copies into the run:
         // the guard reads it (run-names.ts's RIG_HOME) where it passes over the label's plugins
         // beside it (LABELS_OWN).
@@ -12323,6 +12372,7 @@ await state(file, Number(turn), run);
         ],
         records: {
           "reviewer-text-findings-defect-head-1": [0, 1],
+          "reviewer-text-findings-last-push-head-1": [0, 1],
           "reviewer-text-findings-text-only-head-1": [0, 1],
           "spec-rewrite-head-1": [0, 1, 2],
           "spec-writing-head-1": [0, 1, 2],
@@ -12404,6 +12454,49 @@ await state(file, Number(turn), run);
       }).toEqual({
         agent: { code: 0, stderr: "", ran: true },
         rig: { code: 1, refused: true, ran: false },
+      });
+    }
+  );
+
+  // Catches: a guard that refuses every reviewer for the base rule its system prompt names. The
+  // prompt names `require_last_push_approval`, and every world's base rules answer it (rig.sh's
+  // base_ruleset_routes); folded, `_` read as `-`, the case `last-push` stands inside it, and a
+  // case inside a longer identifier joined by `_` or `-` is that identifier's and not the rig's
+  // word (the architect's ruling D6 of INFRA-764's plan v9, run-names.ts's `besideWord`). The
+  // second launch is the mutant: the same file naming the case standing alone still refuses.
+  test.skipIf(withoutNamespace)(
+    "a reviewer whose system prompt names require_last_push_approval starts; the case last-push standing alone still refuses",
+    () => {
+      const name = "reviewer-text-findings-last-push-head-1";
+      /** The launch of the run in a work directory of its own whose system prompt's file holds
+       * `text`, and whether its agent ran. */
+      const prompted = (text: string) => {
+        const work = freshDir("launch-rule-name");
+        const run = runDirOf(work, name);
+        const { result } = launched(work, name, `: >${run}/agent-ran`, [], {
+          files: {
+            "system-args": `--append-system-prompt ${run}/state/secrets/system-prompt.md`,
+            "state/secrets/system-prompt.md": text,
+          },
+        });
+        return { run, result, ran: existsSync(path.join(run, "agent-ran")) };
+      };
+      const rule = prompted(
+        "Push no fix where the branch's rules answer `require_last_push_approval: true`.\n"
+      );
+      const alone = prompted("Push no fix in the last-push round.\n");
+      expect({
+        rule: { code: rule.result.code, stderr: rule.result.stderr, ran: rule.ran },
+        alone: {
+          code: alone.result.code,
+          refused: alone.result.stderr.includes(
+            `the world of ${path.basename(alone.run)} names "last-push" in <run>/state/secrets/system-prompt.md`
+          ),
+          ran: alone.ran,
+        },
+      }).toEqual({
+        rule: { code: 0, stderr: "", ran: true },
+        alone: { code: 1, refused: true, ran: false },
       });
     }
   );
@@ -13603,7 +13696,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         'trap \'stop_pid "$standin_pid"; stop_pid "$watcher_pid"; stop_pid "$dispatch_pid"; stop_pid "$github_pid"; pg_sql "$TEST_POSTGRES" "DROP DATABASE IF EXISTS $database WITH (FORCE)" >/dev/null 2>&1 || true\' EXIT',
         "dispatch_pid='' github_pid='' watcher_pid='' standin_pid=''",
         'worker_run_world 1 1700000000 "$case_name"',
-        'case $case_name in text-only | defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
+        'case $case_name in text-only | defect | last-push) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
         'case $case_name in accept | correct | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
         'if [ "$pushed" = 1 ]; then',
         '  src=$R/src when="@1700000101 +0000"',
@@ -13899,6 +13992,28 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(concerns(world)).toEqual(
         noConcern({ ...none, defect: true, doc: true, workflow: true })
       );
+    }, 300_000);
+
+    test("last-push: text-only's world on a base that asks the last push approved by another, both passes standing at the head and only its two text findings true", () => {
+      const world = seededWorld("last-push");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(noConcern({ ...none, doc: true, workflow: true }));
+      // The case reaches the base's rules through worker_fixture (review_world's CASE).
+      const asked = spawnChecked(
+        [
+          "bun",
+          GH_STANDIN,
+          "gh",
+          "api",
+          "repos/fernbrook/widgets/rules/branches/main",
+          "--jq",
+          '.[] | select(.type=="pull_request") | .parameters.require_last_push_approval',
+        ],
+        { env: { ...childEnv, GH_DATA_DIR: world.run } }
+      );
+      expect([asked.exitCode, asked.stdout.toString()]).toEqual([0, "true\n"]);
     }, 300_000);
 
     test("correct: the reviewer's commit is the head, its sentence false another way, and the workflow's comment is the one other finding", () => {

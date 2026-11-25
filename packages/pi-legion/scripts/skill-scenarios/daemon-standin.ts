@@ -339,6 +339,7 @@ import {
   submittedReviews,
   threadState,
 } from "./gh-threads";
+import { pusherOf } from "./rest-objects";
 import { CALLS, Opened, openingLine } from "./run-records";
 import {
   type CapabilityFacts,
@@ -748,7 +749,7 @@ function worldPull(): { pull: PullRequestFacts; round: boolean } {
       number: PR,
       head,
       state: typeof held === "string" ? held : "OPEN",
-      mergeState: mergeStateOf(at, threads, mergeStates, head, calls),
+      mergeState: mergeStateOf(at, threads, mergeStates, head, calls, pusherOf(runDir, head)),
       decision,
     },
     round: true,

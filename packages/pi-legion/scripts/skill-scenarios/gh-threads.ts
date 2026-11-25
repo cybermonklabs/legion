@@ -715,17 +715,23 @@ export function submittedReviews(at: ThreadWorld, calls: readonly Recorded[]): S
 export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
 /** GitHub's review decision on the pull request (GraphQL's `reviewDecision`, which gh prints as
  * `""` where it is null), from each reviewer's last review that decides (`DECIDES`), at whatever
- * head it stands, since the base dismisses no approval on a push and asks no approval of the last
- * push (`dismiss_stale_reviews_on_push` and `require_last_push_approval`, false on every world's
- * base, rig.sh's base_ruleset_routes): `CHANGES_REQUESTED` while any change request stands; else,
- * where the base's `pull_request` rule requires approvals (`required_approving_review_count`),
- * `APPROVED` once that many stand and `REVIEW_REQUIRED` until then; and where nothing requires
- * one, `APPROVED` once one stands and null before. Measured on 2026-11-18 at 04:18Z over
- * cybermonklabs/legion's 60 newest open pull requests (`gh pr list --json
- * number,baseRefName,reviewDecision,mergeStateStatus,mergeable`): against `main`, whose ruleset
- * requires one approval, each read `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`; against
- * a branch no ruleset protects, `""` (#4376, #4373, #4370), `APPROVED` (#4320) or
+ * head it stands, since the base dismisses no approval on a push (`dismiss_stale_reviews_on_push`,
+ * false on every world's base, rig.sh's base_ruleset_routes): `CHANGES_REQUESTED` while any change
+ * request stands; else, where the base's `pull_request` rule requires approvals
+ * (`required_approving_review_count`), `APPROVED` once that many stand and `REVIEW_REQUIRED` until
+ * then; and where nothing requires one, `APPROVED` once one stands and null before. Measured on
+ * 2026-11-18 at 04:18Z over cybermonklabs/legion's 60 newest open pull requests (`gh pr list
+ * --json number,baseRefName,reviewDecision,mergeStateStatus,mergeable`): against `main`, whose
+ * ruleset requires one approval, each read `REVIEW_REQUIRED`, `CHANGES_REQUESTED` or `APPROVED`;
+ * against a branch no ruleset protects, `""` (#4376, #4373, #4370), `APPROVED` (#4320) or
  * `CHANGES_REQUESTED` (#4355), never `REVIEW_REQUIRED`.
+ *
+ * Where the rule's `require_last_push_approval` is true (last-push's base alone, rig.sh's
+ * review_world; production's is false), an approval by `pusher`, the login that made the head's
+ * last push (rest-objects.ts's `pusherOf`), is not counted: "Whether the most recent reviewable
+ * push must be approved by someone other than the person who pushed it" (the description of
+ * `repository-rule-pull-request` in github/rest-api-description at rest-required.ts's
+ * DESCRIPTION_COMMIT). A `pusher` of "", no account of the world, leaves every approval counted.
  *
  * The rule's `require_code_owner_review` asks no approval of its own in any world. GitHub's rule
  * is that "any pull request that modifies content with a code owner must be approved by that code
@@ -737,16 +743,21 @@ export const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
  * 2026-11-18T18:19:22Z (ruleset 12331919, read 2026-11-19T05:35:00Z) and every world's base's
  * (rig.sh's base_ruleset_routes), leaves the decision to the approvals the count asks for, as
  * `false` would. */
-export function reviewDecisionOf(at: ThreadWorld, calls: readonly Recorded[]): string | null {
+export function reviewDecisionOf(
+  at: ThreadWorld,
+  calls: readonly Recorded[],
+  pusher = ""
+): string | null {
   const latest = new Map<string, string>();
   for (const review of submittedReviews(at, calls))
     if (DECIDES.includes(review.state)) latest.set(review.login, review.state);
-  const states = [...latest.values()];
-  if (states.includes("CHANGES_REQUESTED")) return "CHANGES_REQUESTED";
-  const required =
-    numberOf(ruleParameters(baseRules(at), "pull_request")?.required_approving_review_count) ?? 0;
-  if (required > 0) return states.length >= required ? "APPROVED" : "REVIEW_REQUIRED";
-  return states.length > 0 ? "APPROVED" : null;
+  if ([...latest.values()].includes("CHANGES_REQUESTED")) return "CHANGES_REQUESTED";
+  const rule = ruleParameters(baseRules(at), "pull_request");
+  const lastPush = rule?.require_last_push_approval === true && pusher !== "";
+  const approvals = [...latest.keys()].filter((login) => !(lastPush && login === pusher)).length;
+  const required = numberOf(rule?.required_approving_review_count) ?? 0;
+  if (required > 0) return approvals >= required ? "APPROVED" : "REVIEW_REQUIRED";
+  return approvals > 0 ? "APPROVED" : null;
 }
 
 /** The conclusions GitHub takes a required status check as passed with. */
@@ -770,17 +781,27 @@ function passed(
  * and a state GitHub has not computed (`UNKNOWN`) are each the world's own, which no rule moves:
  * #4374 and #4361 of the measurement below read `REVIEW_REQUIRED` and `DIRTY`. */
 const MERGEABLE_BUT_FOR_RULES = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
+/** Whether GitHub shows `thread` open on the pull request: unresolved, and holding a comment it
+ * has published (a pending review's comments alone are shown to their writer and nobody else).
+ * The thread rule of a base holds its head `BLOCKED` on such a thread (`mergeStateOf`), and
+ * score.ts reads a finding left open by it. */
+export function shownOpen(thread: Json): boolean {
+  return (
+    thread.isResolved !== true && commentsOf(thread).some((comment) => comment.state !== "PENDING")
+  );
+}
 /** The merge state GitHub reports for the pull request at `head`, with its threads `threads` and
  * the run's record `calls`: the world's own state for that head (`mergeStates`, gh-call.ts's
  * `mergeStateOn`), held `BLOCKED` while a rule of its base (`baseRules`) that a merge must meet is
  * unmet:
  *   - `pull_request`: fewer approvals stand than it requires, or a change request stands
  *     (`reviewDecisionOf`, whose code owner review asks no approval of its own where no
- *     CODEOWNERS file names an owner, as in every world); and, where it requires review threads
- *     resolved (`required_review_thread_resolution`), a thread holding a comment GitHub has
- *     published (no pending review's alone) is open. GitHub moves a head so protected from
- *     `BLOCKED` to `CLEAN` when the last such thread is resolved, and a world whose state never
- *     moved told every agent that resolving a thread changes nothing;
+ *     CODEOWNERS file names an owner, as in every world, and which counts no approval by
+ *     `pusher`, the login that made the head's last push, where the rule asks the last push
+ *     approved by another); and, where it requires review threads resolved
+ *     (`required_review_thread_resolution`), a thread is shown open (`shownOpen`). GitHub moves a
+ *     head so protected from `BLOCKED` to `CLEAN` when the last such thread is resolved, and a
+ *     world whose state never moved told every agent that resolving a thread changes nothing;
  *   - `required_status_checks`: a check it names (`context`, by the App its `integration_id`
  *     names) has no run on the head that GitHub takes as passed (`passed`);
  *   - `code_scanning`: a tool it names has no check run of the tool's name on the head that
@@ -804,7 +825,8 @@ export function mergeStateOf(
   threads: Threads,
   mergeStates: unknown,
   head: string,
-  calls: readonly Recorded[]
+  calls: readonly Recorded[],
+  pusher = ""
 ): string {
   const own = mergeStateOn(mergeStates, head);
   const { world } = at;
@@ -815,13 +837,9 @@ export function mergeStateOf(
   const approvals = numberOf(review?.required_approving_review_count) ?? 0;
   const checks = ruleParameters(rules, "required_status_checks")?.required_status_checks;
   const tools = ruleParameters(rules, "code_scanning")?.code_scanning_tools;
-  const open = threads.list.some(
-    (thread) =>
-      thread.isResolved !== true &&
-      commentsOf(thread).some((comment) => comment.state !== "PENDING")
-  );
+  const open = threads.list.some(shownOpen);
   const unmet =
-    (approvals > 0 && reviewDecisionOf(at, calls) !== "APPROVED") ||
+    (approvals > 0 && reviewDecisionOf(at, calls, pusher) !== "APPROVED") ||
     (review?.required_review_thread_resolution === true && open) ||
     (Array.isArray(checks) &&
       checks.some(

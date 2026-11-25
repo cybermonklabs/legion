@@ -63,9 +63,11 @@ export const SCENARIOS: Readonly<
   "ask-on-message": { cases: [] },
   "measure-before-ask": { cases: [] },
   "tester-proof": { cases: [], world: "worker" },
+  // k1 runs text-only and its defect control (Verification v47); k3 runs last-push, text-only's
+  // world on a base whose rules require another approver of the last push.
   "reviewer-text-findings": {
     variable: "SKILL_SCENARIOS_REVIEWER_CASE",
-    cases: ["text-only", "defect"],
+    cases: ["text-only", "defect", "last-push"],
     world: "worker",
   },
   // No case is a default: Verification v38's k2 names the case of every batch it runs, as k1 does
@@ -290,7 +292,8 @@ export const WORLD_REMOTE_NAMES = [`git-remote-${WORLD_REMOTE_VCS}`, WORLD_REMOT
 
 /** The words a run's world is held to, derived from SCENARIOS and the labels given: every
  * scenario, every case and every label. A word with a character that is no letter or digit
- * (`text-only`, `threads-closed`) names the measurement wherever it stands; a plain word (`head`,
+ * (`text-only`, `threads-closed`) names the measurement wherever it stands alone, a case not
+ * inside a longer identifier (`besideWord`); a plain word (`head`,
  * `base`, `defect`, `askgate`) is also an ordinary word, and names it only as a part of a name or
  * a path, or beside another word of the measurement (`proseNames`). The removed names
  * (REMOVED_NAMES) are distinctive. */
@@ -302,9 +305,14 @@ export interface Vocabulary {
   readonly ordinary: readonly string[];
 }
 
+/** Every case of every scenario of SCENARIOS, once. */
+const CASES: ReadonlySet<string> = new Set(
+  Object.keys(SCENARIOS).flatMap((scenario) => casesOf(scenario))
+);
+
 export function vocabulary(labels: readonly string[]): Vocabulary {
   const scenarios = Object.keys(SCENARIOS);
-  const cases = [...new Set(scenarios.flatMap((scenario) => casesOf(scenario)))];
+  const cases = [...CASES];
   const all = [...new Set([...scenarios, ...cases, ...labels].map((word) => word.toLowerCase()))];
   return {
     scenarios,
@@ -318,6 +326,14 @@ export function vocabulary(labels: readonly string[]): Vocabulary {
 const literal = (word: string) => word.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 /** A text as the words are matched in it: lower case, an underscore read as a hyphen. */
 const folded = (text: string) => text.toLowerCase().replaceAll("_", "-");
+/** What may stand on either side of `word`, a word of the vocabulary, where it stands alone in a
+ * text `folded`: no letter or digit, and, for a case of SCENARIOS, no hyphen either (an
+ * underscore folded to one). A case name inside a longer identifier joined by `_` or `-` is that
+ * identifier's and not the rig's word (the architect's ruling D6 of INFRA-764's plan v9): the
+ * reviewer's system prompt names the base rule `require_last_push_approval`, which every world's
+ * rules answer (rig.sh's base_ruleset_routes), and the case `last-push` stands inside it, so a
+ * guard that read it there refused every run of every reviewer world. */
+const besideWord = (word: string) => (CASES.has(word) ? "[a-z0-9-]" : "[a-z0-9]");
 
 /** The first removed name (REMOVED_NAMES), or the first of `names`, in `lower`, a text `folded`:
  * where a word starts, whatever follows it. */
@@ -326,12 +342,14 @@ function removedIn(lower: string, names: readonly string[] = REMOVED_NAMES): str
 }
 
 /** The first distinctive word of `vocab` in `text`, or of REMOVED_NAMES when `removed` holds:
- * a vocabulary word standing alone (no letter or digit on either side), a removed name where a
- * word starts (`removedIn`). */
+ * a vocabulary word standing alone (`besideWord`: no letter or digit on either side, and no
+ * hyphen beside a case), a removed name where a word starts (`removedIn`). */
 function distinctiveIn(text: string, vocab: Vocabulary, removed: boolean): string | undefined {
   const lower = folded(text);
-  for (const word of vocab.distinctive)
-    if (new RegExp(`(?<![a-z0-9])${literal(word)}(?![a-z0-9])`).test(lower)) return word;
+  for (const word of vocab.distinctive) {
+    const beside = besideWord(word);
+    if (new RegExp(`(?<!${beside})${literal(word)}(?!${beside})`).test(lower)) return word;
+  }
   return removed ? removedIn(lower) : undefined;
 }
 
@@ -395,14 +413,16 @@ export function proseNames(sentence: string, vocab: Vocabulary): string | undefi
 
 /** Whether `text`, an input an agent was given or a thing it wrote, holds `word`, a word
  * `proseNames` read in a sentence: where a word starts and ends (no letter or digit beside it, an
- * underscore read as a hyphen), so a path that names a run (`runs/threads-closed-correct-head-1/`)
- * holds its scenario word, and a space in a pair (`defect head`) is a space or a
- * hyphen; a removed name or a name of the world's remote where a word starts, whatever follows
- * it, as `removedIn` reads it (`rig-` in `rig-reviewer`). */
+ * underscore read as a hyphen, and no hyphen beside a case either, `besideWord`), so a path that
+ * names a run (`runs/threads-closed-correct-head-1/`) holds its scenario word, an input that
+ * names the rule `require_last_push_approval` holds no case `last-push`, and a space in a pair
+ * (`defect head`) is a space or a hyphen; a removed name or a name of the world's remote where a
+ * word starts, whatever follows it, as `removedIn` reads it (`rig-` in `rig-reviewer`). */
 export function holds(text: string, word: string): boolean {
   const pattern = literal(word).replaceAll(" ", "[ -]");
-  const end = [...REMOVED_NAMES, ...WORLD_REMOTE_NAMES].includes(word) ? "" : "(?![a-z0-9])";
-  return new RegExp(`(?<![a-z0-9])${pattern}${end}`).test(folded(text));
+  const beside = besideWord(word);
+  const end = [...REMOVED_NAMES, ...WORLD_REMOTE_NAMES].includes(word) ? "" : `(?!${beside})`;
+  return new RegExp(`(?<!${beside})${pattern}${end}`).test(folded(text));
 }
 
 /** The labels the work directory `work` holds a profile for (`rig.sh profile`), by the names

@@ -42,7 +42,7 @@ import {
   threadState,
 } from "./gh-threads";
 import { GITHUB_ROUTES, type GithubRoute, githubRouteOf } from "./github-routes";
-import { accountsOf, pullRequestJson, repositoryJson, userJson } from "./rest-objects";
+import { accountsOf, pullRequestJson, pusherOf, repositoryJson, userJson } from "./rest-objects";
 import { CALLS } from "./run-records";
 
 /** The world one stand-in serves, and the tokens it minted. */
@@ -136,7 +136,7 @@ function pullRequest(served: Served, form: "simple" | "full"): Record<string, un
   const view = typeof held === "object" && held !== null ? (held as Record<string, unknown>) : {};
   const comments =
     (Array.isArray(view.comments) ? view.comments.length : 0) + conversationOf(world, calls).length;
-  const state = mergeStateOf(at, threads, mergeStates, head, calls);
+  const state = mergeStateOf(at, threads, mergeStates, head, calls, pusherOf(served.runDir, head));
   return pullRequestJson(
     { ...view, mergeStateStatus: state, mergeable: mergeableOf(state) },
     {

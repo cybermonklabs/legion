@@ -49,7 +49,7 @@ import {
   shapeOf,
   stderrOf,
 } from "./production-shapes";
-import { roleApp } from "./rest-objects";
+import { pusherOf, roleApp } from "./rest-objects";
 import {
   absentFields,
   DESCRIPTION_COMMIT,
@@ -3642,7 +3642,7 @@ test("gh run view and gh run watch are gh's refusals of a run the world has not 
 // diff media type of a comparison, which is the diff's own. Catches: the world's line end after
 // every answer and between pages, and its 404 bodies indented with `\n` line ends.
 test("gh api prints GitHub's answer as it came, and --jq and gh's own JSON end with a line end", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const out = (...args: string[]) => String(asked(dir, "reviewer", args)[1]);
   const viewer = `{"data":{"viewer":{"login":"${rigValue("world_review_app")}[bot]"}}}`;
   expect(out("api", "graphql", "-f", "query=query{viewer{login}}")).toBe(viewer);
@@ -4010,7 +4010,7 @@ test("a commit's git data is read by its full SHA alone, as GitHub reads it", ()
 // list short of a field GitHub's description requires, a prefix's list held to the list
 // operation (rest-required.ts's ANSWERED_AS names the reads of 2026-11-21 behind each).
 test("the refs are GitHub's, the remote's and the pull request's, one by its name and a list by a prefix", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const remote = path.join(dir, "remote.git");
   const base = git(remote, "rev-parse", "refs/heads/main");
@@ -4268,7 +4268,7 @@ test("gh api --include prints GitHub's status line and headers before the body, 
 // gh-standin.ts's `linkOf`); and `--paginate` printing a list's pages as one, where gh with
 // `--include` prints each page after its own headers.
 test("every route the stand-in serves prints its status line and headers with --include", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
   const reason: Record<number, string> = {
@@ -4429,7 +4429,7 @@ test("round 25's pr view of the files and its inline thread query are answered a
 // where the world's base alone is (by its ruleset), and a `protected` parameter that filters
 // nothing. gh-standin.ts's `branchList` names the reads of 2026-11-21.
 test("the branches are the remote's, the base alone protected, filtered by `protected` as GitHub filters them", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
   const repo = "repos/example/widgets";
@@ -4495,7 +4495,7 @@ test("a tree is read from the run's own remote by any object GitHub reads, recur
     truncated: false,
   });
   expect([read(tree.slice(0, 8)).sha, read("legion/LWEVAL-1").sha]).toEqual([tree, first]);
-  const world = worldDir("approved_world", "", { threadsCase: "correct" });
+  const world = worldDir("approved_world", "", { worldCase: "correct" });
   const paths = (query: string) =>
     ghCall(
       world,
@@ -4639,7 +4639,7 @@ test("health reads GitHub's refusals of the remote's commits, trees, refs and co
 // `unmergedHead` names the command and its answer); here the push's line is written as the
 // remote's post-receive hook writes one.
 test("health names a push that leaves the issue branch without the base's tip, and passes a fix pushed over it", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const remote = path.join(dir, "remote.git");
   const log = path.join(dir, "pushes.log");
   const fix = pushFix(dir, "docs/cli.md", "a fix\n");
@@ -4943,19 +4943,21 @@ const WORLD_VALUES = [
  * review comment on them stands on a line of the pull request's diff, as the world's seeded one
  * does; `fixture_workspace`, which makes the issue workspace with jj and which no gh answer
  * reads, stubbed unless `workspace` asks for it; and this checkout's gh selectors written in as
- * worker_boot writes a label's (`writeGhSelectors`). `threadsCase` is the threads-closed case
- * approved_world builds (rig.sh's own refusal names the world that is given none): `correct`, the
- * reviewer's commit at the head with one thread left on the workflow file, `accept`, its commit
- * with none, or `code-defect`, with the guard `dropped`. `env` is the operator's own environment
- * the build runs in, over this process's. */
+ * worker_boot writes a label's (`writeGhSelectors`). `worldCase` is the case the world's function
+ * builds (worker_fixture passes it): for approved_world the threads-closed case (rig.sh's own
+ * refusal names the world that is given none), `correct`, the reviewer's commit at the head with
+ * one thread left on the workflow file, `accept`, its commit with none, or `code-defect`, with the
+ * guard `dropped`; for review_world `last-push`, text-only's world on a base whose rules require
+ * the last push approved by another, or none. `env` is the operator's own environment the build
+ * runs in, over this process's. */
 function worldDir(
   world: string,
   guard = "",
   {
     workspace = false,
     env = {},
-    threadsCase = "",
-  }: { workspace?: boolean; env?: Record<string, string>; threadsCase?: string } = {}
+    worldCase = "",
+  }: { workspace?: boolean; env?: Record<string, string>; worldCase?: string } = {}
 ): string {
   const dir = mkdtempSync(path.join(tmpdir(), `gh-standin-${world}-`));
   made.push(dir);
@@ -4999,7 +5001,7 @@ function worldDir(
       "-",
       dir,
       guard,
-      threadsCase,
+      worldCase,
     ],
     {
       env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", ...env },
@@ -5017,13 +5019,30 @@ function builtHead(dir: string): string {
   return read.world.head;
 }
 /** Pushes a commit that writes `text` into `file` over the issue branch's tip to the run's own
- * remote, as a role pushes its fix, so the remote's own hook logs the push; the commit. */
-function pushFix(dir: string, file: string, text: string): string {
+ * remote, as a role pushes its fix, so the remote's own hook logs the push; the commit. With `app`
+ * the commit is authored and committed as that App's bot (`botOf`), as a role's pane commits
+ * (rig.sh's role_env), whatever identity this process's environment carries, so the world links
+ * the pushed head to that App's account (rest-objects.ts's `pusherOf`). */
+function pushFix(dir: string, file: string, text: string, app?: "implement" | "review"): string {
   const work = path.join(dir, "fix-work");
   git(dir, "clone", "-q", "-b", "legion/LWEVAL-1", path.join(dir, "remote.git"), work);
   writeFileSync(path.join(work, file), text);
   git(work, "add", "-A");
-  git(work, "commit", "-qm", "docs: the text fix");
+  if (app === undefined) git(work, "commit", "-qm", "docs: the text fix");
+  else {
+    const [, name = "", email = ""] = /^(.*) <(.*)>$/.exec(botOf(app)) ?? [];
+    const committed = spawnChecked(["git", "-C", work, "commit", "-qm", "docs: the text fix"], {
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_AUTHOR_NAME: name,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: name,
+        GIT_COMMITTER_EMAIL: email,
+      },
+    });
+    if (committed.exitCode !== 0) throw new Error(`git commit: ${committed.stderr.toString()}`);
+  }
   git(work, "push", "-q", "origin", "legion/LWEVAL-1");
   return git(work, "rev-parse", "HEAD");
 }
@@ -5650,7 +5669,7 @@ type ViewedReview = {
 // body the run gave the world's review; and `latestReviews` that is `reviews`, holds an author's
 // earlier review, or names an id and a commit gh does not read.
 test("pr view's reviews are gh's: every review GitHub holds, and latestReviews its reading of them", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   for (const argv of [
     ["api", "-X", "PUT", `${REVIEWS}/5001`, "-f", "body=Approved, and updated."],
@@ -5721,7 +5740,7 @@ test("a pending review is the App's that wrote it alone, until it is submitted",
     const app = identity.startsWith(rigValue("world_implement_app")) ? "implement" : "review";
     expect([role, roleApp(role)]).toEqual([role, app]);
   }
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const input = path.join(dir, "pending.json");
   writeFileSync(
@@ -5933,7 +5952,7 @@ test("a thread comment's author is GraphQL's Bot by its slug, the viewer, resolv
 // line named or placed otherwise than gh's; and `--comments` printing the pull request's lines,
 // a comment with a review's status, or the review a reply is filed in.
 test("pr view without --json prints gh's text, and --comments the comments and the reviews gh shows", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const raw = (...argv: string[]) => {
     const made = spawnChecked(["bun", STANDIN, "gh", ...argv], { env: callEnv(dir) });
@@ -6224,7 +6243,7 @@ const pinnedCache = temporaryDirectory("gh-standin-pinned");
 function pinnedWorldCopy(): string {
   const kept = path.join(pinnedCache, "world");
   if (!existsSync(kept)) {
-    const built = worldDir("approved_world", "", { threadsCase: "correct" });
+    const built = worldDir("approved_world", "", { worldCase: "correct" });
     const head = builtHead(built);
     for (const argv of [
       ["pr", "comment", "1001", "--body", "a note on the change"],
@@ -6274,7 +6293,7 @@ for (const name of PINNED_GH)
 // `--comments` list of a pull request with no conversation comment, that prints a line in a
 // shape #4326's has not got or leaves out one it has.
 test("a pull request no agent has commented on is viewed in #4326's line shapes", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   expect(ghCall(dir, "api", "repos/example/widgets/issues/1001/comments").out).toBe("[]");
   for (const name of ["gh pr view (text, small)", "gh pr view --comments (text, small)"]) {
     const read = pinnedRead(name);
@@ -6432,7 +6451,7 @@ for (const name of PINNED_GRAPHQL)
 // got, JSON whose content or sha is not the blob's, a ref or a path the remote has not got
 // answered 200, and a route the world serves with no evidence (gh-route-evidence.ts).
 test("the contents read answers the file at the commit from the run's own remote, raw or as GitHub's JSON", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const raw = (sha: string, file = "greet.ts") => [
     "api",
@@ -6512,7 +6531,7 @@ test("the contents read answers the file at the commit from the run's own remote
 // branch's bytes, not the head's. Catches: a no-ref read refused, or answered from the head or
 // from no branch at all; and a `content` that is not the base64 of the file.
 test("a contents read with no ref answers the default branch's file, and .content is its base64", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const remote = path.join(dir, "remote.git");
   const content = (endpoint: string) =>
@@ -6613,7 +6632,7 @@ test("the merge state follows the threads: BLOCKED until the last one the base r
   expect(resolve(guarded, "PRRT_kwDOAAAAAc4AAD9001")).toBe(0);
   expect(states(guarded)).toEqual(clean);
   // A base that requires no resolution: its open thread holds nothing, nor does a new one.
-  const open = worldDir("approved_world", "dropped", { threadsCase: "code-defect" });
+  const open = worldDir("approved_world", "dropped", { worldCase: "code-defect" });
   expect(states(open)).toEqual(clean);
   expect(comment(open)).toBe(0);
   expect(states(open)).toEqual(clean);
@@ -6662,12 +6681,12 @@ test("the base requires the head's checks, and the head's checks report on that 
     "--jq",
     '.[] | select(.type=="code_scanning") | .parameters.code_scanning_tools[].tool',
   ];
-  for (const [world, guard, threadsCase] of [
+  for (const [world, guard, worldCase] of [
     ["tester_proof_world", "", ""],
     ["approved_world", "dropped", "code-defect"],
     ["review_world", "", ""],
   ] as const) {
-    const dir = worldDir(world, guard, { threadsCase });
+    const dir = worldDir(world, guard, { worldCase });
     expect([world, ghCall(dir, ...rules), ghCall(dir, ...protection)]).toEqual([
       world,
       { code: 0, out: "test\nlint", err: "" },
@@ -6676,7 +6695,7 @@ test("the base requires the head's checks, and the head's checks report on that 
     expect(ghCall(dir, ...resolution).out).toBe(JSON.stringify([world === "review_world"]));
     expect(ghCall(dir, ...tools)).toEqual({ code: 0, out: "CodeQL", err: "" });
   }
-  const dir = worldDir("approved_world", "dropped", { threadsCase: "code-defect" });
+  const dir = worldDir("approved_world", "dropped", { worldCase: "code-defect" });
   const head = builtHead(dir);
   const runsOf = (sha: string) =>
     ghCall(
@@ -7183,15 +7202,25 @@ function pagesOf(out: string): unknown[] {
   }
   return pages;
 }
+/** The worlds whose base's rules the rows below read, each a world function and, after a space,
+ * the case it is built for (`worldDir`'s `worldCase`). */
+const RULED_WORLDS = ["tester_proof_world", "review_world", "review_world last-push"] as const;
+type RuledWorld = (typeof RULED_WORLDS)[number];
+/** The world `world` names, built (`worldDir`). */
+function ruledWorldDir(world: RuledWorld): string {
+  const [name = "", worldCase = ""] = world.split(" ");
+  return worldDir(name, "", { worldCase });
+}
 /** The rules each world's one ruleset holds (rig.sh's base_ruleset_routes): production's seven, in
  * production's order, at production's values (cybermonklabs/legion ruleset 12331919, read on
  * 2026-11-19T05:35:00Z: one approval, no approval dismissed on a push and none asked of the last
  * push, a code owner's review required, as it has been since 2026-11-18T18:19:22Z, an
  * extra approval for Copilot's unattributed changes, squash the one merge method, its merge
  * queue's settings and its code-scanning thresholds), but for review threads resolved in the
- * resolution world alone (resolution_protection_routes), the checks GitHub Actions reports on the
- * world's head (integration 15368) and the tool whose check that head reports, `CodeQL`. */
-function rulesOf(world: "tester_proof_world" | "review_world"): object[] {
+ * review round's worlds alone (resolution_protection_routes), the last push's approval asked of
+ * another in last-push's world alone (review_world's case), the checks GitHub Actions reports on
+ * the world's head (integration 15368) and the tool whose check that head reports, `CodeQL`. */
+function rulesOf(world: RuledWorld): object[] {
   return [
     { type: "deletion" },
     { type: "non_fast_forward" },
@@ -7204,8 +7233,8 @@ function rulesOf(world: "tester_proof_world" | "review_world"): object[] {
         required_reviewers: [],
         require_code_owner_review: true,
         dismissal_restriction: { enabled: false, allowed_actors: [] },
-        require_last_push_approval: false,
-        required_review_thread_resolution: world === "review_world",
+        require_last_push_approval: world === "review_world last-push",
+        required_review_thread_resolution: world !== "tester_proof_world",
         require_extra_approval_for_unattributed_changes: true,
         allowed_merge_methods: ["squash"],
       },
@@ -7261,7 +7290,8 @@ function ruleTypes(rules: unknown): unknown[] {
 // 2026-11-17). Each of production's seven rules is held to production's rule of its type, and none
 // may be absent: a world holding two of them passed the shape row, since a variant a list holds
 // none of is compared no further (INFRA-764's ruling of 2026-11-18). Each world's rules are its
-// ruleset's, the thread-resolution rule's `true` the resolution world's alone.
+// ruleset's, the thread-resolution rule's `true` the review round's worlds' alone, and the last
+// push's approval asked of another (`require_last_push_approval: true`) last-push's alone.
 test("the base branch's rules answer as production's, naming the checks every base requires", () => {
   const read = pinnedRead("rules-branches-main");
   expect(pinnedTypes(read, ".")).toEqual([
@@ -7273,8 +7303,8 @@ test("the base branch's rules answer as production's, naming the checks every ba
     "merge_queue",
     "code_scanning",
   ]);
-  for (const world of ["tester_proof_world", "review_world"] as const) {
-    const got = pinnedCall(worldDir(world), read);
+  for (const world of RULED_WORLDS) {
+    const got = pinnedCall(ruledWorldDir(world), read);
     expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
       world,
       read.exit,
@@ -7312,8 +7342,8 @@ test("the repository's rulesets answer as production's: the one ruleset on the b
 // 1), in the shape of every GitHub error body (the pinned 403's).
 test("the base's ruleset answers as production's by its id, and GitHub's 404 for another", () => {
   const read = pinnedRead("ruleset-<id>");
-  for (const world of ["tester_proof_world", "review_world"] as const) {
-    const dir = worldDir(world);
+  for (const world of RULED_WORLDS) {
+    const dir = ruledWorldDir(world);
     const got = pinnedCall(dir, read, { id: "1" });
     expect([world, got.code, got.err, shapeDiff(got.answer, read)]).toEqual([
       world,
@@ -7702,7 +7732,7 @@ test("every REST route the world serves answers every field GitHub's description
       .map(({ route }) => route)
       .filter((route) => restOperation(route) === undefined)
   ).toEqual([]);
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
   const calls = restCalls(head, base);
@@ -7824,7 +7854,7 @@ const KEY_SET_DECLARED: Readonly<
 let keySetAnswers: Map<string, unknown[]> | undefined;
 function answersOf(route: string): unknown[] {
   if (keySetAnswers === undefined) {
-    const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+    const dir = worldDir("approved_world", "", { worldCase: "correct" });
     const head = builtHead(dir);
     const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
     keySetAnswers = new Map();
@@ -7995,7 +8025,7 @@ for (const pin of PINNED_REST)
     const read = pinnedRead(pin.name);
     for (const world of pin.worlds ?? ["approved_world"]) {
       const dir = worldDir(world, "", {
-        threadsCase: world === "approved_world" ? "correct" : "",
+        worldCase: world === "approved_world" ? "correct" : "",
       });
       const head = builtHead(dir);
       const base = git(path.join(dir, "remote.git"), "rev-parse", "refs/heads/main");
@@ -8064,7 +8094,7 @@ const PINNED_HTTP: readonly {
 // stand-in's answers were held to GitHub's required fields alone (github-standin.test.ts), from a
 // world that row writes by hand; this one serves rig.sh's own world.
 test("each read of the run's GitHub stand-in answers in production's shape", async () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const head = builtHead(dir);
   const child = Bun.spawn(
     ["bun", path.join(import.meta.dir, "github-standin.ts"), dir, "example/widgets", "main"],
@@ -8153,7 +8183,7 @@ test("every read the pin holds is compared by a row", () => {
 // opened the branch, as the comparison links that commit to it; and a test merge GitHub could not
 // hold: no commit, or one that does not merge the head into the base.
 test("the REST pull request is GitHub's object, saying what pr view says", () => {
-  const dir = worldDir("approved_world", "", { threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { worldCase: "correct" });
   const remote = path.join(dir, "remote.git");
   const base = git(remote, "rev-parse", "refs/heads/main");
   const tip = pushFix(dir, "docs/cli.md", "the text fix\n");
@@ -8497,6 +8527,78 @@ test("each reader of the pull request says GitHub's decision and merge state at 
   expect(read(tester)).toEqual(said("APPROVED", "CLEAN"));
 }, 120_000);
 
+/** What the reviewer's gh reads of the pull request of the world under `dir`: the review
+ * decision and the merge state `gh pr view` prints, and the REST pull request's
+ * `mergeable_state`. */
+function decidedBy(dir: string): string[] {
+  const viewed = asked(dir, "reviewer", [
+    "pr",
+    "view",
+    "1001",
+    "--json",
+    "reviewDecision,mergeStateStatus",
+  ]);
+  const rest = asked(dir, "reviewer", [
+    "api",
+    "repos/example/widgets/pulls/1001",
+    "--jq",
+    ".mergeable_state",
+  ]);
+  const { reviewDecision, mergeStateStatus } = JSON.parse(String(viewed[1]));
+  return [reviewDecision, mergeStateStatus, String(rest[1]).trim()];
+}
+/** The reviewer's approval of `sha` in the review world under `dir`, then its resolution of the
+ * bot's seeded thread (rig.sh's review_world), the one other rule of the base that holds the head
+ * `BLOCKED`: each call's status. */
+function approvedAndResolved(dir: string, sha: string): unknown[] {
+  return [
+    asked(dir, "reviewer", [
+      ...["api", "--method", "POST", REVIEWS, "-f", `commit_id=${sha}`],
+      ...["-f", "event=APPROVE", "-f", "body=Approved."],
+    ])[0],
+    asked(dir, "reviewer", [
+      ...["api", "graphql", "-f"],
+      "query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}",
+      ...["-F", "id=PRRT_kwDOrig0001"],
+    ])[0],
+  ];
+}
+
+// GitHub's last-push rule, as its REST description of the rulesets API's `pull_request` rule
+// gives it: "Whether the most recent reviewable push must be approved by someone other than the
+// person who pushed it" (gh-threads.ts's `reviewDecisionOf`). last-push's base alone sets it
+// (rig.sh's review_world), and its head is the implementer's push, so the reviewer's approval is
+// another's and lifts the approval rule, and with the bot's thread resolved the head is `CLEAN`.
+// Catches: a rule that refuses every approval, so that last-push's reviewer, which approves the
+// head as it stands (Verification v47's k3), could lift nothing.
+test("on last-push's base an approval by a login other than the head's last pusher counts", () => {
+  const dir = worldDir("review_world", "", { worldCase: "last-push" });
+  const head = builtHead(dir);
+  expect(pusherOf(dir, head)).toBe(`${rigValue("world_implement_app")}[bot]`);
+  expect(decidedBy(dir)).toEqual(["REVIEW_REQUIRED", "BLOCKED", "blocked"]);
+  expect(approvedAndResolved(dir, head)).toEqual([0, 0]);
+  expect(decidedBy(dir)).toEqual(["APPROVED", "CLEAN", "clean"]);
+}, 120_000);
+
+// The rule's other half: an approval by the account that made the head's last push counts for
+// nothing. The reviewer pushes its own text fix as the review App's bot, which the world links the
+// pushed head to (rest-objects.ts's `pusherOf`), and approves it: on last-push's base the decision
+// stays `REVIEW_REQUIRED` and the head `BLOCKED` with every thread resolved, where text-only's
+// base, which asks no approval of the last push, as production's asks none, takes the same
+// approval. Catches: the rule read as no rule, the pusher read off another commit than the head,
+// and the rule set on a base other than last-push's.
+test("on last-push's base an approval by the login that made the head's last push counts for nothing", () => {
+  const ruled = worldDir("review_world", "", { worldCase: "last-push" });
+  const fix = pushFix(ruled, "docs/cli.md", "the text fix\n", "review");
+  expect(pusherOf(ruled, fix)).toBe(`${rigValue("world_review_app")}[bot]`);
+  expect(approvedAndResolved(ruled, fix)).toEqual([0, 0]);
+  expect(decidedBy(ruled)).toEqual(["REVIEW_REQUIRED", "BLOCKED", "blocked"]);
+  const unruled = worldDir("review_world");
+  const own = pushFix(unruled, "docs/cli.md", "the text fix\n", "review");
+  expect(approvedAndResolved(unruled, own)).toEqual([0, 0]);
+  expect(decidedBy(unruled)).toEqual(["APPROVED", "CLEAN", "clean"]);
+}, 120_000);
+
 // GitHub's code owner review: "any pull request that modifies content with a code owner must be
 // approved by that code owner" (docs.github.com, Available rules for rulesets, read 2026-11-19),
 // and content has a code owner only where the base branch's `.github/CODEOWNERS`, `CODEOWNERS`
@@ -8683,7 +8785,7 @@ const OPERATOR = Object.fromEntries(
 // rig.sh's fixture_reviewer_commit) not the review App's, and the operator's identity in the
 // world's history.
 test("a seeded commit carries the identity of the role that made it, and none of the operator's", () => {
-  const dir = worldDir("approved_world", "", { env: OPERATOR, threadsCase: "correct" });
+  const dir = worldDir("approved_world", "", { env: OPERATOR, worldCase: "correct" });
   const author = `${rigValue("world_author_name")} <${rigValue("world_author_email")}>`;
   // Every commit of the world carries one date (rig.sh's fixture_git), so the log is read child
   // before parent, which a date order leaves to chance.
@@ -8746,7 +8848,7 @@ test("a pane's commit carries its role's App as author and committer, and two ro
   const dir = worldDir("approved_world", "", {
     workspace: true,
     env: OPERATOR,
-    threadsCase: "correct",
+    worldCase: "correct",
   });
   writeFileSync(path.join(dir, "jj.toml"), '[ui]\npaginate = "never"\n');
   const shown =

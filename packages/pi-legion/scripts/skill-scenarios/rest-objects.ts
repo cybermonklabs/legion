@@ -120,6 +120,21 @@ export function committerJson(email: string, accounts: readonly Account[]): Json
   return account === undefined ? null : userJson(account.login, accounts);
 }
 
+/** The login of the account that made the last push of `head`, the commit the pull request's
+ * branch stands at on the run's remote: the account the world links that commit's committer
+ * address to (`accountsOf`), as GitHub links a commit to its account. Each role of the world
+ * commits as its own App's bot (rig.sh's role_env, fixture_git's `fixture_by`) and pushes through
+ * its own App (world_remote_app), so the commit a push leaves at the head carries the address of
+ * the App that pushed it, as score.ts's `fixPushes` tells a role's push by. "" where git cannot
+ * read the commit or no account of the world holds its address. gh-threads.ts's
+ * `reviewDecisionOf` reads it for a base whose rule asks the last push approved by another. */
+export function pusherOf(runDir: string, head: string): string {
+  const address = remote(runDir, ["log", "-1", "--format=%ce", head]);
+  return address === undefined
+    ? ""
+    : (accountsOf(runDir).find((one) => one.email === address)?.login ?? "");
+}
+
 /** The time the world's Apps were registered and last changed, the world's own. */
 const APP_TIME = "2026-01-01T00:00:00Z";
 /** The permissions the world's role Apps hold on its repository, the ones production's role App

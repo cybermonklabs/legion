@@ -1264,7 +1264,7 @@ const runRecords: Check = {
 /** Each `mount --bind <source> <target>` of a line, each word as the line writes it: a word in
  * double quotes, a command substitution in it included (`"$(machine "$p")"`), or a bare word. */
 const BIND =
-  /\bmount --bind ("(?:[^"$]|\$\([^()]*\)|\$)*"|\S+) ("(?:[^"$]|\$\([^()]*\)|\$)*"|\S+)/g;
+  /\bmount --bind ("(?:[^"$]|\$\([^()]*\)|\$(?!\())*"|\S+) ("(?:[^"$]|\$\([^()]*\)|\$(?!\())*"|\S+)/g;
 /** private_world's holder, `h=<dir>`, the directory of /dev/shm it binds each shown path into. */
 const HOLDER = /^h=(\/dev\/shm\/[\w.-]+)$/m;
 const worldContent = grepCheck({

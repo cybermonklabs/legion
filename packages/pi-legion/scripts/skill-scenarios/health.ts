@@ -25,9 +25,11 @@
  *      (`withDaemon`); one whose daemon cannot be rebuilt is not judged by this rule. The
  *      scorer's refused-completion rule reads this through the same function
  *      (`refusedCompletion`, which score.ts's `unscored` calls);
- *   3. taken: a scenario whose world must take a role's completion (`ANSWERS`' `takes`) took it at
- *      least once, with an answer its world allows, read as rule 2 reads it.
- *      reviewer-text-findings requires one of the reviewer's; threads-closed requires none;
+ *   3. taken: a scenario whose world must take a role's completion in the run's case (`ANSWERS`'
+ *      `takes`) took it at least once, with an answer its world allows, read as rule 2 reads it
+ *      (`untaken`). reviewer-text-findings requires one of the reviewer's in defect and in
+ *      last-push, and none in text-only, whose reviewer waits for the implementer once it has
+ *      pushed its fix; threads-closed requires none;
  *   4. routes: no request the daemon stand-in answered 404 is of a route the run's label's daemon
  *      registers (`unservedRoute`): the routes read out of the API source of the commit the run's
  *      built-from records, rebuilt as rule 2 rebuilds it (daemon-pane.ts's `labelRoutes`), which
@@ -5119,7 +5121,7 @@ function otherRunWrite(run: Run, runs: readonly Run[]): string | undefined {
  * (daemon-pane.ts's `judgedOnDaemon`); or, where that cannot be read, why, as rule 4 says it of
  * the routes. Never the label's name: the checkout a label is built from moves. */
 function withDaemon(
-  run: Run,
+  run: Pick<Run, "dir" | "label" | "repos">,
   judge: (daemon: () => LabelDaemon) => string | undefined
 ): string | undefined {
   return judgedOnDaemon(
@@ -5129,6 +5131,24 @@ function withDaemon(
       `completion shapes unknown: an answer the stand-in logged turns on how the ${run.label} label's daemon takes a completion, which cannot be read: ${why}`,
     run.repos
   );
+}
+
+/** Rule 3: why the run's world took none of the completions its scenario requires in the run's
+ * case (completion-answers.ts's `takenCompletions`, `ANSWERS`' `takes`), or undefined where it
+ * took one or requires none. The case is the one the run's record names (`unfinished` reads it
+ * so): a text-only reviewer that pushed its fix and waits for the implementer completes nothing,
+ * and defect's and last-push's reviewer completes its round. */
+export function untaken(
+  run: Pick<Run, "dir" | "scenario" | "label" | "repos">
+): string | undefined {
+  const identity = runIdentity(run.dir);
+  const runCase = typeof identity === "string" ? "" : identity.case;
+  return withDaemon(run, (daemon) => {
+    const taken = takenCompletions(daemonLines(run.dir), run.scenario, runCase, daemon);
+    return taken !== undefined && taken.count === 0
+      ? `no completion taken: no completion of the ${taken.role} was answered as the ${run.label} label's daemon answers one it takes`
+      : undefined;
+  });
 }
 
 /** Rule 4: the first request the daemon stand-in answered 404 whose route the run's label's
@@ -5622,16 +5642,7 @@ const RULES: readonly {
         return `refused completion: POST ${refused.line.path} of the ${refused.role} answered ${answerOf(refused.line)}, which the ${run.label} label's daemon does not answer it with in this world`;
       }),
   },
-  {
-    name: "taken",
-    judge: (run) =>
-      withDaemon(run, (daemon) => {
-        const taken = takenCompletions(daemonLines(run.dir), run.scenario, daemon);
-        return taken !== undefined && taken.count === 0
-          ? `no completion taken: no completion of the ${taken.role} was answered as the ${run.label} label's daemon answers one it takes`
-          : undefined;
-      }),
-  },
+  { name: "taken", judge: untaken },
   { name: "routes", judge: unservedRoute },
   { name: "failed claim", judge: failedClaim },
   // Rule 22, read right after its sibling: what the run's daemon took from a claim after its boot.
