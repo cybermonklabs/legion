@@ -27,9 +27,9 @@
  *      (`refusedCompletion`, which score.ts's `unscored` calls);
  *   3. taken: a scenario whose world must take a role's completion in the run's case (`ANSWERS`'
  *      `takes`) took it at least once, with an answer its world allows, read as rule 2 reads it
- *      (`untaken`). reviewer-text-findings requires one of the reviewer's in defect and in
- *      last-push, and none in text-only, whose reviewer waits for the implementer once it has
- *      pushed its fix; threads-closed requires none;
+ *      (`untaken`). reviewer-text-findings requires one of the reviewer's in defect, and none in
+ *      text-only or last-push, whose reviewer may wait for the implementer; threads-closed
+ *      requires none;
  *   4. routes: no request the daemon stand-in answered 404 is of a route the run's label's daemon
  *      registers (`unservedRoute`): the routes read out of the API source of the commit the run's
  *      built-from records, rebuilt as rule 2 rebuilds it (daemon-pane.ts's `labelRoutes`), which
@@ -5132,11 +5132,11 @@ function withDaemon(
   );
 }
 
-/** Rule 3: why the run's world took none of the completions its scenario requires in the run's
- * case (completion-answers.ts's `takenCompletions`, `ANSWERS`' `takes`), or undefined where it
- * took one or requires none. The case is the one the run's record names (`unfinished` reads it
- * so): a text-only reviewer that pushed its fix and waits for the implementer completes nothing,
- * and defect's and last-push's reviewer completes its round. */
+/** Rule 3: why the run's world took none of the completions its scenario requires in the run's case
+ * (completion-answers.ts's `takenCompletions`, `ANSWERS`' `takes`), or undefined where it took one
+ * or requires none. The case is the one the run's record names (`unfinished` reads it so): a
+ * text-only or last-push reviewer that waits for the implementer completes nothing, and defect's
+ * reviewer completes its round. */
 export function untaken(
   run: Pick<Run, "dir" | "scenario" | "label" | "repos">
 ): string | undefined {

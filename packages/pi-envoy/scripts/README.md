@@ -396,15 +396,14 @@ The scenarios and every input are in the script's header (`./rig.sh` with no arg
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
 route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
 A batch needs Docker only where it starts the Postgres and NATS containers. Where both
-`SKILL_SCENARIOS_POSTGRES_URL` and `SKILL_SCENARIOS_NATS_URL` are set, as in a Legion pod, which
-has no Docker, the batch uses those two servers, starts no container, and needs `psql` and
-`python3` instead, to read the Postgres URL with libpq and to reach the
-server. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or `postgresql://` URL of the
-Postgres on this machine. Each run's Dispatch gets the connection string libpq reads of it, for
-the run's own database (`run_database_url`), and the two readers that open that database with
-Bun.SQL, `seed.ts pull-request` and the head watcher, get that string as a `postgres://` URL with
-each value percent-encoded (`rig.sh`'s `conninfo_url`), never the given URL's own text, of which
-Bun can read another host than libpq does.
+`SKILL_SCENARIOS_POSTGRES_URL` and `SKILL_SCENARIOS_NATS_URL` are set, as in a Legion pod, which has
+no Docker, the batch uses those two servers, starts no container, and needs `psql` and `python3`
+instead, to read the Postgres URL with libpq and to reach the server. `SKILL_SCENARIOS_POSTGRES_URL`
+must be a `postgres://` or `postgresql://` URL of the Postgres on this machine. Each run's Dispatch
+gets the connection string libpq reads of it, for the run's own database (`run_database_url`), and
+the two readers that open that database with Bun.SQL, `seed.ts pull-request` and the head watcher,
+get that string as a `postgres://` URL with each value percent-encoded (`rig.sh`'s `conninfo_url`),
+never the given URL's own text, of which Bun can read another host than libpq does.
 A judge runs in a Docker container, unless both service URLs are given, when it runs in the pod
 (below). Every container a batch or a judge starts has CPU and memory limits. It runs a mise of
 its own, never the caller's, since a worker pod's image carries none (the image's `tools` stage
@@ -804,11 +803,11 @@ line names a role the scenario boots, and every completion the daemon stand-in r
 answered as `completion-answers.ts`'s `ANSWERS` table allows for the run's scenario and that
 role: an answer a daemon of either shape gives it, or one the daemon of the run's own label gives
 it, read out of the sources of the commit the run's `built-from` records (below; a run with such
-an answer whose daemon cannot be read is unhealthy); a
-reviewer-text-findings world of the `defect` or the `last-push` case took the reviewer's
-completion at least once (`completion-answers.ts`'s `ANSWERS` `takes`, keyed by case), and one of
-the `text-only` case need take none, since a reviewer that pushed its own text fix records no
-pass at it, approves nothing and completes nothing while it waits for the implementer; no
+an answer whose daemon cannot be read is unhealthy); a reviewer-text-findings world of the `defect`
+case took the reviewer's completion at least once (`completion-answers.ts`'s `ANSWERS` `takes`,
+keyed by case), and one of the `text-only` or `last-push` case need take none, since a reviewer that
+waits for the implementer completes nothing: a text-only reviewer that pushed its own text fix
+records no pass at it and approves nothing while it waits; no
 request the daemon stand-in answered 404 is of a route the run's label's daemon registers, read
 out of the source of
 that same commit (the stand-in answers by the same routes, and a run with

@@ -1644,19 +1644,16 @@ describe("health: rule 3, taken, by the run's case", () => {
   const NONE =
     "no completion taken: no completion of the reviewer was answered as the head label's daemon answers one it takes";
 
-  test("a text-only reviewer that completed nothing is no unhealthy run", () => {
-    expect(taken("reviewer-text-findings-text-only-head-1", false)).toBe(undefined);
-    expect(taken("reviewer-text-findings-text-only-head-2", true)).toBe(undefined);
+  test("a text-only or last-push reviewer that completed nothing is no unhealthy run", () => {
+    for (const runCase of ["text-only", "last-push"]) {
+      expect(taken(`reviewer-text-findings-${runCase}-head-1`, false)).toBe(undefined);
+      expect(taken(`reviewer-text-findings-${runCase}-head-2`, true)).toBe(undefined);
+    }
   });
 
   test("a defect reviewer whose completion the world took none of is unhealthy", () => {
     expect(taken("reviewer-text-findings-defect-head-1", false)).toBe(NONE);
     expect(taken("reviewer-text-findings-defect-head-2", true)).toBe(undefined);
-  });
-
-  test("a last-push reviewer that completed nothing is no unhealthy run", () => {
-    expect(taken("reviewer-text-findings-last-push-head-1", false)).toBe(undefined);
-    expect(taken("reviewer-text-findings-last-push-head-2", true)).toBe(undefined);
   });
 
   // Catches: a `takes` keyed by a word that is no case of its scenario, which would require a
@@ -1669,7 +1666,6 @@ describe("health: rule 3, taken, by the run's case", () => {
           named,
           true,
         ]);
-    expect(ANSWERS["reviewer-text-findings"]?.takes).toEqual({ defect: "reviewer" });
   });
 });
 

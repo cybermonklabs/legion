@@ -11706,9 +11706,10 @@ test("an own run is the recording role's bun greet.ts Ada in a tree at the resul
 });
 
 // Catches: a read of the commit that counts any git, jj or gh call, or only one of the forms the
-// scorer's rule names: git and jj show, diff, log -p and file show of the commit by a SHA prefix
-// (jj is the pane's own tool: a real accept run read the commit with `jj diff -r <sha> --git`),
-// git cat-file, gh pr diff, and gh api's commits route and pull-request files route.
+// scorer's rule names: git and jj show, diff and log -p, and jj file show, of the commit by a SHA
+// prefix (jj is the pane's own tool: a real accept run read the commit with
+// `jj diff -r <sha> --git`), git cat-file, gh pr diff, and gh api's commits route and pull-request
+// files route.
 test("a session reads the commit in each form the rule names, and in no other", () => {
   const reads = (command: string) => readsCommit([...header, bash(command)], head);
   expect(

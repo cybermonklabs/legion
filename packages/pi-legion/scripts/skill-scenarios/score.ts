@@ -926,6 +926,11 @@ const JJ_READ =
   /\bjj(?:\s+(?:-R\s+\S+|--repository\s+\S+|--no-pager|--ignore-working-copy|--color(?:=|\s+)\S+))*\s+(show|diff|log|file\s+show)\b([^;&|\n]*)/g;
 const LOG_PATCH = /(?:^|\s)(?:-p|-u|--patch)(?=\s|$)/;
 const JJ_LOG_PATCH = /(?:^|\s)(?:-p|--patch|--git)(?=\s|$)/;
+/** Each read of a commit through git or jj, with the options that make its `log` print patches. */
+const COMMIT_READS = [
+  [GIT_READ, LOG_PATCH],
+  [JJ_READ, JJ_LOG_PATCH],
+] as const;
 const GH_PR_DIFF = /\bgh\s+pr\s+diff\b/;
 const GH_COMMIT = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/commits\/([0-9a-f]{7,40})\b/g;
 const GH_PR_FILES = /\bgh\s+api\b[^;&|\n]*?\brepos\/[^/\s]+\/[^/\s]+\/pulls\/\d+\/files\b/;
@@ -938,14 +943,9 @@ export function readsCommit(entries: SessionEntry[], sha: string): boolean {
     if (GH_PR_DIFF.test(command) || GH_PR_FILES.test(command)) return true;
     if ([...command.matchAll(GH_COMMIT)].some(([, named = ""]) => sha.startsWith(named)))
       return true;
-    return (
-      [...command.matchAll(GIT_READ)].some(
-        ([, verb, rest = ""]) =>
-          (verb !== "log" || LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
-      ) ||
-      [...command.matchAll(JJ_READ)].some(
-        ([, verb, rest = ""]) =>
-          (verb !== "log" || JJ_LOG_PATCH.test(rest)) && namesCommit(rest, [sha])
+    return COMMIT_READS.some(([read, patch]) =>
+      [...command.matchAll(read)].some(
+        ([, verb, rest = ""]) => (verb !== "log" || patch.test(rest)) && namesCommit(rest, [sha])
       )
     );
   });
