@@ -9,7 +9,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import type { InboxRow } from "../web/src/api/types";
 
-import { setLiveSessions } from "./agents";
+import { type FakeSession, setLiveSessions } from "./agents";
 import {
   answerAsk,
   createAsk,
@@ -65,14 +65,17 @@ export interface Seeded {
  * ask's thread, and the thread of an answered decision block in an issue's spec. Each comment
  * thread is read through its fourth reply, so replies 5 and 6 are the unread ones.
  *
- * `project` is the key of the project the issues are made in: `threads-order.e2e.ts` passes its
- * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
+ * `project` is the key of the project the issues are made in, and `session` the session that
+ * writes the asks and the replies: `threads-order.e2e.ts` passes its row's own (`rowKey` and
+ * `rowSessionId` through `rowThreadSession`, e2e/test.ts and e2e/inbox-threads.ts), and the
+ * stubbed rows replay a recording made under `CORE` and the fixed `THREAD_SESSION`.
  */
 export async function seedThreads(
   project: RowKey,
+  session: FakeSession = THREAD_SESSION,
   replies: readonly string[] = REPLIES
 ): Promise<Seeded> {
-  await setLiveSessions([THREAD_SESSION]);
+  await setLiveSessions([session]);
   await createProject({ key: project, name: "Core" });
 
   const commentIssue = await createIssue({
@@ -86,18 +89,18 @@ export async function seedThreads(
     body: ROOT,
   });
   for (const body of replies) {
-    await createComment(commentIssue.key, { body, reply_to: comment.id }, asSession());
+    await createComment(commentIssue.key, { body, reply_to: comment.id }, asSession(session));
   }
 
   const askIssue = await createIssue({ project, title: "Lease handover" });
   const ask = await createAsk(
     askIssue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the lease handover?" },
-    asSession()
+    asSession(session)
   );
   await answerAsk(ask.id, { expected_edited_at: null, selected: ["Ship"] });
   for (const body of replies) {
-    await createComment(askIssue.key, { ask_id: ask.id, body }, asSession());
+    await createComment(askIssue.key, { ask_id: ask.id, body }, asSession(session));
   }
 
   // force, because this fixture files a near copy on purpose: "Replay window" shares its only
@@ -121,7 +124,7 @@ export async function seedThreads(
   );
   await answerAsk(block.id, { expected_edited_at: null, selected: ["The last hour"] });
   for (const body of replies) {
-    await createComment(blockIssue.key, { ask_id: block.id, body }, asSession());
+    await createComment(blockIssue.key, { ask_id: block.id, body }, asSession(session));
   }
 
   return {
