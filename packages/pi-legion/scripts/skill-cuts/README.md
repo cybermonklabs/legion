@@ -269,6 +269,12 @@ task's failure in `load`), naming the case, the arm and the first copy that diff
 under a new `--out`. The run stops above 1 GiB of peak resident memory, and no new model call
 starts once the replies cost `--budget-usd` at list price.
 
+Each cache entry a context builds (`<cache-dir>/<kind>s/<key>`: a skill, a repository's checkout under `trees/`, a plugin, a compose, a file or a directory) has a file list, `<cache-dir>/lists/<kind>s/<key>.json`, kept apart from the entries: each file and symbolic link the entry was made with, with its size or its target.
+A context that finds the entry in the cache checks it against that list, and a listed path that is missing or changed stops the context with `IncompleteCacheEntry`, which names the entry, how many listed paths differ, and up to 5 of them in full with what differs; removing the entry and its list builds it again.
+A file the entry holds beyond its list is no change: a compose writes its Go test into a checkout while it runs.
+A checkout with no list, made before lists were kept, is made again, since only a checkout's files keep their commit's file times (from its tarball), so only a checkout can be partly kept by a save that keeps only files newer than a cutoff.
+Any other entry with no list is taken unchecked: the runner wrote it when it built it, and making each again would cost a GitHub read per file of thousands of entries.
+
 The gateway serves two routes, and each case runs on its own model's: the Anthropic Messages
 route (`/v1/messages`, `anthropic/<id>`) and the OpenAI Responses route (`/v1/responses`,
 `openai/<id>`, today `openai/gpt-6.1-sol`). `--models` names both providers as the pod's

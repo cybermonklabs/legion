@@ -3,8 +3,9 @@ body: |-
   The `skill-cuts` runner counts reads by skill copy and tests skill edits by replaying recorded
   sessions. Its read count distinguishes reads of renamed skills under their former names and
   leaves reads from retired worker-image paths unattributed when no copy matches the path. A case
-  or load task whose rebuilt skill listing misses, or adds, more than 10% of the names its session
-  recorded is dropped.
+  or load task whose rebuilt skill listing misses more than 10% of the names its session recorded
+  is dropped, and so is one that adds more than 10% where the capture builds the listing from the
+  profile. A capture refuses a cache entry that lost or changed a file it was made with.
 time: 2026-11-24T18:48:13Z
 custom:
     Issue: skill-cuts
