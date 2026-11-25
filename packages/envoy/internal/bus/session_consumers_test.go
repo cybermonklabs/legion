@@ -222,10 +222,12 @@ func beforeAckWait(ackWait time.Duration) time.Time {
 }
 
 // requireAckWait requires the consumer of sessionID to carry want as its ack wait, for a row
-// whose redelivery is meant to come on a shortened one.
+// whose redelivery is meant to come on a shortened one. Its read waits until the test's deadline
+// (forgedWait): a read with no deadline of its own takes the product's storedMessageWait, 10 s
+// (requestConfirmed), which a slow answer on a loaded machine outlasts with nothing wrong.
 func requireAckWait(t *testing.T, consumers *SessionConsumers, sessionID string, want time.Duration) {
 	t.Helper()
-	info, err := consumers.Info(context.Background(), sessionID)
+	info, err := consumers.Info(forgedWait(t), sessionID)
 	if err != nil {
 		t.Fatalf("info: %v", err)
 	}
@@ -967,8 +969,9 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	}
 }
 
-// A NAK with a delay has the message delivered again once the delay has passed, before the
-// consumer's own ack wait could have sent it again (nextBefore).
+// A NAK with a delay has the message delivered again once the delay has passed, by the nak and not
+// by the consumer's own ack wait, which the row tells apart by reading it before half that ack
+// wait has passed (nextBefore). It does not time the delay: a nak that asked 20 s would pass too.
 func TestNakWithDelayRedelivers(t *testing.T) {
 	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
@@ -1062,9 +1065,11 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 	return info
 }
 
-// Release gives the server back, at once, every message the pull holds that its caller never
-// read: the next pull of that consumer is delivered both of them straight away, each as a second
-// delivery, rather than after SessionConsumerAckWait, before which the row reads them (nextBefore).
+// Release gives the server back every message the pull holds that its caller never read, by a nak
+// with no delay: the next pull of that consumer is delivered both of them, each as a second
+// delivery, by that nak and not after SessionConsumerAckWait, which the row tells apart by reading
+// them before half that ack wait has passed (nextBefore). It proves the nak returned them, not how
+// soon the server acted on it: a nak that asked a delay under that half, 20 s say, passes too.
 // Stop in its place drops them, and the next pull waits out that ack wait for them. A returned
 // message is still awaiting an ack -- a nak schedules a redelivery, it does not undo the delivery
 // it answers -- so the consumer holds nothing for an ack only once the next owner has taken and
