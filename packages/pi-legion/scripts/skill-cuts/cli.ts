@@ -69,9 +69,12 @@
  *   (none of the configuration's `servedModels` has its id, its text after the last `/`) is
  *   dropped as `model-not-served`, and a case on a served model runs as that served
  *   `provider/model`, on the gateway route of its capture's body (gateway.ts); a case whose
- *   listing measure misses more than MAX_LISTING_CHANGE_PERCENT of its session's recorded names,
- *   or adds more names than that share of them (score.ts's `listingStanding`), is dropped as
- *   `listing-misses` or `listing-adds`, before any call too; the three
+ *   listing measure misses more than MAX_LISTING_CHANGE_PERCENT of its session's recorded names
+ *   is dropped as `listing-misses`, before any call too, and so is a case whose capture builds
+ *   its listing from the rebuilt profile and whose measure adds more names than that share of
+ *   them, as `listing-adds` (score.ts's `listingStanding`); a case whose capture sends its
+ *   session's recorded system prompt whole is not dropped for added names, since the model sees
+ *   the recorded listing whatever the profile installs; the three
  *   judge controls (judge.ts's CONTROLS) run, and a case that fails any is dropped, its drop
  *   naming each control it failed; then a capture
  *   per arm (old, new, none; capture.ts, read back when saved already), SCREEN_RUNS replays of
@@ -153,11 +156,16 @@
  *   part, and the request log's total and its difference from that sum, part by part, each part
  *   with its cause, where the log exists), the peak memory, how many captures' system-prompt
  *   digests differ from their
- *   session's, and how many cases carry the Envoy plugin's block of the skill, by where the answer
+ *   session's, how many cases carry the Envoy plugin's block of the skill, by where the answer
  *   that their session had Dispatch comes from (arms.ts's `dispatchOf`: a Legion role, the
  *   transcript, or the assumption; each capture that carries the block records it in its stage's
- *   `captures`). With `--reading-models`, it prints each model of the file with its sessions and
- *   whether the gateway serves it (the file's `served`), the sessions with no model and not
+ *   `captures`), and, for the cases whose capture sends their session's recorded system prompt
+ *   whole (a profile with a `systemPrompt`), how many of their runs read a skill outside the
+ *   recorded listing, by skill and by how the read was answered (score.ts's `outsideListing`:
+ *   `copy`, an installed copy; `absent`, the unknown-skill reply), a count that drops no case and
+ *   changes no verdict. With `--reading-models`, it prints each model of the file with its
+ *   sessions and whether the gateway serves it (the file's `served`), the sessions with no model
+ *   and not
  *   queried, and the served models the screened cases ran on, each with its cases; a verdict's
  *   line then ends with the reading sessions it speaks for, on each served model its screened
  *   cases ran on (a model of the file counted under the served model of its id), and the ones it
@@ -274,6 +282,7 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
+  listingOf,
   restoreCopies,
   type SessionFacts,
   savedCapture,
@@ -371,6 +380,8 @@ import {
   MAX_SCREENED_CASES,
   type MadeConfirm,
   MIN_INFORMATIVE_CASES,
+  outsideListing,
+  outsideListingWords,
   POOLED_CONFIRMS,
   RunRecord,
   SCREEN_RUNS,
@@ -2741,7 +2752,9 @@ function requestLogLines(
  *  more than one runner unless told), each case's passes, the skill's verdict and the run's
  *  figures, its spend among them (`spendLines`, and `requestLogLines` for the request log
  *  `requestLog`). A dropped case's line gives the stage that dropped it, why, and each stage it
- *  ran. */
+ *  ran. Its `outside recorded listing` line counts the runs of the cases whose capture sends
+ *  their session's recorded system prompt whole that read a skill outside that listing
+ *  (`outsideListing`): a count only, which drops no case and changes no verdict. */
 function reportCommand(b: Behaviour, requestLog: string): void {
   const results = readResults(b);
   const runners = runnerLine(b, results);
@@ -2888,6 +2901,30 @@ function reportCommand(b: Behaviour, requestLog: string): void {
   const from = (answer: DispatchFrom) => answers.filter((each) => each === answer).length;
   lines.push(
     `dispatch: ${answers.length} cases carry the Envoy plugin's block of the skill: ${from("assumed")} rest on the assumption that their session had Dispatch, ${from("legion-role")} take it from a Legion role, ${from("transcript")} from their transcript (arms.ts's dispatchOf)`
+  );
+  // The runs of each case whose capture sends its session's recorded system prompt whole (its
+  // profile holds the prompt, capture.ts's `systemPrompt` choice) that read a skill outside the
+  // recorded listing, from the reads each run records: a count only, which drops no case and
+  // changes no verdict.
+  lines.push(
+    outsideListingWords(
+      outsideListing(
+        b.cases.flatMap((c) => {
+          const prompt = c.profile.systemPrompt;
+          const result = results.get(c.id);
+          if (prompt === undefined) return [];
+          return [
+            {
+              recorded: new Set(listingOf(prompt).keys()),
+              runs: (result === undefined ? [] : eachStage(result)).flatMap(([, stage]) =>
+                stage.runs.map((run) => run.skillReads?.flat())
+              ),
+            },
+          ];
+        })
+      ),
+      "case"
+    )
   );
   const spend = recordedSpend(results.values());
   lines.push(...spendLines(b, spend), ...requestLogLines(requestLog, b, results, spend));

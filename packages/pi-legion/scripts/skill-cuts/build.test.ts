@@ -2272,6 +2272,19 @@ describe("build-cases over every made-up session", () => {
     expect(summary.listing["subagent listing"]).toBe(1);
     expect(summary.listing["not measurable"]).toBeGreaterThan(0);
     expect(summary.listing.none).toBe(0);
+    // The predicate the listing rule reads: a measure is of kind `session listing` exactly when
+    // its case's profile holds the recorded system prompt that the case's capture sends whole
+    // (capture.ts's `c.profile.systemPrompt`), whatever the case; so score.ts's
+    // `listingStanding` reads the capture's own choice from the measure alone.
+    expect(cases.length).toBeGreaterThan(1);
+    for (const each of cases) {
+      const item = each.evidence?.find((entry) => entry.item === LISTING_MEASURE_ITEM);
+      const { kind } = ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
+      expect([each.id, kind === "session listing"]).toEqual([
+        each.id,
+        each.profile.systemPrompt !== undefined,
+      ]);
+    }
   });
 
   test("exits 0 and writes cases that loadCases loads", () => {

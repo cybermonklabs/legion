@@ -73,12 +73,29 @@ skill's cases (`cases.ts`), one JSON object per line.
   served model runs as that served `provider/model`, so an Anthropic model behind another
   gateway prefix runs as `anthropic/<id>`. A case whose listing measure (its `listing measure`
   evidence item, under `build-cases` below) misses more than 10% of the names its session's
-  recorded listing holds, or adds more names than 10% of them (names the recording lacks), each
-  side counted alone, is dropped before any call too, as `listing-misses` or `listing-adds`, with
-  the count, the share and the names; exactly 10% is kept. A case over 10% on both sides is
-  dropped as `listing-misses`, and its reason gives the adds part too (the architect,
-  2026-11-24). `report` applies the rule to saved results as well, so a case screened before the
-  rule dropped on added names is dropped at screen when the report runs, with no model call. With
+  recorded listing holds is dropped before any call too, as `listing-misses`, with the count, the
+  share and the names; exactly 10% is kept (the architect, 2026-11-22). A recorded name the
+  profile does not install is answered "unknown skill" when a run reads it, where the session got
+  the skill's text, so a miss changes what the runs see. The names the rebuilt profile adds to
+  the recorded listing count only for a case whose capture builds its listing from the rebuilt
+  profile (a measure of kind `subagent listing`): over 10% of the recorded names it is dropped as
+  `listing-adds` (the architect, 2026-11-24), and a case over 10% on both sides is dropped as
+  `listing-misses`, its reason giving the adds part too. A case whose capture sends its session's
+  recorded system prompt whole (a measure of kind `session listing`: its profile holds the
+  session's system prompt, and the capture sends it with only the tested skill's listing line
+  changed per arm) is never dropped for added names, however many: the model in every arm sees
+  exactly the recorded listing, whatever the rebuilt profile installs, and the profile changes
+  there only how a read of a skill is answered, from the profile's installed copy or with the
+  unknown-skill reply (the architect, 2026-11-25). `report` counts those reads (below); the count
+  drops no case and changes no verdict. The rule reads the capture's own choice from the
+  measure: `build.ts` writes the kind `session listing` exactly when the case's profile holds the
+  session's recorded system prompt, and `capture.ts` sends the recorded prompt exactly when the
+  profile holds one (`build.test.ts` checks it over the cases a build writes), so the rule never
+  reads a run's result. `report` applies the rule to saved results as well, so a case with runs
+  saved before the listing-adds rule, whose capture builds its listing from the profile, is
+  dropped at screen when the report runs, with no model call; a case a runner saved as dropped for
+  `listing-adds` before this rule keeps that saved drop (`screen` skips a dropped case and `report`
+  prints its saved reason) until its result file is removed. With
   `--reading-models`
   (the skill's `<cut id>/models/<skill>.json` that `attribute` writes: its reading sessions by
   model), a skill with fewer than 6 reading sessions on models the gateway serves is refused
@@ -186,8 +203,16 @@ skill's cases (`cases.ts`), one JSON object per line.
   chance at the cases run (exact binomial under identical old and new texts, the pass rates taken
   from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, the spend
-  at list price (below), the peak memory, and how many captures' system-prompt digests differ
-  from their session's. It calls no model, and needs only `--config`, `--out`, `--old` and
+  at list price (below), the peak memory, how many captures' system-prompt digests differ
+  from their session's, and, for the cases whose capture sends their session's recorded system
+  prompt whole (their profile holds the prompt), the `outside recorded listing` line: how many of
+  their runs read a skill outside the recorded listing, of the runs that record their reads (a run
+  saved before runs recorded them, or whose replay failed, records none, and is counted apart),
+  and each such skill with its runs by how the read was answered (`copy`: an installed copy
+  answered it; `absent`: the unknown-skill reply). A run that reads a skill in several rounds
+  counts once for it, and a read answered from the arm's own text (the tested skill) is no
+  count. The line is a count only: it drops no case and changes no verdict (the architect,
+  2026-11-25). It calls no model, and needs only `--config`, `--out`, `--old` and
   `--cases`; `--request-log` names the log it sets the spend against, `<out>/requests.jsonl` by
   default. With
   `--reading-models` it also prints each model of that file with its sessions and whether the
@@ -551,15 +576,31 @@ summary's `dropped` give the reason (`unreadable-directory: ` and the repository
 the path), a run started again skips it while its profile file keeps the same bytes, and the
 verdict rule counts it as a task with no runs.
 
-Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24),
-so no one applies it by hand. Each task's listing measure comes from the tasks file's build-tasks
-summary (`<tasks>.summary.json`): a session task's own profile's `listing measure` evidence item,
-and a written task's context session's; a task with no summary beside its file is not measurable.
+Every load applies the listing rule (the architect, 2026-11-22; on added names too, 2026-11-24;
+narrowed by how the capture shows the listing, 2026-11-25), so no one applies it by hand. Each
+task's listing measure comes from the tasks file's build-tasks summary (`<tasks>.summary.json`): a
+session task's own profile's `listing measure` evidence item, and a written task's context
+session's; a task with no summary beside its file is not measurable.
 A task whose rebuilt listing misses more than 10% of the names its session's recorded listing
-holds, or adds more names than 10% of them, each side counted alone, is dropped before any run
-(`listing-misses: ` or `listing-adds: ` with the count, the share and the names; exactly 10% is
-kept, and a task over 10% on both sides is dropped as `listing-misses`, its reason giving the adds
-part too): its line and the summary's task give the reason, the summary's `listing` counts the
+holds is dropped before any run (`listing-misses: ` with the count, the share and the names;
+exactly 10% is kept). A task whose capture builds its listing from the rebuilt profile is dropped
+too when its listing adds more names than 10% of the recorded ones (`listing-adds: `, with the
+same reason form); that is a task measured as `subagent listing`, and every task on Claude Code,
+whose capture lists the skills its plugins hold and sends no recorded system prompt. A task over
+10% on both sides is dropped as `listing-misses`, its reason giving the adds part too. A task
+whose capture sends its session's recorded system prompt whole (on Oh My Pi, a measure of kind
+`session listing`: its profile holds the session's system prompt) is never dropped for added
+names: the model in every run sees exactly the recorded listing, whatever the rebuilt profile
+installs, and the profile changes there only how a read of a skill is answered, from an installed
+copy or with the unknown-skill reply. A recorded name the profile does not install is answered
+"unknown skill" when a run reads it, where the session got the text, so a miss still drops the
+task. For such tasks the command counts the runs that read a skill outside the recorded listing,
+by skill and by how the read was answered (`copy`: an installed copy; `absent`: the unknown-skill
+reply), from the reads each run records: the summary's `outsideRecordedListing` (`tasks` counted,
+their `runs`, the runs `examined` that record their reads, the runs that read `outside` the
+listing, and `bySkill`) and the `outside recorded listing` line it prints. The count drops no task
+and changes no verdict. A dropped task's line and the summary's task give the reason, the
+summary's `listing` counts the
 tasks measured, not measurable and dropped, and the drops by the start of their reason
 (`droppedBy`, also on the listing rule's line), and no verdict reads it. Where the rule drops more
 than half of a load's tasks, the command stops before any run (exit 3) and says so with the
@@ -1221,7 +1262,11 @@ Each case and each load task's profile carries a `listing measure` evidence item
 is one JSON object (`ListingMeasure` in build.ts): how far the listing its rebuilt profile gives
 (its skills less those Oh My Pi hides, the tested skill included) is from the listing its
 session saw. A session that recorded its system prompt (a subagent's) is measured against that
-prompt's `<skills>` lines (`session listing`). A top-level session records only its prompt's
+prompt's `<skills>` lines (`session listing`), and its capture sends that prompt whole, with only
+the tested skill's listing line changed per arm, so the model sees the recorded listing whatever
+the rebuilt profile installs. `build.ts` writes the kind `session listing` exactly when the
+case's or task's profile holds the recorded system prompt, which is exactly when `capture.ts`
+sends that prompt, so the kind says which listing the capture shows. A top-level session records only its prompt's
 digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is measured against
 the recorded listing of a subagent it started under the build its profile is read at (`subagent
 listing`: the earliest one-level child of its directory whose `session_init` holds a listing and
@@ -1250,9 +1295,11 @@ profile installed names only because the recorded listing names one of their poo
 new at a subagent's start, above) lists those names as `fromRecorded`: the measure cannot see a
 miss of them, since the same listing decided them. The summaries count such measures
 (`listing.fromRecorded`), and so do `behaviour report`'s verdict line and `load`'s summary and
-listing line. The measure drops
-nothing here: `behaviour` and `load` apply the listing rule to its `missing` and `added` names
-(above, under each command).
+listing line. The measure drops nothing here: `behaviour` and `load` apply the listing rule to
+its `missing` names for every case and task, and to its `added` names only for a measure of kind
+`subagent listing`, whose capture builds its listing from the rebuilt profile. The `added` names
+of a `session listing` measure change only how a run's read of that skill is answered, which
+`behaviour report` and `load` count (above, under each command).
 
 `--reprofile` rebuilds each profile from the case and its session's head and path.
 It pulls no transcript and calls no reader. Only `profile` and its evidence can change.

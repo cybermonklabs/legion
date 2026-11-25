@@ -207,25 +207,33 @@
  * build, and the GitHub reads in it with their count), the runs of its profile's tasks, its
  * writes, the rest, and the total.
  *
- * The listing rule (the architect, 2026-11-24T23:52Z), so that no one applies it by hand: each
- * task's listing measure is read from the tasks file's build-tasks summary
- * (`<tasks>.summary.json`: a session task's own profile's evidence, a written task's context
- * session's; `taskListings`), and a task with no summary beside its file is not measurable. A task
- * whose rebuilt listing misses more than MAX_LISTING_CHANGE_PERCENT of the names its session's
- * recorded listing holds, or adds more names than that share of them, each counted alone
- * (score.ts's `listingStanding`), is dropped before any run, its reason in the summary's task and
- * the counts in its `listing`, by the start of its reason (`listing-misses` or `listing-adds`);
- * it is not run and no verdict reads it. Where
- * the rule drops more than half of the tasks, the command stops before any run and says so with
- * the numbers (exit 3): the architect decides such a load. The skill's verdict is made with and
- * without the tasks whose listing could not be measured (`listedOutcome`), both in the summary's
- * `verdicts`: where they agree it stands, with how many tasks were not measured; where they
- * differ there is no verdict, since it depends on those tasks. Beside the listing counts, the
- * summary's `dispatch` and the listing rule's line count the tasks whose capture carries the
- * Envoy plugin's block of the skill, and of them those that rest on the assumption that their
- * session had Dispatch: a task holds no message of its session, so arms.ts's `dispatchOf` answers
- * from its profile's context alone (a Legion role's, else the assumption), and each capture's
- * record keeps that answer (`dispatch`).
+ * The listing rule (the architect, 2026-11-24T23:52Z, and 2026-11-25T00:52:35Z), so that no one
+ * applies it by hand: each task's listing measure is read from the tasks file's build-tasks
+ * summary (`<tasks>.summary.json`: a session task's own profile's evidence, a written task's
+ * context session's; `taskListings`), and a task with no summary beside its file is not
+ * measurable. A task whose rebuilt listing misses more than MAX_LISTING_CHANGE_PERCENT of the
+ * names its session's recorded listing holds is dropped before any run, and so is one whose
+ * capture builds its listing from the rebuilt profile and whose listing adds more names than that
+ * share of them, each side counted alone (score.ts's `listingStanding`), its reason in the
+ * summary's task and the counts in its `listing`, by the start of its reason (`listing-misses` or
+ * `listing-adds`); it is not run and no verdict reads it. A task whose capture sends its
+ * session's recorded system prompt whole (a profile with a `systemPrompt` on Oh My Pi, measured
+ * as `session listing`) shows the model the recorded listing whatever the profile installs, so
+ * it is not dropped for added names; the summary's `outsideRecordedListing` and a line of the
+ * command's output count its runs that read a skill outside that listing, by skill and by how the
+ * read was answered (`copy`, an installed copy; `absent`, the unknown-skill reply; score.ts's
+ * `outsideListing`), from the reads each run records: a count only, which drops no task and
+ * changes no verdict. Claude Code's capture sends no recorded prompt, so its tasks keep both
+ * drops. Where the rule drops more than half of the tasks, the command stops before any run and
+ * says so with the numbers (exit 3): the architect decides such a load. The skill's verdict is
+ * made with and without the tasks whose listing could not be measured (`listedOutcome`), both in
+ * the summary's `verdicts`: where they agree it stands, with how many tasks were not measured;
+ * where they differ there is no verdict, since it depends on those tasks. Beside the listing
+ * counts, the summary's `dispatch` and the listing rule's line count the tasks whose capture
+ * carries the Envoy plugin's block of the skill, and of them those that rest on the assumption
+ * that their session had Dispatch: a task holds no message of its session, so arms.ts's
+ * `dispatchOf` answers from its profile's context alone (a Legion role's, else the assumption),
+ * and each capture's record keeps that answer (`dispatch`).
  */
 import { createHash } from "node:crypto";
 import {
@@ -261,6 +269,7 @@ import {
   type HarnessRecord,
   type HarnessRule,
   type HintWriter,
+  listingOf,
   type RecordedLine,
   rawBodyFile,
   renamedListingBlocks,
@@ -343,6 +352,9 @@ import {
   MAX_LISTING_CHANGE_PERCENT,
   NEAR_MISS_MAX_LOADS,
   NEED_MIN_LOADS,
+  type OutsideListing,
+  outsideListing,
+  outsideListingWords,
   TaskLabel,
   taskFault,
 } from "./score";
@@ -745,11 +757,14 @@ function summaryEvidence(
 /** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`) in
  *  `evidence`, the tasks file's summary's (`summaryEvidence`), and how many tasks' measures mark
  *  names their profile took from the recorded listing (`tookFromRecorded`; `loadTasks` takes no
- *  id twice). With no summary beside the tasks file, each task is not measurable. */
+ *  id twice). With no summary beside the tasks file, each task is not measurable. On Claude Code
+ *  no task's capture sends a recorded system prompt (it lists the skills its plugins hold), so
+ *  each task's added names count whatever its measure's kind. */
 function taskListings(
   tasksFile: string,
   tasks: readonly Task[],
-  evidence: ReadonlyMap<string, readonly EvidenceItem[] | undefined> | undefined
+  evidence: ReadonlyMap<string, readonly EvidenceItem[] | undefined> | undefined,
+  host: Host
 ): { readonly standings: Map<string, ListingStanding>; readonly fromRecorded: number } {
   if (evidence === undefined) {
     const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
@@ -757,7 +772,12 @@ function taskListings(
     return { standings: new Map(tasks.map((task) => [task.id, standing])), fromRecorded: 0 };
   }
   return {
-    standings: new Map(tasks.map((task) => [task.id, listingStanding(evidence.get(task.id))])),
+    standings: new Map(
+      tasks.map((task) => [
+        task.id,
+        listingStanding(evidence.get(task.id), { recordedPromptSent: host === "omp" }),
+      ])
+    ),
     fromRecorded: tasks.filter((task) => tookFromRecorded(evidence.get(task.id))).length,
   };
 }
@@ -2604,7 +2624,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   if (injected !== undefined) throw new Refused(injected);
   // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
   const evidence = summaryEvidence(o.tasksFile, tasks);
-  const { standings: listings, fromRecorded } = taskListings(o.tasksFile, tasks, evidence);
+  const { standings: listings, fromRecorded } = taskListings(o.tasksFile, tasks, evidence, o.host);
   // Each task's daemon image item (context.ts's DAEMON_IMAGE_ITEM), which its capture reads, so
   // a Legion task's role prompt is composed at its daemon image's commit, as a behaviour case's
   // is. No other item of the evidence goes to the capture.
@@ -2816,11 +2836,28 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       usd: runsUsd + failedRunsUsd + hintsUsd,
     };
   };
-  /** Writes the summary as the runs stand; returns the skill's verdict and the test's dollars so
-   *  far at list price: its runs', its failed runs' and its hints'. The verdict leaves out each
-   *  task the listing rule dropped, and is made with and without the tasks whose listing was not
-   *  measured (`listedOutcome`), both in the summary. */
-  const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
+  // Each task whose capture sends its session's recorded system prompt whole (an Oh My Pi task
+  // whose profile holds one; Claude Code's capture sends none), with the names that prompt lists
+  // as the capture sends it: a test under another name renames the tested skill's line in it.
+  const recordedListings = profiled.flatMap(({ task, profile }) => {
+    const prompt = profile.profile.systemPrompt;
+    if (o.host !== "omp" || prompt === undefined) return [];
+    const sent =
+      settings.renamedFrom === null
+        ? prompt
+        : renamedListingBlocks(prompt, settings.renamedFrom, name);
+    return [{ id: task.id, recorded: new Set(listingOf(sent).keys()) }];
+  });
+  /** Writes the summary as the runs stand; returns the skill's verdict, the test's dollars so far
+   *  at list price (its runs', its failed runs' and its hints') and the runs of its
+   *  recorded-prompt tasks that read a skill outside the recorded listing (`outsideListing`). The
+   *  verdict leaves out each task the listing rule dropped, and is made with and without the
+   *  tasks whose listing was not measured (`listedOutcome`), both in the summary. */
+  const writeSummary = (): {
+    verdict: LoadVerdict;
+    usd: number;
+    outside: OutsideListing;
+  } => {
     const listed = listedOutcome(
       tasks.flatMap((task) =>
         listingDrops.has(task.id)
@@ -2837,6 +2874,19 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       o.runs
     );
     const verdict = listed.verdict;
+    // The runs of the tasks whose capture sends their session's recorded system prompt whole that
+    // read a skill outside the recorded listing, from the reads each run records: a count only,
+    // which drops no task and changes no verdict.
+    const outside = outsideListing(
+      recordedListings.map(({ id, recorded }) => ({
+        recorded,
+        runs: (runsOf.get(id) ?? []).map((run) =>
+          run.skillReads === "answered"
+            ? run.replies.flatMap((reply) => reply.answers ?? [])
+            : undefined
+        ),
+      }))
+    );
     const runs = [...runsOf.values()].flat();
     const spends = tasks.map(spendOf);
     const total = (field: "runsUsd" | "failedRunsUsd" | "hintsUsd" | "usd") =>
@@ -2874,6 +2924,13 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         listing: listingCounts,
         listedUnder: listedCounts(),
         dispatch: dispatchCounts,
+        outsideRecordedListing: {
+          tasks: outside.groups,
+          runs: outside.runs,
+          examined: outside.examined,
+          outside: outside.outside,
+          bySkill: outside.bySkill,
+        },
         verdict,
         verdicts: {
           withUnmeasured: listed.withUnmeasured,
@@ -2885,12 +2942,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         updatedAt: new Date().toISOString(),
       })
     );
-    return { verdict, usd: spend.usd };
+    return { verdict, usd: spend.usd, outside };
   };
   writeSummary();
   if (listingDrops.size * 2 > tasks.length) {
     throw new Stopped(
-      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or adds more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
+      `the listing rule drops ${listingDrops.size} of the ${tasks.length} tasks of ${o.tasksFile}, more than half (${[...listingDrops.keys()].join(", ")}): the rebuilt listing of each misses more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adds more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, so the test stops before any run, and the architect decides such a load; ${listingCounts.measured} tasks' listings were measured and ${listingCounts.notMeasurable} could not be; written to ${summaryFile}`
     );
   }
 
@@ -2902,7 +2959,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     .map(([start, n]) => `${n} ${start}`)
     .join(", ");
   test.say(
-    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped (${droppedBy}), each missing more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or adding more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
+    `the listing rule (${listingCounts.summary}): ${listingCounts.measured} tasks' listings measured, ${listingCounts.notMeasurable} not measurable, ${listingCounts.dropped} tasks dropped (${droppedBy}), each missing more than ${MAX_LISTING_CHANGE_PERCENT}% of the names its session's recorded listing holds or, where its capture builds its listing from the rebuilt profile, adding more names than ${MAX_LISTING_CHANGE_PERCENT}% of them, ${listingCounts.fromRecorded} installed names their recorded listing gave them (fromRecorded); ${dispatchCounts.carryBlock} tasks carry the Envoy plugin's block of the skill, ${dispatchCounts.assumed} of them on the assumption that their session had Dispatch`
   );
   const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
   for (const { task, profile } of profiled) {
@@ -3071,7 +3128,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
   }
   peak = Math.max(peak, o.io.peakRssBytes());
-  const { verdict, usd } = writeSummary();
+  const { verdict, usd, outside } = writeSummary();
   const under = listedCounts();
   const noCapture =
     under.none === 0 ? "" : `; ${under.none} tasks have no capture whose record says`;
@@ -3080,6 +3137,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ? `the listing line of ${name}: ${under.recorded} tasks list it under the line their session recorded, ${under.drawn} under a hint of draw ${o.hintDraw}${noCapture}`
       : `the listing line of ${name}: ${under.description} tasks list it under its description, since Claude Code lists no hint${noCapture}`
   );
+  test.say(outsideListingWords(outside, "task"));
   const small =
     count("need") < MIN_TASKS_PER_LABEL || count("near-miss") < MIN_TASKS_PER_LABEL
       ? ` (a load test has at least ${MIN_TASKS_PER_LABEL} need and ${MIN_TASKS_PER_LABEL} near-miss tasks; this one has ${count("need")} and ${count("near-miss")})`

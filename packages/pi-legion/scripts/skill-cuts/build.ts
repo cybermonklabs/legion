@@ -3390,7 +3390,13 @@ async function imageCommit(
 }
 
 /** A listing measure: `kind` says which listing the rebuilt one is set against (the session's own
- *  recorded prompt's, a subagent's of it, or none: `not measurable`); `recorded` the names that
+ *  recorded prompt's, a subagent's of it, or none: `not measurable`). It is `session listing`
+ *  exactly when the case's or task's profile holds the session's recorded system prompt
+ *  (`ListingInput.recorded`, taken from the profile's `systemPrompt`), which capture.ts sends
+ *  whole, so the kind also says what the capture shows the model: the recorded listing
+ *  (`session listing`), whatever the profile installs, or a listing built from the profile
+ *  (`subagent listing`); score.ts's `listingStanding` reads it so. A task that keeps an old
+ *  profile is `not measurable` whatever that profile holds. `recorded` the names that
  *  listing holds, `listed` those the rebuilt profile lists (its skills less those Oh My Pi hides),
  *  `missing` the recorded names the profile does not list, `added` the names it lists that the
  *  recording lacks, `missingShare` missing ÷ recorded (null with no recorded name);

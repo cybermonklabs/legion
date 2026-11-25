@@ -2064,16 +2064,18 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     ]);
   }, 60_000);
 
-  // The architect, 2026-11-24T23:52Z: the listing rule drops on added names too. Report applies
-  // it to saved results, so a case a runner of the earlier code screened, under the rule that
-  // dropped only on missing names, is dropped at screen with no model call.
-  test("a case whose rebuilt listing adds more names than 10% of its session's recorded names is dropped as listing-adds: report drops and counts a saved case an earlier runner screened, and screen drops a new one before any call", async () => {
+  // The architect, 2026-11-24T23:52Z: the listing rule drops on added names too, for a case whose
+  // capture builds its listing from the rebuilt profile (a measure of kind `subagent listing`; one
+  // whose capture sends its session's recorded prompt whole is not dropped for them, below).
+  // Report applies it to saved results, so a case a runner of the earlier code screened, under
+  // the rule that dropped only on missing names, is dropped at screen with no model call.
+  test("a case whose rebuilt profile-built listing adds more names than 10% of its session's recorded names is dropped as listing-adds: report drops and counts a saved case an earlier runner screened, and screen drops a new one before any call", async () => {
     const s = scenario("listing-adds", LOSS_SKILL(), ids(7));
     withEvidence(s, {
       ...Object.fromEntries(
-        SIX.map((id) => [id, listingEvidence("session listing", 10, [], ["beta"])])
+        SIX.map((id) => [id, listingEvidence("subagent listing", 10, [], ["beta"])])
       ),
-      c07: listingEvidence("session listing", 20, [], ["cw-one", "cw-two", "cw-three"]),
+      c07: listingEvidence("subagent listing", 20, [], ["cw-one", "cw-two", "cw-three"]),
     });
     // A runner digest no runner of this tree has: the code before the listing-adds rule.
     const earlier = "0123456789abcdef";
@@ -2083,7 +2085,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     const lines = ran.stdout.split("\n");
     expect(lines[1]).toContain(`screen: ${earlier} (7 case stages, `);
     const adds =
-      "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded session listing (15.0%), more than 10%: cw-one, cw-two, cw-three";
+      "listing-adds: its rebuilt listing adds 3 to the 20 names of the recorded subagent listing (15.0%), more than 10%: cw-one, cw-two, cw-three";
     expect(lines).toContain(
       `case c07: dropped at screen: ${adds}; screen: old 10/10, new 10/10, none 0/10: informative, not flagged`
     );
@@ -2094,7 +2096,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     // A case not screened yet is dropped by screen before any call.
     const fresh = scenario("listing-adds-screen", LOSS_SKILL(), [{ id: "c-adds" }]);
     withEvidence(fresh, {
-      "c-adds": listingEvidence("session listing", 9, [], ["cw-one"]),
+      "c-adds": listingEvidence("subagent listing", 9, [], ["cw-one"]),
     });
     answer = behaviourStandIn;
     const from = recorder.requests.length;
@@ -2103,7 +2105,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     expect(requestsSince(from)).toHaveLength(0);
     const dropped = result(fresh.out, "c-adds");
     expect([dropped.dropped, dropped.droppedAt, dropped.stages]).toEqual([
-      "listing-adds: its rebuilt listing adds 1 to the 9 names of the recorded session listing (11.1%), more than 10%: cw-one",
+      "listing-adds: its rebuilt listing adds 1 to the 9 names of the recorded subagent listing (11.1%), more than 10%: cw-one",
       "screen",
       {},
     ]);
@@ -2117,6 +2119,109 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
       added: 0,
     });
   });
+
+  // The architect, 2026-11-25T00:52:35Z: a case whose capture sends its session's recorded system
+  // prompt whole (a measure of kind `session listing`) shows the model the recorded listing
+  // whatever the rebuilt profile installs, so names its profile adds drop nothing; report counts
+  // the runs of such cases that read a skill outside that listing, by skill and answer kind.
+  test("behaviour report over saved results of a recorded-prompt case whose measure adds over 10% keeps the case and prints the count of runs that read a skill outside the recorded listing, by skill and answer kind", async () => {
+    const s = scenario("listing-recorded-prompt", LOSS_SKILL(), ids(6));
+    const recordedPrompt = [
+      "You are a made-up subagent.\n<skills>\n- alpha: Use for the alpha steps.\n- beta: Use for the beta greeting.\n</skills>\n",
+    ];
+    // c06's session recorded its system prompt, which its capture sends whole; its profile adds 20
+    // names to the 9 it lists. c01 to c05's captures build their listings from the profile.
+    withEvidence(s, {
+      ...Object.fromEntries(
+        SIX.slice(0, 5).map((id) => [id, listingEvidence("subagent listing", 10, [], ["beta"])])
+      ),
+      c06: listingEvidence(
+        "session listing",
+        9,
+        [],
+        Array.from({ length: 20 }, (_, n) => `extra-${n + 1}`)
+      ),
+    });
+    const cases = readFileSync(s.casesFile, "utf8")
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line): Case => JSON.parse(line));
+    writeFileSync(
+      s.casesFile,
+      cases
+        .map((c) =>
+          c.id !== "c06"
+            ? c
+            : {
+                ...c,
+                context: "subagent:task",
+                profile: { ...c.profile, systemPrompt: recordedPrompt, tools: ["read", "bash"] },
+              }
+        )
+        .map((c) => `${JSON.stringify(c)}\n`)
+        .join("")
+    );
+    /** One answered read of a `skill://` file, as a run records it (replay.ts's AnsweredRead). */
+    interface Read {
+      skill: string;
+      file: string;
+      by: "skill";
+      from: "copy" | "absent";
+      isError: boolean;
+    }
+    const read = (skill: string, from: Read["from"], file = "SKILL.md"): Read => ({
+      skill,
+      file,
+      by: "skill",
+      from,
+      isError: from === "absent",
+    });
+    /** `stage`'s runs, the `n`th of them having read `rounds[n]`, each round's reads in a list. */
+    const readingRuns = (stage: Record<string, unknown>, rounds: Read[][][]) => ({
+      ...stage,
+      runs: (stage.runs as Record<string, unknown>[]).map((run, n) => ({
+        ...run,
+        skillRounds: rounds[n]?.length ?? 0,
+        skillReads: rounds[n] ?? [],
+      })),
+    });
+    plantSix(s, SIX.slice(0, 4), "c01");
+    // c05's capture builds its listing from its profile: its run's read of zeta is no count of the
+    // rule's.
+    plantResult(s, "c05", {
+      stages: {
+        screen: readingRuns(plantedStage(s, "c05", "screen", KEPT), [[[read("zeta", "absent")]]]),
+      },
+    });
+    // c06's runs: one reads beta, which its recorded listing holds; one reads gamma in two rounds;
+    // one reads gamma and delta in one round; one reads delta; the others read no skill.
+    plantResult(s, "c06", {
+      stages: {
+        screen: readingRuns(plantedStage(s, "c06", "screen", KEPT), [
+          [[read("beta", "copy")]],
+          [[read("gamma", "copy")], [read("gamma", "copy", "references/a.md")]],
+          [[read("gamma", "copy"), read("delta", "absent")]],
+          [[read("delta", "absent")]],
+        ]),
+      },
+    });
+    const ran = await cli(report(s));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const lines = ran.stdout.split("\n");
+    expect(lines).toContain(
+      "case c06: screen: old 10/10, new 10/10, none 0/10: informative, not flagged"
+    );
+    expect(lines).toContain(
+      `cases: 6 screened, 6 informative, 0 flagged, 0 confirmed losses; 0 dropped (0 by the judge controls, 0 model-not-served, 0 unreadable-directory, 0 listing-misses, 0 listing-adds, ${NO_INJECTION}, ${NO_PATH_FORM}, ${NO_READS_PAST}, ${NO_REFUSED}), 0 unscreened, 0 not run`
+    );
+    expect(lines).toContain(
+      "outside recorded listing: 3 of 30 runs of 1 recorded-prompt case (the capture sends the session's recorded system prompt whole) read a skill the recorded listing lacks; by skill and answer (copy: an installed copy; absent: the unknown-skill reply): delta (0 copy, 2 absent), gamma (2 copy, 0 absent)"
+    );
+    // Six informative cases and no loss: the reads change no verdict.
+    expect(lines.find((line) => line.startsWith("verdict: "))).toContain(
+      "no loss detected by the registered rule"
+    );
+  }, 60_000);
 
   test("report names a case whose three confirms on one runner were pooled, with each result and the pooled passes; a fourth confirm is refused, naming the case", async () => {
     const s = scenario("pooled", LOSS_SKILL(), ids(7));
