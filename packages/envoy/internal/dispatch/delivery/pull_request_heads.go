@@ -1122,62 +1122,6 @@ const headStoredAtAnswers = `lower(answer.repo) = lower($1) and answer.head_sha 
 // head is commit $2.
 const headsStoredAtCommit = `select repo, number from public.pull_request_heads where lower(repo) = lower($1) and head_sha = $2`
 
-// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
-// into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
-// issue is measured against (api/results_comparison.go). An issue whose pull request merged
-// into an integration branch has reached that branch and no other, so a result of it at a
-// commit that branch's history carries stands at that branch. The repository's default branch
-// answers nothing about the work until the integration branch itself lands. The merged row
-// last updated answers: event_at is the pull request's updated_at as its newest event carried
-// it, which is the time of the merge only until a later event of that pull request (an edit, a
-// label) moves it. The rows are ordered by event_at descending with the rows carrying none
-// last, since a row with no event time is one whose envelope reported none and says less than
-// any row that did, and by the pull request's own number descending where two share a time, so
-// the answer does not turn on whichever row the planner returned first.
-//
-// The read is keyed by the issue and not by the result's commit because Legion merges with
-// squash: the commit that lands on the base branch is the one the squash makes, which is no
-// pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
-// commit is such a head — can never answer for it. Keying by the issue costs nothing in
-// honesty, since a row is attributed to an issue only where the pull request's head is a
-// branch of the repository that issue resolves to (headAttribution), so the branch this
-// answers is one the issue's own work merged into.
-//
-// An empty answer is "no branch to measure against", which a merged row carrying no base_ref
-// gives as much as no merged row at all. The column is declared not null with the empty string
-// as its default, and a `pull_request` envelope published before Dispatch carried the field
-// writes exactly that, so such a row names no base branch; the empty answer leaves the caller
-// on its own fallback, the repository's default branch, where handing that value on as a
-// branch would have it build a GitHub compare read against a branch with no name.
-//
-// No index is added for this lookup: pull_request_heads_issue_head is partial on
-// `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
-// its leading column, and the rows one issue's key holds are the handful of pull requests
-// attributed to that issue.
-//
-// answers is the caller's request's, as HeadsAttributedTo takes them.
-func BaseBranchMergedFor(ctx context.Context, q refs.Queryer, issueKey string, answers HeadAnswers) (string, error) {
-	query, args := baseBranchMergedForRead.query(answers, issueKey)
-	var branch string
-	err := q.QueryRow(ctx, query, args...).Scan(&branch)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	return branch, nil
-}
-
-// baseBranchMergedForQuery is BaseBranchMergedFor's statement after its WITH list.
-var baseBranchMergedForQuery = `
-	select base_ref from pull_request_heads
-	where issue_key = $1 and state = 'merged'
-	order by event_at desc nulls last, number desc
-	limit 1`
-
-// baseBranchMergedForRead is baseBranchMergedForQuery whole, for both callers.
-var baseBranchMergedForRead = newHeadsStatement("", baseBranchMergedForQuery, 1, "")
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again.

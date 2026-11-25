@@ -1279,23 +1279,45 @@ A default-branch result is compared with the default branch alone.
     if (!printed.includes(wanted)) return `the command named no ${wanted}`;
   }
 
-  // Only the two open heads count before merge. The merged head is a fallback only with none open.
+  // A merged head remains a comparison basis; only open heads are pass subjects.
   const before = await checkOf(basesIssue, "before");
   note(`the API's before check compares with ${comparedOf(before)}`);
-  const heads = new Map((before.compared_with ?? []).map((basis) => [basis.pull_request, basis]));
-  if (heads.size !== 2)
-    return `the before check compares with ${comparedOf(before)}, want the open heads of #21 and #22`;
-  for (const [number, head] of [
-    [21, commits.comparedHeadA],
-    [22, commits.comparedHeadA2],
-  ] as const) {
+  const bases = before.compared_with ?? [];
+  const heads = new Map(bases.map((basis) => [basis.pull_request, basis]));
+  const wantedBases = [
+    [21, commits.comparedHeadA, false],
+    [22, commits.comparedHeadA2, false],
+    [23, commits.comparedMergedHead, true],
+  ] as const;
+  for (const [number, commit, merged] of wantedBases) {
     const basis = heads.get(number);
-    if (basis === undefined || basis.kind !== "pull_request" || basis.commit !== head) {
-      return `the basis of pull request #${number} is ${JSON.stringify(basis)}`;
+    if (basis?.kind !== "pull_request" || basis.repo !== repo || basis.commit !== commit ||
+      (basis.merged ?? false) !== merged) {
+      return `compared_with is missing basis ${repo}#${number}@${commit} (merged=${merged}); got ${JSON.stringify(bases)}`;
     }
     if (basis.learned_at === undefined) {
       return `the basis of pull request #${number} says no time Dispatch learned it`;
     }
+  }
+  if (bases.length !== 3 || heads.size !== 3) {
+    return `compared_with must be exactly the three expected bases; got ${JSON.stringify(bases)}`;
+  }
+  const subjects = before.pass_stands.subjects ?? [];
+  for (const [number, commit, merged] of wantedBases) {
+    if (!merged && !subjects.some(({ basis }) => basis.kind === "pull_request" &&
+      basis.repo === repo && basis.pull_request === number && basis.commit === commit)) {
+      return `pass_stands.subjects is missing open subject ${repo}#${number}@${commit}; got ${JSON.stringify(subjects)}`;
+    }
+  }
+  for (const { basis } of subjects) {
+    if (!wantedBases.some(([number, commit, merged]) => !merged &&
+      basis.kind === "pull_request" && basis.repo === repo &&
+      basis.pull_request === number && basis.commit === commit)) {
+      return `pass_stands.subjects contains unexpected subject ${basis.repo}#${basis.pull_request}@${basis.commit}; only the two open heads are subjects`;
+    }
+  }
+  if (subjects.length !== 2) {
+    return `pass_stands.subjects must contain exactly the two open subjects; got ${JSON.stringify(subjects)}`;
   }
   for (const [commit, number] of [
     [commits.comparedHeadA, 21],

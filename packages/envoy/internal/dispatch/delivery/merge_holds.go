@@ -86,10 +86,12 @@ func (a *Attributor) MergeOfIssue(ctx context.Context, q refs.Queryer, issueKey 
 	return readMerged(ctx, q, answers, "the merged pull requests of "+issueKey, mergeOfIssueRead, issueKey)
 }
 
-var mergeOfIssueRead = newHeadsStatement("", `
+var mergeOfIssueQuery = `
 	select `+mergedColumns+` from pull_request_heads
 	where issue_key = $1 and state = 'merged'
-	order by `+newestMergeFirst, 1, "")
+	order by `+newestMergeFirst
+
+var mergeOfIssueRead = newHeadsStatement("", mergeOfIssueQuery, 1, "")
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
 // pull request the issue's external links name there (linkedPullRequestTerms), newest merge
@@ -111,10 +113,12 @@ func LandingOf(ctx context.Context, q refs.Queryer, repo, branch string, answers
 	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests of %s from %s", repo, branch), landingRead, repo, branch)
 }
 
-var landingRead = newHeadsStatement("", `
+var landingQuery = `
 	select `+mergedColumns+` from pull_request_heads
 	where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
-	order by `+newestMergeFirst, 2, "")
+	order by `+newestMergeFirst
+
+var landingRead = newHeadsStatement("", landingQuery, 2, "")
 
 // MergedPullRequestOf is pull request number of repo as pull_request_heads stores it where it
 // merged, and false where no merged row of it is stored: the read a results read makes of a row
@@ -130,9 +134,11 @@ func MergedPullRequestOf(ctx context.Context, q refs.Queryer, repo string, numbe
 	return merged[0], true, nil
 }
 
-var mergedPullRequestRead = newHeadsStatement("", `
+var mergedPullRequestQuery = `
 	select `+mergedColumns+` from pull_request_heads
-	where lower(repo) = lower($1) and number = $2 and state = 'merged'`, 2, "")
+	where lower(repo) = lower($1) and number = $2 and state = 'merged'`
+
+var mergedPullRequestRead = newHeadsStatement("", mergedPullRequestQuery, 2, "")
 
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.
 // HoldUnknown is that it cannot say now: the read failed, or the App cannot read the repository.

@@ -429,7 +429,6 @@ type Attributor struct {
 	linkedQuery     string
 	headQuery       string
 	headsRead       headsStatement
-	mergedInRead    headsStatement
 	mergeInRead headsStatement
 }
 
@@ -442,7 +441,6 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		linkedQuery:     linkedPullRequestsQuery(renames),
 		headQuery:       headAttributedQuery(renames),
 		headsRead:       headsAttributedRead(renames),
-		mergedInRead:    baseBranchMergedInRead(renames),
 		mergeInRead: mergeInRead(renames),
 	}
 }

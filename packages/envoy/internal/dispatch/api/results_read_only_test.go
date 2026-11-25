@@ -1523,8 +1523,8 @@ func parityInProcess(stack *parityStack) string {
 	return fmt.Sprintf("%+v\n%+v", &stack.rig.served.commitPulls, &stack.rig.served.branches)
 }
 
-// parityStored is every pull_request_heads and branch_commits row database holds, whole, one row a
-// line in one order, and how many events it holds.
+// parityStored records every head, branch answer and commit-history answer, whole and ordered,
+// and the event count, so a read-only read cannot hide a write to either kind of cached fact.
 func parityStored(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var stored string
@@ -1534,6 +1534,8 @@ func parityStored(t *testing.T, database *store.Store) string {
 			select 'pull request head ' || to_jsonb(head)::text as row from pull_request_heads head
 			union all
 			select 'branch answer ' || to_jsonb(answer)::text from branch_commits answer
+			union all
+			select 'commit history answer ' || to_jsonb(answer)::text from commit_holds answer
 			union all
 			select count(*)::text || ' events' from events
 		) held

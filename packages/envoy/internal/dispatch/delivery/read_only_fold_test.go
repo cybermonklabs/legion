@@ -47,9 +47,11 @@ type resultsHeadsRead struct {
 var resultsHeadsReads = []resultsHeadsRead{
 	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
 	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
-	{read: "BaseBranchMergedFor", function: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery", text: baseBranchMergedForQuery},
-	{read: "baseBranchMergedInQuery", function: "Attributor.BaseBranchMergedIn", statement: "baseBranchMergedInQuery", text: baseBranchMergedInQuery},
+	{read: "MergeOfIssue", function: "Attributor.MergeOfIssue", statement: "mergeOfIssueQuery", text: mergeOfIssueQuery},
+	{read: "MergeIn", function: "Attributor.MergeIn", statement: "mergeInQuery", text: mergeInQuery},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
+	{read: "LandingOf", function: "LandingOf", statement: "landingQuery", text: landingQuery},
+	{read: "MergedPullRequestOf", function: "MergedPullRequestOf", statement: "mergedPullRequestQuery", text: mergedPullRequestQuery},
 }
 
 // answeredReads is the functions and methods besides the reads' own that take the request's
@@ -907,7 +909,7 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 	var questions []foldQuestion
 	for _, read := range resultsHeadsReads {
 		switch read.read {
-		case "headsAttributedQuery", "BaseBranchMergedFor", "NewestPullRequestHead":
+		case "headsAttributedQuery", "MergeOfIssue", "NewestPullRequestHead":
 			for _, issue := range []string{foldIssue, foldLinkingIssue} {
 				questions = append(questions, foldQuestion{read: read.read, args: []string{issue}})
 			}
@@ -921,8 +923,23 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 					}
 				}
 			}
-		case "baseBranchMergedInQuery":
+		case "MergeIn":
 			questions = append(questions, foldQuestion{read: read.read, args: []string{foldLinkingIssue, deliveryRepo}})
+		case "LandingOf", "MergedPullRequestOf":
+			asked := map[[2]string]bool{}
+			for _, step := range steps {
+				for _, head := range step.pulls.Heads {
+					argument := head.HeadRef
+					if read.read == "MergedPullRequestOf" {
+						argument = fmt.Sprint(head.Number)
+					}
+					key := [2]string{head.Repo, argument}
+					if !asked[key] {
+						asked[key] = true
+						questions = append(questions, foldQuestion{read: read.read, args: key[:]})
+					}
+				}
+			}
 		default:
 			t.Fatalf("the fold test asks nothing of the read %s", read.read)
 		}
@@ -1018,15 +1035,25 @@ func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answe
 	case "HeadStoredAt":
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
 		return fmt.Sprint(stored), err
-	case "BaseBranchMergedFor":
-		branch, err := BaseBranchMergedFor(ctx, q, args[0], answers)
-		return fmt.Sprintf("%q", branch), err
-	case "baseBranchMergedInQuery":
-		branch, err := attributor.BaseBranchMergedIn(ctx, q, args[0], args[1], answers)
-		return fmt.Sprintf("%q", branch), err
+	case "MergeOfIssue":
+		merged, err := attributor.MergeOfIssue(ctx, q, args[0], answers)
+		return fmt.Sprintf("%+v", merged), err
+	case "MergeIn":
+		merged, err := attributor.MergeIn(ctx, q, args[0], args[1], answers)
+		return fmt.Sprintf("%+v", merged), err
 	case "NewestPullRequestHead":
 		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)
 		return describeNewestHead(head, found), err
+	case "LandingOf":
+		merged, err := LandingOf(ctx, q, args[0], args[1], answers)
+		return fmt.Sprintf("%+v", merged), err
+	case "MergedPullRequestOf":
+		var number int
+		if _, err := fmt.Sscan(args[1], &number); err != nil {
+			return "", err
+		}
+		merged, found, err := MergedPullRequestOf(ctx, q, args[0], number, answers)
+		return fmt.Sprintf("%+v, %t", merged, found), err
 	}
 	return "", fmt.Errorf("no read answers %s", question.read)
 }
