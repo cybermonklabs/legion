@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/redirects"
 )
 
@@ -307,7 +308,10 @@ type proofOrigin struct {
 
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
 // failing one request at a time: a missing dependency, no origin at all, and an origin that is
-// not an absolute http(s) origin are all deployment errors.
+// not an absolute http(s) origin are all deployment errors. An origin is a setting's value
+// (Options.Origins), refused by its place among them and as the URL rule prints it (redact.URL),
+// never as written and never with url.Parse's error, which quotes it whole: a configured URL can
+// carry a credential in its user information or its query.
 func New(options Options) (*Verifier, error) {
 	if options.BrokerURL == "" {
 		return nil, errors.New("brokertoken: the broker URL is required")
@@ -328,10 +332,10 @@ func New(options Options) (*Verifier, error) {
 	for i, raw := range options.Origins {
 		origin, err := url.Parse(raw)
 		if err != nil {
-			return nil, fmt.Errorf("brokertoken: the origin %q does not parse: %w", raw, err)
+			return nil, fmt.Errorf("brokertoken: origin %d of %d, %q, does not parse", i+1, len(options.Origins), redact.URL(raw))
 		}
 		if (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.Path != "" {
-			return nil, fmt.Errorf("brokertoken: the origin %q must be an absolute http(s) URL with no path", raw)
+			return nil, fmt.Errorf("brokertoken: origin %d of %d, %q, must be an absolute http(s) URL with no path", i+1, len(options.Origins), redact.URL(raw))
 		}
 		origins[i] = proofOrigin{url: origin, host: withoutDefaultPort(origin.Scheme, origin.Host)}
 		// One empty state serves every request atOrigin rewrites to this origin, built here
