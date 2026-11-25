@@ -880,3 +880,37 @@ func TestTheSettlementWakeNamesWhatLegionDoesNext(t *testing.T) {
 		}
 	})
 }
+
+// An issue at admitted, the phase RoleFor answers the architect for, has no current reader of its
+// task's CI news: the architect works the tree's design there, no step of the task, so no prompt
+// to read Dispatch and no report names it a step's reader, whatever entry its phases row holds. The
+// owner reads only as the reader of its own acceptance. The control: the same issue in accepting
+// has the owner as its one reader, of the acceptance, with no entry.
+func TestAnIssueAtAdmittedHasNoReaderOfItsCINews(t *testing.T) {
+	readersAt := func(t *testing.T, at phase.Phase) []string {
+		t.Helper()
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, at)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner")
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			return record.NewStore().MarkRunFixesCI(t.Context(), tx, root.Key, root.Generation)
+		})
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, Claim: "architect-claim", Entry: 2, EntryTask: "Take the tree up."})
+		var lines []string
+		onStored(t, pool, engine, root.Key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			w, err := engine.walk(ctx, tx, issue)
+			if err != nil {
+				return err
+			}
+			readers, err := engine.ciReaders(ctx, tx, issue, w)
+			for _, reader := range readers {
+				lines = append(lines, string(reader.role)+" "+reader.issue+" "+readerLine(&reader.reader))
+			}
+			return err
+		})
+		return lines
+	}
+	assertStrings(t, "the readers at admitted", readersAt(t, phase.Admitted), nil)
+	assertStrings(t, "the readers in accepting", readersAt(t, phase.Accepting), []string{"architect LEGION-208 accepting@0"})
+}
