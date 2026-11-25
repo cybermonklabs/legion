@@ -4111,6 +4111,36 @@
         "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
         "files": ["packages/daemon/internal/appauth/base_url_join_test.go"],
         "capture": "appauth.base-url/viewer"
+      },
+      {
+        "row": "legion-daemon-url-state-heading",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/cmd/legion/daemon_url_join_test.go"],
+        "capture": "legion.daemon-url/state-heading"
+      },
+      {
+        "row": "legion-daemon-url-line-controller-state",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/cmd/legion/daemon_url_join_test.go"],
+        "capture": "legion.daemon-url/controller-state"
+      },
+      {
+        "row": "legion-daemon-url-line-controller-secret",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/cmd/legion/daemon_url_join_test.go"],
+        "capture": "legion.daemon-url/controller-secret"
+      },
+      {
+        "row": "legion-daemon-url-line-controller-credential",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/cmd/legion/daemon_url_join_test.go"],
+        "capture": "legion.daemon-url/controller-credential"
+      },
+      {
+        "row": "legion-decode-answer-map-key",
+        "base": "e06d83e6b5df22b8944d34352724adcf408e6c7b",
+        "files": ["packages/daemon/cmd/legion/decode_answer_test.go"],
+        "capture": "legion.decode-answer/map-key"
       }
     ],
     "boundary_fields": {
@@ -8990,13 +9020,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt/answered",
-      "production": "daemon workflowRuntime.readBaseRules and unreadRules: GitHub's base branch is logged, and named in the Unread of a read GitHub refused, as the rule reads it (shownBase, githubText.Said), and read as it came",
+      "production": "daemon workflowRuntime.readBaseRules and unreadRules: GitHub's base branch is logged, and named in the Unread of a read GitHub refused, as the rule reads it (shownBase, githubText.Said), and read as it came (githubText.Name)",
       "function": "github.com/sjawhar/legion/daemon/internal/daemon.shownBase",
       "capture": "daemon.answer-words/base-answered",
       "mutation": {
         "file": "packages/daemon/internal/daemon/base_rules.go",
         "preimage": "return base.Said.String()",
-        "replacement": "return base.Name"
+        "replacement": "return base.Name()"
       }
     },
     {
@@ -9095,12 +9125,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestAMergeQueueReadLogsGitHubsMergeCommitAndStateOnlyInTheirShape/state",
-      "production": "daemon outbox.mergeQueueRead: GitHub's pull request state logged only as open or closed (githubrest.ShownWord)",
+      "production": "daemon outbox.mergeQueueRead: GitHub's pull request state logged only as open or closed (githubrest.ShownWord over pullStates)",
       "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.outbox).mergeQueueRead",
       "capture": "daemon.answer-words/merge-queue-state",
       "mutation": {
         "file": "packages/daemon/internal/daemon/merge_queue_removal.go",
-        "preimage": "\"state\", githubrest.ShownWord(pull.State, \"open\", \"closed\")",
+        "preimage": "\"state\", githubrest.ShownWord(pull.State, pullStates...)",
         "replacement": "\"state\", pull.State"
       }
     },
@@ -9851,7 +9881,7 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/cmd/legion",
       "test": "TestAClaimsAnswerPrintsNoBearerItEchoes/retry-failed-token-unread",
-      "production": "legion claims retry --failed: a failed claim whose token has no claim token's shape is not asked for (claimShaped), so no line that names the retry's path - an answer that does not read, a request with no answer - names the token"
+      "production": "legion claims retry --failed: a failed claim whose token is in no shape the daemon makes one in is not asked for (legionclaim.Token.Shaped), so no line that names the retry's path - an answer that does not read, a request with no answer - names the token"
     },
     {
       "id": "legion-cli-claims-retry-shaped-token",
@@ -15938,6 +15968,216 @@
         "preimage": "target, err := urljoin.Join(m.baseURL, path)\n\tif err != nil {\n\t\treturn nil, fmt.Errorf(\"read the GitHub API base URL the daemon is configured with: %w\", err)\n\t}\n\treturn http.NewRequestWithContext(ctx, method, target.String(), body)",
         "replacement": "return http.NewRequestWithContext(ctx, method, m.baseURL+path, body)"
       }
+    },
+    {
+      "id": "legion-daemon-url-join-operator-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAnOperatorCallGoesToTheRouteJoinedOntoTheDaemonURL/query",
+      "production": "legion operator.do: a LEGION_DAEMON_URL with user information, a port, a path and a query (http://reader@host:port/daemon?sig=...) is asked each route joined onto its path, the query kept (operator.urlOf, urljoin.Join: /daemon/legion/v1/operator/claims?sig=...), where the route appended to the URL's text sat inside the query and the daemon was asked /daemon"
+    },
+    {
+      "id": "legion-daemon-url-join-operator-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAnOperatorCallGoesToTheRouteJoinedOntoTheDaemonURL/query-trailing-slash",
+      "production": "legion operator.do: a LEGION_DAEMON_URL whose path ends in a slash and that has a query is asked /daemon/legion/v1/operator/claims?sig=..., where the route sat inside the query"
+    },
+    {
+      "id": "legion-daemon-url-join-operator-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAnOperatorCallGoesToTheRouteJoinedOntoTheDaemonURL/fragment",
+      "production": "legion operator.do: a LEGION_DAEMON_URL with a fragment is asked /daemon/legion/v1/operator/claims, the fragment dropped, where the route sat inside the fragment"
+    },
+    {
+      "id": "legion-daemon-url-join-operator-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAnOperatorCallGoesToTheRouteJoinedOntoTheDaemonURL/no-query",
+      "production": "legion operator.do: a LEGION_DAEMON_URL with a path and no query is asked /daemon/legion/v1/operator/claims, as before the join"
+    },
+    {
+      "id": "legion-daemon-url-join-state-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/query",
+      "production": "legion runState and get: a LEGION_DAEMON_URL with user information, a port, a path and a query reads /daemon/legion/v1/state?sig=... as the URL's user, where the route sat inside the query and the daemon was asked /daemon"
+    },
+    {
+      "id": "legion-daemon-url-join-state-query-trailing-slash",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/query-trailing-slash",
+      "production": "legion runState: a LEGION_DAEMON_URL whose path ends in a slash and that has a query reads /daemon/legion/v1/state?sig=..."
+    },
+    {
+      "id": "legion-daemon-url-join-state-fragment",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/fragment",
+      "production": "legion runState: a LEGION_DAEMON_URL with a fragment reads /daemon/legion/v1/state, the fragment dropped"
+    },
+    {
+      "id": "legion-daemon-url-join-state-no-query",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAStateReadGoesToTheRouteJoinedOntoTheDaemonURL/no-query",
+      "production": "legion runState: a LEGION_DAEMON_URL with a path and no query reads /daemon/legion/v1/state, as before the join"
+    },
+    {
+      "id": "legion-cli-daemon-url-unparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/unparsed-twin",
+      "production": "the probe of the unparsed daemon-URL rows: http.NewRequest's error for that URL quotes its user information and its query's token"
+    },
+    {
+      "id": "legion-cli-daemon-url-reparsed-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/reparsed-twin",
+      "production": "the probe of the reparsed daemon-URL rows: http.NewRequest's error for the URL joined from a daemon URL url.Parse takes quotes its credentials"
+    },
+    {
+      "id": "legion-daemon-url-operator-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/operator-unparsed",
+      "production": "legion operator.do: a daemon URL url.Parse refuses fails the call in fixed words (errDaemonURL), never url.Parse's error",
+      "capture": "legion.daemon-url/operator-unparsed"
+    },
+    {
+      "id": "legion-daemon-url-state-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/state-unparsed",
+      "production": "legion runState: a daemon URL url.Parse refuses fails the read in fixed words (errDaemonURL)",
+      "capture": "legion.daemon-url/state-unparsed"
+    },
+    {
+      "id": "legion-daemon-url-operator-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/operator-reparsed",
+      "production": "legion operator.do: a joined URL url.Parse refuses again (an IPv6 zone escape) fails through oauth2call.Unanswered, never http.NewRequest's error",
+      "capture": "legion.daemon-url/operator-reparsed"
+    },
+    {
+      "id": "legion-daemon-url-state-reparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonURLThatDoesNotParsePrintsNoneOfIt/state-reparsed",
+      "production": "legion get: a joined state URL url.Parse refuses again fails through oauth2call.Unanswered under the URL rule's name of it",
+      "capture": "legion.daemon-url/state-reparsed"
+    },
+    {
+      "id": "legion-daemon-url-line-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/twin",
+      "production": "the probe of the daemon-URL line rows: the URL a request asks, joined from a daemon URL with credentials, holds them"
+    },
+    {
+      "id": "legion-daemon-url-line-wait-bound",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/wait-bound",
+      "production": "legion operatorCall.request: the --wait line names the URL the call asked (operator.shown), where it named the daemon URL's text with the route appended",
+      "capture": "legion.daemon-url/wait-bound"
+    },
+    {
+      "id": "legion-daemon-url-line-list-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/list-unread",
+      "production": "legion operatorCall.printAnswer: an answer it cannot read names the URL asked (operator.shown)",
+      "capture": "legion.daemon-url/list-unread"
+    },
+    {
+      "id": "legion-daemon-url-line-retry-list-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/retry-list-unread",
+      "production": "legion claims retry --failed: a list it cannot read names the URL asked (operator.shown)",
+      "capture": "legion.daemon-url/retry-list-unread"
+    },
+    {
+      "id": "legion-daemon-url-line-suspend-list-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/suspend-list-unread",
+      "production": "legion claims suspend (awaitSuspended): a list it cannot read names the URL asked (operator.shown)",
+      "capture": "legion.daemon-url/suspend-list-unread"
+    },
+    {
+      "id": "legion-daemon-url-line-controller-state",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/controller-state",
+      "production": "legion checkControllerRepositories: a refused state read names the URL asked through the URL rule (operator.shown), never daemon_url's user information",
+      "capture": "legion.daemon-url/controller-state"
+    },
+    {
+      "id": "legion-daemon-url-line-controller-secret",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/controller-secret",
+      "production": "legion fetchControllerSecret: a refused mint names the URL asked through the URL rule (operator.shown)",
+      "capture": "legion.daemon-url/controller-secret"
+    },
+    {
+      "id": "legion-daemon-url-line-controller-credential",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestALineNamesTheDaemonURLAsTheRequestAskedIt/controller-credential",
+      "production": "legion fetchControllerCredential: a refused credential fetch names the URL asked through the URL rule (operator.shown)",
+      "capture": "legion.daemon-url/controller-credential"
+    },
+    {
+      "id": "legion-daemon-url-state-heading-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestTheStateHeadingNamesTheDaemonURLWithNoCredential/twin",
+      "production": "the probe of the state-heading row: the daemon URL holds made-up user information"
+    },
+    {
+      "id": "legion-daemon-url-state-heading",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestTheStateHeadingNamesTheDaemonURLWithNoCredential/heading",
+      "production": "legion runState: the stdout heading names the daemon URL through the URL rule (redact.URLCredentials); stdout passes no writer of the rule",
+      "capture": "legion.daemon-url/state-heading"
+    },
+    {
+      "id": "legion-decode-answer-map-key-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonAnswerThatDoesNotDecodeNamesNoMemberItWrote/map-key-twin",
+      "production": "the probe of the decodeAnswer rows: encoding/json's error for a map value of the wrong kind holds the map key"
+    },
+    {
+      "id": "legion-decode-answer-unknown-member",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonAnswerThatDoesNotDecodeNamesNoMemberItWrote/unknown-member",
+      "production": "legion decodeAnswer: an answer whose only fault is a member the type does not have is named as of another release, decided by decoding again, never by the error's text",
+      "capture": "legion.decode-answer/unknown-member"
+    },
+    {
+      "id": "legion-decode-answer-map-key",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestADaemonAnswerThatDoesNotDecodeNamesNoMemberItWrote/map-key",
+      "production": "legion decodeAnswer: any other failure is oauth2call.DecodeError's fixed text, never encoding/json's path, which holds the answer's map keys",
+      "capture": "legion.decode-answer/map-key"
+    },
+    {
+      "id": "legion-claim-word-issue-less",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestAClaimLineNamesATokenOnlyInAShapeTheDaemonMakes/issue-less",
+      "production": "legion claimWord: a token in no shape the daemon makes (legionclaim.Token.Shaped) prints as words, where the command's own grammar took a token naming no issue"
     }
   ],
   "bun": [
@@ -19082,6 +19322,26 @@
       "site": "packages/daemon/internal/appauth Manager.newRequest",
       "source": "the round-9 decisions of #4368",
       "guard": "appauth-base-url-app-slug"
+    },
+    {
+      "site": "legion operator.do, runState and daemonURL: each built its URL as the daemon URL's text plus the route, so a LEGION_DAEMON_URL with a query took the route into its value and the daemon was asked the URL's own path",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-daemon-url-join-operator-query"
+    },
+    {
+      "site": "legion runState: the stdout heading printed the daemon URL with its user information",
+      "source": "the round-9 decisions of #4368",
+      "guard": "legion-daemon-url-state-heading"
+    },
+    {
+      "site": "legion decodeAnswer: a second copy of the decode-error sanitizer, which read an error by its text and printed encoding/json's member path",
+      "source": "the round-8 quality review",
+      "guard": "legion-decode-answer-map-key"
+    },
+    {
+      "site": "legion claimTokenShape: a copy of the claim token grammar outside package claim, already wider than the tokens the daemon makes",
+      "source": "the round-8 quality review",
+      "guard": "legion-claim-word-issue-less"
     }
   ]
 }
