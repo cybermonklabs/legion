@@ -12920,9 +12920,10 @@ docker() {
   /** services_up for `labels`, each with a checkout of its own under the work directory, whose
    * packages/contracts/src/legion-api.ts is `contracts`' source for that label, or `DESCRIBES`, and
    * whose packages/daemon/internal/api state.go, server.go, shaping.go, version.go and
-   * updatestate.go are this checkout's: main's shape of the state's pull request and of the
-   * contract its answers state, which the contract check builds its bodies by (daemon-pane.ts's
-   * `servesFixAttempts` and `statesContract`), as both labels of a batch are main's now. */
+   * updatestate.go are this checkout's, with packages/contracts/fixtures linked beside them:
+   * main's shape of the state's pull request and of the contract its answers state, which the
+   * contract check builds its bodies by (daemon-pane.ts's `servesFixAttempts` and
+   * `statesContract`), as both labels of a batch are main's now. */
   function up(
     env: Record<string, string>,
     labels: string[] = ["head"],
@@ -12937,6 +12938,10 @@ docker() {
       const contract = path.join(work, "checkouts", label, "packages", "contracts", "src");
       mkdirSync(contract, { recursive: true });
       writeFileSync(path.join(contract, "legion-api.ts"), contracts[label] ?? DESCRIBES);
+      symlinkSync(
+        path.join(CHECKOUT, "packages", "contracts", "fixtures"),
+        path.join(work, "checkouts", label, "packages", "contracts", "fixtures")
+      );
       const api = path.join(work, "checkouts", label, "packages", "daemon", "internal", "api");
       mkdirSync(api, { recursive: true });
       for (const file of ["state.go", "server.go", "shaping.go", "version.go", "updatestate.go"])

@@ -1617,17 +1617,23 @@ test.skipIf(skip)(
 /** A checkout named `name` under the run directory that holds this checkout's daemon module, for a
  * fixture to change: the module copied; the envoy module linked beside it, which the module's
  * go.mod replaces with its sibling directory (`../envoy`); and this checkout's go.work and
- * go.work.sum copied to its root. A checkout's daemon module builds under its own go.work, as
- * rig.sh's builds do (`go_binary`), which reconciles the daemon's and envoy's requirements; with
- * none above it, `go run` builds in module mode, where the envoy module's requirements are read
- * beside the daemon's go.mod alone, and stops at `go: updates to go.mod needed` once envoy
- * requires a newer version of a module than the daemon's go.mod lists. It returns the checkout and
- * its daemon module's directory. */
+ * go.work.sum copied to its root; and `packages/contracts/fixtures` linked beside them so
+ * `statesContract` reads `released-contracts.json` and any entry fixtures (#5399). A checkout's
+ * daemon module builds under its own go.work, as rig.sh's builds do (`go_binary`), which
+ * reconciles the daemon's and envoy's requirements; with none above it, `go run` builds in module
+ * mode, where the envoy module's requirements are read beside the daemon's go.mod alone, and stops
+ * at `go: updates to go.mod needed` once envoy requires a newer version of a module than the
+ * daemon's go.mod lists. It returns the checkout and its daemon module's directory. */
 function daemonCheckout(name: string): { checkout: string; daemon: string } {
   const checkout = path.join(work, name);
   const daemon = path.join(checkout, "packages", "daemon");
   cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
   symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  mkdirSync(path.join(checkout, "packages", "contracts"), { recursive: true });
+  symlinkSync(
+    path.join(CHECKOUT, "packages", "contracts", "fixtures"),
+    path.join(checkout, "packages", "contracts", "fixtures")
+  );
   for (const file of ["go.work", "go.work.sum"])
     cpSync(path.join(CHECKOUT, file), path.join(checkout, file));
   return { checkout, daemon };
