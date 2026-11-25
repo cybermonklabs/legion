@@ -21,6 +21,7 @@
 // and generation) and `call` (the tool's parameters). Output, one JSON object on stdout: `isError`,
 // `text` (the tool's answer as the agent reads it), and `daemonRequests` and `dispatchRequests`,
 // each request as `<METHOD> <path>`, in the order they were sent.
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
@@ -60,9 +61,10 @@ const daemonRequests: string[] = [];
 const dispatchRequests: string[] = [];
 const daemonFetch = recordingFetch(daemonRequests);
 // One value serves both signatures: a fetch, which the older client calls, carrying the options
-// object this checkout's client reads, the plugin's own contract from this root's manifest.
+// object this checkout's client reads, the plugin's own contract, read as `extensions/legion.ts`
+// reads it (`daemonContract`).
 const daemonOptions = Object.assign(daemonFetch, {
-  pluginContract: pkg.legion.daemonApiVersion,
+  pluginContract: daemonContract(pkg, import.meta.dir),
   fetch: daemonFetch,
 });
 const daemon = (createLegionDaemonClient as (url: string, options: unknown) => LegionDaemonClient)(

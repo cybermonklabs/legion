@@ -34,7 +34,7 @@ const (
 var historyEntry = regexp.MustCompile(`(?m)^// \d+: `)
 
 // Every refusal code register_plan and stop_task answer of their own is named in an entry of the
-// daemon API contract history (version.go), which is where a plugin's author reads what a route
+// daemon API contract history (version.go's numbered entries and each entry's own file), which is where a plugin's author reads what a route
 // answers. The codes are read from the type-checked source, not copied: each code a function of
 // plan.go reachable from the two routes writes, and each code of a refusal that the workflow's
 // planGiven or taskStopped, or a function of the workflow or of intake they reach, answers the fact
@@ -58,10 +58,26 @@ func TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory(t *testing.T) {
 		t.Fatal("version.go holds no `// <n>: ` entry: the contract history could not be read")
 	}
 	history := string(source[first[0]:])
+	// An entry after the numbered ones is a file of its own, whose text is the rest of the history
+	// (contracts.go).
+	entries, err := filepath.Glob("contract_[0-9]*_*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry, "_test.go") {
+			continue
+		}
+		text, err := os.ReadFile(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		history += string(text)
+	}
 	codes := slices.Compact(slices.Sorted(slices.Values(append(route, workflow...))))
 	for _, code := range codes {
 		if !regexp.MustCompile(`\b` + code + `\b`).MatchString(history) {
-			t.Errorf("register_plan or stop_task can answer %s, and no entry of version.go's contract history names it", code)
+			t.Errorf("register_plan or stop_task can answer %s, and no entry of the contract history (version.go and the entry files) names it", code)
 		}
 	}
 	t.Logf("codes the two routes answer of their own, each held to the history: %v", codes)

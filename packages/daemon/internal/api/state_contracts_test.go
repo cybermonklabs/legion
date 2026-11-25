@@ -163,7 +163,8 @@ func TestANewHeldReasonReadsUnclassifiedToAnOlderContract(t *testing.T) {
 		{"LEGION-300", record.HeldAwaitingTodo},
 	}
 	// itself says whether the contract reads each added reason as itself; a contract the row
-	// before named already (DaemonAPIVersion while it is chainContract) is served once.
+	// before named already (DaemonAPIVersion() while the chain entry is the build's newest) is
+	// served once.
 	last := 0
 	for _, tc := range []struct {
 		contract int
@@ -171,9 +172,9 @@ func TestANewHeldReasonReadsUnclassifiedToAnOlderContract(t *testing.T) {
 	}{
 		{144, false},
 		{152, false},
-		{chainContract - 1, false},
-		{chainContract, true},
-		{DaemonAPIVersion, true},
+		{entryNumber(chainContract) - 1, false},
+		{entryNumber(chainContract), true},
+		{DaemonAPIVersion(), true},
 	} {
 		if tc.contract == last {
 			continue

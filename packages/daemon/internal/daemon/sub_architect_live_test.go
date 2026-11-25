@@ -859,7 +859,7 @@ func (r *subArchitectLive) register(issue string, role claim.Role, session strin
 	r.waitClaim(token, "with its shim connected", func(held api.OperatorClaim) bool { return held.State == string(supervise.StateShimConnected) })
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s = %d %s, want 200", token, status, body)

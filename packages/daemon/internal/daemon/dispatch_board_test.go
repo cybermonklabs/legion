@@ -28,9 +28,10 @@ const liveRepo = "acme/widgets"
 // the daemon posted, so a step can read back what the daemon told Dispatch and tell a write that
 // never came from one it cannot see, serves the handoff records a step seeds (handoff), which a
 // phase completion names and the daemon reads back, and takes the record of each step the daemon
-// writes (putStep), the rating a retro gave the plan (putRating) and the plan of each run (putPlan)
-// from the daemon's own session alone, as Dispatch's routes take them, and refuses a write whose id
-// names another issue's record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
+// writes (putStep), the rating a retro gave the plan (putRating), the experiment and the variant of
+// the record's issue (putExperiment) and the plan of each run (putPlan) from the daemon's own
+// session alone, as Dispatch's routes take them, and refuses a write whose id names another issue's
+// record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
 // does, keeping nothing of it. Anything else is a call a live proof does not expect, and fails the
 // test as workflowConfig's stand-in does.
 type liveDispatch struct {
@@ -163,6 +164,10 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
 		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
+	// Before the step route's arm, which takes every other PUT under /steps/ and would make a
+	// record whose id is <id>/experiment.
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/experiment"):
+		b.putExperiment(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/experiment"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
 		b.putStep(key, strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/plans/"):
@@ -240,7 +245,8 @@ func (b *liveDispatch) showHandoff(id string, req *http.Request, w http.Response
 // the write and its attempt: the place of the record among the issue's records of the same task,
 // kind and step, in the order of their first write. An id whose record is another issue's is
 // refused 409 STEP_OTHER_ISSUE (writeStep). The daemon sends a rating to the rating route alone
-// (dispatch.HTTPClient.PutStep), so no write here carries one.
+// and a variant to the experiment route alone (dispatch.HTTPClient.PutStepRating and
+// PutStepExperiment), so no write here carries either.
 func (b *liveDispatch) putStep(key, id string, req *http.Request, w http.ResponseWriter) {
 	write, ok := b.daemonWrite(key, "a step record", req, w)
 	if !ok {
@@ -265,6 +271,21 @@ func (b *liveDispatch) putRating(key, id string, req *http.Request, w http.Respo
 		return
 	}
 	b.writeStep(key, id, write, true, req, w)
+}
+
+// putExperiment takes the experiment and the variant of key's issue onto the step record id of
+// key, as Dispatch's PUT /api/v1/issues/{key}/steps/{id}/experiment does: the step write's body and
+// writer, which makes the record where the run's start and end have not landed, on a record of
+// key's (409 STEP_OTHER_ISSUE otherwise), each field written once. It does not refuse a pair for
+// its values, as Dispatch does (both required, each a name of the experiment's rule): the daemon
+// refuses one without the other where its row is queued (record's NewOutboxRow), and its settings
+// refuse a name off the rule at load, so no write of the daemon's carries one.
+func (b *liveDispatch) putExperiment(key, id string, req *http.Request, w http.ResponseWriter) {
+	write, ok := b.daemonWrite(key, "a step record", req, w)
+	if !ok {
+		return
+	}
+	b.writeStep(key, id, write, false, req, w)
 }
 
 // daemonWrite decodes a write to a record of key, which only the session legion-daemon:<project>
@@ -470,10 +491,10 @@ func issueOfDispatchPath(path string) string {
 }
 
 // The board refuses a write whose id names a record or a plan of another issue, as Dispatch does:
-// 409 STEP_OTHER_ISSUE from both step routes and 409 PLAN_OTHER_ISSUE from the plan route, keeping
-// nothing of the write, so the record and the plan stay their first issue's as they were. Each
-// refused write but the rating of the step record is one Dispatch takes under its own issue, so
-// the 409 is the other-issue rule's. That rating is refused under its own issue too, for the
+// 409 STEP_OTHER_ISSUE from the three step routes and 409 PLAN_OTHER_ISSUE from the plan route,
+// keeping nothing of the write, so the record and the plan stay their first issue's as they were.
+// Each refused write but the rating of the step record is one Dispatch takes under its own issue,
+// so the 409 is the other-issue rule's. That rating is refused under its own issue too, for the
 // record's kind (400 STEP_INPUT), which is the control, and under another issue for its issue, not
 // its kind, since Dispatch's store judges the issue before the kind the record holds
 // (workflowstore's putNode). A plan Dispatch refuses for what it states is refused 400 PLAN_INPUT
@@ -540,6 +561,7 @@ func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
 		{"a write of " + first + "'s step record", "/steps/" + step, map[string]any{"model": "claude-opus"}, steprecord.CodeOtherIssue},
 		{"a rating of " + first + "'s retro record", "/steps/" + retro + "/rating", rating(), steprecord.CodeOtherIssue},
 		{"a rating of " + first + "'s step record", "/steps/" + step + "/rating", rating(), steprecord.CodeOtherIssue},
+		{"a variant of " + first + "'s step record", "/steps/" + step + "/experiment", map[string]any{"experiment": "planning", "variant": "b"}, steprecord.CodeOtherIssue},
 		{"a write of " + first + "'s plan", "/plans/" + plan, map[string]any{"generation": 2, "source": "default", "tasks": []any{map[string]any{"id": "default", "steps": []any{"tester"}}}}, steprecord.CodePlanOtherIssue},
 	} {
 		if status, answer := put(other, refused.path, refused.write); status != http.StatusConflict || !strings.Contains(answer, `"code":"`+refused.code+`"`) {

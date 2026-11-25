@@ -73,7 +73,7 @@ func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
 func TestARetryWhosePhaseRestartWasRefusedPrintsTheRefusalUnderTheClaim(t *testing.T) {
 	const implementerClaim = legionclaim.Token("legion-legion-legion-209-implementer")
 	retried := api.OperatorClaim{Token: implementerClaim, Tree: "LEGION-208", Issue: "LEGION-209",
-		Role: "implementer", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion}
+		Role: "implementer", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion()}
 	line := string(implementerClaim) + " implementer LEGION-209 launching - 3 " + thisBinarysContract + " - - - -\n"
 	refusal := "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched " +
 		string(implementerClaim) + ": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold"

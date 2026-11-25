@@ -13,4 +13,9 @@ export const sessionIds = {
   observer: "019a1c04-3a1e-7b5d-9c06-1d8e2f5a6b04",
   archivist: "019a1c05-4b2f-7c6e-8d17-2e9f3a6b7c05",
   silent: "019a1c06-5c3a-7d7f-ae28-3f0a4b7c8d06",
+  // The two claim holders the review corpus adds beside the workspace's sessions
+  // (`claimHolderSessions`, `workspace.ts`): one titled as a person titles a session, led by an
+  // emoji, and one whose title is this id itself.
+  cacheWarm: "019a1c07-6d4b-7e80-bf39-4a1b5c8d9e07",
+  untitled: "019a1c08-7e5c-7f91-8a4a-5b2c6d9e0f08",
 } as const;

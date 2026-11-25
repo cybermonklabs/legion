@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -3717,294 +3724,16 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 276: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
-// approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
-// move.
-// `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
-// come together or not at all: `basisArtifactId`, the same step's document of an ancestor on the
-// issue's Dispatch `child_of` chain; `basisVersion`, the version of it a person approved or an
-// open approval request asks a person to approve; and `reason`, 1 to 1,000 characters with no
-// decision block, which the daemon posts on the root's issue. A call with a basis is refused
-// with a code that names what Dispatch shows (`BASIS_INCOMPLETE`, `BASIS_NOT_ON_CHAIN`,
-// `BASIS_NOT_NEAREST`, `BASIS_NOT_IN_LEGION`, `BASIS_ACCEPTED`, `BASIS_NOT_APPROVED`,
-// `BASIS_VERSION_MISMATCH`, `BASIS_NOT_BY_PERSON`, `BASIS_REQUEST_NOT_OPEN`,
-// `BASIS_NO_REQUIREMENTS`, `ROOT_VERSION_NOT_LATEST`, `ROOT_CHANGES_REQUESTED`, the six
-// `VIEW_` codes, `REASON_INVALID` and `REASON_HOLDS_DECISION_BLOCK`) and records nothing. The
-// answer is unchanged, and a call that names none of the three fields is the call it was.
-// Every root issue record of `GET /legion/v1/state` — the record `read_record` reads — gains
-// two things. Its `gatedSteps` entries take two status words beside the four of 55:
-// `open_on_basis`, a step its architect registered on a person's approval of the ancestor's
-// document, whose `approvedVersion` is the root's version registered, which no person approved;
-// and `pending_on_basis`, a step that waits, closed, on the ancestor's open approval request.
-// Each such entry carries `basis`: the ancestor `issue`, its document's `artifactId`, the
-// `version` approved or asked for, and `approver` and `approvedAt` for an approval or `askId`
-// for a request. `designGate.approvedVersion` of a step open on a basis is that same version
-// registered, so a reader that names a person's approval reads `gatedSteps`. And every root of
-// the daemon's project carries `treeRuns`, whether its tree runs under the workflow by the
-// daemon's own rule (`record.TreeRuns`): its lifecycle stands open under the workflow, the root
-// does not linger, and it does not wait in the line for its tree to be opened. The record held
-// no field that decided it in every case: a root a re-admission left at `todo` runs nothing
-// whatever its architect's claim reads.
-// The architect's `catch-up` notice states a step on a basis too: each entry of its `gates` may
-// carry `pending` and `basis` (`issue`, `artifact`, `version`, `approver`, `approved_at`, `ask`),
-// and a step open on a basis reads `open` with no `approved`, since no person approved the
-// version its root registered. No plugin decodes the notice: it reaches the architect's session
-// as the daemon writes it, so it needs no narrowing.
-// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer two more refusals, after
-// `SIGNOFF_CHILD_IN_WORKFLOW` and in this order: `SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, while a root
-// whose step rests on the issue's approval is still in the workflow, and `SIGNOFF_CHILD_OPEN`,
-// while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
-// hold it; the refusal's shape is the one every refusal has.
-// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve a caller below 276 — one
-// that states a contract below it in `Legion-Plugin-Contract`, or else one from a pod whose
-// claims record one — the shape its own contract describes, by 193's serving rule, and this
-// entry adds one band and two value strips to that serving, and a word to a third strip, 219's
-// `withoutUnadmittedHeldWords`. The band is the row of `gateBasisContract` in shaping.go's
-// `stateNarrowings` (`withoutGateBasis`): it follows the contract the caller states, else its
-// pod's highest, and serves every issue without `treeRuns`, and without `gatedSteps` on an
-// issue a step of which carries `basis`. The bands compose, as
-// 193's entry says of them: a caller below 178 is served the state without `paused` and
-// `lastPause` as well, the entry of 178 above (`withoutPause`), a caller below 146 the issues
-// without both entry times and `architectStalls`, the entry of 146 (`withoutEntryTimes`), and so
-// on down `stateNarrowings`. 178's band and this one touch no key of each other's, and the bands
-// of 193, 202, 220, 228, 246, 250, 256 and 275 stand between them (232 adds none), so a caller at 202
-// through 275 is served the pause, the keys 193 added and the repositories block 202 writes, and
-// none of this entry's keys and words (a caller that states 203 or 204 is served 202's records,
-// the nearest recorded contract at or below it, one that states 205 to 212 is served 205's, which
-// are 202's under its own number, as 205's entry says, one that states 213 to 216 is served 213's,
-// which are 205's with `caches` among the words of a capability row's `source`, as 213's entry
-// says, one that states 217 or 218 is served 217's, which are 213's under its own number, as
-// 217's entry says, one that states 219 is served 219's, which are 217's with the owner's plan's
-// routes, fields and words, as 219's entry says, one that states 220 to 227 is served 220's,
-// which are 219's with each assignment's `plan`, as 220's entry says, one that states 228 to 231
-// is served 228's, which are 220's with `intakeGiveUps` and the two give-up answers, as 228's
-// entry says, one that states 232 to 245 is served 232's, whose answer records are 228's under
-// its own number, since 232 adds two fields to a request and moves no answer's shape, one that
-// states 246 to 249 is served 246's, which are 232's with each issue's `podHold`, as 246's entry
-// says, one that states 250 to 255 is served 250's, which are 246's with each issue's `priority`
-// and its waitingLine's `priority`, as 250's entry says, one that states 256 to 274 is served
-// 256's, which are 250's with each claim view's `lastDeathAt` and `lastStartFailureAt`, as 256's
-// entry says, and one that states 275 is served 275's, which are 256's with the state's
-// `dispatchCredential`, as 275's entry says, so a caller below 275 is served no
-// `dispatchCredential`, one below 256 is served no `lastDeathAt` or `lastStartFailureAt`, one below
-// 250 no `priority` either, one below 246 no `podHold` either, one below 228 no `intakeGiveUps`
-// either, one below 220 no assignment's `plan` either, and one below 219 none of 219's additions
-// either), a
-// caller at 193 through 201 the pause, 193's keys and the block in 152's shape (one that states
-// 194 to 198 is served 193's shape and one that states 199 to 201 199's, and 199's is 193's, since
-// 199 moves no shape of an answer a plugin parses), a caller at 178 through 192 the pause and the
-// block in 152's shape and neither 193's keys nor this entry's, and a caller at 146 through 177
-// the entry times and none of the pause, 193's keys and this entry's.
-// The strip of `gatedSteps` is not for the key's sake alone: every plugin from 55 on reads
-// `status` with a strict enum of the four words and refuses the whole body for a fifth, and no
-// word of the four is true of such a step — `waiting` would send its architect to ask a person
-// for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. The two words are values
-// of an enumerated field, which answers.go's `EnumeratedFields` declares at this contract
-// (`gatedStepStatuses`), so a value strip holds them back too, following the contract the caller
-// states, else its pod's lowest: `withoutUnadmittedStepStatuses`, a row of shaping.go's
-// `valueStrips`, serves an issue any step of which reads a word the caller does not admit with no
-// `gatedSteps`. Every reader from 276 on takes `treeRuns` and `basis` as optional and reads the
-// six words (`packages/contracts/src/legion-api.ts`).
-// The change ships store migrations `20261114064234_design_gate_basis` and
-// `20261122154643_outbox_kinds_with_the_basis_seeds`, which keep the basis on the gate row and
-// admit the two outbox kinds that read it; they move the daemon's own record and are no part of
-// this number. Nor are the new notice kinds `basis-ended`, `basis-changes-requested` and
-// `resting-root`, which reach an architect's session as text, as every notice kind does.
-// The same contract carries a parent's wait on its open children, a new phase value
-// `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
-// it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
-// `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller below 276 knows neither word — its phase enum and its held
-// words are the ones before this change — so the daemon serves it that issue's `phase` as
-// `admitted`, the status that names no worker's phase, and that held entry's `reason` as
-// `children_first`, the word a started parent's wait took over. Both are value strips, rows of
-// shaping.go's `valueStrips` that read each word's arrival from answers.go's `EnumeratedFields`
-// (`phases`, `heldReasons`) and follow the contract the caller states, else its pod's lowest:
-// `withoutUnadmittedPhases` and `withoutUnadmittedHeldWords`. `heldFrom` and
-// `pendingTask.phase` read `LEGION_WORKFLOW_PHASES` too, so the table declares the word for them
-// as well (`workflowPhases`), and `withoutUnadmittedPhases` leaves either key off where it names
-// the word for a caller below 276; the daemon writes the word in neither, since `heldFrom` is null
-// in the phase and a hold never comes from it, and no task is queued for a phase no role works.
-// The change ships store migration `20261114232555_awaiting_children`, which adds the phase value
-// and the parent's held start to the issues table; it moves the daemon's own record and is no part
-// of this number.
-// `POST /legion/v1/phase/backward`, `POST /legion/v1/signoff` and 219's `POST /legion/v1/tasks/stop`
-// on a parent in that phase answer one more refusal, `WAITING_ON_CHILDREN`, naming its open
-// children and the start it holds: each acts on a phase or on the task standing in one, and the
-// parent stands in none (dispatch://INFRA-3320 R11). The refusal's shape
-// is the one every refusal has. The new notice kind `awaiting-children`, which tells the parent's
-// architect of the wait in place of the phase-finished notice of the start it holds, is no part
-// of this number either: it reaches an architect's session as text, as every notice kind does.
-// The forward merge of main at 0497e861b0d9 brought in 205's removal of the operation that took a
-// child out of the workflow through the daemon, and this entry's refusals and notices lost their
-// sentences that named it: `SIGNOFF_CHILD_IN_WORKFLOW` and `SIGNOFF_CHILD_OPEN`, as
-// `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer them, carry the sentence on a
-// status the daemon has not taken yet and the rules for ending a child (`record.StatusNotTakenYet`,
-// `record.EndChildRule`), followed by the sentence on asking the person (workflow's
-// endChildrenFirst), and the `awaiting-children` notice and the `children-first` notice end a
-// child by the rules alone.
-// `WAITING_ON_CHILDREN` on a parent with an open child, as `POST /legion/v1/signoff`, the
-// architect's `POST /legion/v1/phase/backward` and `POST /legion/v1/tasks/stop` answer it, ends
-// with the same sentence on a status not taken yet and the same rules; as a phase worker's
-// `POST /legion/v1/phase/backward` answers it, it ends by telling the worker that its architect
-// acts on the children, and gives none of the architect's rules, since a worker ends no child.
-// Each refusal keeps its code and the shape every refusal has, so no reader's parse moves.
-// The forward merge of main at c4196c824b7d brought in 213's `caches`, a third word of a
-// capability row's `source` (dispatch://INFRA-4036, 213's entry above), whose value strip runs
-// beside this entry's two in shaping.go's `valueStrips` and serves it to a caller at 213 and
-// above, so this entry's own records name `caches` in the domain of `capabilities.*.source` as
-// 213's do.
-// (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
-// requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
-// that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main
-// in at d24093cef77a, which landed #3793's INFRA-3146 at 123. It was renumbered 126 → 134 at the
-// forward merge of 2026-11-15 that brought main in at ff69e078a4ab, which carries #3715's
-// INFRA-3036 at 132, the entry above 133's; the open pull requests held 133 (#3937) and nothing
-// above it, so 134 was the lowest number above main's and above every number another open head
-// declared. That read was a GraphQL read of each open head's file, and it missed most heads: the
-// blob text it gives of this file is cut before the const line. A REST raw read of each open
-// head's file at 2026-11-15T02:46Z gave, above main's 132, 133 (#3711 and #3937), 134 (#4021,
-// which declares 134 too), 135 (#3659), 136 (#3575 and #3730) and 137 (#3712), and no open head
-// declares above 137, so this change moved 134 → 138, the lowest free number: the lowest above
-// main's and above every number another open head declares. At the forward merge of 2026-11-15
-// that brought main in at d7dce7302e31, main carried #3937's 133, and 138 stayed above it. At the
-// forward merge of 2026-11-15 that brought main in at b504408737a9, main carried 137 (#4046's
-// INFRA-3621), and the open heads held 138 (#4049) and 139 to 146, read with a
-// REST raw read of each open head's file at 2026-11-15T15:43Z, so this change moved 138 → 147, the
-// lowest number above main's and above every number another open head declares. At the forward
-// merge of 2026-11-15 that brought main in at 7ed023731622, main carried #3575's 141
-// (INFRA-2566), and 147 stayed above every open head. At the forward merge of 2026-11-15 that
-// brought main in at b2e427423163, main carried #4021's 144 (INFRA-3557), and 147 stayed above
-// every open head. At the forward merge of 2026-11-16 that brought main in at a97cd5939748, main
-// carried #3711's 146 (INFRA-2614, the entry above), and 147 stayed above it. At the forward merge
-// of 2026-11-17 that brought main in at a2b379d13f42, main carried #4106's 151 (INFRA-3729, the
-// entry above), and the open heads held 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273), 156
-// (#4065) and 157 (#4049, #3993, #3519 and #2230), read with a REST raw read of each open head's
-// file between 2026-11-17T14:01:15Z and 14:08:12Z, so this change moved 147 → 158, the lowest
-// number above main's and above every number another open head declares. At the forward merge of
-// 2026-11-18 that brought main in at 6ef60ff0ceeb, main carried #3730's 152 (INFRA-2543, the entry
-// above), and the open heads held 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230
-// and #3993), 158 (#4173, #4180 and #4193, beside this change), 159 (#4175), 160 (#3519) and 161
-// (#4049), read with a REST raw read of each of the 233 open heads' file between
-// 2026-11-18T07:00:38Z and 07:05:43Z, so this change moved 158 → 162, the lowest number above
-// main's and above every number another open head declares. At the forward merge of 2026-11-18
-// that brought main in at 0e6b1f456bfa, main still carried 152, and the open heads held 153 to 161
-// and 162 (#2230 and #3712, beside this change) and 163 (#4049), read with a REST raw read of each
-// of the 232 open heads' file between 2026-11-18T09:42:26Z and 09:46:59Z, so this change moved
-// 162 → 164, the lowest number above main's and above every number another open head declares.
-// At the forward merge of 2026-11-19 that brought main in at fd1efd0418c4, main carried 160
-// (INFRA-2009's entry, above), and a REST raw read of each of the 234 open heads' file between
-// 2026-11-19T08:39:43Z and 08:43:32Z found 164 declared by this change alone (161 by four heads,
-// 162 by two, 163, 165 and 166 by one each, 167 by four and 168 by one), so it holds. Read the
-// base's own number and every open head again, by a REST raw read of each head's file, at the
-// next forward merge rather than from this line. At the forward merge of 2026-11-19 that brought
-// main in at 724196efdd83, main carried 168 (cybermonklabs/legion#4488's plan ratings, above), and
-// a REST raw read of each of the 242 open heads' file between 2026-11-19T18:56:47Z and 19:02:16Z
-// found 169 (#4065), 170 (#2230, #4173, #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993
-// and #4273), 175 (#3712, #4115, #4392, #4432, #4485 and #4495) and 176 (#3831 and #4030)
-// declared, and nothing above 176, so this change moved 164 → 177, the lowest number above main's
-// and above every number another open head declares. At the forward merge of 2026-11-20 that
-// brought main in at c7e1cbd53237, main carried 178 (cybermonklabs/legion#4115's project pause,
-// INFRA-3759, the entry above), and a read of each open head's file at 2026-11-20T01:17Z found 178
-// (#3831, #4552 and #4554), 179 (#4392 and #4540), 180 (#4049 and #4175) and 181 (#4553)
-// declared, so this change moved 177 → 182, the lowest number above main's that no other open head
-// then declared. At 2026-11-20T07:08Z, main still carrying 178, a read of each open head's file
-// between 2026-11-20T07:04Z and 07:08Z found every number from 179 to 188 declared, so this
-// change moved 182 → 189, the lowest number above main's 178 that no open head declared
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20-md). At the forward merge of
-// 2026-11-20 that brought main in at 1c7c82536786, main carried 188 (cybermonklabs/legion#4543,
-// the entry above), and a REST raw read of each of the 263 open heads' file between
-// 2026-11-20T10:13Z and 10:25Z found 189 (#3831, and #4596, which stacks on this change) and 190
-// (#4493 and #4578) declared, and nothing above 190, so this change moved 189 → 191, the lowest
-// number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20b-md). At the forward merge of
-// 2026-11-20 that brought main in at b1b4e281ec0a, main still carried 188, and a REST raw read of
-// each of the 267 open heads' file between 2026-11-20T12:19Z and 12:24Z found 190 (#4578), 191
-// (#4049, #4493, #4495 and #4573, and #4596, which stacks on this change), 192, 193 and 194
-// declared, and no head declaring 189, so this change moved 191 → 189, the lowest number above
-// main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). At the forward merge of
-// 2026-11-20 that brought main in at a4cd4949fce7, main carried 189, which its #4581
-// (dispatch://INFRA-4108) took at the same time as this change, and a REST raw read of each of the
-// 283 open heads' file between 2026-11-20T16:16Z and 16:20Z found 189 (#4611 and #4634), 190
-// (#4578), 191, 192, 193, 194 and 195 (#4493 and #4590) declared by other heads, so this change
-// moved 189 → 196, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20d-md). At the forward merges of
-// 2026-11-20 and 2026-11-21 that brought main in at 8a9540682d8a and then at 0d3786da5367, main
-// carried 193, which its #3659 took, and then 199, which its #4495 took, and a REST raw read of
-// each of the 321 open heads' file between 2026-11-21T00:28Z and 00:30Z found 200 (#4049 and
-// #4065), 201 (#4553 and #4611) and 202 (#4432, #4493, #4580 and #4590) declared by other heads,
-// so this change moved 196 → 203, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21a-md). At the forward merge of
-// 2026-11-21 that brought main in at 1cdf5b9ceba6, main carried 202, which its #4493 took, and a
-// REST raw read of each of the 341 open heads' file between 2026-11-21T03:27Z and 03:30Z found
-// 203 (six heads), 204 (#3831 and #4030), 205 (#4573) and 206 (#4540) declared by other heads, so
-// this change moved 203 → 207, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-21b-md). At the forward merge of
-// 2026-11-21 that brought main in at 0f26570963c5, main carried 202, and a REST raw read of each
-// of the 396 open heads' file between 2026-11-21T11:29Z and 11:32Z found 203 (#4175), 204 (#4173
-// and #4193), 205 (#4539 and #4573), 206 (#3712), 207 (twelve heads beside this change), 208
-// (#2230), 209 (#4049, #4540, #4553 and #4580), 210 (#4661) and 211 (#4611) declared by other
-// heads, so this change moved 207 → 212, the lowest number above main's that no other open head
-// declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21c-md). At the forward merge
-// of 2026-11-21 that brought main in at 323a522dd1f8, main carried 202, and a REST raw read of
-// each of the 417 open heads' file between 2026-11-21T17:12Z and 17:16Z found 203 to 213 declared
-// by other heads (212 by #4065 and #4771, and by #4596, which stacks on this change; 213 by #4030
-// and #4553), so this change moved 212 → 214, the lowest number above main's that no other open
-// head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-21d-md). At the forward
-// merge of 2026-11-21 that brought main in at 0497e861b0d9, main carried 205 (dispatch://INFRA-3178,
-// 205's entry above), below 214, and this change kept 214 at that merge. At the forward merge of
-// 2026-11-22 that brought main in at c4196c824b7d, main carried 213 (dispatch://INFRA-4036, 213's
-// entry above), and this change kept 214, which a REST raw read of each of the 444 open heads'
-// file at main 83b91235c5, between 2026-11-22T11:29:49Z and 11:33:32Z, found #4918 declaring too,
-// because this change was then merging and was expected to land first, and
-// `.github/scripts/check-daemon-api-contract.sh` would then have refused #4918's 214 against a base
-// carrying 214 and named it a free number. At the forward merge of 2026-11-23 that brought main in
-// at 8f3326828659, main carried 217 (cybermonklabs/legion#4273's, dispatch://INFRA-3531 and
-// dispatch://INFRA-4567, the entry above), and a REST raw read of each of the 525 open heads' file
-// between 2026-11-23T01:12:49Z and 01:16:31Z found 218 to 231 declared by other heads, so this
-// change moved 214 → 232, the lowest number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-23-md). At the forward merge of
-// 2026-11-23 that brought main in at a7fae897a408, main carried 219 (cybermonklabs/legion#4611's
-// owner plan, the entry above), and a REST raw read of each of the 503 open heads' file between
-// 2026-11-23T18:02Z and 18:07Z found 220 to 235 and 237 declared by other heads, 232 among them by
-// seven, so this change moved 232 → 236 then. At the same merge, a REST raw read of each of the
-// 512 open heads' file between 2026-11-23T22:25:40Z and 22:34:16Z found 236 declared by #4173,
-// #4182 and #4193, 237 by #5168 and #5169 and 238 by #4771 and #5285, with every number from 220
-// to 235 declared, so this change moved 236 → 239, the lowest number above main's that no other
-// open head declares (dispatch://INFRA-4728/artifact/contract-census-2026-11-23c-md). At the merge
-// of main 4ad19fe8459c a census of the 520 open heads (2026-11-24T01:48:37Z to 01:54:21Z) found 221
-// to 238 and 240 declared by other pull requests and 239 by none, so this change keeps 239
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-md). At the merge of main
-// 843a9f45a3a0, which carries 228 (dispatch://INFRA-1575, the entry above), a census of the 493
-// open heads (2026-11-24T09:42:14Z to 09:47:58Z, against main 9688b2b23292; the five main commits
-// after it declare no contract) found 239 declared by this change's pull request alone, so this
-// change keeps 239, above main's 228
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-d-md). At the merge of main
-// d27405712c7c, which carries 232 (dispatch://INFRA-4508, the entry above), a census of the 479
-// open heads (2026-11-24T12:41:23Z to 12:47:35Z) found 239 declared by this change's pull request
-// alone, so this change keeps 239, above main's 232
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-e-md). At the merge of main
-// 25cbe2b315fb, which carries 246 (#4960's pod hold, the entry above), above this change's 239, a
-// census of the 478 open heads (2026-11-24T15:55:25Z to 16:01:06Z, against main 7e75126fae6d; the
-// two main commits after it declare no contract) found 247 (#4580 and #5384) and 248 (#3993)
-// declared by other pull requests and 249 by none, so this change moved 239 → 249, the lowest
-// number above main's 246 that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-24-g-md). From this entry answers.go's
-// SupportedContracts names `gateBasisContract` after `podHoldContract`, 246's constant. At the
-// merge of main 1af8002b42b5, which carries 250 (#5365's waiting-line priority) and 256 (#5349's
-// claim cause times, the entry above), above this change's 249, this change moved 249 → 276, the
-// number INFRA-3118's architect allocated to it under INFRA's controller's ruling of
-// 2026-11-24T18:27Z, by which that architect allocates the numbers until INFRA-1569's #5399
-// merges. From this entry answers.go's SupportedContracts names `gateBasisContract` after
-// `causeTimesContract`, 256's constant. At the merges of main c227d0466191, 67dcae63bfd,
-// 99327832858f and 8ce4195034e2, each of which carried 256, this change kept 276: #5399 was still
-// open and INFRA-3118's architect's table still gave 276 to #4592 (read 2026-11-25T08:37Z). At the
-// merge of main ac1c9a332ea2, which carries 275 (#4392's Dispatch credential, the entry above),
-// below 276, this change kept 276 by the same table, with #5399 still open (read
-// 2026-11-25T09:27Z), and SupportedContracts names `gateBasisContract` after
-// `dispatchCredentialContract`, 275's constant. Read the base's own number at the next forward
-// merge, and take this change's number from whoever allocates the numbers then, rather than from
-// this line.)
-const DaemonAPIVersion = 276
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/

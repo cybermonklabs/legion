@@ -184,7 +184,7 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 		t.Helper()
 		var decision workflow.IdleDecision
 		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion())
 			return store.IdleReleaseMark{}, nil
 		}); err != nil {
 			t.Fatalf("read the pod's idle decision: %v", err)

@@ -1355,9 +1355,18 @@ func (d Deps) check() error {
 // of any outage worth the name. A database that stops answering holds the machine's lock for up to
 // about twice this per bounded call that holds a connection, and for at most defaultClaimAcquire,
 // this and the commit's settle together (37 s) for one that queues first, the bounds
-// store.BoundAfterAcquire states. The write it cuts short is not lost: a bare context deadline is
-// a write the server never answered, which writeOwed owes, so the claim write is marked and made
-// again at the claim's next decision (owes, repair).
+// store.BoundAfterAcquire states. A call this bound cuts after the database was handed it (its
+// BEGIN answered) is made once more at once (write, claimWriteTries, cutByBound), and the second
+// try may first wait in the pool's queue: pgxpool frees the slot of the first try's connection
+// only once its destructor has closed it, which it gives up to 15 s on a server that answers
+// nothing (pgxpool/pool.go:328-337 at v5.13.0; puddle/v2 pool.go:695-700). So such a write holds
+// the lock for two tries' bounds before it is owed: about 10 s when the second try is handed a
+// connection at once, 25.0 s measured on a pool of one connection whose server went silent after
+// the BEGIN (5.0 s before this retry), and at most two tries of 37 s. A dial, a queue wait or a
+// BEGIN the bound cut is owed at once.
+// The write a second cut leaves is not lost: a bare context deadline is a write the server never
+// answered, which writeOwed owes, so the claim write is marked and made again at the claim's next
+// decision (owes, repair).
 //
 // It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
@@ -2255,8 +2264,10 @@ const (
 //     roleSend.noHolder). That wake would bring back the pod the release took.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
-//     repair, the publish and the mark's write: the claim-write deadline twice and notify's
-//     request timeout once, about 20 seconds, and the claim's other decisions wait that long.
+//     repair, the publish and the mark's write: each write up to two tries of the claim-write
+//     deadline (write), notify's request timeout once, about 30 seconds, and longer when a
+//     write's second try waits in the pool's queue (defaultClaimWrite); the claim's other
+//     decisions wait that long.
 //  4. The mark is set in memory and written before the section ends, and before the row can end.
 //     The write runs under context.WithoutCancel, still bounded by the claim-write deadline
 //     (write), so a daemon stop that cancels the lane during or just after a delivered publish
@@ -4861,19 +4872,72 @@ func (m *Machine) forgetSend() {
 
 // write runs one store write of a decision under the claim-write deadline (bounded), derived from
 // the decision's own context so the daemon's stop still ends the write at once. Every claim and
-// delivery write a decision makes while it holds the machine's lock goes through it, and those
-// are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
-// take no deadline: what they wait on is an advisory lock another transaction holds, so a
-// deadline there would fail a launch that was only queued behind its predecessor. So do the reads
+// delivery write a decision makes while it holds the machine's lock goes through it but one, and
+// those are the only calls that do: ReleaseNames makes ReleaseHolds once under bounded instead,
+// since a second try of a release answers the names it freed as none (the last paragraph).
+// Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and take no deadline: what they
+// wait on is an advisory lock another transaction holds, so a deadline there would fail a launch
+// that was only queued behind its predecessor. So do the reads
 // of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
 // the next write will say rather than hold the row, and whose failure costs the decision and
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
-// the machine's lock for the length of the outage; a write it cuts short is owed and made again
-// at the claim's next decision (owes, repair).
+// the machine's lock for the length of the outage.
+//
+// A call the deadline cut short after the database was handed it, while the decision's own context
+// still runs, is made once more, at once, under a fresh deadline (claimWriteTries, cutByBound): one
+// write a loaded database answered past defaultClaimWrite then costs its decision nothing. Before,
+// such a write was owed and made again only at the claim's next decision, and the decisions that
+// wait on their write came back far later than the database did: a launch whose write as launching
+// was cut was tried again at the probe interval (writeTry, relaunchAtProbe), and the boot's release
+// of an uncertain launch at the daemon's next orphan sweep (ReleaseUncertainLaunch;
+// dispatch://INFRA-3904). A call made again may have been applied the first time, whatever its
+// answer said, so each call that comes here must be safe to make twice, each for a reason of its
+// own: PutClaim, PutClaimAndDelivery and PauseStopped are the writes the repair itself makes again
+// (repair); PutDelivery is an upsert of one row; RetireDelivery reads ErrNoSuchDelivery after a
+// landed first try as the retirement made; HoldSessions inserts on conflict do nothing. A new
+// caller of write must have such a reason too. The one bounded write that has none is the
+// exception to the retry and does not come here: ReleaseHolds answers the names it freed, so
+// ReleaseNames makes it once under bounded. A second cut is owed as every write the database did
+// not take is (owes, repair). Any other failure is answered at once and is not made again here.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := m.bounded(ctx)
-	defer cancel()
-	return call(writing)
+	for try := 1; ; try++ {
+		writing, cancel := m.bounded(ctx)
+		err := call(writing)
+		cancel()
+		if err == nil || try == claimWriteTries || !cutByBound(ctx, err) {
+			return err
+		}
+		m.log.Warn(claimWriteAgainLine, "try", try, "bound", m.deps.claimWrite(), "error", err)
+	}
+}
+
+// claimWriteTries is how many times write makes one store call the claim-write bound cuts short:
+// the call, and once more. One more is what a single slow answer needs; a database that answers
+// no write within the bound twice in a row is one the repair waits out, without the machine
+// holding its lock through a third bound.
+const claimWriteTries = 2
+
+// BegunWriteError is the one contract between the store and write's retry about which errors a
+// write may be made again for: an error of a transaction whose BEGIN the database answered, so the
+// database was handed the write. The store's error type asserts at compile time that it implements
+// this interface (store's begunError), and cutByBound reads nothing else, so the two cannot drift
+// apart without the store failing to build.
+type BegunWriteError interface {
+	error
+	WriteBegun() bool
+}
+
+// cutByBound is the one place that decides whether write makes a call again: err is a deadline,
+// while the decision's own context still runs, on a BegunWriteError. So a dial the bound cut, a
+// wait in the pool's queue that ran out its bound (defaultClaimAcquire), and a BEGIN that never
+// came back are owed at once: the database was never handed the write, and a second try would
+// hold the machine's lock another bound for a database that answers nothing. A connection that
+// broke or was refused, a statement refused and a refusal of the store's own carry no deadline and
+// are owed or answered at once too. A call the daemon's stop ended carries the stop's
+// cancellation, or a deadline once ctx has ended, and is not made again: the daemon is going.
+func cutByBound(ctx context.Context, err error) bool {
+	var begun BegunWriteError
+	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) && errors.As(err, &begun) && begun.WriteBegun()
 }
 
 // bounded is ctx for one bounded store call of a decision: the wait in the store's pool queue

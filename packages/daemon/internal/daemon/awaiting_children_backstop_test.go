@@ -50,7 +50,7 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 			if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, issue.Key, claim.RoleImplementer), Project: "legion",
 				Tree: issue.Tree, Issue: issue.Key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased, Session: "ses-implementer",
-				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion}); err != nil {
+				SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion()}); err != nil {
 				t.Fatalf("seed the released implementer: %v", err)
 			}
 			// The backstop an earlier release of this pod armed, still open.

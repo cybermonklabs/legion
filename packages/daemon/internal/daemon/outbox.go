@@ -602,8 +602,11 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
-		// record is of went on without it. The line is what says the record is not in Dispatch,
-		// since nothing else would.
+		// record is of went on without it. The line stands for two refusals. Where Dispatch
+		// refused the record's own write, the line is what says the record is not in Dispatch,
+		// since nothing else would. Where it refused the variant's write after it took the record
+		// (publishStepExperiment), the record stays in Dispatch with no variant. The line's error
+		// tells the two apart: only the variant's names "write the variant of the step record".
 		told = r.recordDropped(row, "step", value.ID, cause)
 	case record.PlanRecord:
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
@@ -995,11 +998,18 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.publishRoleHolders(ctx, row, value)
 	case record.StepRecord:
 		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
-		// takes on the record's rating route alone (publishStepRating).
+		// takes on the record's rating route alone (publishStepRating). One naming the experiment
+		// and the variant of its issue sends them after that write, on the record's experiment
+		// route alone (publishStepExperiment), so a Dispatch older than that route takes the
+		// record and only the variant waits.
+		publish := r.publishStepRecord
 		if value.PlanRating != nil {
-			return r.publishStepRating(ctx, row, value)
+			publish = r.publishStepRating
 		}
-		return r.publishStepRecord(ctx, row, value)
+		if err := publish(ctx, row, value); err != nil || value.StepExperiment == nil {
+			return err
+		}
+		return r.publishStepExperiment(ctx, row, value)
 	case record.PlanRecord:
 		return r.publishPlanRecord(ctx, row, value)
 	case record.IssueBranch:
@@ -2112,8 +2122,8 @@ func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, p
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
 // row's issue and the record's own id. Dispatch writes each field once and keeps what the write
-// leaves out, so the start, the end and the rating land in any order, and a write that runs again
-// after a lost answer changes nothing.
+// leaves out, so the start, the end, the rating and the variant land in any order, and a write
+// that runs again after a lost answer, or after its variant waited, changes nothing.
 //
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
@@ -2145,8 +2155,25 @@ func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
-// each field of its start or its end that payload carries.
+// publishStepExperiment writes the experiment and the variant of the record's issue, which payload
+// carries, onto its record on Dispatch, under the row's issue and the record's own id, through the
+// record's experiment route (dispatch.Client.PutStepExperiment), with the run's identity. run sends
+// it only once the record's own write was taken, so a Dispatch older than that route still holds
+// the record: its router's 404 makes the row wait (execute), and each run of the waiting row sends
+// the record's own write again before the pair, which changes nothing Dispatch holds. Its answers
+// are decided as a step record's are (publishStepRecord).
+func (r *outbox) publishStepExperiment(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutStepExperiment(ctx, row.Issue, payload.ID, stepWriteOf(payload), dispatch.StepExperiment(*payload.StepExperiment)); err != nil {
+		return fmt.Errorf("write the variant of the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepWriteOf is the step write of payload's fields, the rating and the experiment aside: the
+// identity of the run, and each field of its start or its end that payload carries.
 func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
 	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
 		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
@@ -2178,14 +2205,14 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// recordRefused is whether Dispatch refused a step record, a rating or a plan in a way no retry
-// changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
-// the shared rule calls final, which leaves out the refusal of a field this daemon added by a
-// Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
-// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the step, the
-// rating and the plan routes all answer: the daemon names its own session on every write, so the
-// route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or
-// PLAN_OTHER_ISSUE for a plan).
+// recordRefused is whether Dispatch refused a step record, a rating, a variant or a plan in a way
+// no retry changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a
+// coded 400 the shared rule calls final, which leaves out the refusal of a field this daemon added
+// by a Dispatch from before #2461; a refusal naming the rating is no such refusal, since no
+// Dispatch refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the
+// step, the rating, the experiment and the plan routes all answer: the daemon names its own
+// session on every write, so the route's rule and the daemon's disagree) and an id of another
+// issue (409 STEP_OTHER_ISSUE, or PLAN_OTHER_ISSUE for a plan).
 // Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
 // ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
 // restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute
@@ -3283,7 +3310,15 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A start that asks for a new session has the retry forget the recorded one, inside
 			// that one decision: the operator's `legion claims retry --fresh-session`, which is
 			// refused by whatever refuses this row rather than having discarded the session first.
-			if err := machine.Handle(ctx, supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession}); err != nil {
+			// A production check look's start is the half-open trial of a checking role that
+			// failed: it retries the claim with one attempt left of each budget its failure spent,
+			// never a fresh budget, so a role that cannot start launches once a look rather than
+			// until a whole budget runs out at every look up to the check's bound
+			// (supervise.RequestRetry.OneAttemptLeft). A check start never asks for a new session
+			// (workflow's startLook); the resets a person or the controller makes, which give the
+			// whole budget, are the API's retry and fresh session (supervise.RequestOperatorRetry).
+			again := supervise.RequestRetry{Claim: token, FreshSession: payload.FreshSession, OneAttemptLeft: payload.CheckLook > 0}
+			if err := machine.Handle(ctx, again); err != nil {
 				return fmt.Errorf("retry claim %s: %w", token, err)
 			}
 		case supervise.StateRetired:
@@ -5081,7 +5116,7 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 // one's.
 func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload record.CheckWakeDue) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-wake:%s:%d", row.Issue, row.ID),
-		intake.CheckWakeDue{Issue: row.Issue, Look: payload.Look, OpenedAt: payload.OpenedAt, Reason: payload.Reason}, r.handlers...); err != nil {
+		intake.CheckWakeOf(row.Issue, payload), r.handlers...); err != nil {
 		return fmt.Errorf("wake %s's production check at look %d: %w", row.Issue, payload.Look, err)
 	}
 	return nil

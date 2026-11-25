@@ -878,7 +878,7 @@ func (r *pauseDaemonRig) ready(token claim.Token) {
 	c := r.claim(token)
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: c.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: c.Generation, Session: c.Session, SessionFile: c.SessionFile,
-		PluginContract: api.DaemonAPIVersion})
+		PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: c.Generation, Session: c.Session})
 	r.awaitState(token, supervise.StateReady, "the woken role is ready")
 }

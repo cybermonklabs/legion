@@ -230,7 +230,7 @@ func TestAnOperatorsStopOfASlottedWorkerHolds(t *testing.T) {
 		DispatchStatus: "in_progress", HandedOver: true, Rank: "U"},
 		supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: root, Role: claim.RoleImplementer, Generation: 1,
 			State: supervise.StateWorking, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: workingPane(implementer),
+			PluginContract: api.DaemonAPIVersion(), Locator: workingPane(implementer),
 			Pending: &supervise.Delivery{ID: "outbox:11", Task: "Carry on implementing.", Generation: 1, Phase: phase.Implementing,
 				QueuedAt: now, DeliveredAt: now, ConfirmedAt: now}})
 	writePrompt(t, cfg, implementer)
@@ -339,7 +339,7 @@ func seedWaitingTester(t *testing.T, cfg config.Config, project, root, key, rank
 		Status: "testing", DispatchStatus: "testing", Rank: rank},
 		supervise.Claim{Token: tester, Project: project, Tree: root, Issue: key, Role: claim.RoleTester, Generation: 1,
 			State: supervise.StateReady, Session: "ses_" + key, SessionFile: filepath.Join(cfg.StateDir, key+".jsonl"),
-			PluginContract: api.DaemonAPIVersion, Locator: workingPane(tester)},
+			PluginContract: api.DaemonAPIVersion(), Locator: workingPane(tester)},
 		record.SuperviseRequest{Op: "start", Tree: root, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing,
 			Task: "Test the change.", NeedsSlot: true})
 	writePrompt(t, cfg, tester)

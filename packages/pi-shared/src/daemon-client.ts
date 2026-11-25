@@ -181,8 +181,8 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
   /** The `register_gate` of the architect of an issue that holds its own gate: its document for a
    * design-gate step at a version and, on a basis, the ancestor's document id (`basisArtifactId`),
-   * its `basisVersion` and the architect's `reason` (contract 276), which the daemon takes
-   * together or not at all. */
+   * its `basisVersion` and the architect's `reason` (entry 20261125161152 (gate-basis)), which the
+   * daemon takes together or not at all. */
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;

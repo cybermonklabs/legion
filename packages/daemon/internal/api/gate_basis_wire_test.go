@@ -66,21 +66,6 @@ func TestGatedStepsAnswerAStepOnAnAncestorsBasisInItsOwnWords(t *testing.T) {
 	}
 }
 
-// gateBasisContract is the contract whose entry in version.go added a step's basis, its two
-// status words and each root's `treeRuns`, and this daemon's own contract is never below it: a
-// caller at this contract is served them.
-func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
-	const addedGateBasis = 276
-	if gateBasisContract != addedGateBasis {
-		t.Fatalf("gateBasisContract = %d, want %d, the contract whose entry in version.go added the gated steps' basis and the roots' treeRuns",
-			gateBasisContract, addedGateBasis)
-	}
-	if gateBasisContract > DaemonAPIVersion {
-		t.Fatalf("gateBasisContract = %d, above DaemonAPIVersion %d: no caller could be served the basis",
-			gateBasisContract, DaemonAPIVersion)
-	}
-}
-
 // A plugin below gateBasisContract reads `gatedSteps[].status` with an enum of the four words
 // before it, and a strict one refuses the whole body for a key it does not name. So a caller
 // below it is served no `treeRuns` on any issue, and no `gatedSteps` on an issue any step of
@@ -106,26 +91,26 @@ func TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis(t *
 		claims []supervise.Claim
 		stated int
 	}{
-		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1},
-		{name: "a caller stating shapedAnswersContract", remote: operator, claims: podClaims(DaemonAPIVersion), stated: shapedAnswersContract},
+		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion()), stated: entryNumber(gateBasisContract) - 1},
+		{name: "a caller stating shapedAnswersContract", remote: operator, claims: podClaims(DaemonAPIVersion()), stated: shapedAnswersContract},
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			behind := issueViews(t, stateStating(t, stateServer(t, state, tc.claims), tc.remote, tc.stated))
 			for key, view := range behind {
 				if runs, carried := view["treeRuns"]; carried {
-					t.Errorf("%s is served treeRuns = %v below %d; its plugin's reader does not name the key", key, runs, gateBasisContract)
+					t.Errorf("%s is served treeRuns = %v below %d; its plugin's reader does not name the key", key, runs, entryNumber(gateBasisContract))
 				}
 				steps, carried := view["gatedSteps"]
 				if _, basis := onBasis[key]; basis && carried {
-					t.Errorf("%s is served gatedSteps %v below %d; no word that reader knows is true of a step on a basis", key, steps, gateBasisContract)
+					t.Errorf("%s is served gatedSteps %v below %d; no word that reader knows is true of a step on a basis", key, steps, entryNumber(gateBasisContract))
 				} else if want := state.Issues[key].GatedSteps; !basis && (len(want) > 0) != carried {
-					t.Errorf("%s is served gatedSteps = %v below %d, want them as the record says: %+v", key, carried, gateBasisContract, want)
+					t.Errorf("%s is served gatedSteps = %v below %d, want them as the record says: %+v", key, carried, entryNumber(gateBasisContract), want)
 				}
 			}
 			for _, key := range []string{"pullRequest", "check"} {
 				if value := behind["LEGION-207"][key]; value == nil {
-					t.Errorf("LEGION-207 is served no %s below %d, want every key of it beside the basis", key, gateBasisContract)
+					t.Errorf("LEGION-207 is served no %s below %d, want every key of it beside the basis", key, entryNumber(gateBasisContract))
 				}
 			}
 		})
@@ -137,8 +122,8 @@ func TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis(t *
 		claims []supervise.Claim
 		stated int
 	}{
-		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: gateBasisContract},
-		{name: "a pod whose claims record the contract", remote: statePodAddr + ":41000", claims: podClaims(gateBasisContract)},
+		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: entryNumber(gateBasisContract)},
+		{name: "a pod whose claims record the contract", remote: statePodAddr + ":41000", claims: podClaims(entryNumber(gateBasisContract))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			at := issueViews(t, stateStating(t, stateServer(t, state, tc.claims), tc.remote, tc.stated))
@@ -149,7 +134,7 @@ func TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis(t *
 				case issue.TreeRuns == nil && carried:
 					t.Errorf("%s, no root, is served treeRuns = %v", key, runs)
 				case issue.TreeRuns != nil && runs != *issue.TreeRuns:
-					t.Errorf("%s is served treeRuns = %v at %d, want %v", key, runs, gateBasisContract, *issue.TreeRuns)
+					t.Errorf("%s is served treeRuns = %v at %d, want %v", key, runs, entryNumber(gateBasisContract), *issue.TreeRuns)
 				}
 				status, basis := onBasis[key]
 				if !basis {
@@ -157,11 +142,11 @@ func TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis(t *
 				}
 				steps, _ := view["gatedSteps"].([]any)
 				if len(steps) != 1 {
-					t.Fatalf("%s is served gatedSteps %v at %d, want its one step", key, view["gatedSteps"], gateBasisContract)
+					t.Fatalf("%s is served gatedSteps %v at %d, want its one step", key, view["gatedSteps"], entryNumber(gateBasisContract))
 				}
 				step := steps[0].(map[string]any)
 				if step["status"] != string(status) || step["basis"] == nil {
-					t.Errorf("%s is served the step %v at %d, want %s with its basis", key, step, gateBasisContract, status)
+					t.Errorf("%s is served the step %v at %d, want %s with its basis", key, step, entryNumber(gateBasisContract), status)
 				}
 			}
 		})

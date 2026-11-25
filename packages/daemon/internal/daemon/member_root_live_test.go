@@ -255,7 +255,7 @@ func memberRegister(t *testing.T, r *personHandoverRig, launch runtime.SpawnSpec
 	session := "ses_" + string(launch.Claim)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	var registered claim.RegisterResponse
 	if status != http.StatusOK || json.Unmarshal(body, &registered) != nil {

@@ -986,7 +986,7 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 	t.Parallel()
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
@@ -1030,7 +1030,7 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 	cfg := waveConfig(t)
 	cfg.WorkerWakesPerMinute = 0
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)
@@ -1085,7 +1085,7 @@ func TestAnOperatorsResumeAndTheControllersOwnWakeNeverWait(t *testing.T) {
 	putClaim(t, cfg, supervise.Claim{
 		Token: suspended, Project: project, Tree: cfg.Project + "-901", Issue: cfg.Project + "-901",
 		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator,
-		Session: "ses_suspended", SessionFile: "/sessions/suspended.jsonl", PluginContract: api.DaemonAPIVersion,
+		Session: "ses_suspended", SessionFile: "/sessions/suspended.jsonl", PluginContract: api.DaemonAPIVersion(),
 	})
 	writePrompt(t, cfg, suspended)
 	controller := claim.ControllerToken(project)
@@ -1925,7 +1925,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	cfg := waveConfig(t)
 	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	dead := waveClaimsFrom(t, cfg, claim.RoleImplementer, waveSize+1, 1, func(i int, token claim.Token) supervise.Claim {
-		return liveClaim(i, token, api.DaemonAPIVersion)
+		return liveClaim(i, token, api.DaemonAPIVersion())
 	})[0]
 	clock, logged := newWaveClock(), &syncBuffer{}
 	rt := newWaveRuntime(clock)

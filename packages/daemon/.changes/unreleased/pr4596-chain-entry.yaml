@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  Daemon API contract entry 20261125170900 (chain). `set_status` takes `children`: `include` moves an issue's open
+  children with it out of work, and `unlink` takes them from under it. `set_status` and
+  `rerun_child` take `parent`: `include` moves each issue above that is not in work to
+  `in_progress`. Dispatch's parent rule refuses those moves without the argument. Each status call
+  answers with the rows it queued. The held words gain `chain_unknown` and `awaiting_todo`, an issue at `admitted` that
+  waits for a person's `todo` to start its run. `treeRuns` reads false for a root that waits in the
+  line for a slot it does not hold, a returned one included. The state's `daemon.convertedAt`
+  names the time the first boot's conversion finished. A caller below that entry is served
+  neither field and reads the two new words as `unclassified`. `register_plan` and `stop_task`
+  refuse a caller that does not act on the issue on its Dispatch chain with `ISSUE_NOT_OWNED`.
+  `legion issue status` takes `--children` and `--parent`, and `legion state` counts each held
+  word and prints the roots in work.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

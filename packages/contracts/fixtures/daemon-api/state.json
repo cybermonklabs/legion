@@ -7,10 +7,6 @@
     "startedAt": "2026-09-22T09:15:02Z",
     "convertedAt": "2026-09-18T14:04:11Z"
   },
-  "contract": {
-    "daemon": 276,
-    "caller": 276
-  },
   "admission": {
     "cap": 5,
     "active": [

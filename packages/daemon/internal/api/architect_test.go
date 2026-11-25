@@ -80,7 +80,8 @@ type statusRecorder struct {
 	writes []statusWrite
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
-	// gated steps, the design gates, a step, a step's rating or a plan. It keeps none of them.
+	// gated steps, the design gates, a step, a step's rating, a step's experiment or a plan. It
+	// keeps none of them.
 	taken []string
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
 	documents map[string]string
@@ -322,6 +323,10 @@ func (r *statusRecorder) PutStep(_ context.Context, key, _ string, _ dispatch.St
 }
 func (r *statusRecorder) PutStepRating(_ context.Context, key, _ string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
 	r.taken = append(r.taken, "PutStepRating "+key)
+	return nil
+}
+func (r *statusRecorder) PutStepExperiment(_ context.Context, key, _ string, _ dispatch.StepWrite, _ dispatch.StepExperiment) error {
+	r.taken = append(r.taken, "PutStepExperiment "+key)
 	return nil
 }
 func (r *statusRecorder) PutPlan(_ context.Context, key, _ string, _ dispatch.PlanWrite) error {

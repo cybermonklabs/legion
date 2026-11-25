@@ -17,6 +17,7 @@
 // is given the plugin's own contract from this root's manifest). Output, one JSON object on stdout:
 // `ok` and the method's `answer`, or `ok` false with the daemon's `status`, `code` and `error`, or the
 // contract `error` the client found in an answer it could not read.
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   createLegionDaemonClient,
   LegionDaemonApiError,
@@ -35,18 +36,16 @@ const Input = z.object({
 const input = Input.parse(JSON.parse(await Bun.stdin.text()));
 const daemonFetch = ((request: string | URL | Request, init?: RequestInit) =>
   fetch(request, init)) as typeof fetch;
+const pluginContract = daemonContract(pkg, import.meta.dir);
 const daemonOptions = Object.assign(daemonFetch, {
-  pluginContract: pkg.legion.daemonApiVersion,
+  pluginContract,
   fetch: daemonFetch,
 });
 const daemon = (createLegionDaemonClient as (url: string, options: unknown) => LegionDaemonClient)(
   input.daemonUrl,
   daemonOptions
 );
-const request =
-  input.method === "register"
-    ? { ...input.input, pluginContract: pkg.legion.daemonApiVersion }
-    : input.input;
+const request = input.method === "register" ? { ...input.input, pluginContract } : input.input;
 const call = daemon[input.method] as (request: unknown) => Promise<unknown>;
 
 let answer: object;

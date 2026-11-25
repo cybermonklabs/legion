@@ -520,7 +520,7 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 		r.setStatus(run.parent.Key, "in_progress")
 	}
 	r.linkUnder(run.root, run.parent, opt.live)
-	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
+	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
 	if opt.holdSeed {
 		held.hold(run.root.Key, record.OutboxKindGateSeed)
 	}
@@ -661,8 +661,8 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	// 5. A new version of R's Verification document adding a check of G's requirement.
 	five := r.openRun(held, []string{"Glacier melt sensor", "Alpine hydrology study", "Mountain climate programme"}, stayingOptions{grandparent: true})
 	base = r.firstReads(five)
-	r.writeDocument(five.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(five.parent.Key, "p2")}},
-		rigCheck{id: "k2", serves: []string{specBlock(five.grand.Key, "g1")}}))
+	r.writeDocument(five.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(five.parent.Key, "p2")}},
+		verificationCheck{id: "k2", serves: []string{specBlock(five.grand.Key, "g1")}}))
 	r.quiet(five.root.Key)
 	r.stays("run 5, R's Verification document adding a check of G's g1", five.root.Key, base)
 	r.approve(five.parent.PrimaryArtifactID)
@@ -1006,7 +1006,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		run.sibling = &sibling
 	}
 	if opt.openedBefore || opt.member != "" {
-		r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
+		r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, "p2")}}))
 		r.registerBasis(run.grant(), run.root, 1, run.parent, run.basisVersion, basisReason)
 		r.openedOnBasis(run.root, run.parent, 1, run.basisVersion)
 		r.dispatchRowsDone(run.root.Key)
@@ -1040,10 +1040,10 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.quiet(run.parent.Key)
 		served = "p4"
 	}
-	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
+	r.writeDocument(run.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
 	if run.sibling != nil {
 		run.sibling.basisVersion = run.basisVersion
-		r.writeDocument(run.sibling.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
+		r.writeDocument(run.sibling.root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
 	}
 	return run
 }
@@ -1623,7 +1623,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.registerOn(later.basisRun)
 	r.openedOnBasis(later.root, later.parent, 1, later.basisVersion)
 	r.dispatchRowsDone(later.root.Key)
-	r.writeDocument(later.parent.Key, "verification.md", checksMarkdown(rigCheck{id: "pk1", serves: []string{specBlock(later.parent.Key, "p1")}}))
+	r.writeDocument(later.parent.Key, "verification.md", checksMarkdown(verificationCheck{id: "pk1", serves: []string{specBlock(later.parent.Key, "p1")}}))
 	request := r.requestApprovalWithVerification(later.parent.PrimaryArtifactID, "The Verification document is new; the spec stands at version 3.")
 	r.quiet(later.parent.Key)
 	dispatchCall(t, r.baseURL, http.MethodPost, "/api/v1/asks/"+request+"/answer",

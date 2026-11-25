@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The daemon API mirror follows the contract entry 20261125170900 (chain): `LegionIssueStatusRequest` takes `children` and
+  `parent`, `LegionChildRequest` takes `parent`, `LegionStatusCallResponse` is the answer of
+  `set_status` and `rerun_child`, `LegionWaveReleaseResponse` gains `queued`, the held words gain
+  `chain_unknown` and `awaiting_todo`, and `daemonInfo` gains `convertedAt`.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

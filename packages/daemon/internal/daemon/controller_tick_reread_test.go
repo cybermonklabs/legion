@@ -312,6 +312,9 @@ func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWri
 func (d *tickDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
+func (d *tickDispatch) PutStepExperiment(context.Context, string, string, dispatch.StepWrite, dispatch.StepExperiment) error {
+	return nil
+}
 func (d *tickDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil

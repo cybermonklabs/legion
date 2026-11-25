@@ -753,7 +753,7 @@ func (s *server) readRegisterBody(w http.ResponseWriter, r *http.Request, into *
 // asked has answered it already: a pending delivery is handed to no claim that is not ready or
 // idle (supervise's staleRefusesClaim, sendPending).
 func (s *server) staleClaim(c supervise.Claim) (int, bool) {
-	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion, s.pluginRelaunchable, s.noPluginInstall) &&
+	return c.PluginContract, supervise.StaleRefusesCalls(c, DaemonAPIVersion(), s.pluginRelaunchable, s.noPluginInstall) &&
 		c.State != supervise.StateWorking
 }
 
@@ -761,7 +761,7 @@ func (s *server) staleClaim(c supervise.Claim) (int, bool) {
 // never a secret.
 func (s *server) logStaleRefusal(r *http.Request, identityKey, identityValue string, got int) {
 	s.log.Warn("api: refused a call from a process on another plugin contract",
-		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion)
+		"route", r.URL.Path, identityKey, identityValue, "pluginContract", got, "daemonApiVersion", DaemonAPIVersion())
 }
 
 // refuseIfStaleClaim is the claim-route refusal shape (ready, exit): the sentence-only refusal
@@ -773,7 +773,7 @@ func (s *server) refuseIfStaleClaim(w http.ResponseWriter, r *http.Request, c su
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	refusal := claim.StalePluginContract(got, DaemonAPIVersion)
+	refusal := claim.StalePluginContract(got, DaemonAPIVersion())
 	s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)
 	return true
 }
@@ -786,7 +786,7 @@ func (s *server) refuseIfStaleClaimFailure(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	s.logStaleRefusal(r, "claim", string(c.Token), got)
-	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion).Message)
+	s.writeFailure(w, r, http.StatusConflict, "STALE_PLUGIN_CONTRACT", claim.StalePluginContract(got, DaemonAPIVersion()).Message)
 	return true
 }
 

@@ -1,0 +1,73 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "daemon.convertedAt"
+      ],
+      "addValues": {
+        "admission.held.*.reason": [
+          "awaiting_todo",
+          "chain_unknown"
+        ]
+      }
+    },
+    {
+      "answer": "status-call",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "queued",
+        "queued.*",
+        "queued.*.issue",
+        "queued.*.row",
+        "queued.*.status"
+      ]
+    },
+    {
+      "answer": "wave-release",
+      "addKeyPaths": [
+        "queued",
+        "queued.*",
+        "queued.*.issue",
+        "queued.*.row",
+        "queued.*.status"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/children/rerun",
+      "addFieldPaths": [
+        "parent"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/issues/status",
+      "addFieldPaths": [
+        "children",
+        "parent"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "status-call",
+      "routes": [
+        "POST /legion/v1/issues/status",
+        "POST /legion/v1/children/rerun"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "admission.held.*.reason",
+      "values": [
+        "awaiting_todo",
+        "chain_unknown"
+      ]
+    }
+  ]
+}

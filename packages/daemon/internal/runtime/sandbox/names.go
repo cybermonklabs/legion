@@ -21,8 +21,10 @@ import (
 // launcher container, and no session is on it — every session is a row in the session database the
 // deployment names (Options.SessionStore). The pod's feed is the volume's feedSubPath directory,
 // mounted at FeedDir: read-write in workspace-fetch, which mounts nothing else of the volume, and
-// read-only over the whole volume's mount in every other container. The clone owns its object-store
-// entries, and no agent writes what the token-holding container reads. No volume is ever carried
+// read-only over the whole volume's mount in every other container. The clone borrows the feed's
+// objects through its alternates (workspace's feedClone, `git clone --shared`) and reads them in
+// place on that read-only mount, holding only the objects it writes itself, and no agent writes
+// what the token-holding container reads. No volume is ever carried
 // over from an earlier release: an issue pod's disk is created with the pod and deleted with it
 // (INFRA-80), so every feed is one this pod's own workspace-fetch wrote, and the fetch's own check
 // of it (workspace.Fetch takes a feed only in the shape it writes), run before any git and in an

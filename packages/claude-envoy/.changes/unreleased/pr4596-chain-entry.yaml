@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The plugin speaks the daemon API contract entry 20261125170900 (chain). That entry gives
+  `set_status` the `children` and `parent` arguments and `rerun_child` the `parent` argument,
+  answers each with the status rows it queued, adds the held words `chain_unknown` and
+  `awaiting_todo`, and adds `convertedAt` to the state's `daemon`.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

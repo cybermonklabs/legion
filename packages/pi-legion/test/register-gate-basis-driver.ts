@@ -24,6 +24,7 @@
 // another checkout as well: copied into that checkout's packages/pi-legion/test/, it drives that
 // checkout's tool, which is how k8's negative control drives the tool of the commit the branch
 // starts from (scripts/e2e/README.md, "register-gate-basis.sh").
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
@@ -61,10 +62,11 @@ function recordingFetch(requests: string[]): typeof fetch {
 const input = Input.parse(JSON.parse(await Bun.stdin.text()));
 const daemonRequests: string[] = [];
 const dispatchRequests: string[] = [];
-// The plugin's own contract, read from the manifest of this checkout as `extensions/legion.ts`
-// reads it: the daemon serves each answer in the shape the contract the caller states describes.
+// The plugin's own contract, read as `extensions/legion.ts` reads it (`daemonContract`): this
+// checkout's, since no pack wrote it into the manifest. The daemon serves each answer in the shape
+// the contract the caller states describes.
 const daemon = createLegionDaemonClient(input.daemonUrl, {
-  pluginContract: pkg.legion.daemonApiVersion,
+  pluginContract: daemonContract(pkg, import.meta.dir),
   fetch: recordingFetch(daemonRequests),
 });
 const board = new DispatchClient(
