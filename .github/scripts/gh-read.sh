@@ -255,9 +255,11 @@ _gh_read_run() {
 # gh runs as a child here, so a TERM, INT or HUP sent to this process alone (`timeout
 # --foreground`) is passed on to it, and the log, in the helper's work directory, is removed once
 # gh ends. The traps are set before gh starts, and a signal that comes before its pid is known is
-# passed on once it is. A background job starts with INT and QUIT ignored and stdin at
-# /dev/null, so the child puts both signals back to their default and takes this process's stdin
-# (`gh api --input -` reads it), or none where the caller closed it. Every other gh command, a
+# passed on once it is. gh starts from a subshell in the background: a background simple command
+# would start with INT and QUIT ignored and stdin at /dev/null, and gh keeps an ignored INT until
+# it sets a handler, while a subshell's exec starts it with the signals this process started with
+# (measured with bash 5.2.21; gh-read.test.sh holds it). The subshell hands gh this process's
+# stdin (`gh api --input -` reads it), or none where the caller closed it. Every other gh command, a
 # paginated `gh api` among them (several requests, each page's body inside the log), writes
 # `unread` and runs as it is, by exec.
 _gh_read_gh() {
@@ -278,7 +280,6 @@ _gh_read_gh() {
   trap 'if [ -n "$pid" ]; then kill -s INT "$pid" 2> /dev/null; else pending=INT; fi' INT
   trap 'if [ -n "$pid" ]; then kill -s HUP "$pid" 2> /dev/null; else pending=HUP; fi' HUP
   (
-    trap - INT QUIT
     export GH_DEBUG=api
     if [ -n "$stdin" ]; then
       exec "$GH_READ_GH" "$@" <&"$stdin" {stdin}<&- 2> "$trace"

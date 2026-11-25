@@ -901,6 +901,17 @@ github 3
 drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset bash -c "gh api --paginate repos/o/r/pulls/1; exit 124"'
 check "a command its timeout ended (124) is answered nothing: no rate_limit read, no sleep" \
   "$(is "$status|$(calls /rate_limit)|$(slept)|$(calls /repos/o/r/pulls/1)" '124|0||1')"
+# A gh api whose log holds no answer, as a failed connection or a stand-in gh leaves: the gh first
+# on PATH here runs the real one with GH_DEBUG unset, so the helper's gh finds no request in the log.
+rm -rf "$work/nonebin"
+mkdir -p "$work/nonebin"
+printf '%s\n' '#!/usr/bin/env bash' "exec env -u GH_DEBUG $(command -v gh) \"\$@\"" > "$work/nonebin/gh"
+chmod +x "$work/nonebin/gh"
+github 3
+drive_on_clock JOB_TIMEOUT_MINUTES=5 PATH="$work/clockbin:$work/nonebin:$PATH" -- 'gh_wait_reset gh api repos/o/r/pulls/1'
+check "a gh api whose log holds no answer is decided by the rate_limit route too: the spent budget is waited for" \
+  "$(is "$status|$out|$(calls /rate_limit)|$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")" '0|{"title":"t"}|1|true')"
+rm -rf "$work/nonebin"
 
 # left_of <token>: the processes still running whose command line carries the token.
 left_of() {
@@ -930,10 +941,11 @@ check "an INT: exits 124, not the KILL's 137, and no process of the call is left
   "$(is "$status|$(left_of "$token")" '124|')"
 
 echo "case: the real gh starts with INT and QUIT at their default, not ignored"
-# A background job starts with both ignored, and gh keeps an ignored INT until it installs a
-# handler of its own, so an INT that comes first would be lost. The gh first on PATH here records
-# the signals it was started with ignored, as a process's SigIgn mask, which an exec keeps, and
-# then runs the real gh; the helper takes it for the real gh.
+# A background simple command starts with both ignored, and gh keeps an ignored INT until it
+# installs a handler of its own, so an INT that comes first would be lost; the helper's gh starts gh
+# from a subshell, whose exec does not ignore them. The gh first on PATH here records the signals it
+# was started with ignored, as a process's SigIgn mask, which an exec keeps, and then runs the real
+# gh; the helper takes it for the real gh.
 rm -rf "$work/maskbin"
 mkdir -p "$work/maskbin"
 printf '%s\n' '#!/usr/bin/env bash' "awk '/^SigIgn:/ { print \$2 }' /proc/self/status > \"$work/sigign\"" \
