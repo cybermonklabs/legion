@@ -11,9 +11,10 @@ body: |-
   and so does the fail of a review step whose agent is not the owner. A hook's `moves` may name
   each of the 41 moves back that some task's order makes, the moves of a step among them, and the
   loader refuses the other 16 pairs. A task whose role the deployment no longer defines stops, and
-  a todo does not start it again while the role is gone. The daemon API contract is 297. State
-  names the role of a running step (`stepRole`) and the roles that wait for the issue's pod
-  (`startWaitsForPod`), and a caller below 297 reads `step` as `implementing`.
+  a todo does not start it again while the role is gone. The daemon API contract gains an entry
+  for this change. State names the role of a running step (`stepRole`) and the roles that wait
+  for the issue's pod (`startWaitsForPod`), and a caller whose contract lacks the entry reads
+  `step` as `implementing`.
 
   The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
   earlier release cannot read a row at `step` or of such a role. Before a rollback past this
