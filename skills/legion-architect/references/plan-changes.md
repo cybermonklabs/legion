@@ -16,6 +16,7 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Either a step failed and no earlier step of the type implementation can take the work back, and the reason names the task and the step: read the failed step's report.
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
+  A stop that ends a fix is the exception: one `task-stopped` notice, with no `stoppedBy`, says ` Fix <n> of task <t> ended with the stop.` and names the branches that hold the work of the fix and of the steps beside it; Legion keeps them until no step of the task can run again, and you delete none.
   Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
   On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
@@ -40,7 +41,7 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Decide with the person, then send the task back with `request_backward_move`, or stop it with `stop_task`, unless its experiment's group runs the default steps (`PLAN_NOT_TAKEN`).
 
 - **`worker-died` that names a fix:** the implementer's claim failed while it ran the fix.
-  The fix ended, nothing is held, and no second fix starts for that check at that head.
+  The fix ended, the failure holds nothing, and no second fix starts for that check at that head; the notice names the branches the fix's work is on, which Legion keeps, so delete none.
   Where the check still fails at the task's end you are told; `request_backward_move` starts the implementer again.
 
 - **`plan-not-taken`:** Legion did not take a plan at the issue's first step, in one of two cases.
