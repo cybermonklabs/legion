@@ -139,7 +139,7 @@ jobs:
   # (dispatch://INFRA-1406), the contract test holds every committed recording's body to that
   # shape on every pull request (packages/dispatch/e2e/__tests__/stub-recordings.test.ts), this
   # watches the status of each route, and the rows that stayed on the real stack hold the
-  # server's behaviour. `statusDrift` in packages/dispatch/e2e/stub/recording.ts is the whole of
+  # server's behaviour. `packages/dispatch/e2e/stub/recording.ts#statusDrift` is the whole of
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
