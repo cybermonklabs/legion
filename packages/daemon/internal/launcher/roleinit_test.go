@@ -22,6 +22,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 	"golang.org/x/sys/unix"
@@ -659,7 +660,7 @@ func copyExecutable(source, target string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(target, body, 0o755)
+	return testexec.WriteFile(target, body, 0o755)
 }
 
 // mountHidden makes path a memory filesystem of the stage's own that holds the marker `hidden`.

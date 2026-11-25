@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -24,7 +25,7 @@ func stubTestPG(t *testing.T) (calls string) {
 	script := "#!/bin/sh\nif [ -f \"$" + testPGLogVariable + "\" ]; then log=present; else log=absent; fi\n" +
 		"printf '%s %s %s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" \"$" + testPGLogVariable + "\" \"$log\" >> " + calls +
 		"\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
-	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "exit"), []byte("0\n"), 0o644); err != nil {
@@ -218,7 +219,7 @@ func TestATestDatabaseRunThatHangsIsBounded(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	dir := t.TempDir()
 	script := "#!/bin/sh\nsleep 30\n"
-	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -244,7 +245,7 @@ func TestCheckTestPostgresRunsEveryStepAndStopsTheServer(t *testing.T) {
 	calls := filepath.Join(dir, "calls")
 	for _, program := range []string{testPGProgram, "psql"} {
 		script := "#!/bin/sh\nprintf '%s %s\\n' \"$(basename \"$0\")\" \"$*\" >> " + calls + "\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
-		if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
+		if err := testexec.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
