@@ -14,10 +14,11 @@ import (
 // TestACheckClientsErrorPrintsNoneOfTheIssuersWords: a token endpoint that refuses the check at a
 // refusal's status with an error code quoting a URL that carries a credential refuses the client
 // (CheckClient: any refusal but invalid_grant is ClientCheckRejected), and the check's error, which
-// quotes the code, prints none of the credential. One that answers the same code at an outage's
-// status could not answer, and the check's error, which wraps x/oauth2's answer with %w, prints
-// none of it either. A token endpoint that answers nothing reaches the check's other error, which
-// wraps a transport failure and carries no answer at all.
+// names that code only as the closed set reads it (redact.RefusalCode, which such a code is no
+// member of), prints none of the credential. One that answers the same code at an outage's status
+// could not answer, and the check's error, which wraps x/oauth2's answer with %w, prints none of it
+// either. A token endpoint that answers nothing reaches the check's other error, which wraps a
+// transport failure and carries no answer at all.
 func TestACheckClientsErrorPrintsNoneOfTheIssuersWords(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
