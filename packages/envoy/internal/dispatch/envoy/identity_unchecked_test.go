@@ -82,7 +82,7 @@ func TestACallTheListenerCouldNotCheckIsMadeAgainAfterItsRetryAfter(t *testing.T
 
 	t.Run("answered twice then taken: delivered after two waits", func(t *testing.T) {
 		stand := &uncheckedListener{unchecked: 2, body: uncheckedIdentityAnswer}
-		result, took, err := send(t, stand, defaultTimeout)
+		result, took, err := send(t, stand, CallWindow)
 		presented, at := stand.tries()
 		t.Logf("the send ended %s after it began, on try %d", took.Round(time.Millisecond), len(presented))
 		if err != nil || result.EnvelopeID != "envelope-1" {
@@ -97,8 +97,8 @@ func TestACallTheListenerCouldNotCheckIsMadeAgainAfterItsRetryAfter(t *testing.T
 				t.Fatalf("try %d came %s after the 503 before it, want at least its Retry-After of 1s", i+1, gap)
 			}
 		}
-		if took >= defaultTimeout {
-			t.Fatalf("the send took %s, want it inside the client's window of %s", took, defaultTimeout)
+		if took >= CallWindow {
+			t.Fatalf("the send took %s, want it inside the client's window of %s", took, CallWindow)
 		}
 	})
 
@@ -118,7 +118,7 @@ func TestACallTheListenerCouldNotCheckIsMadeAgainAfterItsRetryAfter(t *testing.T
 
 	t.Run("a 503 without the code is answered after one try", func(t *testing.T) {
 		stand := &uncheckedListener{unchecked: 1, body: `{"error":"envoy: the message bus did not answer"}`}
-		_, _, err := send(t, stand, defaultTimeout)
+		_, _, err := send(t, stand, CallWindow)
 		if presented, _ := stand.tries(); len(presented) != 1 || !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("a send a route answered 503 = %v after %d tries, want ErrUnavailable after one", err, len(presented))
 		}

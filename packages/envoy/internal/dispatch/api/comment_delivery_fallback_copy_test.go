@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -497,23 +498,29 @@ type queuedMention struct {
 // mentionClaimRefresh: it is the live claim the outbox bounds its wait by however long the lane
 // is held. The listener client's send window is pastTheRun, longer than any run of the test
 // binary, so no send of this lane's misses it however long a loaded machine takes between the
-// stall and its release; a test whose send must miss it names a shorter one
-// (aMentionQueuedWithinASendWindow).
+// stall and its release; a test whose send must miss it runs the server on a clock it moves past
+// that window (aMentionQueuedOnClock).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
-	return aMentionQueuedWithinASendWindow(t, route, pastTheRun)
+	return aMentionQueuedOn(t, route, testServerOptions{envoyTimeout: pastTheRun})
 }
 
-// aMentionQueuedWithinASendWindow is aMentionQueuedBehindAStalledSend with the window the
-// listener client gives a send named: past it a send is a receipt timeout, whose attempt is
-// failed while its frame may well have landed. A caller that names a short one releases the
-// stalled send well inside it, so the lane is held by the test rather than by that window.
-func aMentionQueuedWithinASendWindow(t *testing.T, route string, window time.Duration) queuedMention {
+// aMentionQueuedOnClock is aMentionQueuedBehindAStalledSend on a server whose clock is clock: the
+// listener client's window (envoy.CallWindow) runs on it, so a send whose answer the listener
+// holds misses its window, and its attempt fails as a receipt timeout while its frame may well
+// have landed, only once the test moves clock past that window.
+func aMentionQueuedOnClock(t *testing.T, route string, clock *clocktest.Fake) queuedMention {
+	t.Helper()
+	return aMentionQueuedOn(t, route, testServerOptions{clock: clock})
+}
+
+// aMentionQueuedOn builds the lane aMentionQueuedBehindAStalledSend describes on a server built
+// from options, with the stand-in listener's URL set on them.
+func aMentionQueuedOn(t *testing.T, route string, options testServerOptions) queuedMention {
 	t.Helper()
 	listener, state := newMentionListener(t)
-	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: window,
-	})
+	options.envoyURL = listener.URL
+	handler, database, deps, served := newRegisteredTestServer(t, options)
 	issue := createInteractionIssue(t, handler, "TEST", "A lane held past a lease", "before")
 	if route != "" {
 		if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{

@@ -2302,12 +2302,14 @@ notice comes once per handoff commit, from whichever read finds it first.
   reads `"state": "failed"` until a login succeeds. Nothing needs restarting, and no person is ever
   asked. The line names the class the failure was sorted into (`class`), the retry schedule that
   class takes (`schedule`), the wait before the next login (`retry_in`) and the cause (`error`).
-  When a login got no HTTP answer, or a 5xx answer from the broker or its front door (the
-  broker is down, out of reach, or cannot reach its database), the daemon retries 2 s later,
-  doubling to at most 10 s, so it logs in within about 10 s of the broker serving again. After
-  any other failure it retries 30 s later, doubling to at most 5 minutes: a refusal the broker
-  decided, a token file it could not read, and a fault on the daemon's own side — a TLS
-  handshake that failed, or a host name that does not resolve — which no wait of seconds fixes.
+  When a login got no HTTP answer, or a 408, a 429 or a 5xx answer from the broker or its front
+  door (the broker is down, out of reach, cannot reach its database, or will not take a login
+  yet), the daemon retries 2 s later, doubling to at most 10 s, so it logs in within about 10 s of
+  the broker serving again. After a 429 it waits at least as long as the answer's `Retry-After`
+  asks, at most 5 minutes. After any other failure it retries 30 s later, doubling to at most 5
+  minutes: a refusal the broker decided (any other 4xx), a token file it could not read, and a
+  fault on the daemon's own side — a TLS handshake that failed, or a host name that does not
+  resolve — which no wait of seconds fixes.
 
   ```sh
   legion state --config legion.yaml --json | jq .agentSecretsLogin
