@@ -290,8 +290,8 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
-	// The caller stands below the admission cap's row too (admissionCapContract), so the log holds
-	// that row's line beside the cause times' line, and no other.
+	// A caller below causeTimesContract is below the rows above it too, dispatchCredentialContract's
+	// and admissionCapContract's, so it is told of the cause times' row among theirs and no other.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
 	causeLines := 0

@@ -370,7 +370,9 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // Its settings are the maximal kubernetes file with a sandbox block that sets every member but
 // `type` (sandboxSettingsBlock), which neither other body carries: populatedState's settings are
 // that file alone, and stay so because the state golden is written from them, and the second
-// body's are a tmux file's.
+// body's are a tmux file's. They carry `dispatch_token_broker` too, turned on in the loaded
+// configuration, since the file names `dispatch_token_file`, which the loader refuses beside the
+// setting.
 func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	t.Helper()
 	at := time.Date(2026, 9, 22, 9, 30, 0, 0, time.UTC)
@@ -488,6 +490,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})
 	}
+	settings := loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)
+	settings.DispatchTokenBroker = true
 	both := AppInstallationsView{Implement: true, Review: true}
 	live := make([]LiveRepositoryView, 0, len(cacheWords))
 	for _, state := range cacheWords {
@@ -518,7 +522,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Issues:       issues,
 		WakesWaiting: wakes,
 		Repositories: RepositoriesView{Live: live},
-		Settings:     SettingsOf(loadSettingsFile(t, settingsFixtureFile+sandboxSettingsBlock)),
+		Settings:     SettingsOf(settings),
 		// Built as the state's read builds it (PauseStateTx), holding no row: populatedState's
 		// pause carries the held rows.
 		Paused:        pausedViewOf(goldenPause(false), stops, nil),
@@ -717,7 +721,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
-		// A set of the cap by the controller on a person's word (contract 268): the cap in force,
+		// A set of the cap by the controller on a person's word (contract 307): the cap in force,
 		// the ceiling, and the cap that stands with who set it, when and why, every key the answer
 		// can carry. A clear answers no override.
 		AnswerAdmissionCap: {roots: typesOf(AdmissionCapResponse{}), bodies: []any{AdmissionCapResponse{Cap: 5, Ceiling: 8,

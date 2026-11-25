@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    Speaks daemon API contract 268, the daemon whose admission cap moves while it runs
+    Speaks daemon API contract 307, the daemon whose admission cap moves while it runs
     (cybermonklabs/legion#5384); nothing else of the plugin changes.
 time: 2026-11-24T17:31:15.772772283Z
 custom:

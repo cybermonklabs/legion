@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-    Daemon API contract 268: `LegionStateResponse`'s `admission` gains `ceiling`, `override` (the
+    Daemon API contract 307: `LegionStateResponse`'s `admission` gains `ceiling`, `override` (the
     admission cap set while the daemon runs: `cap`, `setBy`, `setAt`, `reason`) and `capChanges`
     (the newest 50 changes of the cap: `id`, `cap`, `capBefore`, `capAfter`, `ceiling`, `setBy`,
     `setAt`, `reason`), and `admission.cap` is the cap in force.

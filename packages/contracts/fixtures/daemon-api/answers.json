@@ -188,7 +188,7 @@
       "POST /legion/v1/project/admission-cap",
       "POST /legion/v1/project/admission-cap/clear"
     ],
-    "since": 268,
+    "since": 307,
     "noBody": false
   }
 ]

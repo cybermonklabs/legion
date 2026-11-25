@@ -79,6 +79,7 @@ var settingsEmitted = map[string]string{
 	"Config.EnvoyURL":                                "envoy_url",
 	"Config.NatsURLs":                                "nats_urls",
 	"Config.DispatchURL":                             "dispatch_url",
+	"Config.DispatchTokenBroker":                     "dispatch_token_broker (absent while false)",
 	"Config.Projects":                                "projects",
 	"Config.Gates":                                   "gates",
 	"Config.GitHubApps":                              "github_apps",
@@ -206,40 +207,41 @@ var settingsEmitted = map[string]string{
 // credential, the source of one, the path of a file holding one, the operator's pod pieces, a
 // deployment's own repositories, or a derived value that is no setting.
 var settingsExcluded = map[string]string{
-	"Config.PostgresDSN":              "a credential: a DSN carries its password",
-	"GitHubApp.PrivateKey":            "a credential: Config holds the PEM resolved whatever the file's source",
-	"GitHubApp.PrivateKeyCommand":     "the source of a credential",
-	"GitHubApp.PrivateKeySecret":      "the source of a credential",
-	"GitHubApp.TokenCommand":          "the source of a credential: the command that prints the App's installation tokens",
-	"ProviderKey.Secret":              "the source of a credential: a secretsd key or a providers Secret key",
-	"ProviderKey.File":                "the path of a file holding a credential",
-	"Config.OperatorTokenFile":        "the path of a file holding a credential",
-	"Config.EnvoyTokenFile":           "the path of a file holding a credential",
-	"Config.NatsNkeySeedFile":         "the path of a file holding a credential",
-	"Config.NatsDaemonNkeySeedFile":   "the path of a file holding a credential",
-	"Config.DispatchTokenFile":        "the path of a file holding a credential",
-	"AgentSecretsConfig.TokenFile":    "the path of a file holding a credential: the daemon's own broker login token",
-	"Kubernetes.Kubeconfig":           "the daemon's cluster credential file",
-	"Kubernetes.Context":              "the context inside the daemon's cluster credential file",
-	"Kubernetes.Pod":                  "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
-	"PodConfig.Env":                   "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
-	"PodConfig.Volumes":               "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
-	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
-	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
-	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
-	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
-	"Config.LeakCheck":                "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
-	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
-	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
-	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
-	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
-	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
-	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
-	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
-	"Config.Revision":                 "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
-	"Config.GitHubGraphQLShare":       "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
-	"Config.AdmissionCeiling":         "carried once, as the state's `admission.ceiling` (contract 268, dispatch://INFRA-5616), beside the cap in force and the cap set, where a reader of the cap reads it; settings would carry the same number a second time",
+	"Config.PostgresDSN":                 "a credential: a DSN carries its password",
+	"GitHubApp.PrivateKey":               "a credential: Config holds the PEM resolved whatever the file's source",
+	"GitHubApp.PrivateKeyCommand":        "the source of a credential",
+	"GitHubApp.PrivateKeySecret":         "the source of a credential",
+	"GitHubApp.TokenCommand":             "the source of a credential: the command that prints the App's installation tokens",
+	"ProviderKey.Secret":                 "the source of a credential: a secretsd key or a providers Secret key",
+	"ProviderKey.File":                   "the path of a file holding a credential",
+	"Config.OperatorTokenFile":           "the path of a file holding a credential",
+	"Config.EnvoyTokenFile":              "the path of a file holding a credential",
+	"Config.NatsNkeySeedFile":            "the path of a file holding a credential",
+	"Config.NatsDaemonNkeySeedFile":      "the path of a file holding a credential",
+	"Config.DispatchTokenFile":           "the path of a file holding a credential",
+	"Config.DispatchTokenTransitionFile": "the path of a file holding a credential: the shared Dispatch token a launch into a pod built before dispatch_token_broker gets",
+	"AgentSecretsConfig.TokenFile":       "the path of a file holding a credential: the daemon's own broker login token",
+	"Kubernetes.Kubeconfig":              "the daemon's cluster credential file",
+	"Kubernetes.Context":                 "the context inside the daemon's cluster credential file",
+	"Kubernetes.Pod":                     "not a daemon setting: the operator's pod pieces, which every pod reads from its own spec and whose lists are Kubernetes API types with no legion.yaml-shaped rendering",
+	"PodConfig.Env":                      "runtime.kubernetes.pod: the operator's free text, delivered to every pod's spec",
+	"PodConfig.Volumes":                  "runtime.kubernetes.pod: Kubernetes API types naming the operator's Secrets, ConfigMaps, claims and NFS exports",
+	"PodConfig.VolumeMounts":             "runtime.kubernetes.pod: Kubernetes API types",
+	"PodConfig.ServiceAccount":           "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
+	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
+	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
+	"Project.CommitIssueTrailerRepos":    "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Config.LeakCheck":                   "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
+	"Config.StallLimits":                 "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
+	"StallLimits.CallBound":              "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.CallGrace":              "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",
+	"StallLimits.Step":                   "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
+	"Hook.Prompt":                        "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
+	"Variant.ConfigFilesField":           "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":                "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
+	"Config.Revision":                    "not a setting: the commit this binary was built from, which `legion start` sets from cmd/legion's link-time revision and no legion.yaml key names",
+	"Config.GitHubGraphQLShare":          "not shown yet: the pace of the daemon's own GraphQL reads of GitHub, which no pod or plugin reads or acts on; carrying it on GET /legion/v1/state is a change of the daemon API contract (answers.go, packages/contracts) that the pull request adding the key does not make",
+	"Config.AdmissionCeiling":            "carried once, as the state's `admission.ceiling` (dispatch://INFRA-5616), beside the cap in force and the cap set, where a reader of the cap reads it; settings would carry the same number a second time",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly
@@ -1001,6 +1003,32 @@ func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
 			}
 			if string(encoded) != want {
 				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
+}
+
+// dispatch_token_broker reaches the settings as `true` where the file turns it on, a word about how
+// the daemon and its roles reach Dispatch and no credential, and is absent where it is off, so a
+// deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheDispatchTokenBrokerOnlyWhereItIsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		on   bool
+		want string
+	}{
+		"on":  {true, "true"},
+		"off": {false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.DispatchTokenBroker = tc.on
+			encoded, err := json.Marshal(SettingsOf(cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, present := keysOf(t, encoded)["dispatch_token_broker"]
+			if got := string(raw); present != (tc.want != "") || got != tc.want {
+				t.Fatalf("settings.dispatch_token_broker = %q (present %t), want %q", got, present, tc.want)
 			}
 		})
 	}

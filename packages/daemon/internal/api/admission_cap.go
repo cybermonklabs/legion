@@ -30,7 +30,7 @@ import (
 // (shaping.go's withoutAdmissionCap). Its constant rather than its number stands in
 // SupportedContracts, as OwnerPlanContract's does, so a renumber of the entry moves the two
 // together.
-const admissionCapContract = 268
+const admissionCapContract = 307
 
 // ProjectAdmissionCapRequest is the controller's POST /legion/v1/project/admission-cap: its grant,
 // the cap to set, a whole number from 1 to the ceiling, and why: the person's words that ask for

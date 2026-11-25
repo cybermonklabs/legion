@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-    Daemon API contract 268: the project's admission cap moves while the daemon runs, with no pull
+    Daemon API contract 307: the project's admission cap moves while the daemon runs, with no pull
     request and no restart, from 1 up to `admission_ceiling` in `legion.yaml` (else
     `LEGION_ADMISSION_CEILING`, else `admission_cap`). `admission_cap` (else `LEGION_ADMISSION_CAP`)
     stays the cap the daemon starts under, and a clear returns to it. The controller sets the cap
@@ -15,7 +15,7 @@ body: |-
     Info line to the log; a change that changes nothing appends no row. `GET /legion/v1/state` and
     `legion state` name the
     cap in force, `admission.ceiling`, the cap that stands (`admission.override`) and the newest 50
-    changes (`admission.capChanges`, `[]` before the first). A caller below contract 268 is served
+    changes (`admission.capChanges`, `[]` before the first). A caller below contract 307 is served
     the state without the three new keys. To raise the ceiling, edit `admission_ceiling` and restart
     the daemon; a cap set while the daemon runs keeps holding across the restart until a clear. To
     roll back below this release, take `admission_ceiling` out of `legion.yaml` first: an earlier
