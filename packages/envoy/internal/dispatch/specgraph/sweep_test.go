@@ -92,14 +92,14 @@ func notRepoPaths(path string) []string {
 // or drops some, fails by name too. One right, which sweepInputs gives the input where it writes
 // it: a repository path of a tree written " " is a real path, since git holds a file of that name
 // (git ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a
-// tie covers, and a result before it that counts across commits, a caught failing example or a
-// result of the test of a program check of production or of the graph, counts across it no more
-// (the rule that replaces The Spec's R8); the base of production-and-graph whose failure of the
-// test of c1 counts at m2 shows it. A path of a fault written " " is no
-// path, as one of only white space is none, so its record does not say what its fault changed, and
-// as the newest failing example it reads unknown, no_fault_paths where it was the one path and
-// blank_fault_path beside a real one: it has no right, and a base whose failing example of two
-// paths that missed its fault is newer than a caught one shows that it needs none. A content label
+// tie covers, and a result before it that counts across commits, a caught failing example or a run
+// of the test of a program check of production or of the graph, counts across it no more (the rule
+// that replaces The Spec's R8); the base of production-and-graph whose failure of the test of c1
+// counts at m2 shows it. A path of a fault written " " is no path, as one of only white space is
+// none, so its record does not say what its fault changed, and as the newest failing example it
+// reads unknown, no_fault_paths where it was the one path and blank_fault_path beside a real one: it
+// has no right, and the base with a later failing example planted on c9, newer than carry's caught
+// one, and TestCheckState's rows of a blank fault path show that it needs none. A content label
 // is no path, and one of " " names no content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
@@ -251,9 +251,10 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // planted on c1, which would read the check true at c2 and at m2; and one that takes out a failure
 // of A, as the failure of the test of c1 in the base where a pass and a caught failing example of
 // the test of m2 come before it, which would read the check true at m2. A failing example of A
-// that missed its fault, taken out beside a caught one of A, moves only a reason in these bases
-// (failing_example_missed to no_failing_example), and no base holds a run that could not run, so
-// TestCheckState's rows, not this sweep, pin that a refusal keeps both. A refusal that the table
+// that missed its fault counts only at the commit that it counts from, so a refusal at A that could
+// reach one is a refusal at the subject's own commit, where step 2 reads uncited first: whether a
+// refusal keeps a missed example is moot. No base holds a run that could not run, so
+// TestCheckState's rows, not this sweep, pin that a refusal keeps one. A refusal that the table
 // does not name takes out nothing that counts at another subject. The sweep adds one refusal at a
 // time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
 // for each check of its approved spec that the base does not refuse there, and reads each one back
@@ -357,7 +358,6 @@ func refusalsTakeOut() map[string][]refusalOut {
 	return map[string][]refusalOut{
 		"carry": carry,
 		"carry with a later failing example planted by no step":                      carry,
-		"carry with a later failing example planted on c1 that missed its fault":     carry,
 		"carry with a later failing example planted on c9, no commit of the history": carry,
 		"carry with c2's failure between c1's pass and c1's failing example": slices.Concat(carry,
 			[]refusalOut{{"c2", code, []int64{9}}}),
@@ -458,9 +458,10 @@ func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
 }
 
 // plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit
-// of the history: the ties decide whether that record counts at a subject (the rule that replaces
-// The Spec's R8), and where it does not, the older evidence decides, as with no such record.
-const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where the ties carry it; elsewhere older evidence decides`
+// of the history: a record whose test missed its fault counts at no other commit, and the ties decide
+// whether one whose test caught it counts at a subject (the rule that replaces The Spec's R8), and
+// where it does not, the older evidence decides, as with no such record.
+const plantedOnElsewhere = `a planted_on that names a commit of the history counts at another commit only for a caught failing example, where the ties carry it; elsewhere older evidence decides`
 
 // withoutResult is the states of base with result i of results.json taken out (scenarioStates).
 func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
@@ -504,9 +505,10 @@ type addableRecords struct {
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
 // that no step planted moves no state: it counts from planted_on only with both, and with one of
 // the two it reads unknown with the reason that names the other (deriveChecks, step 7). A planted_on
-// that names a commit of the history has one right: where the ties do not carry that commit to a
-// subject, the record counts nowhere there and the base without that record decides
-// (plantedOnElsewhere). A planted_on that names no commit of the history has none: such a record
+// that names a commit of the history has one right: at a subject at another commit, a record whose
+// test missed its fault counts nowhere, and one whose test caught it counts nowhere where the ties
+// do not carry that commit there, and the base without that record decides (plantedOnElsewhere). A
+// planted_on that names no commit of the history has none: such a record
 // reads unknown, planted_on_outside_history.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
@@ -750,11 +752,11 @@ func recordKinds() map[string][][]string {
 // out of a commit's tree is not there at that commit, so it changed, and a failing example caught
 // before it counts across it no more (the rule that replaces The Spec's R8: "A failing example that
 // a check's test caught (The Spec R9) counts at another commit only while no file that the test
-// reads changed"; a run of a check of the code, and a failing example that missed its fault, count
-// only at the commit that they read), as a changed label ends it: it moves a state away from true,
-// as a path of a tree written " " does in TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row
-// derives the check at the subject of its scenario with the record, and with the record taken out;
-// setup makes the scenario first.
+// reads changed"; a run of a check of the code counts only at the commit that it read, and a failing
+// example that missed its fault only at the commit that it counts from), as a changed label ends
+// it: it moves a state away from true, as a path of a tree written " " does in
+// TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the subject of its
+// scenario with the record, and with the record taken out; setup makes the scenario first.
 func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	t.Parallel()
 	const c = "a-restart-loses-no-message"
