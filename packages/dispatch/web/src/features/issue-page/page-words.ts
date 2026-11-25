@@ -297,8 +297,9 @@ export const PRESET_ORDER = freeze([
   "plan",
   "decisions",
   // Root R2's one list of views holds Graph last, the whole tree read, a view and no filter (R10,
-  // R12). Dashboard (first), Threads and Documents (after Decisions) are each one line of this
-  // list that its own part adds with its view, at its place in root R2's order.
+  // R12). Threads and Documents (after Decisions) are each one line of this list that its own
+  // part adds with its view, at its place in root R2's order. Dashboard, the row's first
+  // control, is a control of its own and no preset, so it adds no line here.
   "graph",
 ] as const);
 
