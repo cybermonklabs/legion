@@ -232,7 +232,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
    *  finished with is pressed no longer, so while `?` reads the bindings this is false. */
   const scrollsABlock = (): boolean => {
     const event = pressing.current;
-    if ((event?.target as Element | null)?.closest?.("[data-text-threads]")) return true;
+    // A key pressed in a node's sheet of threads is the browser's, so a reply typed there does not
+    // move the tree's focus.
+    if (
+      event !== null &&
+      event.eventPhase !== Event.NONE &&
+      event.target instanceof Element &&
+      event.target.closest("[data-text-threads]") !== null
+    ) {
+      return true;
+    }
     return (
       event !== null &&
       event.eventPhase !== Event.NONE &&
