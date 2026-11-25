@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1177,9 +1180,15 @@ func (m *readRuleModel) checkValues(index int) {
 // replays it from the durable's ack floor. The holder is the message that logged heldLine last. A
 // good read ends, for this check, the hold of that message: such a read clears the holder unless a
 // sequence skipped past the cap above its stateSeq keeps the gap read owed, and the log cannot show
-// which, so the check lets that holder's count start again.
+// which, so the check lets that holder's count start again. A good read also ends the hold of a
+// message whose two hand-backs its record lands between, by its legion_reads row's recorded_at
+// against each heldLine's time, whatever the log's order: the read's own line comes only after
+// its record commits, and a message judged beside the project's runner in that gap (judgeCrowded,
+// row 8.1) can go back first, on the cursor the read left.
 func (m *readRuleModel) checkHandBacks(index int) {
+	recorded := m.goodReadsRecorded()
 	last, ended := map[uint64]float64{}, map[uint64]bool{}
+	lastAt := map[uint64]time.Time{}
 	var holder uint64
 	for line := range strings.Lines(m.rig.logs.String()) {
 		var record map[string]any
@@ -1195,14 +1204,15 @@ func (m *readRuleModel) checkHandBacks(index int) {
 				m.fail(index, 3, "the message at stream sequence %d went back to the stream as hand-back %v of its hold, want %d at the most: %s",
 					seq, handBack, stateMaxHolds, strings.TrimSpace(line))
 			}
-			if before, held := last[seq]; held && handBack <= before && !ended[seq] {
+			at := logTime(record)
+			if before, held := last[seq]; held && handBack <= before && !ended[seq] && !recordedBetween(recorded, lastAt[seq], at) {
 				m.fail(index, 3, "the message at stream sequence %d went back to the stream as hand-back %v after hand-back %v, and nothing ended its hold between: %s",
 					seq, handBack, before, strings.TrimSpace(line))
 			}
 			if holder != 0 && holder != seq {
 				ended[holder] = true
 			}
-			last[seq], ended[seq], holder = handBack, false, seq
+			last[seq], ended[seq], lastAt[seq], holder = handBack, false, at, seq
 		case releasedLine:
 			if handBacks, _ := record["handBacks"].(float64); handBacks > stateMaxHolds {
 				m.fail(index, 3, "the message at stream sequence %d was released after %v hand-backs, want %d at the most: %s",
@@ -1217,6 +1227,39 @@ func (m *readRuleModel) checkHandBacks(index int) {
 			}
 		}
 	}
+}
+
+// goodReadsRecorded is when Dispatch recorded each good whole read of INFRA (legion_reads'
+// recorded_at, Postgres's clock at the start of the record's transaction), oldest first.
+func (m *readRuleModel) goodReadsRecorded() []time.Time {
+	rows, err := m.rig.database.Pool.Query(context.Background(), `
+		select recorded_at from legion_reads where project = 'INFRA' and kind = $1 and ok order by recorded_at
+	`, readKindRead)
+	if err != nil {
+		m.t.Fatalf("read when INFRA's good whole reads were recorded: %v", err)
+	}
+	times, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
+	if err != nil {
+		m.t.Fatalf("read when INFRA's good whole reads were recorded: %v", err)
+	}
+	return times
+}
+
+// recordedBetween reports whether a time of recorded falls after from and at or before to. A zero
+// from or to, a log line with no time, is no span.
+func recordedBetween(recorded []time.Time, from, to time.Time) bool {
+	if from.IsZero() || to.IsZero() {
+		return false
+	}
+	return slices.ContainsFunc(recorded, func(at time.Time) bool { return at.After(from) && !at.After(to) })
+}
+
+// logTime is the time a JSON log record carries (slog's "time"), and the zero time for a record
+// with none.
+func logTime(record map[string]any) time.Time {
+	text, _ := record["time"].(string)
+	at, _ := time.Parse(time.RFC3339Nano, text)
+	return at
 }
 
 // readRuleRead is one whole read of INFRA: its legion_reads row and its start on the intake's
