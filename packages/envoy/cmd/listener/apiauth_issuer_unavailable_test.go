@@ -25,6 +25,7 @@ import (
 // receives a copy. The control is the same send with the keys served: kept for the role, marked,
 // and B receives it.
 func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
+	t.Parallel()
 	warm, cold := trailingListeners(t)
 	startListenerDelivery(t, warm)
 	useDispatchPrincipal(cold, rigDispatchPrincipal)

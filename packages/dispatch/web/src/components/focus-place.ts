@@ -4,7 +4,7 @@ import { REQUEST_DEADLINE_MS } from "../api/client";
 import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 

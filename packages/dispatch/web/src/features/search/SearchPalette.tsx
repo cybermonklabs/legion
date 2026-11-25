@@ -21,7 +21,7 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop50,
   badgeLow,

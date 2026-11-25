@@ -25,10 +25,12 @@ import { PANEL_FRAME } from "./PanelTrigger";
 const CLEAR_FILTERS_CLASS = `min-h-11 shrink-0 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
 
 /** **Clear filters** at each size. The compact size gives the touch target up only from `md`,
- *  where a mouse is: it is then as tall as that line's 32 px chips. */
+ *  where a mouse is: it is then as tall as that line's 32 px chips. The toolbar size stands at
+ *  the toolbar's one height from 1280 px up, as its controls do (`controlPadding`). */
 const CLEAR_FILTERS: Record<ControlSize, string> = {
   comfortable: CLEAR_FILTERS_CLASS,
   compact: `${CLEAR_FILTERS_CLASS} md:min-h-8`,
+  toolbar: `${CLEAR_FILTERS_CLASS} xl:h-8.5 xl:min-h-0`,
 };
 
 /** The panel `+N more` opens: a card over the page, as a filter panel is (`PANEL_FRAME`), that
@@ -263,6 +265,11 @@ export interface ControlRowProps {
   readonly onClear?: () => void;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;
+  /** Whether the search box takes a line of its own, above the row's other controls, in a row
+   *  narrower than 61rem (976 px) by the row's own width, rather than give way beside them: the
+   *  project List's, whose placeholder needs about 406 px and the controls after it about 557 px
+   *  (dispatch://INFRA-2947, R15). Unset, the first line is one line from 40rem up. */
+  readonly searchLine?: boolean;
   /** How much room the row's own controls take (`ControlSize`): **Clear filters** and `+N more`.
    *  The page's controls carry their own size. */
   readonly size?: ControlSize;
@@ -368,6 +375,7 @@ export function ControlRow({
   display,
   onClear,
   search,
+  searchLine = false,
   size = "comfortable",
   trigger,
 }: ControlRowProps): ReactNode {
@@ -477,9 +485,14 @@ export function ControlRow({
     >
       {/* One line in a row 40rem wide or more, by the row's own width; in a narrower row - a
           phone's, or the Inbox drawer's at any window - the line wraps, because a search box
-          holding three characters beside a trigger is no search box. */}
-      <div className="flex min-w-0 flex-wrap items-start gap-2 @min-[40rem]:flex-nowrap">
-        <Slot gives>{search}</Slot>
+          holding three characters beside a trigger is no search box. A row whose search box
+          takes a line of its own (`searchLine`) wraps below 61rem, the search box above. */}
+      <div
+        className={`flex min-w-0 flex-wrap items-start gap-2 ${searchLine ? "@min-[61rem]:flex-nowrap" : "@min-[40rem]:flex-nowrap"}`}
+      >
+        <Slot className={searchLine ? "@max-[61rem]:basis-full" : undefined} gives>
+          {search}
+        </Slot>
         <Slot>
           {chipsOn || clear === null ? (
             trigger

@@ -424,10 +424,11 @@ export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactN
 
 /** The bar's own box at each size. The comfortable size is the bar the Inbox draws. The compact
  *  size is the smaller box of a page whose controls are compact, in the padding the compact
- *  controls take (`controlPadding`). */
+ *  controls take (`controlPadding`); the toolbar size's controls take that padding too. */
 const BAR_BOX: Record<ControlSize, string> = {
   comfortable: "px-4 py-2",
   compact: "px-2 py-1",
+  toolbar: "px-2 py-1",
 };
 
 /** Tailwind's `sm` itself: true exactly when the bar's `sm:` classes put it at the foot of the

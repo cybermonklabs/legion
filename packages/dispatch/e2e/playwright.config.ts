@@ -416,6 +416,9 @@ const parallelProjects = [
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
   // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
   // and at 390 to a checkbox cut by the window's bottom edge.
+  // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
+  // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
+  // one drag row, which drags a row of the priorities table by its grip and reads the order back.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -526,6 +529,9 @@ const parallelProjects = [
   // out leaves the focus on the moved card, and that the selection bar's return shows its landing
   // whole by the least scroll: to a row the table has not drawn, to a row at the place cut by 70%,
   // and at 390 to a checkbox cut by the window's bottom edge.
+  // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
+  // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
+  // priorities table by its grip and reads the order back.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",

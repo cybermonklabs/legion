@@ -1,6 +1,6 @@
 import type { KeyboardEvent } from "react";
 
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 
 /**
  * Leaves Enter to a textarea while using Ctrl/Cmd+Enter for an explicit submission. A field whose

@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  `PRIORITY_ID_MAX` (200), the longest priority id, which the server reads as
+  `contracts.PriorityIDMax` to refuse a named id and to cut an id it makes from a title, and the
+  shared fixture `fixtures/priority-ids.json`, whose made-up titles give the id of each case of
+  that rule, a hashed id for a title with no slug or one the cut leaves as `none` or `any`. The
+  generated API contract carries the new route descriptions of
+  `POST /api/v1/priorities`, `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}`.

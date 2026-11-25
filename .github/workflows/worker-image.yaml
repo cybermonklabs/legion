@@ -115,7 +115,7 @@ jobs:
     # head's run starts. Only a head that starts a run of its own can do this. Another pull
     # request's build is in another group. Other events key on github.sha, not github.ref, so a
     # pending run of one main commit never drops another commit's.
-    # They never cancel: in a call from release.yaml, `github.event_name` is the caller's (`push` or
+    # They never cancel: in a call from release.yaml the caller's `github.event_name` is (`push` or
     # `workflow_dispatch`, never `pull_request`), so no main commit is left without an image to pin.
     # Of a release run's two calls only the build-only one's build enters this group: the
     # attest-only call's build skips on its `if:`, and a job its `if:` skips enters no job-level
@@ -125,11 +125,11 @@ jobs:
     # that fails closed.
     # On a pull request, the run that reaches the group last wins, and GitHub does not guarantee
     # arrival order: two pushes seconds apart, or a re-run of an older head's run, can cancel the
-    # newest head's build, and ci.yaml's `ci-ok` job then fails for that run — the worker-image
+    # newest head's build, and `.github/workflows/ci.yaml#ci-ok` job then fails for that run — the worker-image
     # job it needs ended cancelled, which is no success to ci-ok.sh.
     # `gh run rerun` of the newest head's run restores it, so re-run an older head's run only after
     # the newest head's build has completed. The job has no draft or closed `if:`: its only
-    # pull_request run is ci.yaml's call, which never runs on a draft (ci.yaml's `changes` skips
+    # pull_request run is ci.yaml's call, which never runs on a draft (`.github/workflows/ci.yaml#changes` skips
     # it) and has no `closed` trigger.
     concurrency:
       group: worker-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
@@ -295,7 +295,7 @@ jobs:
       # else, so on the one event this step runs on it prints what it saw and exits 0 before any
       # GitHub call. It stays because the rule is about the shape rather than about which events
       # the calling job happens to admit today; the verdict a pull request's run gets is
-      # ci.yaml's `ci-ok` job's own check run.
+      # `.github/workflows/ci.yaml#ci-ok` job's own check run.
       # The checkout before it is what lets `uses: ./.github/actions/ci-ok-report` resolve: the
       # build checked out the pull request's head, which may predate the action, so the workspace
       # is checked out again, .github only, at the commit the run itself checked out

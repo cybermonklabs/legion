@@ -665,6 +665,14 @@ export const secondaryButtonHoverBorder =
   "not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400";
 /** A secondary button that cannot be pressed, `disabled` or refused (`refused:`, `styles.css`). */
 export const secondaryButtonDisabledText = "refused:text-slate-400 dark:refused:text-slate-600";
+/** `secondaryButtonHoverBorder` and `secondaryButtonDisabledText` for a box a button draws inside
+ *  itself, as the priorities' trigger draws its "+" square inside its hit area: keyed to the
+ *  button, which carries `group`, since `refused:` tests the element it is on and the box is
+ *  never `disabled` or refused itself. */
+export const secondaryButtonGroupHoverBorder =
+  "group-not-refused:group-hover:border-sky-500 dark:group-not-refused:group-hover:border-sky-400";
+export const secondaryButtonGroupDisabledText =
+  "group-refused:text-slate-400 dark:group-refused:text-slate-600";
 
 /** An input/select/textarea's resting border and background, plus its focus border. Pass
  * `recessed: true` when the control sits inside a `SURFACE` card (its dark background needs to

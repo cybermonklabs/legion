@@ -4,7 +4,7 @@ import { type KeyboardEvent, type ReactNode, useState } from "react";
 import { api } from "../../api/client";
 import { issueQuery } from "../../api/queries";
 import { SearchBox } from "../../components/SearchBox";
-import { inputMethodKey } from "../../lib/input-method";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   backdrop40,
   card,

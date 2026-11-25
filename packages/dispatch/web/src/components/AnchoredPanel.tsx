@@ -14,7 +14,7 @@ import { createPortal } from "react-dom";
 
 import { hearPresses } from "../features/issue-page/focus-keeper";
 import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
-import { inputMethodKey } from "../lib/input-method";
+import { inputMethodKey } from "../lib/input-method-key";
 import { CLIPPING_OVERFLOW, focusableIn } from "./focus-place";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
