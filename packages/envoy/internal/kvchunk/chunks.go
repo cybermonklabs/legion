@@ -114,19 +114,23 @@ func (c *Chunks) Unnamed(named func(generation string) bool, cutoff time.Time) [
 
 // CollectionReady reports whether a pass of a store's chunk collection may judge from watcher's
 // copy (Unnamed), and each pass asks it first. The copy must follow its bucket
-// (kvwatch.Watcher.Following), then have applied a record at or past the bucket stream's last
-// sequence, read once at the pass's start, within wait (kvwatch.Watcher.WaitCaughtUp; zero waits
-// WriteBound, and only tests give another), and still follow. A copy that stays behind skips the
-// pass with one WARN on log, naming the store, the copy's applied sequence and the stream's last
-// sequence; a stream read that fails skips it with that read's error.
+// (kvwatch.Watcher.Following), then its current read must have applied a record at or past the
+// bucket stream's last sequence, read once at the pass's start, within wait
+// (kvwatch.Watcher.WaitCaughtUp; zero waits WriteBound, and only tests give another), and the copy
+// must still follow. A copy that stays behind skips the pass with one WARN on log, naming the
+// store, the current read's applied sequence and the stream's last sequence; a stream read that
+// fails skips it with that read's error.
 //
 // Following alone proves only that a full read of the bucket completed since the copy last stopped
-// following, not how far behind the live watch is now. Past the barrier, every manifest written
-// before the pass began is in the copy, and a manifest lands within WriteBound and one request of
-// its oldest chunk, so a chunk the copy took more than Grace ago that a manifest names is named by
-// a record the cache holds. That closes a copy that took a chunk and then applied nothing for Grace
-// less WriteBound while it still reported following: a stall between nats.go's queue and the
-// cache, or a frozen process.
+// following, not how far behind the live watch is now. Past the barrier, the current read has
+// completed and has itself applied the bucket through that last sequence, so every manifest the
+// bucket stored before the pass's read of its stream is in the copy, or a later record of its key:
+// one the replaced watcher delivered and the current read swept is waited for until the current
+// watcher delivers it again (WaitCaughtUp names that window). A manifest lands within WriteBound
+// and one request of its oldest chunk, so a chunk the copy took more than Grace ago that a
+// manifest names is named by a record the cache holds. That closes a copy that took a chunk and
+// then applied nothing for Grace less WriteBound while it still reported following: a stall
+// between nats.go's queue and the cache, or a frozen process.
 func CollectionReady(ctx context.Context, watcher *kvwatch.Watcher, wait time.Duration, log *slog.Logger) (bool, error) {
 	if !watcher.Following() {
 		return false, nil

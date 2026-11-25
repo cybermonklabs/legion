@@ -98,7 +98,7 @@ func (w *Watcher) Following() bool {
 }
 
 // Progress is what one WaitCaughtUp barrier found: whether the copy caught up to the bucket
-// stream's LastSeq as read at the barrier's start, the highest stream sequence this epoch's copy
+// stream's LastSeq as read at the barrier's start, the highest stream sequence the current read
 // had applied, and that LastSeq.
 type Progress struct {
 	CaughtUp bool
@@ -107,23 +107,34 @@ type Progress struct {
 }
 
 // WaitCaughtUp reads the bucket's stream once (bus.KeyValue.ReadStreamState, bounded by
-// bus.RequestTimeout and ctx), then waits at most bound for the copy to have applied a record at
-// or past the stream's LastSeq, reporting whether it caught up together with the copy's applied
-// sequence and LastSeq.
+// bus.RequestTimeout and ctx), then waits at most bound for the current read to have applied a
+// record at or past the stream's LastSeq, reporting whether it caught up together with the read's
+// applied sequence and LastSeq.
 //
 // What it proves: on CaughtUp, the copy is on the same stream incarnation the read answered for
 // and either that stream held no messages (Msgs == 0, so no manifest can name a chunk) or the
-// copy has applied every live record the bucket held up through LastSeq -- every Entry.Revision
-// handed to Cache.Apply in this epoch, and every live key up through a completed read's own
-// Read.LastSeq (which covers a tail message since purged or expired whose revision no scan
-// delivers). Any record written to the bucket before the stream read is therefore in the copy.
+// current read reached LastSeq: it completed at a Read.LastSeq at or past it (which covers a tail
+// message since purged or expired whose revision no scan delivers), or the current watcher, since
+// its watch installed, handed Cache.Apply a record at or past it. Only that read's own progress
+// counts, since every install starts applied again at 0. A watcher delivers in stream order, so
+// once that read has completed too (Following, which the caller checks), every record the bucket
+// stored up through LastSeq is in the copy, or a later record of its key.
+//
+// The one window left is a record stored after the current read's own stream read, past its
+// Read.LastSeq, that reached the copy before the current watcher delivered it: one a write site
+// applied, which the read's marks keep (Copy.BeginRead names the gaps they miss), or one the
+// replaced watcher delivered before the install, which the read can sweep until the current
+// watcher delivers it. Neither counts toward applied, so a barrier whose LastSeq reaches such a
+// record waits for the current watcher's own delivery of it.
 //
 // What it does not prove: it does not prove the copy still follows its bucket (the caller checks
 // Following before and after), nor that no record landed after the stream read, nor that the copy
 // has no lag once WaitCaughtUp returns. It reports behind (CaughtUp false, nil error) when the
 // stream read names a stream other than the one the watcher reads (as confirmStream compares),
-// when a new epoch installs during the wait, or when bound passes before applied reaches LastSeq.
-// It returns the stream read's error when that read fails, and ctx.Err() when ctx ends the wait.
+// when a new epoch installs during the wait, or when bound passes before applied reaches LastSeq;
+// a read installed in the same epoch during the wait starts applied again, and the wait goes on
+// for that read's progress. It returns the stream read's error when that read fails, and
+// ctx.Err() when ctx ends the wait.
 func (w *Watcher) WaitCaughtUp(ctx context.Context, bound time.Duration) (Progress, error) {
 	state, err := w.KV().ReadStreamState(ctx)
 	if err != nil {

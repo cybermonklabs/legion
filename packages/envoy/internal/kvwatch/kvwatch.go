@@ -212,12 +212,16 @@ type Watcher struct {
 	// epoch is the current read's Read.Epoch, and bound its stale bound (boundFor).
 	epoch uint64
 	bound time.Duration
-	// applied is the highest stream sequence this epoch's copy has applied: the highest
-	// Entry.Revision handed to Cache.Apply (applyCurrent), and the stream's LastSeq of any read
-	// that completed in this epoch (completeRead). A new epoch (a recreated bucket's watch)
-	// starts it again at 0, since that stream numbers from 1. appliedChanged is created when a
-	// WaitCaughtUp waiter blocks, and closed and cleared whenever applied moves or a new epoch
-	// installs, so steady-state Apply calls allocate nothing.
+	// applied is the highest stream sequence the current read has applied since its watch
+	// installed: the highest Entry.Revision the current watcher handed to Cache.Apply
+	// (applyCurrent), and the read's own LastSeq once it completed (completeRead). Every install
+	// starts it again at 0, so only the current read's own progress counts: a record the replaced
+	// watcher delivered past this read's stream read is one the read can sweep until the current
+	// watcher delivers it again, and a recreated bucket's stream numbers from 1. A replaced
+	// generation's deliveries and completion are dropped after the install (applyCurrent,
+	// completes). appliedChanged is created when a WaitCaughtUp waiter blocks, and closed and
+	// cleared whenever applied moves or a read installs, so steady-state Apply calls allocate
+	// nothing.
 	applied        uint64
 	appliedChanged chan struct{}
 	// streamReads counts the reads of the bucket's stream that this watcher's watches began, each
@@ -559,9 +563,9 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 	recreated := !w.stream.IsZero() && !stream.Equal(w.stream)
 	if recreated {
 		w.epoch++
-		w.applied = 0
-		w.wakeApplied()
 	}
+	w.applied = 0
+	w.wakeApplied()
 	w.generation++
 	generation := w.generation
 	w.watcher = sub
