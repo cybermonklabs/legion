@@ -159,13 +159,36 @@ func (r *vfixRig) fixRunCheck(place int) string {
 	return ""
 }
 
+// fixBranch is the own branch of fix 1 of the task, beside the task's branch, which every start of
+// the fix names (claim.BesideBranch of the implementer).
+func (r *vfixRig) fixBranch() string {
+	r.t.Helper()
+	branch, err := claim.BesideBranch("LEGION-208", 1, "a", 1, claim.RoleImplementer)
+	if err != nil {
+		r.t.Fatalf("name fix 1's own branch: %v", err)
+	}
+	return branch
+}
+
+// fixStartError says why start is not the start of fix 1 that the fix's adoption reads, nil where
+// it is: the implementer's step again in implementing for fix 1, its working copy its own one made
+// at fixHead or at the head of the fix's own branch (fixBranch), waiting for no slot.
+func (r *vfixRig) fixStartError(start record.SuperviseRequest) error {
+	r.t.Helper()
+	if branch := r.fixBranch(); start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Fix != 1 || start.FixFrom != fixHead ||
+		start.FixBranch != branch || start.NeedsSlot {
+		return fmt.Errorf("the fix's start = %+v, want the implementer's step again in implementing for fix 1, in a working copy of its own made at %s or on %s, waiting for no slot",
+			start, fixHead, branch)
+	}
+	return nil
+}
+
 // fixBesideTheReview says why fix 1 of k-ci at fixHead does not run beside the review, nil where
 // it does: the issue stands in reviewing with the review's run open and the issue's record naming
 // fix 1 as running; the fix runs at the implementer's place; one start of the implementer is
-// queued for the fix, in implementing, its working copy its own one made at fixHead, waiting for
-// no slot, its task naming each of checks, fixHead, the job and the job's page; the record of the
-// fix's run names k-ci; and the reviewer is told of the fix once, by a message naming k-ci and
-// fixHead. place is the implementer's place in the task.
+// queued for the fix (fixStartError), its task naming each of checks, fixHead, the job and the
+// job's page; the record of the fix's run names k-ci; and the reviewer is told of the fix once, by
+// a message naming k-ci and fixHead. place is the implementer's place in the task.
 func (r *vfixRig) fixBesideTheReview(place int, checks ...string) error {
 	r.t.Helper()
 	if issue := issueOf(r.t, r.pool, r.engine, "LEGION-208"); issue.Phase != phase.Reviewing || issue.RunningFix != 1 {
@@ -182,9 +205,8 @@ func (r *vfixRig) fixBesideTheReview(place int, checks ...string) error {
 		return fmt.Errorf("the starts of a fix = %+v, want one", starts)
 	}
 	start := starts[0]
-	if start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Fix != 1 || start.FixFrom != fixHead || start.NeedsSlot {
-		return fmt.Errorf("the fix's start = %+v, want the implementer's step again in implementing for fix 1, in a working copy of its own made at %s, waiting for no slot",
-			start, fixHead)
+	if err := r.fixStartError(start); err != nil {
+		return err
 	}
 	for _, value := range append(slices.Clone(checks), fixHead, "unit", fixPage) {
 		if !strings.Contains(start.Task, value) {
@@ -320,7 +342,6 @@ func TestVFix(t *testing.T) {
 	}
 
 	t.Run("case 10: the check fails while the tester runs, and the testing step passes", func(t *testing.T) {
-		t.Skip("needs the testing step that leaves each check a CI job runs to the fix, which this branch does not hold yet: until then the tester's completion reads k-ci's failure and its step fails")
 		r := newVFix(t, "implementer", "tester", "reviewer")
 		r.completes(claim.RoleImplementer, fixHead, "implement-record", 0)
 		r.states(fixHead, passOf("k-unit", "tester"), jobRunning("k-ci"), ciPassing("k-ci2"))
@@ -328,6 +349,11 @@ func TestVFix(t *testing.T) {
 		r.jobRead()
 		if fix := r.latestFix(); fix.State != record.FixRunning || fix.Check != "k-ci" || fix.Head != fixHead {
 			t.Fatalf("the fix while the tester runs = %+v, want it running for k-ci at %s", fix, fixHead)
+		}
+		if starts := r.fixStarts(); len(starts) != 1 {
+			t.Fatalf("the starts of a fix while the tester runs = %+v, want one", starts)
+		} else if err := r.fixStartError(starts[0]); err != nil {
+			t.Fatal(err)
 		}
 		r.completes(claim.RoleTester, fixHead, "test-record", r.serial)
 		assertPhase(t, r.pool, phase.Reviewing)
