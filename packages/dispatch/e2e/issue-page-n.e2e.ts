@@ -2410,8 +2410,9 @@ function postAsPage(page: Page, path: string, data?: object) {
 
 // SLOW(>=2s): three real uploads with the versions they build, the artifact page's version list
 // and comparison, and the references and phone layout read after them.
-// @pr: Upload and download: three real uploads, the versions they build, the Download link on a version, and the references that cite them.
-test("artifacts upload, version, references, and phone layout @phone @pr", async ({
+// Off the pull-request lane: `main`'s source row in `artifacts.e2e.ts` runs there, and the lane's
+// real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this copy.
+test("artifacts upload, version, references, and phone layout @phone", async ({
   page,
 }, testInfo) => {
   const sockets = countDocumentSockets(page);
@@ -3684,10 +3685,9 @@ test("a rotation loses no event and makes no extra read of the issue @phone @fir
 
 // SLOW(>=2s): a cold load in WebKit and in Firefox with the page's first live socket held open
 // through it, which each engine then has to replay the missed change on.
-// @pr: The live socket: a change committed while the page loads has to be replayed, with no reload.
-test("a change committed while the page loads is shown without a reload @pr", async ({
-  browser,
-}) => {
+// Off the pull-request lane: `main`'s source row in `live-socket.e2e.ts` runs there, and the
+// lane's real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this copy.
+test("a change committed while the page loads is shown without a reload", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Before the page load" });
 
@@ -4115,8 +4115,9 @@ async function openWithReadLast(
 
 // SLOW(>=2s): three opens, each a fresh page, each holding the 300 ms margin the partial-data
 // state has no in-page signal for.
-// @pr: The phone conversation's first paint: the question waiting on the reader is on the first screen whichever of its reads answers last.
-test("on a phone, the conversation opens with its open question in view whichever read answers last @phone @pr", async ({
+// Off the pull-request lane: `main`'s source row in `phone-landing.e2e.ts` runs there, and the
+// lane's real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this copy.
+test("on a phone, the conversation opens with its open question in view whichever read answers last @phone", async ({
   browser,
 }) => {
   const { issue, question } = await seedConversation("Landing on the open question");
@@ -4245,8 +4246,10 @@ async function openCard(page: Page, link: Locator): Promise<Locator> {
   return card;
 }
 
-// @pr: The ask-part reference's only reading row: a link to an option opens the ask at that part.
-test("a reference to an ask's option in a comment is a link that opens the ask at that part @pr", async ({
+// Off the pull-request lane: `main`'s source row in `ask-part-references.e2e.ts` runs there, and
+// the lane's real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this
+// copy.
+test("a reference to an ask's option in a comment is a link that opens the ask at that part", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -4403,8 +4406,9 @@ test.describe("a bare web address is a link in a document written through the AP
   // 42334783358), 2,545 ms at the merge base's merge-group run. Nine paragraphs, each a bare
   // address, asserted twice - once in the comment's row of the outline and once in the document
   // editor - which is ten link lookups per surface.
-  // @pr: The bare-address family's one row on the real stack: a link written through the API must read as a link in the document and in a comment.
-  test("after punctuation or an escaped scheme colon @pr", async ({ browser }) => {
+  // Off the pull-request lane: `main`'s source row in `address-links.e2e.ts` runs there, and the
+  // lane's real-stack budget (`e2e/__tests__/pull-request-lane.test.ts`) has no room for this copy.
+  test("after punctuation or an escaped scheme colon", async ({ browser }) => {
     await createProject({ key: "CORE", name: "Core" });
     const issue = await createIssue({
       project: "CORE",
