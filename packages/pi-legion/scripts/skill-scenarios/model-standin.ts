@@ -5,8 +5,9 @@
  * tool. It is the test harness's stand-in server (`serveStandin`) and its Anthropic Messages
  * stream (`messageStream`) of `@legion/pi-shared/test/omp-harness`, so a run on it is the same
  * real Oh My Pi, plugins, Dispatch, listener and daemon stand-in as a run on a real model, with
- * the model alone stood in. A run on it scores, and fails each clause by name: the model writes
- * no plan and reads nothing.
+ * the model alone stood in. A run on it scores and fails: the model writes no plan and reads
+ * nothing, so each clause a program decides fails by name, and each judged clause is pending
+ * until its judgment.
  *
  * The profile's provider block names it in place of the gateway (rig.sh install_standin_route,
  * with rig.sh's model_standin): the provider `standin` and its one model `standin-model`. The
