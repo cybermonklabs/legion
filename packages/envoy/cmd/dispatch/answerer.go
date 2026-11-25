@@ -94,11 +94,18 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
+	if !httpsBaseURL(endpoint) {
 		return "", fmt.Errorf("%s (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name)
 	}
 	return endpoint, nil
+}
+
+// httpsBaseURL reports whether endpoint is the shape a base URL a route is appended to must have:
+// an absolute https URL with a host and no query or fragment, since the client that uses it
+// builds the route and the query itself.
+func httpsBaseURL(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && !strings.ContainsAny(endpoint, "?#")
 }
 
 // resolveAzureAnswerer is resolveAnswerer for DISPATCH_ANSWERER=azure. The Azure chat form takes
