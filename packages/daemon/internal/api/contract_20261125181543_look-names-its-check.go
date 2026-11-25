@@ -15,11 +15,6 @@ package api
 // answer and request record stays intact. Before rollback, clear kept looks only for running
 // issues of the rolled-back project, as docs/kubernetes.md documents and the store test
 // exercises.
-// (This entry was numbered 283 before #5399. scripts/daemon-contract-convert.sh converted it to
-// this file, and did not renumber it.)
-//
-// lookNamesItsCheckContract is this entry: from it on, a production check's look report names its
-// check by HandoffCompleteRequest's checkOpenedAt.
 const lookNamesItsCheckContract = 20261125181543
 
 func init() {
