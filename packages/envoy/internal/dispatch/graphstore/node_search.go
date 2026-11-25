@@ -12,7 +12,7 @@ import (
 // search vector of it. It is what this build's lexical search reads in place of document_search
 // (R17 of the issue-tree spec): a word is found in the node whose text holds it, and the
 // answer names that node. The row of an ask block, and of each block that stands in one, is held
-// like any other; the readers leave those nodes out of what they match (InsideAskBlockSQL).
+// like any other; the readers leave those nodes out of what they match (NodeSearchAskNodesSQL).
 //
 // A text value is a block's alone: the block index states each block's text (refs'
 // planBlockValues), the authored-node pass an authored node's and the reasoning write a lens's
@@ -125,62 +125,130 @@ var nodeSearchWriteStatement = `
 // whose text holds it, or, where no block of the version does, to the node of its document.
 const textParentKind = "text_parent"
 
-// askBlockDepth bounds InsideAskBlockSQL's climb through a block's text parents: the most blocks a
+// askBlockDepth bounds the ask test's walk through text parents: the most blocks a
 // document may open inside one another (pmdoc's maxNesting, which this package may not import).
 const askBlockDepth = "100"
 
-// InsideAskBlockSQL is a boolean SQL expression, true where the block node whose id the SQL text id
-// names is an ask block or stands in one: the block itself, or a block above it by the text_parent
-// tuples the store holds now, opens an ask block. A text_parent is read as every current relation
-// is (CurrentTupleRead): the newest tuple of each far end, kept while it asserts, and only a far
-// end that is a block is climbed to, so the climb ends at the node of the document, where no block
-// holds the text, and at askBlockDepth. A block opens an ask block where its newest text value
-// asserts and begins with the fence of a block of the type ask, three colons or more and `ask{`,
-// the opening pmdoc's ParseTypedDirectiveOpen reads; a block's text begins at its own fence, in
-// whatever container it stands. The cheap prefix test comes first, so a text that opens no fence is
-// never matched against the pattern.
-//
-// It is the test the readers of node_search apply to the rows their word matched (search's
-// document arm, the near-copy gate's scoring and the related-item check's probe of a lexeme), so
-// an ask block's words, and those of a block standing in one, find the ask and never the document,
-// as search_document_text removes the ask blocks of a document's text. The writer, the census and
-// the backfill do not apply it: node_search holds a row for every block node that holds text, and
-// a retype of a block's ancestor moves what the readers answer with no write of the block. It is a
-// correlated read of one block's ancestry, each step one probe of graph_tuples_current and one of
-// graph_tuples_values. id is spelled by the caller and is never a value a request carried.
-//
-// One case is not caught. An ask block whose node address is longer than MaxAddressBytes gets no
-// node (refs' blockIDFits). The block index (refs' placeBlocks) puts each of its child blocks under
-// the nearest ancestor whose address fits. So no tuple names the ask, and the climb never reaches
-// it. A word in such an ask's options is then a document hit as well as the ask hit the asks leg
-// gives.
-func InsideAskBlockSQL(id string) string {
-	return `exists (
-		with recursive text_up (id, depth) as (
-			select (` + id + `)::text, 0
-			union all
-			select parent.to_id, text_up.depth + 1
-			from text_up
-			cross join lateral (
-				select standing.to_id from (
-					` + CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
-		`t.from_kind = '`+blockKind+`' and t.from_id = text_up.id and t.kind = '`+textParentKind+`'
-					  and t.to_kind <> '`+KindValue+`'`) + `
-				) standing
-				where standing.asserted and standing.to_kind = '` + blockKind + `'
-				order by standing.seq desc
-				limit 1
-			) parent
-			where text_up.depth < ` + askBlockDepth + `
-		)
-		select 1 from text_up
-		cross join lateral (
+// askTextSQL is true where the SQL text text opens a block of the type ask: three colons or more
+// and `ask{`, the opening pmdoc's ParseTypedDirectiveOpen reads, a block's text beginning at its
+// own fence. The cheap prefix test comes first, so a text that opens no fence is never matched
+// against the pattern. Over node_search's own column it is, word for word, the predicate of the
+// partial index node_search_ask_fences (migration 20261125160000_issue_tree_node_search), which
+// is what lets a read of the fences by that test take the index.
+func askTextSQL(text string) string {
+	return `case when left(` + text + `, 3) = ':::' then ` + text + ` ~ '^:{3,}ask\{' else false end`
+}
+
+// currentBlockTextParentSQL is the block block id stands in by the text_parent tuples the store
+// holds now, as a select answering at most one row: each relation read as every current relation
+// is (CurrentTupleRead), its newest tuple kept while it asserts, the relations to a block alone,
+// and of those the newest. A parent that is the node of a document is never climbed to.
+func currentBlockTextParentSQL(id string) string {
+	return `select standing.to_id from (
+			` + CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted, t.seq`,
+		`t.from_kind = '`+blockKind+`' and t.from_id = `+id+` and t.kind = '`+textParentKind+`'
+			  and t.to_kind = '`+blockKind+`'`) + `
+		) standing
+		where standing.asserted
+		order by standing.seq desc
+		limit 1`
+}
+
+// currentBlockAskTextSQL answers one row, opens_ask, for the block id: whether its newest text
+// tuple asserts and opens an ask block (askTextSQL), and no row for a block with no text tuple.
+func currentBlockAskTextSQL(id string) string {
+	return `select newest.asserted and ` + askTextSQL("newest.text") + ` as opens_ask
+		from (
 			select t.asserted, t.to_id as text from graph_tuples t
-			where t.from_kind = '` + blockKind + `' and t.from_id = text_up.id
+			where t.from_kind = '` + blockKind + `' and t.from_id = ` + id + `
 			  and t.kind = '` + AttributeText + `' and t.to_kind = '` + KindValue + `'
 			order by t.seq desc
 			limit 1
-		) newest
-		where newest.asserted and starts_with(newest.text, ':::') and newest.text ~ '^:{3,}ask\{'
+		) newest`
+}
+
+// NodeSearchAskNodesSQL is a CTE of a WITH RECURSIVE, ask_nodes (id, depth), holding every block
+// node that is an ask block or stands in one, of the owners the relation owners names (a CTE or
+// table with a column ref_key, the owner part of a node's address, refs.NodeSearchOwnerSQL): the
+// set InsideAskBlockSQL is true of, read once for a statement rather than once for each node a
+// word matched. A reader leaves out of what it matches each node whose address the set holds.
+//
+// The set is walked down from the ask blocks rather than up from the matches, because the ask
+// blocks are few and a common word matches tens of thousands of nodes. Its first rows are the
+// node_search rows whose text opens an ask block, read through node_search_ask_fences, the
+// partial index of those rows by their owner; each further row is a block whose current block
+// parent (currentBlockTextParentSQL) is a row already found, read off the tuples into that row
+// (graph_tuples_as_of_in) and kept only where the newest such parent is the row, to askBlockDepth.
+//
+// It is InsideAskBlockSQL's set, node for node:
+//
+//   - InsideAskBlockSQL climbs from a node through its current block parent, a function: each node
+//     has at most one. So a node x is above an ask block f at distance d (d at most askBlockDepth)
+//     on that climb exactly where f is d steps up the same function from x, which is where the
+//     walk down from f reaches x at depth d. A cycle of text_parent tuples is cut at the same depth
+//     both ways, and `union` drops a node found again at a depth it already holds.
+//   - InsideAskBlockSQL tests a node's newest text tuple; the walk starts from node_search's text.
+//     node_search holds the row of each block node present whose newest text tuple asserts, with
+//     that tuple's value, written in the transaction that writes the tuple (QueueNodeSearch), and
+//     the census kind node_search holds the table to the tuples both ways. So the two differ only
+//     for a node gone, or one with no node row, whose newest text opens an ask. Neither is an
+//     ancestor of a node present: an ask block is stated gone only where a version drops it (refs'
+//     IndexBlocks; the deferred typed-node pass states gone only decisions and readings, whose text
+//     opens no ask), and the pass that drops it restates the text_parent of every block it keeps to
+//     a block the same version holds (planBlockValues), so no live block's current parent is gone.
+//     A node with no text tuple opens no fence on either side. A node of a gone ask block is in
+//     node_search on neither side, so it is no match at all.
+//   - A retype into or out of an ask block is a new text tuple of the block and, in the same
+//     transaction, its node_search row, so both sides read the new text with no write of a node
+//     under it.
+//   - An ask block whose address is past MaxAddressBytes has no node (refs' blockIDFits), so it is
+//     on neither side: no tuple names it, and node_search holds no row of it.
+//   - owners only narrows which ask blocks the walk starts from. The text_parent tuples link a block
+//     to a block of the same document text under the same ref_key (planBlockValues states both ends
+//     with document.RefKey), so an ask block above a node shares the node's owner, and a reader that
+//     passes the owners its matches can name loses no ask block above any of them.
+//
+// Every node_search row is a block node's (QueueNodeSearch writes node_kind block alone), so the
+// set is keyed by the address alone, as the readers match a row by it.
+func NodeSearchAskNodesSQL(owners string) string {
+	return `ask_nodes(id, depth) as (
+		select fence.node_address, 0
+		from ` + owners + ` fence_owner
+		join node_search fence on split_part(fence.node_address, '#', 1) = fence_owner.ref_key
+		  and ` + askTextSQL("fence.text") + `
+		union
+		select child.from_id, ask_nodes.depth + 1
+		from ask_nodes
+		cross join lateral (
+			select distinct t.from_id from graph_tuples t
+			where t.to_kind = '` + blockKind + `' and t.to_id = ask_nodes.id and t.kind = '` + textParentKind + `'
+			  and t.from_kind = '` + blockKind + `'
+		) child
+		where ask_nodes.depth < ` + askBlockDepth + `
+		  and (` + currentBlockTextParentSQL("child.from_id") + `) = ask_nodes.id
 	)`
+}
+
+// InsideAskBlockSQL is a boolean SQL expression, true where the block node of the node_search row
+// whose address and text the SQL expressions id and text name is an ask block or stands in one
+// (NodeSearchAskNodesSQL's set): its own text opens an ask block, or a block above it by its
+// current block parents (currentBlockTextParentSQL), to askBlockDepth, has a newest text tuple
+// that asserts and opens one. It is the form for a reader that needs one node of a few and stops
+// at the first, the related-item check's probe of a lexeme, where the set read whole would cost
+// more than the climbs it saves. id and text are spelled by the caller and never a value a
+// request carried.
+func InsideAskBlockSQL(id, text string) string {
+	return `(` + askTextSQL(text) + ` or exists (
+		with recursive text_up(id, depth) as (
+			select parent.to_id, 1 from (` + currentBlockTextParentSQL(id) + `) parent
+			union all
+			select parent.to_id, text_up.depth + 1
+			from text_up
+			cross join lateral (` + currentBlockTextParentSQL("text_up.id") + `) parent
+			where text_up.depth < ` + askBlockDepth + `
+		)
+		select 1 from text_up
+		cross join lateral (` + currentBlockAskTextSQL("text_up.id") + `) newest
+		where newest.opens_ask
+	))`
 }

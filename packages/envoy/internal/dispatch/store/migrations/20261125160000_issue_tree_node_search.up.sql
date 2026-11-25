@@ -26,7 +26,13 @@
 -- No key references graph_nodes: a key would take a lock of graph_nodes, which the pre-deploy census
 -- would size as a table this migration touches, and no writer deletes a node.
 --
--- A create table and an index on it, each exempt from the census's table limit
+-- node_search_ask_fences holds the rows whose text opens a block of the type ask, by the owner part
+-- of the address (the ref_key before the first '#'), and no other row. Its predicate is, word for
+-- word, graphstore's askTextSQL over the column, so the readers' read of the ask blocks above what
+-- they match (graphstore.NodeSearchAskNodesSQL) takes the index: the ask blocks of the documents
+-- a search can answer, without reading the rows of every other block.
+--
+-- A create table and two indexes on it, each exempt from the census's table limit
 -- (internal/pgmigrate/exempt.go: catalogOnlyCreateTable, and catalogOnlyIndex over a table the same
 -- migration creates). It names no other table: artifact_versions, document_search and its trigger
 -- stay as they are for the root's own pull request to drop (R17, R19).
@@ -44,3 +50,5 @@ create table node_search (
   primary key (node_kind, node_address)
 );
 create index node_search_vector on node_search using gin (search);
+create index node_search_ask_fences on node_search (split_part(node_address, '#', 1))
+  where case when left(text, 3) = ':::' then text ~ '^:{3,}ask\{' else false end;

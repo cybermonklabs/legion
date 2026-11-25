@@ -155,11 +155,14 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // per block node holding its text's vector), so each term is one probe of a GIN index and no
 // candidate's spec is read more than once per term. A block's node is read as a block of its
 // document (refs.NodeSearchDocumentSQL), so a term one of a primary document's blocks holds is a
-// term its issue holds. A node that is an ask block or stands in one holds no term of its
-// document (graphstore.InsideAskBlockSQL, tested on the rows the index matched): its words are
-// its ask's, as search_document_text keeps them out of the document's version vector.
-// project_key, the status and the ancestors are filters on the rows those index scans produced,
-// never the driving predicate.
+// term its issue holds. Each node's owner is joined once per owner, from the trees and primary
+// docs read once (refs.NodeSearchOwnersSQL), rather than probed once per node, and the document,
+// its issue and the issue's project, status and ancestors are filters on the rows the index
+// scans produced, never the driving predicate. A node that is an ask block or stands in one holds
+// no term of its document: its words are its ask's, as search_document_text keeps them out of the
+// document's version vector. That set is read once, walked down from the ask blocks of the owners
+// the matches name (graphstore.NodeSearchAskNodesSQL), so a node several terms match is tested
+// once by a hash probe.
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
@@ -180,23 +183,32 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
 // $5 the lowest score to return, $6 the headline options, $7 the new title.
 var duplicateScoreQuery = `
-with term_weights as (
+with recursive term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
     from unnest($2::text[], $3::float8[]) w(lexeme, idf)
 ),
 picked as (select coalesce(sum(idf), 0) as weight from term_weights),
+owners as materialized (` + refs.NodeSearchOwnersSQL(`owner.is_primary`) + `),
+node_matches as materialized (
+  select i.key, w.lexeme, w.idf, s.node_address, o.ref_key
+    from term_weights w
+    join node_search s on s.search @@ w.tq
+    join owners o on o.ref_key = ` + refs.NodeSearchOwnerSQL("s") + `
+    join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s", "o") + ` and a.kind = 'doc' and a.is_primary
+    join issues i on i.key = a.issue_key
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+),
+match_owners as (select distinct ref_key from node_matches),
+` + graphstore.NodeSearchAskNodesSQL("match_owners") + `,
 hits as (
   select i.key, w.lexeme, w.idf
     from term_weights w
     join issues i on i.search @@ w.tq
    where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
   union
-  select i.key, w.lexeme, w.idf
-    from term_weights w
-    join node_search s on s.search @@ w.tq and not ` + graphstore.InsideAskBlockSQL(`s.node_address`) + `
-    join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s") + ` and a.kind = 'doc' and a.is_primary
-    join issues i on i.key = a.issue_key
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
+  select hit.key, hit.lexeme, hit.idf
+    from node_matches hit
+   where not exists (select 1 from ask_nodes ask where ask.id = hit.node_address)
 ),
 scored as (
   select h.key, sum(h.idf) / nullif((select weight from picked), 0) as score,

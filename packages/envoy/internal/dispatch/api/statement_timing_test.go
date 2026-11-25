@@ -196,16 +196,12 @@ func TestStatementTimings(t *testing.T) {
 	// the first row it meets, which is not the statement production runs.
 	probeArguments := []any{subjects.Project, subjects.ProbeLexemes, subjects.Issue, (*string)(nil)}
 
-	// The five statements of search's document arm are measured as pairs on a database at this
-	// release's schema: this release's text of the arm reads document_search, the release
-	// before's reads a lateral over artifact_versions, and that schema holds both, so the two
-	// texts run alternately on one connection and the runner fails a pair whose after median is
-	// not below its before. A database migrated from the release before holds no
-	// document_search (migration 20261101182447), so this release's text cannot run there at
-	// all: each before text is measured alone instead, under the name it carries here, and the
-	// reading to compare it with is this schema's own reading of the same before text, which
-	// every pair below logs beside its after text. The two-commit run is therefore this one
-	// test against two databases rather than a second harness. The two meaning statements are
+	// The pair database has node_search for this build's document arm and artifact_versions
+	// for the before arm. document_search is the historical schema marker, not a source
+	// for either arm. The rewrites use the same bound parameters as before. The runner
+	// alternates texts on one connection and fails a Pair unless the after median is
+	// lower. The older database, without the marker, runs only the before texts under
+	// the same names. The two meaning statements are
 	// the exception, and their names say so: this release deletes the whole-text rows four of
 	// main's five meaning arms read, so main's meaning text measures a statement whose arms
 	// find nothing here, and the pair and report below take a before side of their own under a
