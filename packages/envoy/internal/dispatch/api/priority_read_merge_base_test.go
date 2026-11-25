@@ -635,6 +635,10 @@ func (a *mergeBaseAdvancesScan) resolve() []model.IssueAdvance {
 // encodes to as the route encodes it. A comparison of two empty answers proves nothing, so on the
 // corpus the copy's answer with no project named must hold the counts the corpus was built to
 // hold (holdReadCorpusAnswer), and each named project must hold work under a priority.
+//
+// On the corpus it compares in each of the three states of the newest-event pairs
+// (mergeBaseCorpusStates), one subtest each, in order: after the fill, every pair null, and after
+// an append of the release before. Before the first, it holds the fill (holdNewestEventFill).
 func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 	t.Parallel()
 	corpus := seedPrioritiesReadCorpus(t)
@@ -642,16 +646,24 @@ func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 	corpus.census.hold(t)
 	requireReadCorpusJITOff(t, corpus.database, "the merge base's comparison")
 	t.Logf("the read below this change is readPriorities at %s, frozen in priority_read_merge_base_test.go", prioritiesReadMergeBase)
+	holdNewestEventFill(t, corpus.database)
 
 	largest := readCorpusLargestProjects(t, corpus.database, 2)
-	compareReadsWithMergeBase(t, corpus.database, "the corpus", [][]string{{}, largest[:1], largest}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
-		switch {
-		case len(projects) == 0:
-			holdReadCorpusAnswer(t, want, form, "the read below this change")
-		case want.PriorityWorkParked.Count == 0:
-			t.Errorf("%s with %s answers no parked work in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
-		}
-	})
+	for _, state := range mergeBaseCorpusStates {
+		t.Run(state.name, func(t *testing.T) {
+			if state.setup != nil {
+				state.setup(t, corpus.database)
+			}
+			compareReadsWithMergeBase(t, corpus.database, "the corpus "+state.name, [][]string{{}, largest[:1], largest}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
+				switch {
+				case len(projects) == 0:
+					holdReadCorpusAnswer(t, want, form, "the read below this change")
+				case want.PriorityWorkParked.Count == 0:
+					t.Errorf("%s with %s answers no parked work in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
+				}
+			})
+		})
+	}
 
 	empty := seedNoLivePriority(t)
 	compareReadsWithMergeBase(t, empty.database, "a store with no live priority", [][]string{{}, empty.projects[:1], empty.projects}, func(form prioritiesReadForm, projects []string, want model.Priorities) {
@@ -663,6 +675,165 @@ func TestThePrioritiesReadAnswersAsTheMergeBaseAnswers(t *testing.T) {
 			t.Errorf("%s with %s on a store with no live priority counts no work under none in the read below this change, so its comparison proves little", form.called, projectsNamed(projects))
 		}
 	})
+}
+
+// mergeBaseCorpusStates are the three states of the corpus's newest-event pairs that
+// TestThePrioritiesReadAnswersAsTheMergeBaseAnswers compares the two reads in, each made by its
+// setup from the one before:
+//
+//   - after the fill, the steady state, as the corpus is seeded: the read takes each newest event
+//     from the issue row;
+//   - every pair null, as on a store before 20261125094600 fills it: the read probes the event of
+//     last_seq of each member issue;
+//   - after an append of the release before: the fill again (fillNewestEventPairs), then, for one
+//     member issue of each live priority, what QueueAppendWithLogins of the release before
+//     20261125094500 writes (appendAsTheReleaseBefore). Its pair then names the seq before
+//     last_seq, and its event of last_seq is the newest of every priority it advances, which only
+//     the probe reads.
+var mergeBaseCorpusStates = []struct {
+	name  string
+	setup func(t *testing.T, database *store.Store)
+}{
+	{"after the fill", nil},
+	{"with every pair null", func(t *testing.T, database *store.Store) {
+		t.Helper()
+		if _, err := database.Pool.Exec(context.Background(), `update issues set last_event_at = null, last_event_at_seq = null`); err != nil {
+			t.Fatalf("null every newest-event pair: %v", err)
+		}
+	}},
+	{"after an append of the release before", func(t *testing.T, database *store.Store) {
+		t.Helper()
+		fillNewestEventPairs(t, database)
+		appendAsTheReleaseBefore(t, database)
+	}},
+}
+
+// holdNewestEventFill holds the corpus to what 20261125094600's fill leaves, before any state is
+// read: every issue with last_seq > 0 holds last_event_at_seq = last_seq and the created_at of its
+// event of last_seq as last_event_at, and every issue with last_seq = 0 holds both null. The COPY
+// wrote every pair null, so the issues whose pair is not null are the rows the fill wrote, which it
+// prints. It fails on each row that breaks the rule, naming the first of them.
+func holdNewestEventFill(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	var wrote int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from issues where last_event_at is not null or last_event_at_seq is not null`).Scan(&wrote); err != nil {
+		t.Fatalf("count the rows the fill wrote: %v", err)
+	}
+	t.Logf("the fill wrote the newest-event pair of %d issues", wrote)
+	rows, err := database.Pool.Query(ctx, `
+		select i.key, i.last_seq, i.last_event_at_seq, i.last_event_at, e.created_at
+		from issues i
+		left join events e on e.issue_key = i.key and e.seq = i.last_seq
+		where (i.last_seq > 0 and (i.last_event_at_seq is distinct from i.last_seq or i.last_event_at is distinct from e.created_at))
+		   or (i.last_seq = 0 and (i.last_event_at is not null or i.last_event_at_seq is not null))
+		order by i.key collate "C"
+	`)
+	if err != nil {
+		t.Fatalf("read the pairs the fill left: %v", err)
+	}
+	var unnamed, unknown []string
+	for rows.Next() {
+		var key string
+		var lastSeq int64
+		var pairSeq *int64
+		var pairAt, eventAt *time.Time
+		if err := rows.Scan(&key, &lastSeq, &pairSeq, &pairAt, &eventAt); err != nil {
+			rows.Close()
+			t.Fatalf("read a pair the fill left: %v", err)
+		}
+		row := fmt.Sprintf("%s (last_seq %d, pair seq %v at %v, its event of last_seq at %v)", key, lastSeq, pointedTo(pairSeq), pointedTo(pairAt), pointedTo(eventAt))
+		if lastSeq > 0 {
+			unnamed = append(unnamed, row)
+		} else {
+			unknown = append(unknown, row)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the pairs the fill left: %v", err)
+	}
+	if len(unnamed) > 0 {
+		t.Errorf("after the fill, %d issues with an event hold a pair that does not name their event of last_seq, want 0: %s", len(unnamed), firstRows(unnamed))
+	}
+	if len(unknown) > 0 {
+		t.Errorf("after the fill, %d issues with no event hold a pair, want both null: %s", len(unknown), firstRows(unknown))
+	}
+}
+
+// pointedTo is what p points to, and "null" for nil, as a failure names a column.
+func pointedTo[T any](p *T) string {
+	if p == nil {
+		return "null"
+	}
+	return fmt.Sprint(*p)
+}
+
+// firstRows is the first ten of rows, and how many more there are.
+func firstRows(rows []string) string {
+	const shown = 10
+	if len(rows) <= shown {
+		return strings.Join(rows, "; ")
+	}
+	return strings.Join(rows[:shown], "; ") + fmt.Sprintf("; and %d more", len(rows)-shown)
+}
+
+// appendAsTheReleaseBefore writes, for one member issue of each live priority - the first by key
+// that states its relation (priorityCorpusSeed) - what QueueAppendWithLogins of the release before
+// 20261125094500 writes: an event at last_seq + 1 and the row's new last_seq and updated_at, in one
+// statement, with the pair left as it was. Each event's created_at is later than every event of
+// the corpus, one minute apart, so it is the newest event of every priority its issue advances.
+// It holds that each such issue's pair then names the seq before its last_seq.
+func appendAsTheReleaseBefore(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	nodes, err := prioritystore.List(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the live priorities: %v", err)
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		ids = append(ids, node.ID)
+	}
+	seedKeys, seedIDs := priorityCorpusSeed(t, database, ids)
+	picked := map[string]bool{}
+	var appended []string
+	for index, key := range seedKeys {
+		if picked[seedIDs[index]] {
+			continue
+		}
+		picked[seedIDs[index]] = true
+		if slices.Contains(appended, key) {
+			continue
+		}
+		appended = append(appended, key)
+	}
+	if len(picked) != len(ids) {
+		t.Fatalf("the corpus states a relation for %d of its %d live priorities, want each", len(picked), len(ids))
+	}
+	for minutes, key := range appended {
+		if _, err := database.Pool.Exec(ctx, `
+			with appended as (
+				insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at)
+				select i.key, i.last_seq + 1, 'comment.created', '{"kind":"user","id":"alice"}'::jsonb, '{}'::jsonb, false, at.at, at.at
+				from issues i, (select max(created_at) + make_interval(mins => $2) as at from events) at
+				where i.key = $1
+				returning issue_key, seq, created_at
+			)
+			update issues set last_seq = appended.seq, updated_at = greatest(issues.updated_at, appended.created_at)
+			from appended where issues.key = appended.issue_key
+		`, key, minutes+1); err != nil {
+			t.Fatalf("append to %s as the release before does: %v", key, err)
+		}
+	}
+	var behind int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from issues where key = any($1::text[]) and last_event_at_seq = last_seq - 1`, appended).Scan(&behind); err != nil {
+		t.Fatalf("read the appended issues' pairs: %v", err)
+	}
+	if behind != len(appended) {
+		t.Fatalf("after an append of the release before to %d issues, %d hold a pair a seq behind last_seq, want each", len(appended), behind)
+	}
+	t.Logf("appended an event as the release before does to %d member issues, one for each of the %d live priorities: %v", len(appended), len(ids), appended)
 }
 
 // compareReadsWithMergeBase makes each form of the read with each list of projects of the
