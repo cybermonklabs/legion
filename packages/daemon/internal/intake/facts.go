@@ -310,7 +310,9 @@ func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
 // attributes the server drops (packages/envoy/internal/dispatch/docs/approval_carry.go,
 // restoreReason, restoreCarriedReason and carriedReasonPrefix, whose format is "Carried forward
 // from the approval of version %d: ..."). A person's answer, resolve or decline of an ask writes
-// one version, which changes only the server-owned attributes of the ask's block (`state`, and
+// one version. When the answer, resolve or decline is that version's whole change (that package's
+// changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+// version), the version changes only the server-owned attributes of the ask's block (`state`, and
 // `answered_by` and `answered_at` where it is answered), so its carry is the last of these, a
 // carried approval like any other. The daemon cannot import that package, so it holds the prefix
 // before the version number as a literal of its own.
