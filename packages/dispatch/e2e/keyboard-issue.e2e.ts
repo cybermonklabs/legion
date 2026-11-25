@@ -727,6 +727,77 @@ test.describe("keys typed straight after a key that opens a surface", () => {
     }
   });
 
+  // The page starts the shortcut sheet's chunk and the search bar's as soon as it has drawn
+  // (`web/src/features/shell/ShortcutHelpHost.tsx`, `web/src/features/search/
+  // SearchPaletteHost.tsx`), so each row holds that download on the wire, and the press finds the
+  // chunk not in. The box that holds the keys is found by the name it carries for its surface,
+  // "<name> (loading)" (`Placeholder` in `web/src/features/shell/asked-surface.tsx`).
+  test("? then 1 while the shortcut sheet's chunk is on its way writes no priority, and the sheet opens with 1 in its filter", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Held sheet" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const { release } = await holdAssetUntilReleased(page, chunkFile("ShortcutHelp"));
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Held sheet");
+
+      await page.keyboard.press("?");
+      await page.keyboard.press("1");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
+      const box = page.getByRole("textbox", { exact: true, name: "Keyboard shortcuts (loading)" });
+      await expect(box).toBeFocused();
+      await expect(box).toHaveValue("1");
+      release();
+      const filter = page
+        .getByRole("dialog", { name: "Keyboard shortcuts" })
+        .getByRole("searchbox", { name: "Filter shortcuts" });
+      await expect(filter).toHaveValue("1");
+      await expect(filter).toBeFocused();
+      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+    } finally {
+      await context.close();
+    }
+  });
+
+  test("$mod+k then 1 while the search bar's chunk is on its way writes no priority, and the bar opens with 1 in its box", async ({
+    browser,
+  }) => {
+    await createProject({ key: "CORE", name: "Core" });
+    const issue = await createIssue({ project: "CORE", title: "Held bar" });
+    const context = await asUser(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const { release } = await holdAssetUntilReleased(page, chunkFile("SearchPalette"));
+      const patched = await patchesOf(page, issue.key);
+      await openIssue(page, issue.key, "Held bar");
+
+      await page.keyboard.press("ControlOrMeta+k");
+      await page.keyboard.press("1");
+      await afterAnyWrite(page);
+      expect(patched()).toBe(0);
+      expect(await keptWrites(page)).toBe(0);
+      const box = page.getByRole("textbox", { exact: true, name: "Search (loading)" });
+      await expect(box).toBeFocused();
+      await expect(box).toHaveValue("1");
+      release();
+      const search = page
+        .getByRole("dialog", { name: "Search" })
+        .getByRole("combobox", { name: "Search" });
+      await expect(search).toHaveValue("1");
+      await expect(search).toBeFocused();
+      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+    } finally {
+      await context.close();
+    }
+  });
+
   // Tab and Shift+Tab stay in the box that holds the keys, as they stay in an open dialog
   // (`Placeholder` in `web/src/features/shell/asked-surface.tsx`). Before, Shift+Tab put the focus
   // on the page, the box's blur called the open off, and the next digit wrote the issue's
