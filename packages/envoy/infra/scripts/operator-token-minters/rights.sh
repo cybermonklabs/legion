@@ -14,8 +14,9 @@
 # attach enter any pod on the node, the guarded ones included. A binding is written by create,
 # patch or update, and RBAC lets one who may bind its role, by name, update it, so each is asked;
 # a Role or ClusterRole is written by patch or update, which adds a rule to a role someone already
-# holds, so those are asked too (named_rights asks the same two by each bound role's name, which
-# live_named reads from the cluster's roles instead of reviewing). A Secret of type
+# holds, so those are asked too (binding_rights asks the writes of a binding or a role in each
+# other namespace that holds a RoleBinding, and live_named reads each rule that limits one of
+# them by name from the cluster's roles). A Secret of type
 # kubernetes.io/service-account-token naming a ServiceAccount is filled with its token, so create
 # secrets is asked beside get, list and watch.
 RIGHTS_TABLE='
@@ -232,9 +233,12 @@ rights_json() {
 }
 # TABLE_JSON: the namespaced rows of RIGHTS_TABLE ({verb, group, resource, sub, named}), the ways in
 # a namespace to become a ServiceAccount of it that follow_becomes asks; `named` rows name the
-# ServiceAccount.
+# ServiceAccount. A patch or update of a Role is left out: RBAC lets one who writes a role add only
+# rules it already holds unless it may escalate (asked beside it), so a write of a role alone is no
+# way to become anyone, and a chain through one would be a false finding.
 TABLE_JSON="$(while read -r verb group resource sub scope; do
   [ -n "$verb" ] && [ "$scope" != cluster ] || continue
+  case "$verb $resource" in "patch roles" | "update roles") continue ;; esac
   [ "$group" != - ] || group=""
   [ "$sub" != - ] || sub=""
   printf '%s\t%s\t%s\t%s\t%s\n' "$verb" "$group" "$resource" "$sub" "$scope"
@@ -246,10 +250,12 @@ done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | spl
 # any ServiceAccount of it, and the ServiceAccount is the pair the pool binds, so either lets its
 # maker act as the pair's Google service account. Beside them, the escalation rights by which a
 # holder grants itself any of those: impersonate users, groups and serviceaccounts, escalate and
-# bind clusterroles, and create, patch and update clusterrolebindings, cluster-wide, and create and
-# get nodes/proxy; bind and escalate roles and create, patch and update rolebindings in each guarded
-# namespace (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS). The
-# admission rights are each cluster's own (admission_rights).
+# bind clusterroles, patch and update clusterroles, and create, patch and update
+# clusterrolebindings, cluster-wide, and create and get nodes/proxy; bind and escalate roles,
+# patch and update roles, and create, patch and update rolebindings in each guarded namespace
+# (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS). The admission rights
+# are each cluster's own (admission_rights), and the writes of a binding or a role in each other
+# namespace that holds a RoleBinding are binding_rights'.
 GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq" | jq -c --argjson csr "$CSR_RIGHTS" '. + $csr')"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"

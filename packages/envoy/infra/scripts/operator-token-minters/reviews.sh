@@ -3,38 +3,61 @@
 # operator-token-minters/reviews.sh: SubjectAccessReviews, how their answers are judged, who can
 # become a ServiceAccount with a finding, and the principals and rights a cluster adds. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
-# REVIEW_WORKERS: how many kubectl calls review runs at once, each with its own share of the
-# principals. kubectl POSTs one review at a time, so one call is the API server's rate for one
-# connection: on a mock API server over loopback, 500 reviews took 21.5 s, 23.2 a second (measured;
-# a live API server is slower). The operator's cluster asks about 618,000 reviews, which is about
-# 7.4 hours at that one-call rate, and ten calls at once divide it if the API server serves ten
-# connections at that rate, which is arithmetic on the one-call measurement, not a measured figure.
-# A run sets REVIEW_WORKERS in its environment to ask more slowly, or 1 to ask as one call; the
-# answer's order does not depend on it, since the chunks are read back in the order they were asked.
+# REVIEW_WORKERS: the most kubectl calls review runs at once on one cluster, each with its own share
+# of the principals; 10 unless a run sets it. The calls on a cluster are REVIEW_WORKERS or the
+# nominal seats that cluster's API server gives the priority level global-default, whichever is
+# fewer (review_workers). kubectl POSTs one review at a time, so a call holds one seat at a time.
+# Measured on a mock API server over loopback, so kubectl's own cost (a live API server adds its
+# latency to each POST): 2,000 reviews took 86.4 s in one call (23.2 a second), 8.9 s in ten (225
+# a second) and 4.6 s in twenty (433 a second). The answer's order does not depend on the number
+# of calls, since the chunks are read back in the order they were asked.
 REVIEW_WORKERS="${REVIEW_WORKERS:-10}"
+# review_workers KUBECONFIG: sets WORKERS, how many calls review makes at once on that cluster:
+# REVIEW_WORKERS, capped at the nominal seats of the priority level global-default, which serves a
+# user no earlier FlowSchema matches, as the one running this check is. The seats are the API
+# server's apiserver_flowcontrol_nominal_limit_seats in its /metrics, from the replica that
+# answers. More calls than seats would only wait behind each other at the API server, and take
+# seats from global-default's other users. A /metrics that cannot be read, or that holds no
+# whole number of seats for global-default, gives one call, which loads the API server least: the
+# review is slower, never wrong. Returns 1 with REVIEW_ERROR when REVIEW_WORKERS is not a whole
+# number above 0.
+review_workers() {
+  local seats
+  WORKERS=1
+  [[ "$REVIEW_WORKERS" =~ ^[1-9][0-9]{0,3}$ ]] || {
+    REVIEW_ERROR="REVIEW_WORKERS is not a whole number from 1 to 9999, so the reviews were not asked"
+    return 1
+  }
+  seats="$(kubectl --kubeconfig "$1" get --raw /metrics 2>/dev/null |
+    awk '$1 == "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"}" { print $2; exit }')" || true
+  [[ "$seats" =~ ^[1-9][0-9]{0,5}$ ]] || return 0
+  WORKERS=$((seats < REVIEW_WORKERS ? seats : REVIEW_WORKERS))
+}
 # review KUBECONFIG PRINCIPALS RIGHTS [FENCE]: one SubjectAccessReview for each principal of the
 # JSON array PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS. The
-# principals are split into REVIEW_WORKERS chunks, each asked by its own kubectl call as one List,
-# so each call POSTs its share one at a time and the calls run at once; the first chunk always holds
-# the witness, whose reviews every judgement ends on. kubectl create answers with one JSON document
-# per review it made, never a List (review-answer.jq), read with -s. A review's answer is matched to
-# its question by the subject and the attributes the API server echoes in its spec. Writes a record
-# of principal, right label, allowed|refused|error, the evaluation error, the API server's reason
-# and the fence's verdict on the right (review-answer.jq) per review to $WORK/review.rec, in the
-# chunks' order; FENCE is the broker's pod fence credited on this cluster (broker-fence.sh's
-# FENCE_CREDITED), none on any other. Returns 1 with REVIEW_ERROR when the API server refused a
-# call, when a document of an answer is not a SubjectAccessReview with a status, or when the answers
-# do not hold each review asked once (an empty body sent with exit 0 holds none). PRINCIPALS and
-# RIGHTS reach jq through files (--slurpfile), never its command line: a cluster's principals and
-# rights (530 and 3,668 on the operator's) are more than one argument may hold. Each must be one
-# JSON array (one_array), so an empty argument fails the reviews' build.
+# principals are split into WORKERS chunks (review_workers: REVIEW_WORKERS, capped at the cluster's
+# seats), each asked by its own kubectl call as one List, so each call POSTs its share one at a time
+# and the calls run at once; the first chunk always holds the witness, whose reviews every
+# judgement ends on. kubectl create answers with one JSON document per review it made, never a List
+# (review-answer.jq), read with -s. A review's answer is matched to its question by the subject and
+# the attributes the API server echoes in its spec. Writes a record of principal, right label,
+# allowed|refused|error, the evaluation error, the API server's reason and the fence's verdict on
+# the right (review-answer.jq) per review to $WORK/review.rec, in the chunks' order; FENCE is the
+# broker's pod fence credited on this cluster (broker-fence.sh's FENCE_CREDITED), none on any other.
+# Returns 1 with REVIEW_ERROR when the API server refused any call, when a document of an answer is
+# not a SubjectAccessReview with a status, or when the answers do not hold each review asked once
+# (an empty body sent with exit 0 holds none). PRINCIPALS and RIGHTS reach jq through files
+# (--slurpfile), never its command line: a cluster's principals and rights are more than one
+# argument may hold. Each must be one JSON array (one_array), so an empty argument fails the
+# reviews' build.
 review() {
-  local chunks chunk rc=0
+  local chunks chunk refused="" pids=()
   REVIEW_ERROR=""
   printf '%s' "$2" >"$WORK/review-principals.json"
   printf '%s' "$3" >"$WORK/review-rights.json"
-  # The chunks: at most REVIEW_WORKERS, each a share of the principals, the witness's in the first.
-  if ! chunks="$(jq -r --argjson workers "$REVIEW_WORKERS" '
+  review_workers "$1" || return 1
+  # The chunks: at most WORKERS, each a share of the principals, the witness's in the first.
+  if ! chunks="$(jq -r --argjson workers "$WORKERS" '
       (if length < $workers then length else $workers end) as $n
       | if $n < 1 then 1 else $n end' "$WORK/review-principals.json" 2>"$WORK/review.err")"; then
     REVIEW_ERROR="this script could not count the principals: $(first_line "$WORK/review.err")"
@@ -51,16 +74,19 @@ review() {
   done
   for ((chunk = 0; chunk < chunks; chunk++)); do
     kubectl --kubeconfig "$1" create -f - -o json <"$WORK/review-in-$chunk.json" \
-      >"$WORK/review-out-$chunk.json" 2>"$WORK/review-err-$chunk" || touch "$WORK/review-refused-$chunk" &
+      >"$WORK/review-out-$chunk.json" 2>"$WORK/review-err-$chunk" &
+    pids[chunk]=$!
   done
-  wait
+  # Each call is waited for by its own pid, so no other background job of the shell is; every
+  # call is waited for, and the first the API server refused, in the order asked, names the
+  # refusal.
   for ((chunk = 0; chunk < chunks; chunk++)); do
-    [ ! -e "$WORK/review-refused-$chunk" ] || {
-      rm -f "$WORK"/review-refused-*
-      REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review-err-$chunk")"
-      return 1
-    }
+    wait "${pids[chunk]}" || [ -n "$refused" ] || refused=$chunk
   done
+  if [ -n "$refused" ]; then
+    REVIEW_ERROR="the API server refused the review (it needs create on subjectaccessreviews, container.subjectAccessReviews.create on GKE): $(first_line "$WORK/review-err-$refused")"
+    return 1
+  fi
   # The chunks are read in the order they were asked, so the records' order does not depend on which
   # worker answered first.
   : >"$WORK/review.json"
@@ -76,7 +102,6 @@ review() {
     REVIEW_ERROR="the API server answered $answered of the $asked reviews asked, in $documents documents"
     return 1
   fi
-  return $rc
 }
 # witness_held: whether the API server allowed every one of the witness's reviews in
 # $WORK/review.rec (WITNESS_RECORD, the first principal of every review); returns 1 with
@@ -487,7 +512,10 @@ named_grants() {
 # the certificate chain so limited (an approval by name, whose name the requester picks) goes to
 # csr_part, so it joins the signers judge_reviews' reviews allowed; the caller runs csr_chains after
 # this. Runs after judge_reviews; a refused list is UNKNOWN naming the permission, and an answer that
-# is not a list (is_list) or that code-rbac.jq cannot read is UNKNOWN naming the roles' list.
+# is not a list (is_list), that holds no bootstrap ClusterRole cluster-admin (labelled
+# kubernetes.io/bootstrapping=rbac-defaults, which every cluster has, so a list without it is not
+# whole: code-rbac.jq passes over a binding whose role the list lacks), or that code-rbac.jq cannot
+# read is UNKNOWN naming the roles' list.
 live_named() {
   local what id detail kind ns name policy residual
   # ROLES_OK: whether $WORK/roles.json holds this cluster's roles, for follow_becomes's named read.
@@ -497,7 +525,16 @@ live_named() {
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
     return 0
   fi
-  if ! is_list "$WORK/roles.json" "$WORK/named.rec.err" || ! named_grants "$5" "$WORK/named.rec" "${6:-}"; then
+  if ! is_list "$WORK/roles.json" "$WORK/named.rec.err"; then
+    unknown "$2" "the API server's list of roles could not be read, so a right a role limits by name is not read: $(first_line "$WORK/named.rec.err")"
+    return 0
+  fi
+  if ! jq -e 'any(.items[]; .kind == "ClusterRole" and .metadata.name == "cluster-admin"
+      and .metadata.labels["kubernetes.io/bootstrapping"] == "rbac-defaults")' "$WORK/roles.json" >/dev/null 2>&1; then
+    unknown "$2" "the API server's list of roles holds no bootstrap ClusterRole cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so it is not whole and a right a role limits by name is not read"
+    return 0
+  fi
+  if ! named_grants "$5" "$WORK/named.rec" "${6:-}"; then
     unknown "$2" "the API server's list of roles could not be read, so a right a role limits by name is not read: $(first_line "$WORK/named.rec.err")"
     return 0
   fi
@@ -664,39 +701,22 @@ settings_verdict() {
     unknown "$1" "the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list" ;;
   esac
 }
-# named_rights [PROJECT]: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster
-# whose bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate
-# groups and users by name, the users being the bindings' User subjects and each user or Google
-# service account the GKE IAM step listed as a holder, and, for a cluster in PROJECT, a project other
-# than --project, each one its member project's IAM step listed (GKE's IAM authorizer judges an
-# impersonated user by its own IAM there); bind and escalate on every binding's role, and patch and
-# update on every binding, by name; and update and patch by name on each role bound to a reviewed
-# principal. When the bindings could not be read, it holds impersonate groups system:masters and
-# the IAM holders alone. Returns 1 with NAMED_ERROR when a pipeline that gathers its inputs fails or
-# named-rights.jq built no JSON array of rights, which leaves NAMED_RIGHTS none ([]) rather than
-# what it printed. Its callers run it as `named_rights || unknown`, which turns errexit off inside
-# it, so each pipeline here is checked by its own `||`.
-named_rights() {
-  local bindings='{"items": []}' file files=() built cannot="the rights a role limits by name could not be built, so none is read from the cluster's roles"
-  NAMED_RIGHTS='[]' NAMED_ERROR=""
-  cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/reviewed.json" ||
-    { NAMED_ERROR="$cannot: the reviewed principals could not be listed"; return 1; }
-  [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
-  for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
-    [ ! -s "$file" ] || files+=("$file")
-  done
-  if [ "${#files[@]}" -gt 0 ]; then
-    awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
-      sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))' >"$WORK/iam-users.json" ||
-      { NAMED_ERROR="$cannot: the IAM holders could not be listed"; return 1; }
+# binding_rights: sets BINDING_RIGHTS, the rights binding-rights.jq builds from the bindings
+# bound_subjects read last ($WORK/bindings.json): for each namespace that holds a RoleBinding, bind
+# and escalate on roles, bind on clusterroles, and patch and update on roles and rolebindings,
+# naming no resource. The step reviews them for every principal and live_named reads the rules that
+# limit them by name, which is how a right in a namespace outside the guarded ones is found. When
+# bound_subjects could not read the bindings (its own UNKNOWN), it holds none. Returns 1 with
+# BINDING_ERROR when binding-rights.jq built no JSON array of rights, which leaves BINDING_RIGHTS
+# none ([]) rather than what it printed.
+binding_rights() {
+  local built
+  BINDING_RIGHTS='[]' BINDING_ERROR=""
+  [ "$BINDINGS_OK" = true ] || return 0
+  if built="$(jq -c -L "$LIB" -f "$LIB/binding-rights.jq" "$WORK/bindings.json" 2>"$WORK/binding-rights.err")" && is_rights "$built"; then
+    BINDING_RIGHTS="$built"
   else
-    printf '[]' >"$WORK/iam-users.json" || { NAMED_ERROR="$cannot: the IAM holders could not be written"; return 1; }
-  fi
-  if built="$(jq -c -L "$LIB" --slurpfile reviewed "$WORK/reviewed.json" --slurpfile iam_users "$WORK/iam-users.json" \
-    -f "$LIB/named-rights.jq" <<<"$bindings" 2>"$WORK/named-rights.err")" && is_rights "$built"; then
-    NAMED_RIGHTS="$built"
-  else
-    NAMED_ERROR="$cannot: $(first_line "$WORK/named-rights.err")"
+    BINDING_ERROR="the rights of the namespaces that hold a RoleBinding could not be built, so none is reviewed or read from the cluster's roles: $(first_line "$WORK/binding-rights.err")"
     return 1
   fi
 }
@@ -735,7 +755,7 @@ shape_error() {
 # refuses anything but two JSON arrays (is_rights), an empty argument included, printing why and
 # returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
 # than go on without the rights the argument owed. Every rights value a step joins goes through it.
-# custom_rights, admission_rights and named_rights check what they build with is_rights too, so a
+# custom_rights, admission_rights and binding_rights check what they build with is_rights too, so a
 # failed build reads as their own UNKNOWN, naming those rights, rather than stopping the run.
 with_rights() {
   if ! is_rights "$1" || ! is_rights "$2"; then

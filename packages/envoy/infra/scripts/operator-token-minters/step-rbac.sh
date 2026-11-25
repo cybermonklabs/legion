@@ -137,17 +137,17 @@ else
   [ "${AUTOPILOT["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}" = true ] ||
     unknown "$step" "the cluster is GKE Standard, not Autopilot, so a privileged or hostPath pod on the operator's node can read the kubelet's credentials and the operator's ServiceAccount token there, a node escape no RBAC review here sees"
   masters_bindings "$step" "" "cluster:$CLUSTER"
-  # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
-  # and user by name, bind and escalate every binding's role and patch and update every binding by
-  # name, and update or patch each role bound to a reviewed principal. They are not reviewed: live_named
-  # below reads the cluster's own Roles and ClusterRoles for each rule whose resourceNames limit one
-  # of them and names the subject the binding gives it, which is the same answer from the same
-  # objects, without a review for every principal of every name. On this cluster that is where most
-  # of the reviews would go: of 1,944,040 asked on 2026-11-24, 1,325,530 named a resource. A right
-  # the API server allows outside RBAC is still reviewed, since every unnamed right stays in the
-  # reviewed set, and GKE's IAM authorizer grants a verb on a resource, never on one resource's name.
-  named_rights || unknown "$step" "$NAMED_ERROR"
-  named_read="$(with_rights "$rights" "$NAMED_RIGHTS")"
+  # A right a role limits to a resource by name never answers a review that names nothing, so
+  # those are read rather than reviewed: live_named below reads the cluster's own Roles and
+  # ClusterRoles for each rule whose resourceNames limit one of the rights reviewed, and names the
+  # subject the binding gives it. So each right is asked without a name, in each namespace where
+  # it matters: the guarded namespaces and cluster-wide (RIGHTS_TABLE and the rights joined above),
+  # and, for the writes of a binding or a role, each namespace that holds a RoleBinding
+  # (binding_rights), where binding a role grants what it holds there, that namespace's Secrets
+  # among them. The review finds a grant of any authorizer that names no resource, and GKE's IAM
+  # authorizer grants a verb on a resource, never on one resource's name.
+  binding_rights || unknown "$step" "$BINDING_ERROR"
+  rights="$(with_rights "$rights" "$BINDING_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list.
   [ "$accounts" -gt 0 ] ||
@@ -158,13 +158,13 @@ else
     unknown "$step" "$REVIEW_ERROR"
   elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
     RBAC_OK=true
-    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$named_read" "$FENCE_CREDITED"
+    live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights" "$FENCE_CREDITED"
     csr_chains "" "cluster:$CLUSTER"
     follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
     remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER" "$FENCE_CREDITED"
     if unchanged; then
       credits="$(credited)"
-      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each reviewed and $(($(jq length <<<"$named_read") - $(jq length <<<"$rights"))) more a role limits by name read from the cluster's roles: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants whose use on the broker's pods its pod fence refuses")"
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each reviewed, and every rule of the cluster's roles that limits one of them by name read: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants whose use on the broker's pods its pod fence refuses")"
     fi
   fi
 fi

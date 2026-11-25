@@ -103,12 +103,6 @@ live_iam() {
     return
   fi
   mark
-  # The GKE IAM step's holders, and a fleet member project's: who may impersonate one of them, by
-  # name, takes its IAM permissions on the clusters that project authorizes (named_rights asks it).
-  case "$check" in
-    gke) cp "$WORK/analysis.rec" "$WORK/gke-analysis.rec" ;;
-    gke:*) cp "$WORK/analysis.rec" "$WORK/gke-analysis-${check#gke:}.rec" ;;
-  esac
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
@@ -158,8 +152,7 @@ iam_holder() {
 # there of a guard right's container.* permission (a guarded namespace, ServiceAccount or pod, or an
 # escalation right by which it grants itself one) has it on that member as its RBAC would, and a
 # holder of the IAM writers there grants itself any of them (MEMBER_PERMISSIONS). The Workload
-# Identity step runs it before reading that project's clusters, whose named rights ask who may
-# impersonate each holder it lists.
+# Identity step runs it before reading that project's clusters.
 declare -A MEMBER_IAM_DONE=()
 member_project_iam() {
   local check="gke:$1"

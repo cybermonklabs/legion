@@ -30,6 +30,7 @@ var nulPlaces = map[string]string{
 // and ParseWithSourceStarts reach as well, and each tree's own rendering is written back with the
 // replacement in it.
 func TestEveryReaderReadsNulAsReplacement(t *testing.T) {
+	t.Parallel()
 	for place, markdown := range nulPlaces {
 		for _, reader := range blockMarkdownReaders() {
 			t.Run(place+"/"+reader.name, func(t *testing.T) {
@@ -49,6 +50,7 @@ func TestEveryReaderReadsNulAsReplacement(t *testing.T) {
 // two bytes late for each U+0000 before it would cut a block's text mid-paragraph and hash the
 // wrong bytes.
 func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
+	t.Parallel()
 	markdown := "\x00\x00\x00\n\nshort\nline two of para long\n\n# heading long\n"
 	doc, starts, err := ParseWithSourceStarts(markdown)
 	if err != nil {
@@ -75,6 +77,7 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 // hold it: a leading heading marker, a fence or a table row is text there, and no block opens, so
 // the other places of nulPlaces are no inline markdown.
 func TestParseInlineReadsNulAsReplacement(t *testing.T) {
+	t.Parallel()
 	for _, place := range []string{"text", "a code span", "a link's href", "the character alone"} {
 		markdown := nulPlaces[place]
 		t.Run(place, func(t *testing.T) {

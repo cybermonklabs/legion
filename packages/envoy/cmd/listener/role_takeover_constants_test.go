@@ -14,6 +14,7 @@ import (
 // takeoverRecordLife, one hour short of the stream's age limit and duplicate window, so no record a
 // pass needs ages out. A change to one that leaves the others fails here.
 func TestTheTakeoverCopysBoundsHoldTogether(t *testing.T) {
+	t.Parallel()
 	if want := roleKeepWindow - roleWakeInterval; roles.ForwardFenceAge != want {
 		t.Errorf("roles.ForwardFenceAge = %s, want roleKeepWindow less roleWakeInterval, %s", roles.ForwardFenceAge, want)
 	}

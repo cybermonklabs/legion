@@ -67,8 +67,10 @@
 # Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg), (fh), (fj),
 # (fk), (fl) and (fm) the same world with one fault, one grant more or the reviewed digests, (fd),
 # (fe) and (fs) a half without it, and (fr) a contract with one rule or one prefix taken out. The
-# check as at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), and as at
-# 9d08e087406 of (fl), (fm), (fn) and fb's webhook-unguarded, which it fails.
+# check as at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), as at
+# 9d08e087406 of (fl), (fm), (fn) and fb's webhook-unguarded, and as at 01c4044b4e5 of fb's
+# webhook-malformed (it prints the NO CREDIT with no UNKNOWN above naming jq's error), which each
+# fails.
 
 # The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
 # is not credited. A credit's sentence names the use the policy refuses; the allowance's, the

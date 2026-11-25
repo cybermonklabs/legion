@@ -222,16 +222,19 @@ if [ -e "$dir/token-secret-data" ]; then
     [ -z "$found" ] || printf '%s\n' "$found" >>"$dir/secret-data-in-work"
   done
 fi
-# shaped_answer NAME: when the world holds garbage-NAME, empty-NAME or object-NAME, answers the call
-# with exit 0 but not as the List or object kubectl writes: an error page, an empty body or `{}`, as
-# a proxy between kubectl and the API server can (row cu). jq reads an empty body as no value and
-# `{}` as an object whose .items[]? is nothing, so a program over either prints nothing or an empty
-# list and exits 0; only a check of the answer's shape tells them from an empty list. Each branch it
-# serves calls it first, so its command is matched once.
+# shaped_answer NAME: when the world holds garbage-NAME, empty-NAME, object-NAME or emptylist-NAME,
+# answers the call with exit 0 but not as kubectl writes the API server's answer (a List or an
+# object, or for the reviews one document per review): an error page, an empty body, `{}`, or a
+# List with no item, as a proxy between kubectl and the API server can (row cu). jq reads an empty
+# body as no value and `{}` as an object whose .items[]? is nothing, so a program over either
+# prints nothing or an empty list and exits 0; only a check of the answer's shape tells them from
+# an empty list, and only a witness that every cluster holds tells an empty List from a whole one.
+# Each branch it serves calls it first, so its command is matched once.
 shaped_answer() {
   [ ! -e "$dir/garbage-$1" ] || { echo "<html>502 Bad Gateway</html>"; exit 0; }
   [ ! -e "$dir/empty-$1" ] || exit 0
   [ ! -e "$dir/object-$1" ] || { echo '{}'; exit 0; }
+  [ ! -e "$dir/emptylist-$1" ] || { echo '{"apiVersion":"v1","kind":"List","items":[]}'; exit 0; }
 }
 case "${args[*]}" in
   "create -f - -o json")
@@ -265,9 +268,17 @@ case "${args[*]}" in
         >"$dir/review-requests-$calls.tsv" 2>/dev/null || true
     set -- "$dir/review-call-$calls.json"
     mark() { [ -e "$dir/$1" ] && echo on || echo off; }
+    # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
+    # last field writes it) refuses, or answers one review short, the one call that asks about
+    # that subject, whichever batch that is (row cz's later-batch items).
+    holding() { [ -s "$dir/$1" ] && cut -f7 "$dir/review-requests-$calls.tsv" | grep -qxF -- "$(cat "$dir/$1")"; }
+    ! holding review-refuse-holding ||
+      forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
+    short=off
+    ! holding review-short-holding || short=on
     jq --slurpfile grants "$dir/grants.json" --arg masters "$([ -e "$dir/no-masters" ] && echo off || echo on)" \
       --arg reversed "$(mark review-answers-reversed)" --arg copied "$(mark review-witness-copied)" \
-      --arg repeated "$(mark review-repeated)" --argjson call "$calls" \
+      --arg repeated "$(mark review-repeated)" --argjson call "$calls" --arg short "$short" \
       --arg follow_refused "$(mark review-follow-refused)" --arg follow_nostatus "$(mark review-follow-nostatus)" '
       def answer:
         .spec as $s | ($s.resourceAttributes // {}) as $a
@@ -293,6 +304,7 @@ case "${args[*]}" in
       | (if $repeated == "on" then .[-1] = .[0] else . end)
       | (if $call > 1 and $follow_refused == "on" then map(.status = {allowed: false}) else . end)
       | (if $call > 1 and $follow_nostatus == "on" then map(del(.status)) else . end)
+      | (if $short == "on" then .[:-1] else . end)
       | .[]' "$1"
     ;;
   "get serviceaccounts --all-namespaces -o json")
@@ -414,6 +426,19 @@ case "${args[*]}" in
     { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
       jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
+  "get --raw /metrics")
+    # The API server's metrics, the seats of global-default among them: 40, as on the operator's
+    # real cluster, or the world's global-default-seats. A world marked metrics-refused refuses the
+    # read, and metrics-without-seats answers metrics that hold no global-default seats (row cz).
+    if [ -e "$dir/metrics-refused" ]; then
+      echo 'Error from server (Forbidden): forbidden: User "ci" cannot get path "/metrics"' >&2
+      exit 1
+    fi
+    echo '# TYPE apiserver_flowcontrol_nominal_limit_seats gauge'
+    echo 'apiserver_flowcontrol_nominal_limit_seats{priority_level="workload-low"} 46'
+    [ -e "$dir/metrics-without-seats" ] ||
+      echo "apiserver_flowcontrol_nominal_limit_seats{priority_level=\"global-default\"} $(cat "$dir/global-default-seats" 2>/dev/null || echo 40)"
+    ;;
   "get --raw "*)
     # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
     jq -e --arg p "${args[2]}" '.[$p] // error("no such path")' "$dir/raw.json" 2>/dev/null ||
@@ -425,7 +450,8 @@ case "${args[*]}" in
     shaped_answer roles
     [ ! -e "$dir/refuse-roles" ] || forbidden roles.rbac.authorization.k8s.io 'list resource "roles" in API group "rbac.authorization.k8s.io"' container.roles.list
     jq '{apiVersion: "v1", kind: "List", items: (
-      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "cluster-admin"},
+      [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole",
+        metadata: {name: "cluster-admin", labels: {"kubernetes.io/bootstrapping": "rbac-defaults"}},
         rules: [{apiGroups: ["*"], resources: ["*"], verbs: ["*"]}]}]
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "planted-\($i)"},

@@ -120,21 +120,21 @@
 #                     add a container to the operator's next pod, and a validating one can block or
 #                     reshape what it applies. A discovery that cannot be read whole, or whose
 #                     admission list lacks a webhook configuration, which every API server serves,
-#                     is UNKNOWN. RBAC allows a request against a
-#                     rule with resourceNames only when the request names one, so the rights also
-#                     name each name: impersonate groups for system:masters and every Group subject
-#                     the bindings name, impersonate users for every User subject and each user and
-#                     Google service account the GKE IAM step lists, bind and escalate
-#                     on every binding's role and patch and update on every binding (RBAC lets one
-#                     who may bind a role by name write a binding to it), and update and patch on
-#                     each role bound to a reviewed principal (named-rights.jq); every other cluster
-#                     of the pool is asked them too. A rule limited by name on any other right asked
-#                     never answers a review that names nothing, so every cluster's Roles and
+#                     is UNKNOWN. The writes of a binding or a role are asked in each namespace
+#                     that holds a RoleBinding too (binding-rights.jq): bind and escalate roles,
+#                     bind clusterroles, and patch and update roles and rolebindings, since binding
+#                     a role or a ClusterRole there grants what it holds there, that namespace's
+#                     Secrets among them; every other cluster of the pool is asked them too. RBAC
+#                     allows a request against a rule with resourceNames only when the request
+#                     names one, so a rule limited by name never answers a review that names
+#                     nothing: every cluster's Roles and
 #                     ClusterRoles (`kubectl get roles,clusterroles -A`) are read against its bindings
 #                     as the code step reads a render: a rule whose resourceNames limit a right asked
 #                     is a finding naming the names for a subject that is not a person (an approval
 #                     of certificate signing requests by name, whose name the requester picks, joins
-#                     the certificate chain), and a refused list is UNKNOWN. A
+#                     the certificate chain). A refused list is UNKNOWN, and so is one that holds no
+#                     bootstrap cluster-admin ClusterRole (labelled
+#                     kubernetes.io/bootstrapping=rbac-defaults), which every cluster has. A
 #                     review without the groups would miss every grant made to a group. Its witness
 #                     is a review for the group the built-in cluster-admin binding names,
 #                     system:masters, which must be in the answer and allowed: an API server whose
@@ -171,9 +171,11 @@
 #                     or a ServiceAccount or a pod in a guarded pair's namespace (a patch that finds
 #                     no object creates it), nor hold an escalation
 #                     right by which it grants itself one: impersonate users, groups and
-#                     serviceaccounts, escalate and bind clusterroles, and create, patch and update
-#                     clusterrolebindings, cluster-wide; bind and escalate roles and create, patch
-#                     and update rolebindings in a guarded pair's namespace; nor write a webhook or
+#                     serviceaccounts, escalate and bind clusterroles, patch and update
+#                     clusterroles, and create, patch and update clusterrolebindings, cluster-wide;
+#                     bind and escalate roles, patch and update roles, and create, patch and update
+#                     rolebindings in a guarded pair's namespace, and the writes of a binding or a
+#                     role in each namespace that holds a RoleBinding; nor write a webhook or
 #                     admission policy (the RBAC step's admission rights, from each cluster's own
 #                     discovery). Each finding's right names the pairs it guards. On
 #                     every cluster but the operator's, a guarded pair's namespace must not exist
@@ -341,8 +343,8 @@
 #
 # The rights, in each guarded pair's namespace unless cluster-wide: create serviceaccounts/token of
 # the pair's ServiceAccount; impersonate that ServiceAccount, and users and groups cluster-wide;
-# escalate and bind roles and clusterroles, create, patch and update rolebindings and
-# clusterrolebindings;
+# escalate and bind roles and clusterroles, patch and update roles and clusterroles, create, patch
+# and update rolebindings and clusterrolebindings;
 # create, and get (which authorizes an exec, attach or port forward over WebSocket on API servers
 # before 1.35), pods/exec, pods/attach and pods/portforward; create, patch and update pods, and patch
 # and update pods/ephemeralcontainers; create, patch and update replicationcontrollers, deployments,
@@ -699,7 +701,7 @@ missing=""
 for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
   step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
   step-workload-identity.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
-  code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq named-rights.jq rec.jq review-answer.jq \
+  code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
   review-request.jq webhook-backends.jq; do
   [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
 done

@@ -23,7 +23,7 @@ import (
 )
 
 // NATSHold is what the NATS writer hold's routes need: the tables they write
-// (internal/cipher/natshold, migration 0043_nats_hold), the operator's public keys every write
+// (internal/cipher/natshold, migration 0044_nats_hold), the operator's public keys every write
 // must be signed by, and the one caller they admit, the operator entry of BROKER_NATS_SERVICES.
 // The routes are the only writer of those tables a deployment runs: the operator's commands
 // (envoy-infra hold, through internal/holdrecord) call them, and the auth service reads the hold

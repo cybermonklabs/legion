@@ -686,26 +686,6 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
-      "role": "update roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "update roles.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker on cluster example-grade/us-east1/grade-cluster",
       "role": "create rolebindings.rbac.authorization.k8s.io in gke-managed-system, so it can become system:serviceaccount:gke-managed-system:addon-manager, which can create serviceaccounts in dispatch, guarding dispatch/envoy-broker",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -1136,26 +1116,6 @@
     },
     {
       "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
-      "role": "update roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "update roles.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
       "right": "create rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
       "role": "create rolebindings.rbac.authorization.k8s.io in gmp-system, so it can become system:serviceaccount:gmp-system:collector, which can create namespaces cluster-wide",
       "resource": "cluster:example-grade/us-east1/grade-cluster",
@@ -1581,26 +1541,6 @@
       "resource": "cluster:example-grade/us-east1/grade-cluster",
       "permissions": [
         "bind clusterroles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "patch roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
-      "role": "patch roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "patch roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
-      ],
-      "granted_at": "RBAC: allowed by a planted binding"
-    },
-    {
-      "principal": "serviceAccount:grade-ci@example-grade.iam.gserviceaccount.com",
-      "right": "update roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide on cluster example-grade/us-east1/grade-cluster",
-      "role": "update roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide",
-      "resource": "cluster:example-grade/us-east1/grade-cluster",
-      "permissions": [
-        "update roles.rbac.authorization.k8s.io in kube-system, so it can become system:serviceaccount:kube-system:namespace-controller, which can create namespaces cluster-wide"
       ],
       "granted_at": "RBAC: allowed by a planted binding"
     },

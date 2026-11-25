@@ -8,18 +8,18 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS [PROJECT]]: on the cluster KUBE names, no
-# guarded pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no
-# ServiceAccount outside the cluster's system namespaces, none of Kubernetes' own groups, and no
-# binding subject may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the
-# cluster's discovery, or a name-limited right (each a finding, its right followed by WHERE); every
-# binding of system:masters but the bootstrap one is a finding, and its other Group subjects are
-# judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
-# settings_verdict. PROJECT, a project other than --project the cluster is in, adds that project's
-# IAM holders to the users the named rights impersonate. The reviews carry the witness. PASS when it
-# recorded neither a finding nor an UNKNOWN.
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS]: on the cluster KUBE names, no guarded
+# pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount
+# outside the cluster's system namespaces, none of Kubernetes' own groups, and no binding subject
+# may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's
+# discovery, a write of a binding or a role in a namespace that holds a RoleBinding
+# (binding_rights), or any of those limited by name (each a finding, its right followed by WHERE);
+# every binding of system:masters but the bootstrap one is a finding, and its other Group subjects
+# are judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
+# settings_verdict. The reviews carry the witness. PASS when it recorded neither a finding nor an
+# UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" iam_project="${6:-}" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -66,14 +66,14 @@ read_other_cluster() {
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
   admission_power "$KUBE" "$cstep"
-  named_rights "$iam_project" || unknown "$cstep" "$NAMED_ERROR"
-  guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")"
-  # The name-limited rights are read from this cluster's own roles (live_named), never reviewed for
-  # every principal of every name; step-rbac.sh says why.
-  named_read="$(with_rights "$guard_rights" "$NAMED_RIGHTS")"
+  binding_rights || unknown "$cstep" "$BINDING_ERROR"
+  # The writes of a binding or a role in each namespace that holds a RoleBinding are reviewed
+  # beside the guard rights, and live_named reads the rules that limit any of them by name from
+  # this cluster's own roles; step-rbac.sh says why.
+  guard_rights="$(with_rights "$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$POWER_RIGHTS")" "$BINDING_RIGHTS")"
   # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
   # certificates (NODE_CLIENT_RIGHTS).
-  [ "$groups_mode" != own ] || { guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"; named_read="$(with_rights "$named_read" "$NODE_CLIENT_RIGHTS")"; }
+  [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
@@ -83,7 +83,7 @@ read_other_cluster() {
   elif ! review "$KUBE" "$(principals_json "$WORK/principals.rec")" "$guard_rights"; then
     unknown "$cstep" "$REVIEW_ERROR"
   elif judge_reviews "$cstep" "$where" "$principal"; then
-    live_named "$KUBE" "$cstep" "$where" "$principal" "$named_read"
+    live_named "$KUBE" "$cstep" "$where" "$principal" "$guard_rights"
     csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
     remember_cluster "$KUBE" "$cstep" "$where" "$principal"
@@ -140,7 +140,7 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
   fi
   member_project_iam "$POOL_PROJECT"
   read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-    "${CLUSTER_SETTINGS["$label"]:-}" "$POOL_PROJECT"
+    "${CLUSTER_SETTINGS["$label"]:-}"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -299,9 +299,9 @@ else
           continue
         fi
         groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
-        # The member's own project's IAM first, so its cluster asks who may impersonate its holders.
+        # The member's own project's IAM first (its own step), then its cluster.
         [ -z "$member_project" ] || member_project_iam "$member_project"
-        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}" "$member_project"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}"
       else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"

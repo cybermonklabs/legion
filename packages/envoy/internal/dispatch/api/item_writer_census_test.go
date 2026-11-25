@@ -270,7 +270,7 @@ const versionTableException = "none, and none to take: the table is a migration 
 
 // holdTableException is why the broker's hold store's writers are on the census with no lock. Its
 // tables are the NATS writer hold's (nats_hold, nats_hold_log, nats_hold_records,
-// nats_hold_record_deletes and nats_cutover, migration 0043 of the broker's store), which
+// nats_hold_record_deletes and nats_cutover, migration 0044 of the broker's store), which
 // natshold.Store names at run time with its schema (Store.table), so this scan cannot read them
 // (unspelledTableWrites). None is an item row, and they live in the broker's database, which no
 // item's owner lock reaches.

@@ -36,14 +36,18 @@
 #   (cu) each answer the check reads with kubectl -o json (the webhook configurations, the CRDs, the
 #        workload allowlists, the admission policies and their bindings, the roles, the bindings,
 #        the ServiceAccounts, a webhook's Service and the answer to the reviews), sent with exit 0
-#        but as no List (an error page, an empty body, `{}`), reads UNKNOWN naming it, exits 2, and
-#        its step does not pass, though a principal holds a right only that answer reveals, which
-#        the item names;
+#        but not as the API server wrote it (an error page, an empty body, `{}`, and for the roles a
+#        List with no item), reads UNKNOWN naming it, exits 2, and its step does not pass, though a
+#        principal holds a right only that answer reveals, which the item names;
 #   (cy) the answer to the reviews, as kubectl create writes it, one document per review: two or
 #        more so answered are judged; an answer that repeats one review and leaves out another, or
 #        that holds a document without a status, reads UNKNOWN naming the count; and a follow round
 #        whose answer refuses every review, its witness among them, or holds no status, reads
 #        UNKNOWN for the witness rather than pass a seeded chain.
+#   (cz) review's kubectl calls on a cluster are REVIEW_WORKERS, capped at the nominal seats the
+#        API server gives global-default; one call when its /metrics cannot be read or holds no
+#        such seats; UNKNOWN for a REVIEW_WORKERS that is no whole number above 0; and UNKNOWN
+#        when one later batch alone is refused or answers short.
 
 # --- (ce) A webhook's backend: whoever may write its Service, the workload behind it, its endpoints
 # or its TLS Secret decides what the webhook does to the operator's next pod. A webhook whose rules
@@ -347,22 +351,27 @@ if row cm; then
   passed "(cm) Backup for GKE installed on the operator's cluster or another reads UNKNOWN"
 fi
 
-# --- (cu) An answer read with kubectl -o json, sent with exit 0 but as no List: a proxy's error
-# page, an empty body (jq reads no value in it, prints nothing and exits 0), or `{}` (jq's .items[]?
-# is nothing there). Each answer is held to its shape first (is_list, is_object), so each reads
-# UNKNOWN naming it, exits 2, runs to its end, and its step does not pass. Each world holds what the
-# answer would show and a principal a right only that answer reveals, which the item names, so a run
-# that took the answer for an empty one would miss it: the webhook's backend Service, the policy
-# engine's resource, the installed allowlist, the admission policy's parameter, a right a role limits
-# by name, and (the answer to the reviews) legion/worker's create of pods in envoy-operator, or, on
-# another cluster, whose reviews the Workload Identity step makes, ci/runner's create of namespaces.
-# The bindings and the ServiceAccounts have no planted right: the first names the subjects reviewed,
-# the second the accounts, and each also has its witness (the bootstrap cluster-admin binding,
+# --- (cu) An answer read with kubectl -o json, sent with exit 0 but not as the API server wrote it:
+# a proxy's error page, an empty body (jq reads no value in it, prints nothing and exits 0), or `{}`
+# (jq's .items[]? is nothing there); and for the roles, a List with no item. Each list and object
+# is held to its shape first (is_list, is_object), and the roles' list to its witness too, the
+# bootstrap ClusterRole cluster-admin; the answer to the reviews is no list but one document per
+# review, which review-answer.jq holds to its count and its shape. So each reads UNKNOWN naming it,
+# exits 2, runs to its end, and its step does not pass. Each world holds what the answer would show
+# and a principal a right only that answer reveals, which the item names, so a run that took the
+# answer for an empty one would miss it: the webhook's backend Service, the policy engine's
+# resource, the installed allowlist, the admission policy's parameter, a right a role limits by name
+# (for the empty List, the reviewer's impersonation of system:masters limited to that name), and
+# (the answer to the reviews) legion/worker's create of pods in envoy-operator, or, on another
+# cluster, whose reviews the Workload Identity step makes, ci/runner's create of namespaces. The
+# bindings and the ServiceAccounts have no planted right: the first names the subjects reviewed, the
+# second the accounts, and each also has its witness (the bootstrap cluster-admin binding,
 # default/default). Run by hand, the control is the script and its parts as at bfb6ea5c85 for the
 # lists and as at 33e20b2de7 for the reviews: the allowlists, policies and roles items with an empty
 # body or `{}`, the CRDs and webhooks with `{}`, the Service with an empty body, and the reviews with
 # an empty body each pass their step and exit 0 (the operator's reviews with "16 principals …: none
-# allowed"), and the webhooks with an empty body stop the run mid-way. ---
+# allowed"), and the webhooks with an empty body stop the run mid-way; and as at 846057fdc7 for the
+# empty roles List, which passes its step and exits 0. ---
 unread_list_row() {
   local dir="$world/clusters/operator-cluster" list="${1%-*}" shape="${1##*-}" want why missed
   local step="RBAC on operator-cluster" marker="${1%-*}"
@@ -371,6 +380,7 @@ unread_list_row() {
     garbage) why="" ;;
     empty) why="the answer was empty" ;;
     object) why="the answer is JSON, but not one object with a list of items" ;;
+    emptylist) why="" ;;
   esac
   case "$list" in
     webhooks)
@@ -410,9 +420,15 @@ unread_list_row() {
       missed="legion/worker's update on configmaps/sidecar-params in hooks"
       ;;
     roles)
-      subject_grant operator-cluster "$(sa_subject legion worker)" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
-      want="the API server's list of roles could not be read, so a right a role limits by name is not read: $why"
-      missed="legion/worker's update of mutatingwebhookconfigurations existing-webhook, by name"
+      if [ "$shape" = emptylist ]; then
+        subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" groups "" "" system:masters
+        want="the API server's list of roles holds no bootstrap ClusterRole cluster-admin (labelled kubernetes.io/bootstrapping=rbac-defaults), which every cluster has, so it is not whole and a right a role limits by name is not read"
+        missed="legion/worker's impersonation of the group system:masters, by name"
+      else
+        subject_grant operator-cluster "$(sa_subject legion worker)" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
+        want="the API server's list of roles could not be read, so a right a role limits by name is not read: $why"
+        missed="legion/worker's update of mutatingwebhookconfigurations existing-webhook, by name"
+      fi
       ;;
     bindings)
       want="the API server's list of bindings could not be read: $why"
@@ -450,10 +466,10 @@ unread_list_row() {
 if row cu; then
   each unread_list_row webhooks-garbage webhooks-empty webhooks-object service-garbage service-empty \
     crds-garbage crds-empty crds-object allowlists-garbage allowlists-empty allowlists-object \
-    policies-garbage policies-empty policies-object roles-garbage roles-empty roles-object \
+    policies-garbage policies-empty policies-object roles-garbage roles-empty roles-object roles-emptylist \
     bindings-garbage bindings-empty bindings-object serviceaccounts-garbage serviceaccounts-empty serviceaccounts-object \
     reviews-garbage reviews-empty reviews-object reviews-other-empty reviews-other-object
-  passed "(cu) each answer read with kubectl -o json (every list, a webhook's Service, the answer to the reviews on the operator's cluster or another), sent with exit 0 as an error page, an empty body or {}, reads UNKNOWN naming it, exits 2, and its step does not pass"
+  passed "(cu) each answer read with kubectl -o json (every list, a webhook's Service, the answer to the reviews on the operator's cluster or another), sent with exit 0 as an error page, an empty body or {}, and the roles' list as a List with no item, reads UNKNOWN naming it, exits 2, and its step does not pass"
 fi
 
 # --- (cy) The answer to the reviews, as kubectl create writes it: given a List, kubectl creates each
@@ -531,4 +547,59 @@ review_answer_row() {
 if row cy; then
   each review_answer_row judged chunked repeated witness-copied follow-refused follow-nostatus
   passed "(cy) reviews answered as one document each are judged, asked in one call or in four at once; an answer that repeats one and leaves out another reads UNKNOWN naming the count; and a follow round whose answer is all refused or has no status reads UNKNOWN for its witness"
+fi
+
+# --- (cz) review's calls on a cluster are REVIEW_WORKERS, capped at the nominal seats the API server
+# gives the priority level global-default (its /metrics): asked with REVIEW_WORKERS=4 in a clean
+# world, a cluster with 2 seats gets 2 calls and one with 40 gets 4; a /metrics refused, or one
+# holding no global-default seats, gets one call; each run passes its step as one call does. A
+# REVIEW_WORKERS that is no whole number above 0 reads UNKNOWN naming it, exit 2. With four batches,
+# one later batch alone (one that does not hold the witness, read from a first run's recorded
+# requests) refused, or answering one review short, reads UNKNOWN, exit 2. Run by hand, the control
+# is reviews.sh with review_workers' cap taken out (WORKERS set to REVIEW_WORKERS): the capped item
+# gets 4 calls, and the refused and no-seats items 4; and reviews.sh waiting on batch 0's call
+# alone: the later-refused item passes its step. ---
+worker_cap_row() {
+  local dir="$world/clusters/operator-cluster" calls want later file
+  base_world
+  case "$1" in
+    capped) echo 2 >"$dir/global-default-seats"; want=2 ;;
+    upper) echo 40 >"$dir/global-default-seats"; want=4 ;;
+    refused) : >"$dir/metrics-refused"; want=1 ;;
+    no-seats) : >"$dir/metrics-without-seats"; want=1 ;;
+    bad-workers)
+      REVIEW_WORKERS=abc run
+      want_rbac_unknown "REVIEW_WORKERS is not a whole number from 1 to 9999, so the reviews were not asked" \
+        "a REVIEW_WORKERS that is no number"
+      return
+      ;;
+    later-refused | later-short)
+      REVIEW_WORKERS=4 run
+      for file in "$dir"/review-requests-*.tsv; do
+        if ! cut -f7 "$file" | grep -qxF group:system:masters; then later="$(cut -f7 "$file" | sed -n 1p)"; break; fi
+      done
+      [ -n "$later" ] || fail "no batch of the first run went without the witness, so the item ($1) proves nothing"
+      rm -f "$dir"/review-call-*.json "$dir"/review-requests-*.tsv "$dir/review-calls"
+      if [ "$1" = later-refused ]; then
+        printf '%s\n' "$later" >"$dir/review-refuse-holding"
+        want="the API server refused the review (it needs create on subjectaccessreviews"
+      else
+        printf '%s\n' "$later" >"$dir/review-short-holding"
+        want="the API server answered "
+      fi
+      REVIEW_WORKERS=4 run
+      want_rbac_unknown "$want" "the batch holding $later alone, of four, $1"
+      return
+      ;;
+  esac
+  REVIEW_WORKERS=4 run
+  want_status 0 "a clean world asked in capped calls ($1)"
+  want_text "PASS live: RBAC on operator-cluster: " "a clean world asked in capped calls ($1)"
+  calls=$(find "$dir" -maxdepth 1 -name 'review-call-*.json' | wc -l)
+  [ "$calls" -eq "$want" ] ||
+    fail "the review on operator-cluster ($1) was asked in $calls kubectl calls, want $want"
+}
+if row cz; then
+  each worker_cap_row capped upper refused no-seats bad-workers later-refused later-short
+  passed "(cz) review's calls on a cluster are REVIEW_WORKERS capped at the API server's global-default seats (2 seats: 2 calls of 4; 40 seats: 4), one call when the seats cannot be read, UNKNOWN for a REVIEW_WORKERS that is no number, and UNKNOWN when one later batch alone is refused or answers short"
 fi

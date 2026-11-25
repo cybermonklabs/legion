@@ -81,7 +81,8 @@
 #   (br) legion/worker that may get, by name, a token Secret the operator's ServiceAccount lists
 #        exits 1 naming it; a list of bindings without the bootstrap cluster-admin binding, on the
 #        operator's cluster or another, reads UNKNOWN;
-#   (bu) a right a live role limits by name, the reviewer's five probes: update of the mutating
+#   (bu) a right a live role limits by name, and a bind of clusterroles in a namespace outside the
+#        guarded ones, outright or by name (the reviewer's example-db world); the five probes: update of the mutating
 #        webhook configuration existing-webhook on the operator's cluster, and patch of it on
 #        another; create of certificate signing requests, update of the approval of my-csr and
 #        approve of kubernetes.io/kube-apiserver-client; patch of the Deployment secrets-broker in
@@ -889,13 +890,13 @@ name_limited_row() {
       return
       ;;
     handed-off)
-      # The hand-off: a name-limited grant is a finding, and no review names a resource for a shape
-      # named-rights.jq builds from the cluster's bindings (bind, escalate, patch or update of a
-      # role or a binding, and impersonate of a user or a group, each by name). live_named reads
-      # those from the cluster's roles, which is where most of a real cluster's reviews would go:
-      # 1,325,530 of the 1,944,040 asked on 2026-11-24 named a resource. The rights the check still
-      # reviews by name are its own fixed ones, not a binding's: the signers of the certificate
-      # chain, a guarded pair's ServiceAccount, and each token Secret it listed.
+      # The hand-off: a name-limited grant is a finding, and no review names a resource for a
+      # write of a role or a binding, or an impersonation of a user or a group: those are asked
+      # with no name (RIGHTS_TABLE, and binding_rights for each namespace that holds a
+      # RoleBinding), and live_named reads from the cluster's roles each rule that limits one of
+      # them by name. The rights the check still reviews by name are its own fixed ones, not a
+      # binding's: the signers of the certificate chain, a guarded pair's ServiceAccount, and each
+      # token Secret it listed.
       subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io roles "" envoy-operator operator-role
       run
       want_status 1 "a bind limited to one role's name, read from the cluster's roles"
@@ -912,14 +913,36 @@ name_limited_row() {
         fail "the check reviewed $named rights a binding limits by name, which live_named reads from the roles: $(awk -F'\t' "$from_bindings" "$asked" | awk -F'\t' '{ print $1, $3, $6 }' | sort -u | head -n 3 | tr '\n' ';')"
       return
       ;;
+    outside-namespace | outside-namespace-named)
+      # A namespace outside the guarded ones, where a person reads the broker's database login:
+      # legion/worker may create rolebindings there and bind clusterroles there, so it can bind
+      # itself a ClusterRole that reads that Secret, and the login's holders are hold writers. Only
+      # binding_rights asks the bind in that namespace; without it the run passes, none allowed.
+      # The named item limits the bind to one ClusterRole's name, which no review answers and
+      # live_named reads from the cluster's roles for the unnamed right binding_rights asks.
+      subject_grant "$cluster" "$(user_subject dba@example.com)" get "" secrets "" example-db broker-db-login
+      subject_grant "$cluster" "$subject" create rbac.authorization.k8s.io rolebindings "" example-db ""
+      if [ "$1" = outside-namespace ]; then
+        subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db ""
+        want="bind clusterroles.rbac.authorization.k8s.io in example-db"
+      else
+        subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db secret-reader
+        want="bind clusterroles.rbac.authorization.k8s.io secret-reader in example-db"
+      fi
+      run
+      want_status 1 "a bind in a namespace outside the guarded ones ($1)"
+      want_line "FINDING $who: $want" "a bind in a namespace outside the guarded ones ($1)"
+      return
+      ;;
   esac
   run
   want_status 1 "a right limited by name ($1)"
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named handed-off
-  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name, read from the cluster's roles and reviewed by no request that names a resource; create limited by name alone exits 0"
+  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named handed-off \
+    outside-namespace outside-namespace-named
+  passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name, read from the cluster's roles and reviewed by no request that names a resource; create limited by name alone exits 0; and a bind of clusterroles in a namespace outside the guarded ones, outright or limited by name, exits 1 naming that namespace"
 fi
 
 # --- (bv) The roles' list, which the named rights are read from. ---
