@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  A send or a publish the Envoy listener answers `503` with an `error` that starts
+  `envoy: the message was not sent, and may be sent again later` (`MESSAGE_NOT_SENT_PREFIX` in
+  `@legion/contracts`) is no longer reported as one that may have arrived. The listener gives that
+  answer when the message bus refused the message before anything went out, because the deployed
+  stream does not capture its topic for now, as during a hub move. The client still sends it once
+  more under the same key, and when every attempt gets it, it throws that `EnvoyApiError`, whose
+  new `notSent` is true and whose message is the listener's own: nothing was stored, so the message
+  may be sent again later. Before, a send threw `EnvoySendUnconfirmedError`, "not confirmed
+  delivered … It may or may not have arrived". After an earlier attempt that got no answer or
+  another 5xx, a send is still unconfirmed, and a publish's error adds that the earlier attempt may
+  have stored the message, with `notSent` false. The `envoy_send` and `envoy_publish` tool
+  descriptions say that an error that says the message was not sent stored nothing, so the same
+  message may be sent again later.
+time: 2026-11-22T13:48:26Z
+custom:
+    Issue: pr4973
