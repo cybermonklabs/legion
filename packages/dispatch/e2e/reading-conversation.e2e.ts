@@ -1,8 +1,9 @@
 import type { Locator } from "@playwright/test";
 
+import { issueProject } from "../web/src/lib/issue-key";
 import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
 import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
-import { historyItem } from "./issue-page-m";
+import { historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
@@ -301,11 +302,34 @@ test("issue-page-history-turn: an agents' thread turn in the new page's history 
   const turn = await createMessage(
     world.host.key,
     { body: readingText(world) },
-    { actor: { id: "legion-daemon:CORE", kind: "session" }, as: "agent" }
+    { actor: { id: `legion-daemon:${issueProject(world.host.key)}`, kind: "session" }, as: "agent" }
   );
 
   await withIssuePage(page.context(), READER);
   await page.goto(`/issues/${world.host.key}/activity`);
 
   await expectReadsReferences(historyItem(page, turn.id).locator(RENDERED_BODY), world, "link");
+});
+
+// SLOW(>=2s): seeds the reading world and a handoff, then loads the new issue page at `/activity`,
+// which opens Details' History and reads the handoff's fields and each reference in them.
+test("issue-page-history-handoff-body: a handoff's field of words in the new page's history draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  await createHandoff(
+    world.host.key,
+    "implement",
+    { phase: "implement", summary: readingText(world) },
+    readingAgent.actor
+  );
+
+  await withIssuePage(page.context(), READER);
+  await page.goto(`/issues/${world.host.key}/activity`);
+
+  await expectReadsReferences(
+    historyPanel(page).locator('[data-handoff-field="summary"] .dispatch-markdown'),
+    world,
+    "link"
+  );
 });

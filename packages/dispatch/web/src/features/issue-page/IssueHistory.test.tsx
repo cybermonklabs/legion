@@ -5,12 +5,20 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
-import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
+import type {
+  Artifact,
+  DispatchEvent,
+  DisplayTree,
+  Handoff,
+  IssueDetails,
+  MessageRead,
+} from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
 import { dateKey, dayLabel } from "../activity/activity-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -2682,6 +2690,76 @@ test("a refresh that fails over a handoff's body held draws no line, and its Ret
     ).toBe(fields);
   } finally {
     unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
+// A handoff's prose field draws through the shared renderer from the server's reading
+// (`field_trees`), so a `dispatch://` reference in it reads as its target's name and links to
+// it, never as the raw address.
+test("a handoff's prose field draws a reference as its target's name, not its address", async () => {
+  await warmMarkdownRenderer();
+  const reference = "dispatch://CORE-2";
+  const summary = `Follows ${reference} and **keeps** the tests green.`;
+  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue({
+    ...handoffRecord(summary),
+    body: JSON.stringify({
+      files: ["a.ts"],
+      proof: [`See ${reference}`],
+      schemaVersion: 1,
+      summary,
+    }),
+    field_trees: {
+      "/proof/0": displayTree(`See ${reference}`) as DisplayTree,
+      "/summary": displayTree(summary) as DisplayTree,
+    },
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["issue-summary", "CORE-2"], {
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "Warm the cache",
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <HistoryHandoff handoffId="handoff-1" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const link = await waitFor(() => {
+      const found = view.container.querySelector<HTMLAnchorElement>(
+        `[data-handoff-field="summary"] a[data-dispatch-ref="${reference}"]`
+      );
+      if (found === null || found.textContent !== "CORE-2 Warm the cache") {
+        throw new Error(
+          `summary did not draw the reference's target name (text: ${view.container.querySelector('[data-handoff-field="summary"]')?.textContent})`
+        );
+      }
+      return found;
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-2");
+    expect(
+      view.container.querySelector('[data-handoff-field="summary"]')?.textContent
+    ).not.toContain(reference);
+    expect(view.container.querySelector('[data-handoff-field="summary"] strong')?.textContent).toBe(
+      "keeps"
+    );
+    expect(
+      view.container.querySelector(
+        `[data-handoff-field="proof"] a[data-dispatch-ref="${reference}"]`
+      )?.textContent
+    ).toBe("CORE-2 Warm the cache");
+    expect(view.container.querySelector('[data-handoff-field="files"] pre')?.textContent).toBe(
+      '[\n  "a.ts"\n]'
+    );
+  } finally {
+    view.unmount();
+    queryClient.clear();
     getHandoff.mockRestore();
   }
 });

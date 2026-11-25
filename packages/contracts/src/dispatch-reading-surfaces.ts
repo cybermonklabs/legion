@@ -118,6 +118,8 @@ export type DispatchReadingSurface =
   | "outline-crumb"
   | "issue-pin"
   | "issue-page-history-turn"
+  | "issue-page-history-handoff-body"
+  | "issue-page-history-handoff-data"
   | "plan-task-line"
   | "document-page-title"
   | "agent-artifact-page-title"
@@ -672,6 +674,27 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: true,
     surface: "issue-page-history-turn",
+  },
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History",
+    reason:
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+    record: false,
+    rendered: true,
+    surface: "issue-page-history-handoff-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of JSON in Details' History",
+    reason:
+      "A handoff field that holds an array, an object, a number, a boolean or null is the data its session wrote, not words: it is shown as the JSON it is.",
+    record: false,
+    rendered: false,
+    surface: "issue-page-history-handoff-data",
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
