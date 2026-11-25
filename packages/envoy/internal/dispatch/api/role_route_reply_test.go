@@ -563,10 +563,12 @@ func TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt(t *testing.T) {
 			Thumbprint:   caller.jkt,
 		}
 		if service != "" {
-			// A service's token is an account entry's (personlessAccountToken): one of the person
-			// scope naming no person is a machine nobody signed in on, which writes nothing.
+			// A service's token that writes is an account entry's (personlessAccountToken), whose
+			// service is the whole account subject: one of the person scope naming no person is a
+			// machine nobody signed in on, which writes nothing, and a named one naming any other
+			// service is no token the broker mints (ciphertoken.ErrNotASession).
 			answer = personlessAccountToken(caller.jkt)
-			answer.Session, answer.Service = session, service
+			answer.Session = session
 		}
 		brokered.broker.Says(token, answer)
 		return token
@@ -578,9 +580,9 @@ func TestASuccessorsReplyIsHeldToThePrincipalTheListenerNamesIt(t *testing.T) {
 		shared, forbidden bool
 	}{
 		{name: "case: the successor's token acts for another person", named: brokerTestPerson, person: "bob", forbidden: true},
-		{name: "case: the successor's token acts for a service", named: brokerTestPerson, service: brokerTestService, forbidden: true},
+		{name: "case: the successor's token acts for a service", named: brokerTestPerson, service: brokerTestAccount, forbidden: true},
 		{name: "control: the successor's token acts for the person the listener names", named: brokerTestPerson, person: brokerTestPerson},
-		{name: "control: the successor's token acts for the service the listener names", named: brokerTestService, service: brokerTestService},
+		{name: "control: the successor's token acts for the service the listener names", named: brokerTestAccount, service: brokerTestAccount},
 		{name: "control: the shared agent token, which proves no session", named: brokerTestPerson, shared: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {

@@ -30,11 +30,14 @@ body: |-
     build wrote back reads as one whose principal nobody knows, and is refused, and an interest
     change or a clean stop keeps the principal the bucket's leader holds, by a compare-and-swap,
     rather than the one a listener's own copy holds, and writes nothing where the leader does not
-    answer. A registration whose record a listener's copy holds unchanged is skipped only where the
-    leader confirms it holds its principal too, and one whose write failed is answered `503` with
-    `Retry-After: 1` unless the leader confirms the record names its principal, none recorded, or
-    nothing, as is a registration through a listener whose known-session bucket is not open, which
-    records no principal while the bucket can name another; so the session registers again until
+    answer. A registration as another principal than the session's record names is admitted only
+    once that record is deleted, read and deleted at the bucket's leader before anything of the
+    registration changes; a leader that does not answer, a refused delete, and a listener whose
+    known-session bucket is not open answer it `503` with `Retry-After: 1` with nothing admitted
+    (so such a listener refuses every registration until its bucket opens). A registration whose
+    record a listener's copy holds unchanged is skipped only where the leader confirms it holds its
+    principal too, and one whose write failed is answered the same `503` unless the leader confirms
+    the record names its principal, none recorded, or nothing; so the session registers again until
     the record names its principal. A pass also reads, before each copy, whether the replaced
     session is `live` again, from the session bucket's leader where its own copy does not say so,
     so a registration through another listener ends the pass too. A direct
@@ -44,8 +47,9 @@ body: |-
     reply routes ask the listener's new `GET /v1/sessions/{session_id}/successors` for the session
     the delivery names and accept the reply of a session it names, where they refused it `403
     REPLY_FORBIDDEN`; that read names each session that replaced it and each that replaced one of
-    those in turn, however long the chain, while each last registered as its principal, and answers
-    `503` rather than part of the chain when it cannot read the whole of it in time.
+    those in turn, however long the chain, while each last registered as its principal, names that
+    principal, and answers `503` rather than part of the chain when it cannot read the whole of it in
+    time. A reply on a broker token is accepted only where the token acts for that principal.
 time: 2026-11-25T03:15:04Z
 custom:
     Issue: replaced-session-handover

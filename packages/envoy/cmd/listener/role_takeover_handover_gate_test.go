@@ -192,6 +192,12 @@ func gateWarning(warnings []string) (string, bool) {
 	return "", false
 }
 
+// gateClaimDrainHeld has the claim route start no handover of gateRole (skipClaimHandover), for a
+// row whose fault must run in the sweep's pass: the claim's own handover runs on a goroutine of its
+// own, and one that starts late runs its pass after the row has stopped the replaced session and
+// moved the clock, outside the seam the row sets, and copies everything first.
+func gateClaimDrainHeld(role string) bool { return role == gateRole }
+
 // A claim that names the session it replaces hands that session's unread messages to the claimant
 // only when the credential the claim presents, the claimant's last registration and the replaced
 // session's last registration all name one principal (handoverRefusal): a broker token's person,
@@ -494,6 +500,7 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 // the case no message is copied after that registration, and both stay unread on the replaced
 // session; in the control both reach the claimant. The case fails where the rule is read only at
 // the pass's start, or before a step that can still let a registration land ahead of the copy.
+// The claim's own handover is held (gateClaimDrainHeld), so the sweep's pass is the record's first.
 func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *testing.T) {
 	for _, row := range []struct {
 		name       string
@@ -507,8 +514,9 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 			rig := newGateRig(t)
 			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
 			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
-			// The message it reads keeps it live until it stops, so the claim's own pass copies
-			// nothing and the sweep's pass after the stop is the one the fault runs in.
+			// The claim's own handover is held, so the sweep's pass after the stop is the one the
+			// fault runs in.
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld})
 			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
 			first := rig.sendDirect(t, gateReplaced, "dispatch", "the first unread message to "+gateReplaced)
 			seqs := copiesSeqs(t, standIn.collect(t, 2, copiesWatchBound), read, first)
@@ -520,15 +528,12 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
 				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
 			}
-			if n := rig.handedOverCopies(t, gateClaimant, first); n != 0 {
-				t.Fatalf("the claim's own pass copied %s while %s was live: %d copies", first, gateReplaced, n)
-			}
 			second := rig.sendDirect(t, gateReplaced, "dispatch", "the second unread message to "+gateReplaced)
 			for eventID, seq := range copiesSeqs(t, standIn.collect(t, 1, copiesWatchBound), second) {
 				seqs[eventID] = seq
 			}
 			registered := false
-			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeCopy: func(_, previous string, _ uint64) error {
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld, beforeCopy: func(_, previous string, _ uint64) error {
 				if previous == gateReplaced && !registered {
 					registered = true
 					rig.registerOn(t, rig.personToken(gateClaimant, row.registered), gateClaimant)
@@ -567,7 +572,8 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 // person, in the case row, and nothing registers in the control. In the case neither message is
 // copied to the claimant, and both stay unread on the replaced session, which answers again; in
 // the control both reach the claimant. The case fails where the pass reads the replaced session's
-// state only at its start, or before a step a registration can still land behind.
+// state only at its start, or before a step a registration can still land behind. The claim's own
+// handover is held (gateClaimDrainHeld), so the sweep's pass is the record's first.
 func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *testing.T) {
 	for _, row := range []struct {
 		name    string
@@ -581,8 +587,9 @@ func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *tes
 			replacedToken := rig.personToken(gateReplaced, gatePerson)
 			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
 			rig.registerOn(t, replacedToken, gateReplaced)
-			// The message it reads keeps it live until it stops, so the claim's own pass copies
-			// nothing and the sweep's pass after the stop is the one the seam runs in.
+			// The claim's own handover is held, so the sweep's pass after the stop is the one the
+			// seam runs in.
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld})
 			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
 			first := rig.sendDirect(t, gateReplaced, "dispatch", "the first unread message to "+gateReplaced)
 			second := rig.sendDirect(t, gateReplaced, "dispatch", "the second unread message to "+gateReplaced)
@@ -595,11 +602,8 @@ func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *tes
 			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
 				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
 			}
-			if n := rig.handedOverCopies(t, gateClaimant, first); n != 0 {
-				t.Fatalf("the claim's own pass copied %s while %s was live: %d copies", first, gateReplaced, n)
-			}
 			reached := false
-			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeCopy: func(_, previous string, _ uint64) error {
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld, beforeCopy: func(_, previous string, _ uint64) error {
 				if previous == gateReplaced && !reached {
 					reached = true
 					if row.returns {
