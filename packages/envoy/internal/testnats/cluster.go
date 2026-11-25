@@ -50,6 +50,16 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
+	cluster := startCluster(t, n, config)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay listening on
+// a loopback address of its own (testport.ListenLoopback), and returns without waiting for
+// JetStream.
+func startCluster(t testing.TB, n int, config string) *Cluster {
+	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
 	}
@@ -82,7 +92,6 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
@@ -179,7 +188,20 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			Connect(t, server.URL()).Close()
+		}
+	}
+}
+
+// awaitMeta is AwaitReady's wait for the meta group alone, restarting a mute member as AwaitReady
+// says, without the account info request on each member, which a client with no credential
+// cannot send to a member with an auth callout (StartClusterWithCallout).
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	testwait.Until(t, "the JetStream meta group to be ready on every running member", func() (error, bool) {
@@ -198,11 +220,6 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 		}
 		return err, false
 	})
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
-	}
 }
 
 const (

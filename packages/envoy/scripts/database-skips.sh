@@ -10,9 +10,9 @@
 #   database-skips.sh --report FILE [PACKAGE...]
 #
 # PACKAGE is a pattern under packages/envoy: `./dir/`, that package alone, or `./dir/...`, it
-# and every package under it. With none it counts DEFAULT_PACKAGES below, the broker's packages
-# and its command, which need BROKER_TEST_DATABASE_URL, less the packages DEFAULT_EXCEPT takes out
-# of them. From packages/envoy it runs one
+# and every package under it. With none it counts DEFAULT_PACKAGES below, the broker's packages,
+# its command and the writer hold's client, which need BROKER_TEST_DATABASE_URL, less the packages
+# DEFAULT_EXCEPT takes out of them. From packages/envoy it runs one
 #
 #   go test -json -count=1 [-race] [-skip PATTERN] -timeout D PACKAGE...
 #
@@ -59,16 +59,20 @@ export LC_ALL=C
 caller="$PWD"
 cd "$(dirname "$0")/.."
 
-# The broker's packages and its command, less DEFAULT_EXCEPT: every package of each opens the
-# broker's Postgres, named by BROKER_TEST_DATABASE_URL, or skips. DEFAULT_EXCEPT is a `grep -Ev`
-# pattern over the import paths `go list` prints for DEFAULT_PACKAGES, and a run with no PACKAGE
-# runs the packages it keeps. It takes out the race lane's packages under the broker's tree (each
-# a package of ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py, which builds the same pattern
-# as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
-# service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
-# detector, so a run here would be its second in the same CI run.
-DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/)
-DEFAULT_EXCEPT='/internal/cipher/natscallout$'
+# The broker's packages, its command and the writer hold's client (internal/holdrecord, whose
+# journal tests run on the broker's own routes over its Postgres), less DEFAULT_EXCEPT: every
+# package of each opens the broker's Postgres, named by BROKER_TEST_DATABASE_URL, or skips.
+# DEFAULT_EXCEPT is a `grep -Ev` pattern over the import paths `go list` prints for
+# DEFAULT_PACKAGES, and a run with no PACKAGE runs the packages it keeps; empty, it takes none out.
+# It is for a race lane package under the broker's tree that opens no database (each a package of
+# ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py that DATABASE_SKIPS_RACE_ONLY there names,
+# from which that file builds DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT
+# says otherwise): envoy-go-race runs such a package under the detector, so a run here would be
+# its second in the same CI run, and would count nothing. Today it names none. The auth service's
+# natscallout is in the race lane, and its hold rows open the broker's Postgres and skip without
+# it, so this counter runs it too: that run is its second in CI, the price of counting its skips.
+DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/)
+DEFAULT_EXCEPT=''
 
 # EXPECTED_SKIPS: PACKAGE TEST REASON, one per line: a test that skips in every run that sets the
 # database variables, and why. A skip of a test it names is not counted; a line whose package is
@@ -225,7 +229,13 @@ if [ ${#packages[@]} -eq 0 ]; then
     cat "$work/list" >&2
     exit 1
   }
-  mapfile -t runs < <(grep -Ev "$DEFAULT_EXCEPT" "$work/default")
+  # grep -Ev '' would take every line out, since an empty pattern matches all of them, so an
+  # empty DEFAULT_EXCEPT keeps the whole table.
+  if [ -n "$DEFAULT_EXCEPT" ]; then
+    mapfile -t runs < <(grep -Ev "$DEFAULT_EXCEPT" "$work/default")
+  else
+    mapfile -t runs <"$work/default"
+  fi
   [ ${#runs[@]} -gt 0 ] || unknown "DEFAULT_EXCEPT takes every package of ${DEFAULT_PACKAGES[*]} out, so no test ran"
 else
   runs=("${packages[@]}")

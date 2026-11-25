@@ -180,6 +180,11 @@ func (c checkedDocsAPI) SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	return c.next.SettleCopiesOf(ctx, ask)
 }
 
+func (c checkedDocsAPI) CopiesOf(ctx context.Context, ask model.Ask) ([]string, error) {
+	c.check(ctx, "CopiesOf")
+	return c.next.CopiesOf(ctx, ask)
+}
+
 func (c checkedDocsAPI) MarkQuote(ctx context.Context, artifactID string, mark docs.MarkSpec, quote string, occurrence *int) (docs.Anchored, error) {
 	c.check(ctx, "MarkQuote")
 	return c.next.MarkQuote(ctx, artifactID, mark, quote, occurrence)
