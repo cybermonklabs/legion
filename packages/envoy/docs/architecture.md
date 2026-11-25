@@ -660,8 +660,9 @@ the client's next claim writes the record. A handover record's passes are a take
 with three differences. While the replaced session is `live` they copy nothing and set the record
 back as a pass that finds the previous holder holding the role does: a session that answers reads
 its own messages, and a person's direct messages go to no other session while that person's
-session answers. A pass reads the session's state before it starts and again from the listener's
-cache before each copy, so a registration that lands while it runs ends it, and a session that
+session answers. A pass reads the session's state before it starts and again before each copy,
+from the listener's cache and, where that does not read it live, from the session bucket's leader,
+so a registration that lands while it runs, through any listener, ends it, and a session that
 stays live through the record's hour is not handed over. They copy nothing either, and set the
 record back the same way, while the two sessions' last registrations, read from the known-session
 bucket's leader before the pass and again as the last step before each copy
@@ -699,9 +700,10 @@ principal that registration replaced back over it; where the leader does not ans
 nothing. A registration whose record a listener's copy holds unchanged inside the refresh age is
 skipped only where the leader confirms it holds its principal too, and a registration whose
 write failed is answered `503` with `Retry-After: 1` (`session.ErrPrincipalUnrecorded`) unless
-the leader confirms the record names its principal, none recorded, or nothing, so the session
-registers again until the record names the principal it registers as. The claim route writes
-the handover record
+the leader confirms the record names its principal, none recorded, or nothing, as is a
+registration through a listener whose known-session bucket is not open, which writes nothing
+while the bucket can name another principal for the session; so the session registers again
+until the record names the principal it registers as. The claim route writes the handover record
 only when the claim's credential, the claimant's last registration and the replaced session's
 last registration name one principal, none equal to none, each registration read from the
 bucket's leader (`session.KnownSessions.Read`). A replaced session with no record, one whose

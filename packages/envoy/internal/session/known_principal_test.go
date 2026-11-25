@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/kvchunk"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // storedPrincipal is the principal the bucket itself holds on sessionID's record, read past the
@@ -380,4 +381,76 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A registration through a store whose bucket is not open writes nothing, while the bucket another
+// listener's store opened goes on naming the principal the session registered as before, which
+// the handover gate reads as the one it last registered as. So that registration is
+// ErrPrincipalUnrecorded, for the registration route's 503, wrapping ErrKnownSessionsUnavailable.
+// The store that is not open is the one a listener whose NATS user may not open the bucket holds
+// (TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives). The case fails where such a
+// store answers a registration nil, as it answers every other write. The controls are the same
+// registration through the open store, which records its principal and answers nil; the writes
+// through the store that is not open that are no registration, which answer nil; and a
+// registration through a nil store, which answers nil as each of its writes does.
+func TestKnownSessionsARegistrationThroughAStoreNotOpenIsUnrecorded(t *testing.T) {
+	const (
+		sessionID = "ses_registration_not_open"
+		person    = "ada@example.com"
+		service   = "example-fleet"
+	)
+	clock := time.Now()
+	open := openKnown(t, func() time.Time { return clock })
+	if err := open.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: service}); err != nil {
+		t.Fatalf("record the registration as %s through the open store: %v", service, err)
+	}
+	seed, public := testnats.User(t)
+	denied := testnats.StartNkeyGranted(t, public, "nothing.this.store.uses")
+	conn, err := testnats.ConnectSeed(t, denied.URL, seed)
+	if err != nil {
+		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	// No grant ever arrives, and the retry's first wait is past the test's end, so no attempt the
+	// store makes on its own runs while the rows do.
+	notOpen, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("open the store over a bucket its user may not open: %v", err)
+	}
+	t.Cleanup(notOpen.StopWatch)
+	if notOpen.watch() != nil {
+		t.Fatal("the store the case registers through has its bucket open; the case needs it not open")
+	}
+
+	t.Run("case: a registration as another principal through the store whose bucket is not open", func(t *testing.T) {
+		err := notOpen.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: person})
+		if !errors.Is(err, ErrPrincipalUnrecorded) || !errors.Is(err, ErrKnownSessionsUnavailable) {
+			t.Errorf("the registration answered %v; want %v wrapping %v", err, ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+		}
+		if stored := storedPrincipal(t, open, sessionID); stored != service {
+			t.Fatalf("the bucket's record names %q; the case needs it still naming %q", stored, service)
+		}
+	})
+	t.Run("control: a write through the store whose bucket is not open that is no registration", func(t *testing.T) {
+		if err := notOpen.RecordWithin(t.Context(), KnownSession{SessionID: sessionID}); err != nil {
+			t.Errorf("RecordWithin answered %v; want nil", err)
+		}
+		if err := notOpen.TouchWithin(t.Context(), sessionID); err != nil {
+			t.Errorf("TouchWithin answered %v; want nil", err)
+		}
+	})
+	t.Run("control: a registration through a nil store", func(t *testing.T) {
+		var none *KnownSessions
+		if err := none.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: person}); err != nil {
+			t.Errorf("the registration answered %v; want nil", err)
+		}
+	})
+	t.Run("control: the same registration through the open store", func(t *testing.T) {
+		if err := open.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: person}); err != nil {
+			t.Errorf("the registration answered %v; want nil", err)
+		}
+		if stored := storedPrincipal(t, open, sessionID); stored != person {
+			t.Errorf("the bucket's record names %q; want %q", stored, person)
+		}
+	})
 }

@@ -174,10 +174,13 @@ func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 //
 // A store whose bucket is not open is the degraded listener: one whose NATS user may not open the
 // bucket keeps the store, which answers nothing and whose writes do nothing, and opens the bucket
-// as soon as an attempt of its own succeeds (repairUntilStopped). A nil *KnownSessions answers the
-// same way, for a listener that could not build a JetStream context at all and for a test that
-// builds the handlers without a store, so every method here is safe on a nil receiver and no call
-// site carries a nil check.
+// as soon as an attempt of its own succeeds (repairUntilStopped). A registration's write through
+// it is the one write that says so (RecordRegistrationWithin's ErrPrincipalUnrecorded), since the
+// principal it does not record can be another one the bucket holds. A nil *KnownSessions answers
+// nothing and writes nothing too, and answers every write nil, a registration's included, for a
+// listener that could not build a JetStream context at all and for a test that builds the
+// handlers without a store, so every method here is safe on a nil receiver and no call site
+// carries a nil check.
 type KnownSessions struct {
 	now func() time.Time
 	log *slog.Logger
@@ -834,7 +837,18 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // the plain error. A record naming another principal, and a leader that did not answer, leave the
 // gate reading a principal this session did not last register as, or one nobody confirmed it
 // did, so the registration route answers 503 and the client registers again.
+//
+// A store whose bucket is not open writes nothing, and its registration is ErrPrincipalUnrecorded
+// too, wrapping ErrKnownSessionsUnavailable: the bucket another listener opened can hold another
+// principal, recorded, for the session, which the handover gate on that listener would go on
+// reading as the one it last registered as, and this store cannot read the bucket to say it holds
+// none. Once its bucket opens (the store's repair attempts, at once after a connection event), the
+// client's next registration writes its principal. A nil store, the listener's that could build no
+// JetStream context at all and a test's, answers nil, as every one of its writes does.
 func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record KnownSession) error {
+	if s != nil && record.SessionID != "" && s.watch() == nil {
+		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, ErrKnownSessionsUnavailable)
+	}
 	record.PrincipalRecorded = true
 	err := s.writeWithin(ctx, record, true, false)
 	if err != nil && s.principalMayDiffer(ctx, record.SessionID, record.Principal) {
@@ -845,8 +859,9 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record Kno
 
 // ErrPrincipalUnrecorded wraps a registration's write that failed (RecordRegistrationWithin) while
 // the bucket's leader names another principal, recorded, than the one the session just registered
-// as, or did not answer. The registration route answers it 503 with Retry-After: 1 rather than
-// 200, so the client registers again until the record names its principal.
+// as, or did not answer, and a registration through a store whose bucket is not open. The
+// registration route answers it 503 with Retry-After: 1 rather than 200, so the client registers
+// again until the record names its principal.
 var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record may name another")
 
 // principalMayDiffer reports whether sessionID's record, as the bucket's leader holds it, names a

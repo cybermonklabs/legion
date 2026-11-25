@@ -33,7 +33,11 @@ body: |-
     answer. A registration whose record a listener's copy holds unchanged is skipped only where the
     leader confirms it holds its principal too, and one whose write failed is answered `503` with
     `Retry-After: 1` unless the leader confirms the record names its principal, none recorded, or
-    nothing, so the session registers again until the record names its principal. A direct
+    nothing, as is a registration through a listener whose known-session bucket is not open, which
+    records no principal while the bucket can name another; so the session registers again until
+    the record names its principal. A pass also reads, before each copy, whether the replaced
+    session is `live` again, from the session bucket's leader where its own copy does not say so,
+    so a registration through another listener ends the pass too. A direct
     message that names no event id is given one on its first
     copy, so two sessions that each replaced the other copy it once each.
     The new session may answer the delivery of a person's message handed over to it: Dispatch's

@@ -727,9 +727,11 @@ const takeoverRecordRefresh = 15 * time.Minute
 // is passed the same way, with three differences. It copies nothing while the replaced session is
 // live as well as while the role's claim names it: a session that answers reads its own messages,
 // and a copy would hand a person's or an agent's messages to another session while it still reads
-// them. The pass reads it first (sessionLiveNow), and again from this listener's cache before each
-// copy, so a registration that lands while the pass runs ends it; such a pass sets the record back
-// as one that finds the previous holder holding the role does. A replaced session that stays live
+// them. The pass reads it first (sessionLiveNow), and again the same way before each copy, after
+// the beforeCopy seam: this listener's cache, and the session bucket's leader where the cache does
+// not read it live, so a registration that lands while the pass runs, through this listener or
+// another one, ends it; such a pass sets the record back as one that finds the previous holder
+// holding the role does. A replaced session that stays live
 // until the record's life has passed is not one that was replaced, and the record finishes with
 // nothing copied. It copies nothing either, and sets the record back the same way, while the two
 // sessions' last registrations do not name one principal (handoverStands), the rule the claim
@@ -871,22 +873,24 @@ scan:
 			next = message.Sequence + 1
 			continue
 		}
-		// The pass read the replaced session not live before it started; this listener's cache of
-		// the session bucket, read again before each copy with no bucket call, fences a
-		// registration that lands while the pass runs.
-		if handover {
-			if _, state := cfg.sessions.Lookup(record.Previous); sessionIsLive(state) {
-				liveAgain = true
-				break scan
-			}
-		}
 		if err := beforeCopy(message.Sequence); err != nil {
 			return stop(err)
 		}
-		// The pass read both sessions registered as principal before it started; the bucket's
-		// leader, read again as the last step before each copy, fences a registration as another
-		// principal that lands while the pass runs, through any listener.
+		// The pass read the replaced session not live, and both sessions registered as principal,
+		// before it started. Each is read again here, after every step but the copy itself: the
+		// replaced session's state as the start reads it (this listener's cache, and the session
+		// bucket's leader where the cache does not read it live), then both registrations from the
+		// known-session bucket's leader as the last step, so a registration that lands while the
+		// pass runs, through any listener, ends it before the copy.
 		if handover {
+			live, err := sessionLiveNow(ctx, cfg, record.Previous)
+			if err != nil {
+				return stop(fmt.Errorf("read %s's registration: %w", record.Previous, err))
+			}
+			if live {
+				liveAgain = true
+				break scan
+			}
 			stands, err := handoverStillStands(ctx, cfg.known, principal, record.Previous, successor)
 			if err != nil {
 				return stop(err)

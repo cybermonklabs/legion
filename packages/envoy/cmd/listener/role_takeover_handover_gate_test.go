@@ -559,6 +559,81 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 	}
 }
 
+// A pass copies nothing while the replaced session is live, and it reads that before each copy as
+// well as at its start, after every step but the principal reads and the copy itself: a
+// registration of the replaced session that lands while the pass runs ends it before the next
+// copy. The replaced session has two unread messages and stops; the sweep's pass begins, and just
+// before its first copy (the beforeCopy seam) the replaced session registers again, as the same
+// person, in the case row, and nothing registers in the control. In the case neither message is
+// copied to the claimant, and both stay unread on the replaced session, which answers again; in
+// the control both reach the claimant. The case fails where the pass reads the replaced session's
+// state only at its start, or before a step a registration can still land behind.
+func TestAHandoverPassEndsWhenTheReplacedSessionRegistersAgainWhileItRuns(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		returns bool
+	}{
+		{name: "case: the replaced session registers again just before the pass's first copy", returns: true},
+		{name: "control: nothing registers while the pass runs"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			replacedToken := rig.personToken(gateReplaced, gatePerson)
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, replacedToken, gateReplaced)
+			// The message it reads keeps it live until it stops, so the claim's own pass copies
+			// nothing and the sweep's pass after the stop is the one the seam runs in.
+			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
+			first := rig.sendDirect(t, gateReplaced, "dispatch", "the first unread message to "+gateReplaced)
+			second := rig.sendDirect(t, gateReplaced, "dispatch", "the second unread message to "+gateReplaced)
+			seqs := copiesSeqs(t, standIn.collect(t, 3, copiesWatchBound), read, first, second)
+			awaitAckState(t, rig.consumers, gateReplaced, 2, seqs[read])
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			if n := rig.handedOverCopies(t, gateClaimant, first); n != 0 {
+				t.Fatalf("the claim's own pass copied %s while %s was live: %d copies", first, gateReplaced, n)
+			}
+			reached := false
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeCopy: func(_, previous string, _ uint64) error {
+				if previous == gateReplaced && !reached {
+					reached = true
+					if row.returns {
+						rig.registerOn(t, replacedToken, gateReplaced)
+					}
+				}
+				return nil
+			}})
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+			rig.sweepPass()
+			if !reached {
+				t.Fatalf("the sweep's pass reached no copy of %s's messages", gateReplaced)
+			}
+			received := rig.watch(t, taker, gateClaimant, gateRole, wantIf(!row.returns, first, second)...)
+
+			if !row.returns {
+				copiesRequireEach(t, received, gateClaimant, first, second)
+				return
+			}
+			if _, state := rig.harness.sessions.Lookup(gateReplaced); state != session.Live {
+				t.Fatalf("%s reads %s after it registered again; the case needs it live", gateReplaced, state)
+			}
+			copiesRequireNone(t, received, gateClaimant, first, second)
+			for _, eventID := range []string{first, second} {
+				if n := rig.handedOverCopies(t, gateClaimant, eventID); n != 0 {
+					t.Errorf("%s's own subject holds %d copies of %s after %s registered again; want none", gateClaimant, n, eventID, gateReplaced)
+				}
+			}
+			rig.requireUnacknowledged(t, gateReplaced, seqs, first, second)
+		})
+	}
+}
+
 // A registration whose known-session write failed leaves the record naming the principal the
 // session registered as before, which the handover gate would read as the one it last registered
 // as. So the registration route answers such a registration 503 with Retry-After: 1 rather than
@@ -566,14 +641,19 @@ func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *
 // principal. The session first registers as a service; then the bucket takes no write (its
 // stream's largest message is one byte) and it registers again, with a new title so the record
 // is written rather than skipped as unchanged. The case is a registration as a person, which fails
-// where a failed write is answered 200 whatever principal it leaves recorded. The controls are a
-// registration as the same service, whose failed write leaves its own principal recorded and is
-// answered 200, and a registration as a person through a bucket that takes the write.
+// where a failed write is answered 200 whatever principal it leaves recorded. The second case is
+// a registration as a person through a listener whose known-session store's bucket is not open,
+// over the same bus as the listener that recorded the service, which fails where such a store,
+// writing nothing, answers the registration 200 and leaves the service standing as the principal
+// the session last registered as. The controls are a registration as the same service, whose
+// failed write leaves its own principal recorded and is answered 200, and a registration as a
+// person through a bucket that takes the write.
 func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing.T) {
 	const sessionID = "ses_gate_registration_unrecorded"
 	for _, row := range []struct {
 		name      string
 		refused   bool
+		notOpen   bool
 		registers func(rig *gateRig) string
 		status    int
 		stored    string
@@ -581,6 +661,13 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 		{
 			name:      "case: the session registers again as a person and the bucket takes no write",
 			refused:   true,
+			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
+			status:    http.StatusServiceUnavailable,
+			stored:    gateService,
+		},
+		{
+			name:      "case: the session registers again as a person through a listener whose known-session bucket is not open",
+			notOpen:   true,
 			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
 			status:    http.StatusServiceUnavailable,
 			stored:    gateService,
@@ -602,6 +689,14 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 		t.Run(row.name, func(t *testing.T) {
 			rig := newGateRig(t)
 			rig.registerOn(t, rig.serviceToken(sessionID, gateService), sessionID)
+			known := rig.deps.known
+			if row.notOpen {
+				// The routes read the deps at each request, so the registration below is served as
+				// a listener whose store has no bucket open serves it; the store the record is read
+				// from below is the open one, over the same bucket.
+				rig.deps.known = &session.KnownSessions{}
+				t.Cleanup(func() { rig.deps.known = known })
+			}
 			if row.refused {
 				js := rig.harness.client.JS()
 				info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
@@ -630,7 +725,7 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 			if row.status == http.StatusServiceUnavailable && recorder.Header().Get("Retry-After") != "1" {
 				t.Errorf("the 503 carries Retry-After %q; want 1", recorder.Header().Get("Retry-After"))
 			}
-			record, found, err := rig.deps.known.Read(t.Context(), sessionID)
+			record, found, err := known.Read(t.Context(), sessionID)
 			if err != nil || !found {
 				t.Fatalf("read %s's record from the bucket's leader: found %t, %v", sessionID, found, err)
 			}
