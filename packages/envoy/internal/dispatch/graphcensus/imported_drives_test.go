@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,8 +64,9 @@ type writersRig struct {
 	arrived chan struct{}
 	release func()
 	// The issue and its spec, the issue's notes document and the slug an anchor names it by, the
-	// comment whose held send the settle settles, and the ask the follower follows.
-	issue, spec, notes, notesSlug, mentioned, ask string
+	// comment whose held send the settle settles, the ask the follower follows, the targeted message
+	// the session's reply answers, and the untouched document the removal removes.
+	issue, spec, notes, notesSlug, mentioned, ask, message, removable string
 }
 
 func newWritersRig(t *testing.T) *writersRig {
@@ -286,10 +288,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated))
 			r.issue, r.spec = created.Key, created.Primary
 		},
-		Counts: newBlockCounted,
+		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -298,7 +300,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated)).Artifact
 			r.notes, r.notesSlug = notes.ID, notes.Slug
 		},
-		Counts: newBlockCounted,
+		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#commitArtifactVersionEvent", Database: r.database,
 		Sites: []string{"api/artifacts.go#commitArtifactVersionEvent", "refs/blocks.go#Queue"},
@@ -320,6 +322,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
@@ -344,6 +347,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 		},
@@ -380,25 +384,54 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleDeliveredTo}:    {"delivery"},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
+		// A message the request stores on the issue, targeted at a session the listener takes the
+		// send of at once: the message's node, in the issue's project, and the session's node the
+		// settle of its attempt records.
 		Name: "api/message_delivery.go#completeMessageDelivery", Database: r.database,
-		Sites: []string{"api/message_delivery.go#completeMessageDelivery", "graphstore/people.go#QueueReached",
-			"graphstore/people.go#QueueSessionRecorded"},
+		Sites: []string{"api/message_delivery.go#completeMessageDelivery", "api/messages.go#createStoredMessage",
+			"graphstore/people.go#QueueReached", "graphstore/people.go#QueueSessionRecorded"},
 		Drive: func(t *testing.T) {
-			message := decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages", map[string]any{
+			r.message = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages", map[string]any{
 				"body": "Over to you.", "target": "session:" + messageSession, "delivery": "steer",
 			}, "alice", http.StatusCreated)).ID
-			r.awaitTrue(t, "message "+message+"'s attempt settling sent", `
+			r.awaitTrue(t, "message "+r.message+"'s attempt settling sent", `
 				select not exists (select 1 from message_deliveries where message_id = $1::uuid and state = 'pending')
 				   and exists (select 1 from message_deliveries where message_id = $1::uuid and state = 'sent')
-			`, message)
+			`, r.message)
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindMessage)),
+	}, {
+		// The session's reply to that message, a message of the same issue's project.
+		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
+		Sites: []string{"api/message_delivery.go#insertSessionReply", "api/server.go#appendCausingEvent"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/reply", map[string]any{
+				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
+			}, "", http.StatusCreated)
+		},
+		Counts: objectNodeCounted(graphstore.KindMessage),
+	}, {
+		// A broadcast to the message's session: the copy it stores for that session, a message on
+		// no issue, between alice and the session, whose node names those parties.
+		Name: "api/broadcasts.go#writeBroadcast", Database: r.database,
+		Sites: []string{"api/broadcasts.go#writeBroadcast", "api/server.go#appendCausingEvent"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/broadcasts", map[string]any{
+				"body": "To everyone.", "delivery": "btw", "session_ids": []string{messageSession},
+			}, "alice", http.StatusCreated)
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
+		},
 	}, {
 		Name: "api/asks.go#createAskFor", Database: r.database,
 		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
@@ -407,7 +440,22 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
+	}, {
+		// The removal of an untouched document of the issue, made just before by typing a title:
+		// its node stated gone, which the term artifact_removed counts.
+		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
+		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
+		Ready: func(t *testing.T) {
+			r.removable = decoded[struct {
+				Artifact model.Artifact `json:"artifact"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts",
+				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact.ID
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
 	}, {
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
 		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#queueFollow"},
@@ -417,14 +465,20 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: sessionNodeCounted,
 	}, {
-		// The spec's approval request, which a session opens, renewed by another while it waits on
-		// the person: a retry, which appends no event.
-		Name: "api/reviews.go#renewApprovalAsk, on a retry", Database: r.database,
-		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#queueFollow"},
-		Ready: func(t *testing.T) {
+		// The spec's approval request, which a session opens: the request's node, in the spec's
+		// project, and the requester's follow.
+		Name: "api/reviews.go#openApprovalAsk", Database: r.database,
+		Sites: []string{"api/reviews.go#openApprovalAsk", "asks/followers.go#queueFollow"},
+		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
+	}, {
+		// That request renewed by another session while it waits on the person: a retry, which
+		// appends no event.
+		Name: "api/reviews.go#renewApprovalAsk, on a retry", Database: r.database,
+		Sites: []string{"api/reviews.go#renewApprovalAsk", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_retry")}, "", http.StatusOK)
@@ -450,7 +504,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// A session writes an ask as a block of the notes through the edits route, which writes
 		// the version holding it, and the settlement opens the ask and follows it for that session.
 		Name: "docs/settlement.go#appendEvents", Database: r.database,
-		Sites: []string{"docs/settlement.go#appendEvents", "asks/followers.go#queueFollow"},
+		Sites: []string{"docs/settlement.go#appendEvents", "docs/ask_blocks.go#createAskBlock", "asks/followers.go#queueFollow"},
 		Ready: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.notes+"/edits", map[string]any{
 				"actor": sessionActor("ses_editor"),
@@ -463,7 +517,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where block_artifact_id = $1::uuid and block_id = 'sizing-ask')
 			`, r.notes)
 		},
-		Counts: sessionNodeCounted,
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk)),
 	}, {
 		// A person's live edit of the notes, which a build without the block index then wrote as a
 		// version of its own: the version's insert owes the document its index (migration 0122's
@@ -574,6 +628,7 @@ var (
 	newBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 		{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
+		{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
 		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
 	}
@@ -582,3 +637,29 @@ var (
 		{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 	}
 )
+
+// objectNodeCounted is what a create of an issue, a document, an ask or a message of a project
+// appends of the object's node: its visibility, its state and its project, which the term of its
+// kind counts.
+func objectNodeCounted(kind string) map[graphcensus.StoredKind][]string {
+	return map[graphcensus.StoredKind][]string{
+		{kind, graphstore.AttributeVisibility}: {kind},
+		{kind, graphstore.AttributeState}:      {kind},
+		{kind, graphstore.AttributeProject}:    {kind},
+	}
+}
+
+// merged is every kind each of counts holds, its terms joined where two hold one kind.
+func merged(counts ...map[graphcensus.StoredKind][]string) map[graphcensus.StoredKind][]string {
+	joined := map[graphcensus.StoredKind][]string{}
+	for _, count := range counts {
+		for kind, terms := range count {
+			for _, term := range terms {
+				if !slices.Contains(joined[kind], term) {
+					joined[kind] = append(joined[kind], term)
+				}
+			}
+		}
+	}
+	return joined
+}

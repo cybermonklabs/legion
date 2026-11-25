@@ -246,6 +246,16 @@ YAML
 compose_2_12_image=$REGISTRY@$NATS
 container=\$(docker create "\$compose_2_12_image")
 YAML
+  cat > "$root/scripts/e2e/lib/kind-sandbox.sh" <<YAML
+# shellcheck shell=bash
+kind_busybox=$REGISTRY@$NATS
+YAML
+  # The shape IMAGE_FROM covers in the real shared-clone-kind.sh: its driver container's image,
+  # which scripts/e2e/lib/kind-sandbox.sh sets.
+  cat > "$root/scripts/e2e/shared-clone-kind.sh" <<YAML
+#!/usr/bin/env bash
+docker run --rm --network kind "\$kind_busybox" true
+YAML
   echo "$root"
 }
 
