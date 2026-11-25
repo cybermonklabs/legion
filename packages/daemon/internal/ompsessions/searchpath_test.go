@@ -196,6 +196,31 @@ func leaveSetting(ctx context.Context, dsn string) string {
 // calls it .s.PGSQL.<listen_port>, as Postgres does, and binds no TCP port for it.
 const poolPort = "6432"
 
+// poolURL is the URL of database through the pool whose socket is in socketDir, signed in as user
+// with password. url.Values writes a space as `+`, which pgconn keeps as a `+` rather than reading
+// it as a space, so each `+` the encoding leaves is spelt %20: a literal `+` is %2B by then.
+func poolURL(user, password, database, socketDir string) string {
+	return (&url.URL{
+		Scheme: "postgres", User: url.UserPassword(user, password), Path: "/" + database,
+		RawQuery: strings.ReplaceAll(url.Values{"host": {socketDir}, "port": {poolPort}, "sslmode": {"disable"}}.Encode(), "+", "%20"),
+	}).String()
+}
+
+// TestThePoolURLReadsBackToItsSocketDirectory: pgconn reads poolURL back to the directory the
+// pool's socket is in, a space and a `+` in its name included, to the pool's port and to the login
+// and database it was given, a password with a space and a `+` included.
+func TestThePoolURLReadsBackToItsSocketDirectory(t *testing.T) {
+	const dir, password = "/tmp/a pool+dir/lg1", "p@ss word+"
+	config, err := pgconn.ParseConfig(poolURL("postgres", password, "db", dir))
+	if err != nil {
+		t.Fatalf("pgconn cannot read the pool's URL: %v", err)
+	}
+	if config.Host != dir || fmt.Sprint(config.Port) != poolPort || config.User != "postgres" || config.Password != password || config.Database != "db" {
+		t.Fatalf("the pool's URL reads back as host %q port %d user %q password %q database %q; want %q, %s, postgres, %q, db",
+			config.Host, config.Port, config.User, config.Password, config.Database, dir, poolPort, password)
+	}
+}
+
 // startPool starts PgBouncer 1.25.2 (PoolImage) with docker in front of the server direct names,
 // set up as settings says, and answers the URL that reaches direct's database through it, once a
 // connection through it has opened. The container is removed when the test ends, and its removal
@@ -267,14 +292,7 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 	if out, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("start the pool: docker run: %v: %s", err, out)
 	}
-	address := (&url.URL{
-		Scheme: "postgres", User: url.UserPassword(server.User, server.Password), Path: "/" + server.Database,
-		RawQuery: url.Values{
-			"host":    {socketDir},
-			"port":    {poolPort},
-			"sslmode": {"disable"},
-		}.Encode(),
-	}).String()
+	address := poolURL(server.User, server.Password, server.Database, socketDir)
 	logs := func() string {
 		out, _ := exec.Command(docker, "logs", name).CombinedOutput()
 		return string(out)
