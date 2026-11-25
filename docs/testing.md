@@ -674,7 +674,7 @@ fails when its dependencies reach testcontainers.
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than
 running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
-URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each dropped when the
+URL, `ClonePool` an open `pgxpool` on it and `CloneStore` the opened store, each given back when the
 test ends, and the package's
 `TestMain` is `testpg.Main("<prefix>", m.Run)`, which drops the template when the run ends and
 composes with the `TestMain` a package already has
@@ -690,6 +690,22 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+
+In the daemon, a database a test gives back is used again rather than dropped
+(`packages/daemon/internal/testpg/testdb/pool.go`): the next test that asks for the same shape, an
+empty database or a clone of the same template, takes it, so a run creates as many databases as
+it holds at once rather than one per test. A create forces two checkpoints and a drop one, and one
+server runs every package's tests with one checkpointer: with a database per test, seven of the
+daemon's packages at once made 1,415 databases and three of them ran out their 15 minutes waiting
+on those checkpoints, where the pool made 32 and every one passed. A database goes back to the free
+list only after it is reset and read back against its template: an empty one has its schemas
+dropped and `public` made again, a clone has every table but `schema_version` emptied, and the
+reading compares the schema (every relation, column, constraint, function, extension, schema and
+database setting), `schema_version`'s rows, and finds no row in any other table. A database that
+fails either is dropped, never handed on. A package takes the pool through `testdb.Main` in its
+`TestMain` (`testpg.Main` runs inside it); a package without it drops each database as its test
+ends.
+
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own.
