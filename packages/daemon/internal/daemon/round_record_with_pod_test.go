@@ -13,7 +13,7 @@ package daemon
 //     its wait for the pod to go, so it never tells the daemon what it took. The round's
 //     replacement by issue, which waited for the pod's launch turn, finds the Sandbox Suspended
 //     and asks no last word. The round's call yields to the launch's record: in one transaction
-//     the round's read moves onto the launch's record where it weighs more, and the round's
+//     the round's read moves onto the launch's record where it is the read that tells, and the round's
 //     record goes, so one record stands for the one act (the Legion reviewer's Medium 1 on #5285
 //     at 18d81dad). The round ends with no notice of its own; once the Sandbox is gone, the
 //     launch's finish tells the architect once, from the read that tells most of the launch's and

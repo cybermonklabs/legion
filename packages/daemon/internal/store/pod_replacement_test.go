@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,13 +148,18 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 				}
 			}
 			var handed []PodReplacement
-			// moved is the record the yield answers for the record it yields to, and onto that record.
+			// moved is the record the yield answers for the record it yields to, and onto that record
+			// and the two records, oldest first, the yield was handed.
 			moved := []byte(`{"moved": "round-a"}`)
 			var onto []string
-			var yield func(onto, yielding PodReplacement) ([]byte, error)
+			var yield func(onto PodReplacement, both []PodReplacement) ([]byte, error)
 			if tc.yield {
-				yield = func(to, yielding PodReplacement) ([]byte, error) {
-					onto = append(onto, to.Operation+"<-"+yielding.Operation)
+				yield = func(to PodReplacement, both []PodReplacement) ([]byte, error) {
+					names := make([]string, 0, len(both))
+					for _, r := range both {
+						names = append(names, r.Operation)
+					}
+					onto = append(onto, to.Operation+"<-"+strings.Join(names, ","))
 					return moved, nil
 				}
 			}
@@ -180,7 +186,7 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 			}
 			wantOnto := []string(nil)
 			if finish.Yielded {
-				wantOnto = []string{"launch-volume<-" + tc.operation}
+				wantOnto = []string{"launch-volume<-launch-volume," + tc.operation}
 				var record string
 				if err := st.Pool().QueryRow(ctx, `select record::text from pod_replacements where operation = 'launch-volume'`).Scan(&record); err != nil || record != `{"moved": "round-a"}` {
 					t.Errorf("the record of launch-volume after the yield = %q, %v; want the record the yield answered, %s", record, err, moved)

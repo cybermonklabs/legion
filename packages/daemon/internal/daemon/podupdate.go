@@ -1408,9 +1408,10 @@ func (s *supervision) overtakenByLaunch(ctx context.Context, recorded store.PodR
 // Sandbox and its kept volume over that pod stands (runtime.TakenPod.WithPod), that launch took
 // the pod, so the finish yields to it (store.Store.FinishPodReplacement): the round queues no
 // notice and ends, and in the finish's transaction the round's read moves onto the launch's record
-// where it weighs more (movedRead) and the round's record goes. The launch's record alone then
-// stands for the one act: its finish tells the architect from the read of the two that tells most
-// once that act is confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
+// where it is the read that tells of the two, by the rule of every notice (movedRead,
+// tellingRecord), and the round's record goes. The launch's record alone then stands for the one
+// act: its finish tells the architect from the read of the two that tells most once that act is
+// confirmed (the Legion reviewer's Medium 1 on #5285 at 4b123279), and where the
 // runtime shows the act not made, the record is forgotten and nothing is told of a call that took
 // nothing (the Legion reviewer's Medium 1 on #5285 at 18d81dad). The end is the round's end all
 // the same, so no later walk reads the round's pod as one that went without its round (the Legion

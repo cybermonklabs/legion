@@ -42,8 +42,8 @@ import (
 // replacementRecord is the daemon's encoding of a replacement's record (store.PodReplacement's
 // Record): a round's (Round set: its recorded reasons, who made the replacement, and the read
 // before it) or a launch's own (Claim set: the launching claim and why it replaced the pod, and the
-// read through the pod's launcher). The read is what it found, or Failed, the error it failed with
-// as the store keeps a far side's error (storetext.FarSideErrorEnds).
+// read through the pod's launcher). The read is heldRead's, whose fields the encoding carries
+// beside the record's own.
 type replacementRecord struct {
 	Round   string      `json:"round,omitempty"`
 	Reasons string      `json:"reasons,omitempty"`
@@ -52,11 +52,22 @@ type replacementRecord struct {
 	Why     string      `json:"why,omitempty"`
 	Role    claim.Role  `json:"role,omitempty"`
 	At      time.Time   `json:"at"`
-	Head    string      `json:"head,omitempty"`
-	Changed bool        `json:"changed,omitempty"`
-	Commits []string    `json:"commits,omitempty"`
-	Count   int         `json:"count,omitempty"`
-	Failed  string      `json:"failed,omitempty"`
+	heldRead
+}
+
+// heldRead is the read of the issue's workspace a record holds: what it found, or Failed, the error
+// it failed with as the store keeps a far side's error (storetext.FarSideErrorEnds).
+type heldRead struct {
+	Head    string   `json:"head,omitempty"`
+	Changed bool     `json:"changed,omitempty"`
+	Commits []string `json:"commits,omitempty"`
+	Count   int      `json:"count,omitempty"`
+	Failed  string   `json:"failed,omitempty"`
+}
+
+// heldReadOf is the read a record holds of work, found, or of err, the error the read failed with.
+func heldReadOf(work runtime.WorkspaceWork, err error) heldRead {
+	return heldRead{Head: work.Head, Changed: work.Changed, Commits: work.Commits, Count: work.Count, Failed: failedText(err)}
 }
 
 // failedText is the error of a read as the record keeps it, "" for a read that was made.
@@ -74,7 +85,7 @@ func failedText(err error) string {
 // and the pod's uid is its target (GPT-6.1 Sol's point 4).
 func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store.PodReplacement, error) {
 	encoded, err := json.Marshal(replacementRecord{Round: read.round, Reasons: reasons, By: read.by.String(), Role: read.role, At: read.at.UTC(),
-		Head: read.work.Head, Changed: read.work.Changed, Commits: read.work.Commits, Count: read.work.Count, Failed: failedText(read.err)})
+		heldRead: heldReadOf(read.work, read.err)})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
@@ -85,8 +96,7 @@ func roundRecordOf(issue, pod string, read workspaceRead, reasons string) (store
 // operation identity the runtime gave it, with what the act takes, its target, and whether it takes
 // the live pod of its Sandbox with the volume (store.PodReplacement.WithPod, which the row holds).
 func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
-	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why,
-		Head: taken.Work.Head, Changed: taken.Work.Changed, Commits: taken.Work.Commits, Count: taken.Work.Count, Failed: failedText(taken.Err)})
+	encoded, err := json.Marshal(replacementRecord{Claim: taken.Claim, Why: taken.Why, heldRead: heldReadOf(taken.Work, taken.Err)})
 	if err != nil {
 		return store.PodReplacement{}, err
 	}
@@ -94,8 +104,8 @@ func launchRecordOf(taken runtime.TakenPod) (store.PodReplacement, error) {
 		Record: encoded}, nil
 }
 
-// work is the read the record holds, of pod.
-func (r replacementRecord) work(pod string) (runtime.WorkspaceWork, error) {
+// work is the read r holds, of pod.
+func (r heldRead) work(pod string) (runtime.WorkspaceWork, error) {
 	work := runtime.WorkspaceWork{Head: r.Head, Changed: r.Changed, Commits: r.Commits, Count: r.Count, PodUID: pod}
 	if r.Failed != "" {
 		return work, errors.New(r.Failed)
@@ -144,20 +154,22 @@ func (r recordedRead) weight() int {
 	return 0
 }
 
-// tellingRead is the read the notice of one act tells, of every record the act's finish took (took,
-// oldest first, store.PodReplacementFinish.Took): a read that found work that no branch or tag on
-// origin holds tells over one that failed, and a read that failed over one that found nothing, and
-// of reads that weigh the same the one of the newest record tells (the Legion reviewer's item 2 on
-// #5285 at 69e00593). One act can stand under the records of acts made over reads of their own,
-// and the newest record is not always the last read before the take: a replacement by issue reads
-// outside the pod's launch turn and records before it waits for that turn, so its record can be
-// newer than a launch's whose read named commits. So the tie between two reads of one weight goes
-// by when each record was written, not by when each read was made, and of two reads that both
-// found work it can tell the one that names fewer commits (the Legion reviewer's Minor on #5285 at
-// 4b123279). tells is false where every read found nothing: the act owes nobody a notice. A
-// record this daemon cannot read tells nothing.
-func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
-	for _, r := range took {
+// tellingRecord is the record whose read the notice of one act tells, of records (oldest first, as
+// the store holds them: the records an act's finish took, store.PodReplacementFinish.Took, or the
+// two records of a yield): at is its place in records, -1 where none tells, and read is its read. A
+// read that found work that no branch or tag on origin holds tells over one that failed, and a read
+// that failed over one that found nothing, and of reads that weigh the same the one of the newest
+// record tells (the Legion reviewer's item 2 on #5285 at 69e00593). One act can stand under the
+// records of acts made over reads of their own, and the newest record is not always the last read
+// before the take: a replacement by issue reads outside the pod's launch turn and records before it
+// waits for that turn, so its record can be newer than a launch's whose read named commits. So the
+// tie between two reads of one weight goes by when each record was written, not by when each read
+// was made, and of two reads that both found work it can tell the one that names fewer commits (the
+// Legion reviewer's Minor on #5285 at 4b123279). No record tells where every read found nothing:
+// the act owes nobody a notice. A record this daemon cannot read tells nothing.
+func tellingRecord(records []store.PodReplacement) (at int, read recordedRead) {
+	at = -1
+	for i, r := range records {
 		var rec replacementRecord
 		if json.Unmarshal(r.Record, &rec) != nil {
 			continue
@@ -165,33 +177,40 @@ func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
 		var held recordedRead
 		held.work, held.err = rec.work(r.PodUID)
 		if held.weight() > 0 && held.weight() >= read.weight() {
-			read, tells = held, true
+			at, read = i, held
 		}
 	}
-	return read, tells
+	return at, read
+}
+
+// tellingRead is the read the notice of one act tells, of every record the act's finish took (took,
+// oldest first, store.PodReplacementFinish.Took), by tellingRecord's rule; tells is false where no
+// record tells.
+func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
+	at, read := tellingRecord(took)
+	return read, at >= 0
 }
 
 // movedRead is the record onto, a launch's record of the act that took the pod a round's call
-// found taken, once the call's own record, yielding, yields to it (store.Store.FinishPodReplacement):
-// onto holding yielding's read in place of its own where yielding's weighs more (recordedRead.weight),
-// or nil, onto as it is, where it does not. The two records are of one act, so the one record left
-// holds the read that tells most of the two, and the launch's finish tells it; where the launch's
-// act is not made, that record is forgotten and nothing is told (the Legion reviewer's Medium 1 on
-// #5285 at 18d81dad). Of two reads that weigh the same, the launch's own stands: it is the read made
-// last before the act, under the pod's launch turn. A record this daemon cannot read moves nothing,
-// as it tells nothing (tellingRead).
-func movedRead(onto, yielding store.PodReplacement) ([]byte, error) {
+// found taken, once the call's own record yields to it (store.Store.FinishPodReplacement). both is
+// the two records, oldest first, as the store holds them. The two are of one act, so the one record
+// left holds the read the act's notice would tell of the two, by the rule every such notice is told
+// by (tellingRecord): onto holds the yielding record's read in place of its own where that record
+// tells, and answers nil, onto as it is, where onto tells or neither does. So the launch's finish
+// tells the same read whichever commits first, the yield or that finish; where the launch's act is
+// not made, its record is forgotten and nothing is told (the Legion reviewer's Medium 1 on #5285 at
+// 18d81dad, and its finding on podreplace.go:191 at aae2c628). A record this daemon cannot read
+// moves nothing, as it tells nothing.
+func movedRead(onto store.PodReplacement, both []store.PodReplacement) ([]byte, error) {
+	at, _ := tellingRecord(both)
+	if at < 0 || both[at].Operation == onto.Operation {
+		return nil, nil
+	}
 	var to, from replacementRecord
-	if json.Unmarshal(onto.Record, &to) != nil || json.Unmarshal(yielding.Record, &from) != nil {
+	if json.Unmarshal(onto.Record, &to) != nil || json.Unmarshal(both[at].Record, &from) != nil {
 		return nil, nil
 	}
-	var held, moved recordedRead
-	held.work, held.err = to.work(onto.PodUID)
-	moved.work, moved.err = from.work(yielding.PodUID)
-	if moved.weight() <= held.weight() {
-		return nil, nil
-	}
-	to.Head, to.Changed, to.Commits, to.Count, to.Failed = from.Head, from.Changed, from.Commits, from.Count, from.Failed
+	to.heldRead = from.heldRead
 	return json.Marshal(to)
 }
 
@@ -265,9 +284,10 @@ func (s *supervision) forgetReplacement(ctx context.Context, recorded store.PodR
 // the one read that says most of what it took, whichever of its records the caller finishes. yield
 // is a round's call that took nothing, which yields to the record of a launch's act that took the
 // pod with its Sandbox's volume: in the same transaction this record's read moves onto that record
-// where it weighs more (movedRead), and this record goes, with nothing queued, so that record alone
-// tells the architect once its act is confirmed, and is forgotten alone where its act is not made
-// (roundReplaced; the Legion reviewer's Medium 1 on #5285 at 4b123279 and at 18d81dad). It answers
+// where it is the read that tells (movedRead), and this record goes, with nothing queued, so that
+// record alone tells the architect once its act is confirmed, and is forgotten alone where its act
+// is not made (roundReplaced; the Legion reviewer's Medium 1 on #5285 at 4b123279 and at 18d81dad).
+// It answers
 // what the finish did, and the store's error where it refused, which it logs: the records then stand
 // for a later sweep (finishReplacements). A record that the finish of another act took, or another
 // finish of the same act, is finished already: the finish answers it not found
@@ -290,7 +310,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		noticed = true
 		return &store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 	}
-	var yielded func(onto, yielding store.PodReplacement) ([]byte, error)
+	var yielded func(onto store.PodReplacement, both []store.PodReplacement) ([]byte, error)
 	if yield {
 		yielded = movedRead
 	}
@@ -306,7 +326,7 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 		s.log.Info("supervise: the record of this replacement of the issue's pod is finished already, with the record of another act it took or by another finish of it; nothing is queued for it",
 			attrs...)
 	case finish.Yielded:
-		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; nothing is queued for it, its read moves onto that record where it weighs more, and it goes, so the launch's finish tells the architect from the read of the two that tells most",
+		s.log.Info("supervise: the record of this replacement of the issue's pod yields to the record of a launch's act that took the pod with its Sandbox's volume; nothing is queued for it, its read moves onto that record where it is the read that tells of the two, and it goes, so the launch's finish tells the architect from the read of the two that tells most",
 			attrs...)
 	case !noticed:
 	case !finish.Told:

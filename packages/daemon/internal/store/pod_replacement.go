@@ -110,8 +110,8 @@ type PodReplacementFinish struct {
 	// the same act took before, is not found, and nothing is queued for it.
 	Found bool
 	// Yielded is whether the finish yielded to the record of another act that took the target: it
-	// took nothing and queued nothing, the read of its record moved onto that record where it
-	// weighs more, and its record went, so one record stands for the one act.
+	// took nothing and queued nothing, the read of its record moved onto that record where the
+	// yield answered so, and its record went, so one record stands for the one act.
 	Yielded bool
 	// Took is every record the finish took, oldest first: the finished record and each record its
 	// act took with it (takenWith). It is empty where the record was not found or the finish
@@ -157,13 +157,15 @@ type PodReplacementFinish struct {
 // own, and the finished record goes. So the one act stands under one record, which tells the
 // architect once its own act is confirmed and is forgotten alone where the runtime shows its act
 // not made; no record of the call that took nothing is left to be read later as an act of its own
-// (the Legion reviewer's Medium 1 on #5285 at 18d81dad). yield answers onto's record carrying the
-// read that tells most of the two, so a read that found work before the call is told though the
-// other act's own read failed (the Legion reviewer's Medium 1 on #5285 at 4b123279), or nil to
-// keep onto's record as it is; its error is the finish's, which then changes nothing. Where no
-// such record stands, the finish takes what the act took, as every other finish does.
+// (the Legion reviewer's Medium 1 on #5285 at 18d81dad). yield is handed onto and both, the two
+// records oldest first as this finish holds them, so it weighs them by the order of their writes,
+// as every notice of an act does. It answers onto's record carrying the read that tells of the two,
+// so a read that found work before the call is told though the other act's own read failed (the
+// Legion reviewer's Medium 1 on #5285 at 4b123279), or nil to keep onto's record as it is; its error
+// is the finish's, which then changes nothing. Where no such record stands, the finish takes what
+// the act took, as every other finish does.
 func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string,
-	yield func(onto, yielding PodReplacement) ([]byte, error),
+	yield func(onto PodReplacement, both []PodReplacement) ([]byte, error),
 	notice func(took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
 	var finish PodReplacementFinish
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -183,8 +185,10 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		}
 		finish.Found = true
 		finished := standing[at]
-		if onto, ok := yieldTarget(finished, standing); ok && yield != nil {
-			record, err := yield(onto, finished)
+		if to, ok := yieldTarget(finished, standing); ok && yield != nil {
+			onto := standing[to]
+			both := []PodReplacement{standing[min(at, to)], standing[max(at, to)]}
+			record, err := yield(onto, both)
 			if err != nil {
 				return err
 			}
@@ -274,16 +278,16 @@ func takenWith(finished PodReplacement, standing []PodReplacement) []PodReplacem
 	return took
 }
 
-// yieldTarget is the newest record of standing, the issue's records oldest first, that names the
-// act that finished records as a target it takes beside its own (PodReplacement.Targets): another
-// act took that target with its own. ok is false where none does.
-func yieldTarget(finished PodReplacement, standing []PodReplacement) (onto PodReplacement, ok bool) {
-	for _, r := range slices.Backward(standing) {
+// yieldTarget is the place in standing, the issue's records oldest first, of the newest record that
+// names the act that finished records as a target it takes beside its own (PodReplacement.Targets):
+// another act took that target with its own. ok is false where none does.
+func yieldTarget(finished PodReplacement, standing []PodReplacement) (to int, ok bool) {
+	for i, r := range slices.Backward(standing) {
 		if r.Act != finished.Act && slices.Contains(r.Targets(), finished.Act) {
-			return r, true
+			return i, true
 		}
 	}
-	return PodReplacement{}, false
+	return -1, false
 }
 
 // ForgetPodReplacement deletes the record of operation, a replacement of issue's pod whose act was
