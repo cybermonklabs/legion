@@ -286,8 +286,10 @@ and each command runs there.
   (` --seed=<n>`): `bun run test:web web/src/<file> --seed=<n>`,
   `bun run test:web:cold web/src/<file> --seed=<n>` for a row of the web-cold lane, or
   `bun run test:harness e2e/__tests__/<file> --seed=<n>`. Add `--rerun-each=<k>` for a row that
-  first failed on run k, which the report of `bun run test:repeat` names. The order of the tests in
-  a file depends only on the seed and on that file, so this repeats the order the row failed in. A
+  first failed on run k, which the report of `bun run test:repeat` names. That report's command
+  also sets `DISPATCH_UNIT_REPEAT=1`, as the repeated run does: the rows that wait out real time
+  skip under it, so the file runs the same rows as in the repeated run. The order of the tests in a
+  file depends only on the seed and on that file, so this repeats the order the row failed in. A
   row that failed from the lane's load, such as one that times a real process, or from another file
   that ran beside it, can pass alone: run it with the files that ran beside it, or under the same
   load.

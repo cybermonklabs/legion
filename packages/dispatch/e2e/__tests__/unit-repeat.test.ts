@@ -20,7 +20,7 @@
  */
 
 import { expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -156,7 +156,7 @@ test(
     );
     expect("text" in run.junit && run.junit.text.includes("<properties>")).toBe(true);
     const report = summarise(run);
-    const reproduce = `bun run test:harness flaky.test.ts --seed=${SEED} --rerun-each=2`;
+    const reproduce = `DISPATCH_UNIT_REPEAT=1 bun run test:harness flaky.test.ts --seed=${SEED} --rerun-each=2`;
     expect(report.failingRows).toEqual([
       {
         file: "flaky.test.ts",
@@ -210,7 +210,7 @@ test(
         runs: 3,
         firstFailedRun: 1,
         message: "always",
-        reproduce: `bun run test:harness broken.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness broken.test.ts --seed=${SEED}`,
       },
     ]);
     expect(report.exitCode).toBe(1);
@@ -339,7 +339,7 @@ test(
         runs: 1,
         firstFailedRun: 1,
         message: expect.stringMatching(/^Error\n\s+at no-message\.test\.ts:4:\d+$/),
-        reproduce: `bun run test:harness no-message.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness no-message.test.ts --seed=${SEED}`,
       },
     ]);
     expect(report.rowlessFailures).toEqual([]);
@@ -386,7 +386,7 @@ test(
         runs: 1,
         firstFailedRun: 1,
         message: "broken",
-        reproduce: `bun run test:harness broken.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness broken.test.ts --seed=${SEED}`,
       })),
       rowlessFailures: [{ kind: "bun-errors", text: "Bun counted 1 error outside any test." }],
     };
@@ -598,7 +598,7 @@ test(
         rowName: "outer > a two",
         nameUnread: null,
         quietSeconds: 6,
-        reproduce: `bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
       },
       {
         file: "g.test.ts",
@@ -609,7 +609,7 @@ test(
         rowName: "g two",
         nameUnread: null,
         quietSeconds: 4.5,
-        reproduce: `bun run test:harness g.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness g.test.ts --seed=${SEED}`,
       },
       {
         file: "c.test.ts",
@@ -620,7 +620,7 @@ test(
         rowName: null,
         nameUnread: "the run that reads its rows' names exited 1",
         quietSeconds: 3,
-        reproduce: `bun run test:harness c.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness c.test.ts --seed=${SEED}`,
       },
       {
         file: "h.test.ts",
@@ -631,7 +631,7 @@ test(
         rowName: null,
         nameUnread: null,
         quietSeconds: 2,
-        reproduce: `bun run test:harness h.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness h.test.ts --seed=${SEED}`,
       },
       {
         file: "e.test.ts",
@@ -642,7 +642,7 @@ test(
         rowName: null,
         nameUnread: null,
         quietSeconds: 1,
-        reproduce: `bun run test:harness e.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness e.test.ts --seed=${SEED}`,
       },
     ]);
     expect(diedFiles({ stop, early: null }, lane)).toEqual([
@@ -655,7 +655,7 @@ test(
         rowName: "f one",
         nameUnread: null,
         quietSeconds: 9,
-        reproduce: `bun run test:harness f.test.ts --seed=${SEED}`,
+        reproduce: `DISPATCH_UNIT_REPEAT=1 bun run test:harness f.test.ts --seed=${SEED}`,
       },
     ]);
 
@@ -686,7 +686,7 @@ test(
       "::error file=packages/dispatch/a.test.ts,title=Running when the leg was stopped::a.test.ts: " +
         'in row 2, "outer > a two", or a hook after it, of run 2 of 2, 6.0 s since it began, when ' +
         `SIGTERM stopped the leg after 9.5 s (seed ${SEED}). Run it again from packages/dispatch: ` +
-        `bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
+        `DISPATCH_UNIT_REPEAT=1 bun run test:harness a.test.ts --seed=${SEED} --rerun-each=2`,
       expect.stringContaining('g.test.ts: in run 1 of 2, after row 2, "g two", ended'),
       expect.stringContaining(
         "c.test.ts: in run 1 of 2, after row 1, whose name was not read (the run that reads its " +
@@ -699,7 +699,7 @@ test(
       "::error file=packages/dispatch/f.test.ts,title=Running when its worker died::f.test.ts: in " +
         'row 1, "f one", or a hook after it, of run 1 of 2, 9.0 s since it began, when its worker ' +
         `or Bun's test process died (seed ${SEED}). Run it again from packages/dispatch: ` +
-        `bun run test:harness f.test.ts --seed=${SEED}`,
+        `DISPATCH_UNIT_REPEAT=1 bun run test:harness f.test.ts --seed=${SEED}`,
     ]);
     expect(markdown(report)).toContain("### The leg was stopped while 5 test files were running");
     expect(markdown(report)).toContain(
@@ -780,6 +780,105 @@ test(
     );
   },
   rowLimit()
+);
+
+/** Each run of a lane's script that `text` names (`bun run test:web`, `test:web:cold` or
+ *  `test:harness`), with the text around it, and whether DISPATCH_UNIT_REPEAT=1 stands right
+ *  before it, as the tool sets it for the leg's run. */
+function laneCommandsIn(text: string): { readonly marked: boolean; readonly around: string }[] {
+  return [...text.matchAll(/bun run test:(?:web|harness)/g)].map(({ index }) => ({
+    marked: text.slice(0, index).endsWith("DISPATCH_UNIT_REPEAT=1 "),
+    around: text.slice(Math.max(0, index - 40), index + 80),
+  }));
+}
+
+test(
+  "every command the report prints sets the repeat marker, and run from a shell it skips the rows the leg skipped",
+  async () => {
+    // The lie: the leg runs with DISPATCH_UNIT_REPEAT=1, so its rows that wait out real time skip
+    // and never begin, but a command the report prints to run a file again sets no marker. A
+    // person who runs it runs those rows too, up to a minute each on every rerun, and the row the
+    // report counts as row N of the seed's order is not row N there. Here the report holds each
+    // command it prints: the leg's own, a failing row's, a file's that was running at the stop and
+    // a file's whose worker died. Each one in report.md and in the annotations must set the marker,
+    // and the failing row's, run from a shell as a person runs it, must skip the row the leg did.
+    const gated =
+      'import { test } from "bun:test";\n\n' +
+      'const realTimeRow = process.env.DISPATCH_UNIT_REPEAT === "1" ? test.skip : test;\n' +
+      'realTimeRow("waits out real time", () => {\n  throw new Error("ran without the repeat marker");\n});\n' +
+      'test("always fails", () => {\n  throw new Error("always");\n});\n';
+    // Bun runs here as the leg's run does, with the marker.
+    const run = await laneRun({ "gated.test.ts": gated }, 2, { DISPATCH_UNIT_REPEAT: "1" });
+    // Worker 1 was in b.test.ts's second run at the stop; worker 2 had died in c.test.ts's first.
+    const stop: Stop = {
+      signal: "SIGTERM",
+      at: 10_000,
+      afterMs: 9_500,
+      afterBun: false,
+      progress: {
+        text: [
+          progressLine({ event: "load", load: "b", at: 1_000, file: "b.test.ts", pid: 1 }),
+          progressLine({ event: "run", load: "b", at: 1_001 }),
+          progressLine({ event: "done", load: "b", at: 1_002 }),
+          progressLine({ event: "run", load: "b", at: 1_003 }),
+          progressLine({ event: "start", load: "b", at: 1_004 }),
+          progressLine({ event: "load", load: "c", at: 1_000, file: "c.test.ts", pid: 2 }),
+          progressLine({ event: "run", load: "c", at: 1_001 }),
+          progressLine({ event: "start", load: "c", at: 1_002 }),
+        ].join("\n"),
+      },
+      alive: [1],
+      names: { "b.test.ts": { names: ["b one"] }, "c.test.ts": { names: ["c one"] } },
+      bunEnd: null,
+      namesRuns: {},
+    };
+    const report = summarise({ ...run, stop });
+    expect(report.failingRows.map((row) => [row.name, row.reproduce])).toEqual([
+      ["always fails", `DISPATCH_UNIT_REPEAT=1 bun run test:harness gated.test.ts --seed=${SEED}`],
+    ]);
+    expect(report.stop?.running.map((file) => file.reproduce)).toEqual([
+      `DISPATCH_UNIT_REPEAT=1 bun run test:harness b.test.ts --seed=${SEED} --rerun-each=2`,
+    ]);
+    expect(report.died.map((file) => file.reproduce)).toEqual([
+      `DISPATCH_UNIT_REPEAT=1 bun run test:harness c.test.ts --seed=${SEED}`,
+    ]);
+    expect(report.command).toBe(
+      `DISPATCH_UNIT_REPEAT=1 bun run test:harness e2e/__tests__ --seed=${SEED} --rerun-each=2`
+    );
+    const printed = [markdown(report), ...annotations(report)].flatMap(laneCommandsIn);
+    expect(printed.filter((command) => !command.marked)).toEqual([]);
+    // Not a pass over nothing: report.md holds the leg's command, the failing row's and the two
+    // files', and the annotations the two files' again.
+    expect(printed).toHaveLength(6);
+
+    // The failing row's command, run as a person runs it: in a shell, from the directory of a
+    // package whose `test:harness` is `bun test`, with `bun` on the shell's PATH.
+    const directory = scratch();
+    await Bun.write(join(directory, "gated.test.ts"), gated);
+    await Bun.write(
+      join(directory, "package.json"),
+      `${JSON.stringify({ name: "rerun", private: true, scripts: { "test:harness": "bun test" } })}\n`
+    );
+    const bin = join(directory, "bin");
+    mkdirSync(bin);
+    symlinkSync(process.execPath, join(bin, "bun"));
+    const { code, stdout, stderr } = await runBounded({
+      argv: ["sh", "-c", report.failingRows[0].reproduce],
+      bound: "short",
+      cwd: directory,
+      env: { HOME: directory, PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmpdir() },
+      from: import.meta.url,
+    });
+    const output = `${stdout}${stderr}`;
+    expect(code).toBe(1);
+    // Bun prints a failed row's source beside its error, so the gated row's text is in the output
+    // whenever "always fails" fails: its own failure is the `error:` line and the summary counts.
+    expect(output).not.toContain("error: ran without the repeat marker");
+    expect(output).toMatch(/^ 1 skip$/m);
+    expect(output).toMatch(/^ 1 fail$/m);
+  },
+  // laneRun's run of Bun, and then the shell's, each a bounded child under the short bound.
+  rowLimit("short", "short")
 );
 
 /** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
@@ -1157,7 +1256,9 @@ driverRow(
     // real time skip there and never begin, but the run that reads the rows' names runs them, so
     // a skipped row's name stands where the row the leg was in should. Here eight rows skip under
     // the marker and one spins: under this file's seed a skipped row runs first in a names run
-    // without the marker, so only a names run that sets it too names the row that spun.
+    // without the marker, so only a names run that sets it too names the row that spun. Each
+    // command the tool printed, in its output and in report.md, must set the marker too, or a
+    // person who runs it again begins a skipped row where the report names the row that spun.
     const directory = scratch();
     const mark = join(directory, "row-began");
     const skipped = Array.from(
@@ -1165,7 +1266,7 @@ driverRow(
       (_, index) =>
         `realTimeRow(${JSON.stringify(`waits out real time ${index + 1}`)}, () => {});\n`
     ).join("");
-    const { code, report, left } = await stoppedLeg(
+    const { code, stdout, report, left } = await stoppedLeg(
       directory,
       {
         "repeated.test.ts": `${spinningHead}const realTimeRow = process.env.DISPATCH_UNIT_REPEAT === "1" ? test.skip : test;\n${skipped}${spinningRow("spins in the leg", mark)}`,
@@ -1183,6 +1284,16 @@ driverRow(
         rowName: "spins in the leg",
       }),
     ]);
+    expect(report.stop?.running[0]?.reproduce).toBe(
+      `DISPATCH_UNIT_REPEAT=1 bun run test:harness e2e/__tests__/repeated.test.ts --seed=${SEED}`
+    );
+    const printed = [stdout, readFileSync(join(directory, "out", "report.md"), "utf8")].flatMap(
+      laneCommandsIn
+    );
+    expect(printed.filter((command) => !command.marked)).toEqual([]);
+    // Not a pass over nothing: the output names the leg's run and the running file's command, in
+    // its `running` line and its `::error`, and report.md names both again.
+    expect(printed).toHaveLength(4);
     expect(left).toEqual([]);
   },
   rowLimit("stoppedLeg")
