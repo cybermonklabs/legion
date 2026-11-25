@@ -71,6 +71,7 @@ func notCountedOf(t *testing.T, handler http.Handler, issue, role string) map[st
 // block's digest covers its attributes, so no pass of c1 stands. The rig's own upload is settled
 // first, so the rows are read before any settlement can judge them.
 func TestARolesRowOnACICheckCountsForNothing(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	documents := rig.deps.Docs.(*docs.Service)
 	if err := documents.SettleIssueDocuments(context.Background(), rig.issue); err != nil {

@@ -384,10 +384,11 @@ func TestALinkNamesAPullRequestOnlyOfARepositoryGitHubCanName(t *testing.T) {
 }
 
 // NewestPullRequestHead answers the head of an issue's open pull request of the highest number,
-// and only where none is open the head of its merged pull request of the highest number. An open
-// pull request of a lower number wins over a merged one of a higher, a closed-unmerged pull
-// request is no head whatever its number, another issue's pull request answers for nothing, and
-// an issue holding no pull request has no head.
+// and only where none is open the head of its newest merged pull request, which here, where no
+// writer carried a merge time, is the one of the highest number (the merge times decide in
+// newest_merged_test.go). An open pull request of a lower number wins over a merged one of a
+// higher, a closed-unmerged pull request is no head whatever its number, another issue's pull
+// request answers for nothing, and an issue holding no pull request has no head.
 func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 90)

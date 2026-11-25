@@ -81,7 +81,11 @@ import (
 // more and stores them. A row a change of an issue's links named and could not judge from stored
 // facts gets rule 0, so that arm reads it again (LinksChanged). 5 is 4 with no citation of a
 // number that is a pull request Dispatch holds (citedPullRequest), so a pull request a mention of
-// another pull request credited to that pull request's issue goes back to the issue it is for.
+// another pull request credited to that pull request's issue goes back to the issue it is for. 6
+// is 5 with each merged row's merge time stored (pull_request_heads.merged_at): the reconcile's
+// merged arm reads each merged row stored before once more, and that refresh stores the time from
+// GitHub's answer (RefreshPullRequestHead, headRow); the results read asks GitHub itself only for
+// a merged row the reconcile has not reached yet (api's fillMergeTimes).
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
@@ -91,7 +95,7 @@ import (
 // stamp of the try succeeds (PullRequestHeadStaleAfter), but a merged row is read again only by
 // that arm — so a change made without raising it leaves every pull request merged before it
 // judged by the rule of its day for good.
-const AttributionRuleVersion = 5
+const AttributionRuleVersion = 6
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string

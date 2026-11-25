@@ -1,0 +1,40 @@
+-- 20261124085205_pull_request_heads_merged_at.up.sql
+--
+-- When GitHub merged each pull request, stored on its pull_request_heads row, so that the newest
+-- merged pull request of an issue is the one that merged last:
+--
+--   merged_at   GitHub's `merged_at` of the pull request, as the writer read it: from a read of the
+--               pull request through the App (delivery.headRow) and from a `pull_request` envelope,
+--               which carries it (contracts.GithubEnvelope); null for a pull request not merged and
+--               for a write that carried none, which leaves the time the row holds
+--               (delivery.Attributor.UpsertPullRequestHead)
+--
+-- The readers that order an issue's merged pull requests read it before the pull request's number,
+-- `merged_at desc nulls last, number desc` (delivery.NewestPullRequestHead, BaseBranchMergedFor,
+-- BaseBranchMergedIn, and the results read's newest merged subject, api's mergedAfter): event_at,
+-- which those orders read before, is the pull request's updated_at as its newest event carried it,
+-- so an edit of an older pull request after a newer one merged made the older one the newest.
+--
+-- Every row stored before this migration reads null, and no backfill writes it here: a census that
+-- rewrites a row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy census"). A read of the
+-- pull request through the App stores it: delivery.AttributionRuleVersion 6 has the reconcile's
+-- merged arm read each merged row once more, and the results read, before it takes the newest of
+-- two or more merged rows of an issue, reads once each of them that holds none and that the
+-- running rule has not judged (api's fillMergeTimes, through
+-- delivery.Attributor.RefreshPullRequestHead). Where a row of such a set still holds none, the
+-- read names no newest merged pull request of it.
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER takes
+-- ACCESS EXCLUSIVE on pull_request_heads, which every pull request event and every results read
+-- touch, and holds it only for the catalog write; the runner bounds its wait for that lock at
+-- pgmigrate.LockTimeout and tries again up to pgmigrate.LockTimeoutAttempts times. No index is
+-- added: each reader orders the handful of rows one issue's key holds.
+--
+-- The release before this one neither reads nor writes the column, and its insert names its
+-- columns, so the two roll side by side (cmd/dispatch/README.md, "Database migrations"): a row that
+-- release writes during the roll keeps the merge time this release stored, and a row it creates
+-- reads null as a row stored before this migration does. Rolling back past this migration is an
+-- image rollback alone; the column left behind is read by nothing. The rollback script beside this
+-- file drops it, for an operator who wants it gone once no release that writes it serves.
+alter table pull_request_heads
+    add column merged_at timestamptz;

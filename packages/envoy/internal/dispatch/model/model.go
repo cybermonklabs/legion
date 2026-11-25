@@ -1462,7 +1462,10 @@ type BasisLearnedAt struct {
 // the head of each of its branches a CI job's result names. A pass stands only when one stands at
 // each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
 // the answer is unknown because a pass and a fail that count at one commit of a `before_merge`
-// check, from any role, make that commit's state unknown (R4).
+// check, from any role, make that commit's state unknown (R4), and PassStandsReasonReadFailed
+// where it is unknown because a read Dispatch makes did not answer: the check runs of a check CI
+// proves that has no subject, or the time each merged pull request of an issue with none open
+// merged, so that Dispatch cannot tell which of them is the newest.
 //
 // For a check compared with a branch, an `after_merge` or `default_branch` check, Dispatch takes
 // the newest result that counts or that it could not place (R5), and Results names that result. A
@@ -1470,7 +1473,7 @@ type BasisLearnedAt struct {
 type CheckPassStands struct {
 	Answer   string              `json:"answer" enum:"yes,no,unknown"`
 	Roles    []string            `json:"roles,omitempty"`
-	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,read_failed"`
 	Subjects []PassStandsSubject `json:"subjects,omitempty"`
 	Results  []string            `json:"results,omitempty"`
 }
@@ -1499,9 +1502,11 @@ type PassStandsSubject struct {
 // The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
 // and a fail that count at one commit of a `before_merge` check, from any role.
 // PassSubjectReasonReadFailed is a subject alone: the check runs at that head, of a check CI
-// proves, could not be read.
+// proves, could not be read. PassStandsReasonReadFailed is the check's own: a read that decides
+// it did not answer, with no subject to name it at (CheckPassStands).
 const (
 	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonReadFailed  = "read_failed"
 	PassSubjectReasonFail       = "fail"
 	PassSubjectReasonNoResult   = "no_result"
 	PassSubjectReasonReadFailed = "read_failed"

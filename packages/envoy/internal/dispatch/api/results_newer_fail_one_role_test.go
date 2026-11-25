@@ -98,6 +98,7 @@ func newerFailShape(t *testing.T, when, state string) (newerFailStands, string, 
 // its fail two weeks later, at one commit, leave no pass standing, for an `after_merge` check and
 // for a `before_merge` one. The pass names the implementer in no answer.
 func TestOneRolesPassThenItsNewerFailAtOneCommitStandsNoPass(t *testing.T) {
+	t.Parallel()
 	t.Run("after_merge", func(t *testing.T) {
 		stands, _, fail := newerFailShape(t, "after_merge", "merged")
 		if stands.Answer != "no" || len(stands.Roles) != 0 || !slices.Equal(stands.Results, []string{fail}) {

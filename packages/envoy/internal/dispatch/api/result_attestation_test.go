@@ -164,6 +164,7 @@ func hasMember(t *testing.T, raw json.RawMessage, name string) bool {
 // ci_check names, what the job observed, the run the token proved and the recorder, which is the
 // run's session and principal and no person. Its recorded_at is the result's created_at.
 func TestAJobsResultOnTheIssueRouteCarriesTheStatementOfItsRun(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	response := rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass"))
 	result, raw := recordedWithStatement(t, "the job's result for c1", response)
@@ -219,6 +220,7 @@ func TestAJobsResultOnTheIssueRouteCarriesTheStatementOfItsRun(t *testing.T) {
 // TestTheResultsReadAnswersTheStatementTheWriteStored: the statement the write answers is the one
 // the row stores and the one the read answers, value for value.
 func TestTheResultsReadAnswersTheStatementTheWriteStored(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	written, _ := recordedWithStatement(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
 	if written.Attestation == nil {
@@ -247,6 +249,7 @@ func TestTheResultsReadAnswersTheStatementTheWriteStored(t *testing.T) {
 // while the job's result beside them carries one; the job's row is the one row of
 // ci_check_results, and check_results, which holds the tester's row, holds no statement at all.
 func TestOnlyAJobsResultCarriesAStatementOfItsRun(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	job, _ := recordedWithStatement(t, "the job's result for c1", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
 	tester, testerRaw := recordedWithStatement(t, "the tester's result for k1",
@@ -285,6 +288,7 @@ func TestOnlyAJobsResultCarriesAStatementOfItsRun(t *testing.T) {
 // the job and the leg from the check run's name as the project's route reads them, and names the
 // check's ci_check whole as its test's job.
 func TestAJobsMatrixLegIsItsLegOnTheIssueRoute(t *testing.T) {
+	t.Parallel()
 	rig := newCIJobRig(t)
 	filed := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": ciJobProject, "title": "A matrix job proves it", "spec": "A spec\n"})
 	if filed.Code != http.StatusCreated {

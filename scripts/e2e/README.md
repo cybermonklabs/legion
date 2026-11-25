@@ -7099,6 +7099,8 @@ A port the kernel gives the other address can already be listening on `127.0.0.1
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+The same walks run from an `EXIT` trap, as a run's exit handler runs them, read their reader's own status: after `exit 1` `run_processes` names the run's process and `listening_holders` the socket's holder, and after a clean end a `find` or a `grep` a signal ended still makes both exit 2.
+Each walk hands its reader's status out of its process substitution with `exit "$?"`: from a trap, bash's bare `exit` there exits with the status the trap was entered with, so every walk after a failed run read as `xargs` exiting 1 and named nothing, and one after a clean end read as 0 whatever its reader did.
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
@@ -7420,7 +7422,7 @@ A driver counts as alive only while its pid is a live, non-zombie process that s
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
-A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
+A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2, from a driver's exit trap too; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 
 ## lib/operator-dispatch.sh

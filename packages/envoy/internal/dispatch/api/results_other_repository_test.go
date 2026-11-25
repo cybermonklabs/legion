@@ -225,6 +225,7 @@ func otherRepositoryRecord(t *testing.T, handler http.Handler, issue, commit str
 // repository holds is refused, naming both; and a 503 of acme/infra stores the result, since it is
 // no proof. A check CI proves reads #9's run in acme/infra alone, and #9's basis names acme/infra.
 func TestAResultAtTheHeadOfAPullRequestInAnotherRepository(t *testing.T) {
+	t.Parallel()
 	github := &otherRepositoryGitHub{
 		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
 		commitReads: map[string]int{}, runReads: map[string]int{},
@@ -317,6 +318,7 @@ func TestAResultAtTheHeadOfAPullRequestInAnotherRepository(t *testing.T) {
 // acme/app holds, is stored, since no other repository is asked about a commit the issue's own
 // repository holds.
 func TestAFailedReadOfThePullRequestHeadsRefusesTheRecord(t *testing.T) {
+	t.Parallel()
 	github := &otherRepositoryGitHub{
 		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
 		commitReads: map[string]int{}, runReads: map[string]int{},
@@ -347,5 +349,110 @@ func TestAFailedReadOfThePullRequestHeadsRefusesTheRecord(t *testing.T) {
 	}
 	if status, body := otherRepositoryRecord(t, handler, issue.Key, otherRepositoryH); status != http.StatusCreated {
 		t.Fatalf("a result at H, which acme/app holds, with the heads unreadable: status=%d body=%s; want 201", status, body)
+	}
+}
+
+// otherRepositoryS is a commit both acme/app and acme/infra hold, as two repositories that share
+// history do.
+const otherRepositoryS = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
+
+// otherRepositoryStanding is where each result of a check stands, by result id, and the state of
+// each subject, by its commit, as the results read answers them.
+type otherRepositoryStanding struct {
+	results  map[string]otherRepositoryCommitStands
+	subjects map[string]string
+}
+
+// otherRepositoryCommitStands is one result's commit_stands, with only the members this test reads.
+type otherRepositoryCommitStands struct {
+	Answer string                `json:"answer"`
+	Basis  *otherRepositoryBasis `json:"basis"`
+}
+
+// otherRepositoryStandingOf is where each result of k1 of issue stands, and each subject's answer.
+func otherRepositoryStandingOf(t *testing.T, handler http.Handler, issue string) otherRepositoryStanding {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/results", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("read the results of %s: status=%d body=%s", issue, response.Code, response.Body.String())
+	}
+	var read struct {
+		Checks []struct {
+			BlockID string `json:"block_id"`
+			Results []struct {
+				ID           string                      `json:"id"`
+				CommitStands otherRepositoryCommitStands `json:"commit_stands"`
+			} `json:"results"`
+			PassStands struct {
+				Subjects []struct {
+					Basis  otherRepositoryBasis `json:"basis"`
+					Answer string               `json:"answer"`
+				} `json:"subjects"`
+			} `json:"pass_stands"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
+		t.Fatalf("decode the results of %s: %v", issue, err)
+	}
+	standing := otherRepositoryStanding{results: map[string]otherRepositoryCommitStands{}, subjects: map[string]string{}}
+	for _, check := range read.Checks {
+		if check.BlockID != "k1" {
+			continue
+		}
+		for _, result := range check.Results {
+			standing.results[result.ID] = result.CommitStands
+		}
+		for _, subject := range check.PassStands.Subjects {
+			standing.subjects[subject.Basis.Commit] = subject.Answer
+		}
+	}
+	return standing
+}
+
+// TestAResultStandsOnlyAtAHeadOfItsOwnRepository: a `before_merge` result stands only at a head of
+// the repository its commit is taken to be of. ACME-1's repository is acme/app, and acme/app and
+// acme/infra both hold S. A pass of k1 recorded at S while no head names S is taken to be
+// acme/app's, since acme/app holds it. Then acme/infra#9 opens at S. That pass is no pass at #9's
+// head, a head of another repository: it reads other_commit, and #9 reads no. Compared by its
+// commit alone it stood at #9's head and read #9 yes. The control in the same test: a pass recorded
+// at S once #9's head is S is taken to be acme/infra's, stands at #9's head, and #9 reads yes.
+func TestAResultStandsOnlyAtAHeadOfItsOwnRepository(t *testing.T) {
+	t.Parallel()
+	github := &otherRepositoryGitHub{
+		held: map[string]bool{}, down: map[string]bool{}, runs: map[string][]map[string]any{},
+		commitReads: map[string]int{}, runReads: map[string]int{},
+	}
+	github.hold("acme/app", otherRepositoryS)
+	github.hold("acme/infra", otherRepositoryS)
+	handler, database := github.serve(t)
+	issue := issueInRepository(t, handler, "ACME", "acme/app", "A commit two repositories hold")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", otherRepositoryVerification)
+	own := recordResult(t, handler, issue.Key, resultBody("k1", "pass", otherRepositoryS, map[string]any{"role": "tester"}))
+	if own.Code != http.StatusCreated {
+		t.Fatalf("the tester's pass of k1 at S: status=%d body=%s", own.Code, own.Body.String())
+	}
+	ownID := decodeBody[recordedResult](t, own).Result.ID
+	writeHead(t, database, "acme/infra", 9, otherRepositoryS, "open", issue.Key)
+
+	standing := otherRepositoryStandingOf(t, handler, issue.Key)
+	if got := standing.results[ownID]; got.Answer != "other_commit" {
+		t.Fatalf("the pass of acme/app at S stands %+v, want other_commit: S is the head of acme/infra#9, another repository's pull request", got)
+	}
+	if got := standing.subjects[otherRepositoryS]; got != "no" {
+		t.Fatalf("#9's head reads %q, want no: the one pass at its commit is of acme/app", got)
+	}
+
+	linked := recordResult(t, handler, issue.Key, resultBody("k1", "pass", otherRepositoryS, map[string]any{"role": "tester"}))
+	if linked.Code != http.StatusCreated {
+		t.Fatalf("the tester's pass of k1 at #9's head: status=%d body=%s", linked.Code, linked.Body.String())
+	}
+	linkedID := decodeBody[recordedResult](t, linked).Result.ID
+	standing = otherRepositoryStandingOf(t, handler, issue.Key)
+	if got := standing.results[linkedID]; got.Answer != "at_basis" || got.Basis == nil || got.Basis.PullRequest == nil ||
+		*got.Basis.PullRequest != 9 || got.Basis.Repo != "acme/infra" {
+		t.Fatalf("the pass at #9's head stands %+v, want at_basis at acme/infra#9", got)
+	}
+	if got := standing.subjects[otherRepositoryS]; got != "yes" {
+		t.Fatalf("#9's head reads %q after the pass at its head, want yes", got)
 	}
 }
