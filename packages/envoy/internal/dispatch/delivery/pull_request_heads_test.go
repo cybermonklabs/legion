@@ -312,12 +312,12 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 		t.Fatalf("store a head row under GitHub's spelling of the repository: %v", err)
 	}
 
-	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha)
+	stored, err := HeadStoredAt(ctx, pool, "acme/widgets", sha, HeadAnswers{})
 	if err != nil || !stored {
 		t.Fatalf("HeadStoredAt(acme/widgets) = %v, %v; want true: the row is that repository's, spelt as GitHub spells it",
 			stored, err)
 	}
-	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha)
+	elsewhere, err := HeadStoredAt(ctx, pool, "acme/gadgets", sha, HeadAnswers{})
 	if err != nil || elsewhere {
 		t.Fatalf("HeadStoredAt(acme/gadgets) = %v, %v; want false: another repository's commit is not this one's",
 			elsewhere, err)
@@ -408,7 +408,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	}
 	newest := func(issueKey string) (NewestHead, bool) {
 		t.Helper()
-		head, found, err := NewestPullRequestHead(ctx, pool, issueKey)
+		head, found, err := NewestPullRequestHead(ctx, pool, issueKey, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
 		}
@@ -523,7 +523,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 	client := fake.newTestClient()
 
 	// The envelope path: #21, reported by a `pull_request` event.
-	intake := newIntake(nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
 	if _, err := intake.recordPullRequestHead(ctx, map[string]string{
 		"kind": "pr", "action": "opened", "merged": "false", "repo": "acme/gadgets", "number": "21",
 		"title": title, "body": "", "head_ref": "legion/work", "head_repo": "acme/gadgets",
@@ -696,7 +696,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 		t.Error("an envelope whose head is not this repository's paged its commit messages; it attributes nobody whatever they say")
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(number int, fields map[string]string) map[string]string {
 		payload := map[string]string{
 			"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": strconv.Itoa(number),
@@ -932,7 +932,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 
 	// The merge, as an envelope a publisher older than head_repo made. Its author is outside the
 	// delivery population, so the envelope writes the head row and nothing else.
-	intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, client, nil, nil, unrenamed())
 	wrote, err := intake.handlePullRequestEnvelope(ctx, settings, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "61",
 		"title": "HEAD-7 the work", "body": "", "head_ref": "legion/HEAD-7", "head_sha": mergedHead,
@@ -1088,7 +1088,7 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 		t.Errorf("#%s's commit messages were paged; its head branch attributes it, and an envelope naming no head repository attributes nobody whatever they say", r.PathValue("number"))
 		mustEncode(t, w, []any{})
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	envelope := func(action, merged, headSHA, updatedAt string, fields map[string]string) map[string]string {
 		payload := map[string]string{
 			"kind": "pr", "action": action, "merged": merged, "repo": "acme/widgets", "number": "71",
@@ -1637,6 +1637,7 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // arrived had the envelope been handed back again. An acknowledged message is delivered no
 // more, and the count is the one number no other test's leftovers move for this envelope.
 func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -1644,7 +1645,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	capHeadWriteDeliveriesAt(t, 2)
 
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -1700,7 +1701,7 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
-	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
+	in := newIntake(tuningFor(t), nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, unrenamed())
 	payload := map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
 		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
@@ -2065,25 +2066,25 @@ func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
 	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
 	asked := time.Now()
 
-	branches.markUnseen(pair, asked)
-	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+	branches.markUnseen(nil, pair, asked)
+	if !branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter/2)) {
 		t.Fatal("a pair held half the span ago reads unheld, want held")
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair held past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {
 		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
 	}
 
-	branches.markSeen(pair, asked)
-	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+	branches.markSeen(nil, pair, asked)
+	if branches.unseenHeld(nil, pair, asked.Add(time.Minute)) {
 		t.Fatal("a pair GitHub answered reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 1 {
 		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
 	}
-	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+	if branches.unseenHeld(nil, pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
 		t.Fatal("a pair answered past the span reads held, want unheld")
 	}
 	if got := len(branches.compares); got != 0 {

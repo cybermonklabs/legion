@@ -262,18 +262,20 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		PluginContract: api.DaemonAPIVersion(), PluginRelaunchFor: api.DaemonAPIVersion() - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
-		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
-		LastReady:        projectedAt.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:        projectedAt.Add(-30 * time.Second),
+		LastReady:          projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastDeathAt:        projectedAt.Add(-4 * time.Minute),
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: projectedAt.Add(-5 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
@@ -323,13 +325,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateReasons":     current.UpdateReasons,
 			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates the death: the view
-			// carries each as the record holds it.
-			"lastTurnStart":    current.LastTurnStart,
-			"lastTurnEnd":      current.LastTurnEnd,
-			"lastReady":        current.LastReady,
-			"lastDeathCause":   current.LastDeathCause,
-			"lastStartFailure": current.LastStartFailure,
+			// The turn times, the ready and the two causes, each with the time the daemon recorded
+			// it, LastDeathAt dating the death: the view carries each as the record holds it.
+			"lastTurnStart":      current.LastTurnStart,
+			"lastTurnEnd":        current.LastTurnEnd,
+			"lastReady":          current.LastReady,
+			"lastDeathCause":     current.LastDeathCause,
+			"lastDeathAt":        current.LastDeathAt,
+			"lastStartFailure":   current.LastStartFailure,
+			"lastStartFailureAt": current.LastStartFailureAt,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many sends failed and the last send error.

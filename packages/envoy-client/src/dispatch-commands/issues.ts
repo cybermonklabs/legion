@@ -8,12 +8,13 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  SearchResultKind,
 } from "@legion/contracts";
-import { DEFAULT_ISSUE_PAGE_LIMIT } from "@legion/contracts";
+import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { commandLine, fieldFlag } from "../dispatch-command";
 import {
   type DispatchClient,
-  DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
@@ -37,11 +38,19 @@ import {
   optionalStringArray,
   stringArg,
 } from "./context";
-import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import {
+  type ClosingNote,
+  closeAccount,
+  dispatchAnswered,
+  refusalWithCode,
+  withAccount,
+  writeMayHaveLanded,
+} from "./failures";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
+import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
 function componentsChange(input: IssueComponentsInput, after: IssueComponents): string {
@@ -61,10 +70,10 @@ const architectureComponentsAction =
   'Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.';
 
 /** What both claim results say when the server answers `legion_managed_status`: on an issue
- *  Legion runs, only its daemon writes the status. One copy, since the claim and the release
+ *  Legion runs, its daemon owns the status. One copy, since the claim and the release
  *  must say the same thing. */
 const LEGION_OWNS_STATUS =
-  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone.";
+  "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it.";
 
 /**
  * Guidance only: creation already succeeded, so an unavailable source lookup must not turn this
@@ -125,17 +134,25 @@ function refuseUnsavedRepository(
   );
 }
 
-/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
- *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
- *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
- *  was named the call says so and sends nothing, the closing reason included. */
-function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
-  if (issue.advances_revision === undefined) {
-    throw new Error(
-      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
-    );
-  }
-  return named ?? issue.advances_revision;
+/** A Dispatch server from before priorities answers a read without `advances_revision` and
+ *  refuses a write naming `advances`, so a call that names `advances` says so and sends nothing,
+ *  the closing reason included. */
+function refuseServerWithoutAdvances(issue: IssueDetails): void {
+  if (issue.advances_revision !== undefined) return;
+  throw new Error(
+    `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+  );
+}
+
+/** The clause a 409 ADVANCES_REVISION adds to the refusal: how the caller answers it, since the
+ *  server's sentence speaks of the API's field and not of this command's flags. In both of the
+ *  server's sentences (`refuseAdvancesRevision`, internal/dispatch/api/issue_advances.go) the
+ *  last number is the revision the issue holds, and no other field of the answer carries it, so
+ *  the clause takes that number. Every other error adds nothing, so it reads as it did. */
+function advancesRevisionAnswer(issueKey: string, error: unknown): string {
+  if (!dispatchAnswered(error, 409) || error.code !== "ADVANCES_REVISION") return "";
+  const held = /(\d+)\D*$/.exec(error.message)?.[1] ?? "<the revision named above>";
+  return `read the issue with ${commandLine("dispatch_read", { issue: issueKey })}, then send the whole set you mean with ${fieldFlag("dispatch_issue_update", "advances_revision")} ${held}`;
 }
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
@@ -240,7 +257,8 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
 }
 
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. `--labels-add`
- *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them. */
+ *  adds labels to those the issue holds, inside Dispatch's write, where `--label` replaces them.
+ *  With an option of the status change, it sends that route in place of the PATCH. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
   const issueKey = issue();
@@ -263,20 +281,26 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const requestedLinks = Array.isArray(args.external_links)
     ? [...new Set(args.external_links as string[])]
     : undefined;
+  // The schema refused an option beside any field but status and reason, include_children beside
+  // unlink_children, and include_children with done.
+  const options = issueStatusOptionsOf(args);
   let before: IssueDetails;
   try {
     before = await client.getIssue(issueKey);
   } catch (error) {
     throw refusalWithCode(error);
   }
-  // The command replaces the issue's own set, so the write carries a revision: with none the
-  // server takes one act alone and refuses a write that moves two relations
-  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
-  // revision it named; with none, the read above is the read this write answers.
+  if (advances !== undefined) refuseServerWithoutAdvances(before);
+  // The command replaces the issue's own set. The revision it carries is the caller's alone: a
+  // revision says which read the whole set answers, and only a read the caller saw can be that
+  // read. The revision of this command's own read would let the set retract a relation another
+  // writer added after the caller last read the issue. With none, the server takes the write one
+  // relation at a time and refuses one that moves two or more (409 ADVANCES_REVISION), naming the
+  // revision it holds, and the catch below says how to answer that refusal.
   const advancesWrite =
     advances === undefined
       ? undefined
-      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
+      : { advances, ...defined("advances_revision", advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -288,7 +312,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote: { readonly id: string; readonly ref: string } | undefined;
+  const issuesBefore =
+    options.length === 0 ? undefined : await issuesBeforeStatusChange(client, before, options);
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
@@ -311,6 +337,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
       throw withAccount(error, told);
     }
+  }
+  if (issuesBefore !== undefined) {
+    return statusChangeCommand(context, before, options, issuesBefore, closingNote);
   }
   // The server replaces the whole link set. The common call is "link the pull request I just
   // opened", so a non-empty list merges by URL and keeps every existing link (and its kind).
@@ -368,24 +397,19 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       dispatchAnswered(answered, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
+    const revisionClause = advancesRevisionAnswer(issueKey, error);
     if (closingNote === undefined) {
       if (taken !== "" && !(error instanceof DispatchServiceError)) {
         throw withAccount(error, taken);
       }
-      throw refusalWithCode(error, taken);
+      throw refusalWithCode(error, taken, revisionClause);
     }
     // The reason is on the issue, so a blind retry would post it a second time: the error
-    // says where the first one is, and whether the close may have landed anyway. A gateway's
-    // timeout or rate limit refused nothing there is to fix.
-    const posted = `the reason already landed as message ${closingNote.id} (${closingNote.ref})`;
-    const fix =
-      error instanceof DispatchGatewayError && error.transient
-        ? ""
-        : "fix what refused the close, then ";
-    const landed = writeMayHaveLanded(error)
-      ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
-      : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
-    if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
+    // says where the first one is, and whether the close may have landed anyway.
+    const landed = closeAccount(error, closingNote);
+    if (error instanceof DispatchServiceError) {
+      throw refusalWithCode(error, taken, revisionClause, landed);
+    }
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);
@@ -493,8 +517,8 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const held = after.claim;
-  // On an issue Legion runs, only its daemon writes the status: a status this session sets
-  // is undone, so the result says who owns it rather than asking for a move.
+  // On an issue Legion runs, the result says who owns the status (LEGION_OWNS_STATUS) rather
+  // than asking for a move.
   // An absent field (an older Dispatch, or a failed label walk) reads as not managed.
   const legionManaged = after.legion_managed_status === true;
   // A release answers with the claim cleared or it does not answer at all: the server
@@ -535,10 +559,14 @@ export async function searchCommand(context: CommandContext): Promise<DispatchTo
   const project = optionalString(args, "project");
   const limit = optionalNumber(args, "limit");
   const offset = optionalNumber(args, "offset");
+  // The schema holds the vocabulary (`SEARCH_KINDS`), and Dispatch refuses a kind outside it,
+  // so the values are passed on as they were written rather than checked twice.
+  const kind = optionalStringArray(args, "kind") as SearchResultKind[] | undefined;
   const search = await client.search(query, {
     ...(project === undefined ? {} : { project }),
     ...(limit === undefined ? {} : { limit }),
     ...(offset === undefined ? {} : { offset }),
+    ...(kind === undefined ? {} : { kind }),
   });
   return searchAnswer(search, query, offset, linkBase);
 }
@@ -567,9 +595,17 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
+/** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
+ *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
+ *  object is no JSON object, and prints its own notes on standard error. */
+export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  return tool === "dispatch_issues" && args["json"] === true;
+}
+
+/** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
+ *  with `--json`, as one JSON object. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+  const { args, client, input } = context;
   const project = stringArg(args, "project");
   const status = optionalString(args, "status");
   const parent = optionalString(args, "parent");
@@ -620,6 +656,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
     updated_at: row.updated_at,
     progress: row.progress,
   }));
+  const listing = { issues: rows, total, offset, limit };
+  if (printsJson(input.tool, args)) {
+    return { text: JSON.stringify(listing), details: listing };
+  }
   const agents = await liveAgents(
     client,
     rows.some((row) => holdsSession(row.claim))
@@ -654,7 +694,7 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               );
             }),
           ].join("\n"),
-    details: { issues: rows, total, offset, limit },
+    details: listing,
   };
 }
 

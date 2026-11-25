@@ -101,6 +101,10 @@ type State struct {
 	// (runtime.kubernetes.agent_secrets), absent when the deployment configures
 	// no broker.
 	AgentSecretsLogin *AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	// DispatchCredential is the daemon's own Dispatch credential under dispatch_token_broker and
+	// the two counts a deployment reads before it removes dispatch_token_transition_file
+	// (DispatchCredentialView), absent when the setting is off (contract 275).
+	DispatchCredential *DispatchCredentialView `json:"dispatchCredential,omitempty"`
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
@@ -528,6 +532,22 @@ func ControllerLocatorOf(runtimeName string, record controller.Record) *Controll
 // why a login failed — those live only in the daemon's process memory and its log.
 type AgentSecretsLoginView struct {
 	State string `json:"state"`
+}
+
+// DispatchCredentialView is the daemon's Dispatch credential under dispatch_token_broker, as the
+// state shows it: Session, the session its own Dispatch calls run under (`legion-daemon:<project>`,
+// dispatch.DaemonSession), which the secrets broker grants a token of; TransitionLaunches, the
+// launches since the daemon's boot that carried the transition token of
+// dispatch_token_transition_file, and LastTransitionLaunchAt, when the latest of them was sent,
+// null before the first; and LiveLaunchesWithDispatchToken, the live launches whose start carried a
+// Dispatch token, whichever daemon started them (sandbox.Runtime.DispatchTokens). A deployment
+// removes dispatch_token_transition_file once the last is zero: a pod started before the setting
+// holds the shared token while a generation started with it runs. Never a token.
+type DispatchCredentialView struct {
+	Session                       string     `json:"session"`
+	TransitionLaunches            int        `json:"transitionLaunches"`
+	LastTransitionLaunchAt        *time.Time `json:"lastTransitionLaunchAt"`
+	LiveLaunchesWithDispatchToken int        `json:"liveLaunchesWithDispatchToken"`
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
@@ -1122,12 +1142,19 @@ type ClaimView struct {
 	// start did not produce a running agent — a launcher that refused it, a failed init container,
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
-	// questions. LastReady dates the death's cause: a death older than it is one the agent running
-	// now has already survived. The claim drops its start failure when its agent says it is ready
-	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
-	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
-	LastStartFailure string     `json:"lastStartFailure,omitempty"`
-	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// questions. LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside
+	// each (causeTimesContract), set and cleared only with it, as supervise.Claim.LastDeathAt
+	// states; each is absent beside a cause an earlier release recorded, which wrote no time,
+	// except after a rollback (the migration's header, 20261124073512_claim_cause_times).
+	// LastDeathAt dates the death: a LastDeathAt before LastReady is a death the agent running now
+	// has survived. The claim drops its start failure, with its time, when its agent says it is
+	// ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
+	// before).
+	LastDeathCause     string     `json:"lastDeathCause,omitempty"`
+	LastDeathAt        *time.Time `json:"lastDeathAt,omitempty"`
+	LastStartFailure   string     `json:"lastStartFailure,omitempty"`
+	LastStartFailureAt *time.Time `json:"lastStartFailureAt,omitempty"`
+	LastReady          *time.Time `json:"lastReady,omitempty"`
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
 	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
 	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
@@ -1262,14 +1289,17 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// What the daemon last saw this claim's agent do, which the stall backstop and an
 		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
 		Step: StepViewOf(c.Step),
-		// When the agent last began and last ended a turn, and when it last said it could be
-		// prompted, each absent until it happens: they are what tells a worker still making
-		// progress from one wedged in a turn, and the ready is what dates the death's cause below.
-		LastTurnStart:    instant(c.LastTurnStart),
-		LastTurnEnd:      instant(c.LastTurnEnd),
-		LastReady:        instant(c.LastReady),
-		LastDeathCause:   c.LastDeathCause,
-		LastStartFailure: c.LastStartFailure,
+		// When the agent last began and last ended a turn, when it last said it could be
+		// prompted, and when each cause was recorded, each absent until it happens: they are what
+		// tells a worker still making progress from one wedged in a turn, and a LastDeathAt before
+		// the ready is a death the running agent survived.
+		LastTurnStart:      instant(c.LastTurnStart),
+		LastTurnEnd:        instant(c.LastTurnEnd),
+		LastReady:          instant(c.LastReady),
+		LastDeathCause:     c.LastDeathCause,
+		LastDeathAt:        instant(c.LastDeathAt),
+		LastStartFailure:   c.LastStartFailure,
+		LastStartFailureAt: instant(c.LastStartFailureAt),
 		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather

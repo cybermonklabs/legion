@@ -15,8 +15,10 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -177,6 +179,43 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrAwaitingPodRound is a launch refused because the live pod it would keep cannot give its role a
+// Dispatch credential: under dispatch_token_broker a launch carries no Dispatch token, and its role
+// trades its pod's exchange identity for one of its own, but this pod was built before that
+// identity and dispatch_token_transition_file, the shared token such a pod's launch carries
+// instead, is not set. Only the pod's update round, which replaces it with a pod that carries the
+// identity, cures it, and a launch never replaces a pod a round covers (the sandbox runtime's
+// relaunch). It is not the claim's own failure: the caller charges nothing and starts again every
+// minute until the pod it finds carries the identity (supervise's startWaitsForPodRound). Nothing
+// of the pod was touched and nothing was started. The Sandbox runtime refuses with an
+// AwaitingPodRound, which names the pod the launch waits on.
+var ErrAwaitingPodRound = errors.New("the launch waits for its pod's update round")
+
+// AwaitingPodRound is ErrAwaitingPodRound with the pod it is about: Pod is the live pod the
+// refused launch would keep, as the locator of a process of the refused claim in that pod is made
+// (its namespace, its Sandbox's name, the pod's uid, its container and the launch's generation),
+// so PodDrift and ReplacePod take it as they take the locator of a process there; Reason is the
+// refusal's own sentence, which names the pod.
+//
+// The claim records no process while it waits, so the pod is what the daemon's update round has
+// of it: the claim's machine keeps Pod (supervise's Claim.AwaitsPod) until a later try is
+// not refused for want of the round, or the claim's process is let go (supervise's letGo: a
+// suspension, a retirement or a failure of the claim), and the round opens over that pod and
+// replaces it through this locator where no claim records a process in it (internal/daemon's
+// groupPod, podProcess). Without it, a pod whose only claim is the one refused would never have a
+// round, and the claim would be refused at every try.
+type AwaitingPodRound struct {
+	Pod    Locator
+	Reason string
+}
+
+// Error is ErrAwaitingPodRound's words followed by the refusal's own sentence.
+func (e *AwaitingPodRound) Error() string { return ErrAwaitingPodRound.Error() + ": " + e.Reason }
+
+// Is makes every AwaitingPodRound an ErrAwaitingPodRound: errors.Is(err, ErrAwaitingPodRound)
+// holds for an err that is or wraps one.
+func (e *AwaitingPodRound) Is(target error) bool { return target == ErrAwaitingPodRound }
+
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
 // that the runtime did not send, because the pod's launcher has not said that it can look a
 // session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
@@ -245,12 +284,16 @@ type IssuePodReplacer interface {
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
-// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
-// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
-// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
-// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
-// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
-// nothing here.
+// prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
+// identity, which it decides the same way (ompInputs): `--session-id <id>` for a launch that
+// starts a session, `--resume <id>` for a resume by a recorded file, and the one word
+// `--resume=<id>` for a resume of a session the claim records with no file. It answers for the
+// incarnation loc records, and false for any other — an Oh My Pi launch that named no id (one
+// into a kept pod that trades nothing, whose agent mints its id and reports it at its
+// registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
+// incarnation. It is what lets the daemon register a role's chosen session for its pod at the
+// shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
+// session implements nothing here.
 type LaunchSessionNamer interface {
 	LaunchSession(loc Locator) (session string, named bool)
 }
@@ -276,8 +319,19 @@ type IssueSuspender interface {
 // writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
 // already gone is success, so a retried release finishes. Process-only runtimes have no pod to
 // release.
+//
+// It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
+// Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
+// Sandbox already gone (deleted by hand or by an earlier teardown), or a kept Sandbox an earlier
+// release already released, which runs no pod and owns no Secret.
+//
+// writing, where it is not nil, is called under the same lock once the runtime has found a Sandbox
+// to release, just before its first write to that Sandbox or what it owns, and at most once; an
+// error from it ends the release before any write. A release that answers true has called it, and
+// one that acted on nothing has not.
 type IssueReleaser interface {
-	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+		writing func(context.Context) error) (released bool, err error)
 }
 
 // IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at
@@ -328,6 +382,40 @@ type WorkspaceWork struct {
 // HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
 // not hold.
 func (w WorkspaceWork) HoldsWork() bool { return w.Changed || w.Count > 0 }
+
+// KeptPodStart is a role's start in the pod of podUID whose Sandbox owns the issue's kept volume
+// and was created at keptSince, as the daemon's store makes it (store.Store.StartKeptPod, bound to
+// the daemon's project where the daemon wires it). It records that pod with its volume for the
+// issue's update round (store.Store.PodHoldsEarlierWork): a kept volume outlives its pod, so a
+// later pod of the same volume holds on its disk what the roles of an earlier pod of it left
+// unpushed. A call for an issue the daemon's project does not record records nothing.
+//
+// The runtime calls it at every role's start in a pod whose Sandbox owns a kept volume, and starts
+// no role there while the call fails: it refuses that start with KeptPodUnrecorded before the
+// start is sent.
+type KeptPodStart func(ctx context.Context, issue, podUID string, keptSince time.Time) error
+
+// KeptPodUnrecorded is a role's start refused because the daemon's store could not record the
+// role's pod with the issue's kept volume (KeptPodStart). PodUID is the pod, KeptSince is when the
+// API server created the pod's Sandbox, which names the volume, and Err is the store's error. An
+// end of the issue's update round over a later pod of that volume reads the record for whom it
+// names (store.Store.PodHoldsEarlierWork), so a role that ran in a pod the store does not record
+// could leave work on the volume that no end names it for. The runtime refuses with it before it
+// sends the start, so no process of the role was started, and the supervisor charges it as a launch
+// failure: its text is the claim's last start failure, and where the launches run out, the sentence
+// of the claim's failure and the held notice's start failure.
+type KeptPodUnrecorded struct {
+	PodUID    string
+	KeptSince time.Time
+	Err       error
+}
+
+func (e KeptPodUnrecorded) Error() string {
+	return fmt.Sprintf("pod %s of the kept volume made %s could not be recorded for the issue's update round, so no role starts in it: %v",
+		e.PodUID, e.KeptSince.UTC().Format(time.RFC3339), e.Err)
+}
+
+func (e KeptPodUnrecorded) Unwrap() error { return e.Err }
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
@@ -447,10 +535,15 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from. ResumeSession is the session id a `Resume`
+// names the transcript the same agent continues from. ResumeSessionID is set with it, to the
+// session id the claim recorded beside that file ("" for a claim that recorded none): the id the
+// Sandbox runtime resumes an Oh My Pi role by (`--resume <id>`) where its pod trades an exchange
+// identity (its launch's ompInputs). The tmux runtime, and a Sandbox launch whose pod trades
+// nothing, resume by the file and read no id. ResumeSession is the session id a `Resume`
 // continues when the claim records no file of it: it is set only by supervise's Machine.start, in
-// its branch that resumes a session by its id, and only when ResumeSessionFile is empty.
-// ResumeByAgent is read only with ResumeSession: the agent's own command resolves the id
+// its branch that resumes a session by its id, and only when ResumeSessionFile (and so
+// ResumeSessionID) is empty; a Sandbox launch that trades resumes under that id too. ResumeByAgent
+// is read only with ResumeSession: the agent's own command resolves the id
 // (`--resume=<ResumeSession>`), and the runtime names no session and no file to the pod's
 // launcher. Machine.start sets it only on the second `Resume` of a try whose first `Resume`
 // answered ErrSessionLookupUnavailable.
@@ -485,6 +578,7 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSessionID   string
 	ResumeSession     string
 	ResumeByAgent     bool
 	Plugins           *PluginInstall
@@ -767,4 +861,66 @@ func (id GitIdentity) Env() map[string]string {
 		"GIT_AUTHOR_NAME": id.Name, "GIT_AUTHOR_EMAIL": id.Email,
 		"GIT_COMMITTER_NAME": id.Name, "GIT_COMMITTER_EMAIL": id.Email,
 	}
+}
+
+// RoleIdentitiesVariable is the table of every role's git identity that the daemon writes into
+// each workflow role's process environment (spec.Env, which a tmux pane and a pod's role carry):
+// the value RoleIdentities spells, which the author step of `legion jj` reads
+// (ReadRoleIdentities) before a push, to set the author of a commit a push sends from the role
+// its first Legion-Role trailer names, where the step's rules let it. A controller's process has
+// none. An operator may not set it (PaneVariableRefusal, the pod's own list), and it is no
+// runtime-owned name, since ValidateSpawnSpec refuses a spec.Env name a runtime owns.
+const RoleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
+
+// roleIdentity is one role's identity in the table, as the JSON spells it.
+type roleIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// RoleIdentities is the value of RoleIdentitiesVariable for identities: one JSON object from each
+// role to {"name": …, "email": …}, the identity that sets that role's JJ_USER and JJ_EMAIL, keys
+// sorted. A table may hold a subset of the roles.
+func RoleIdentities(identities map[claim.Role]GitIdentity) string {
+	table := make(map[claim.Role]roleIdentity, len(identities))
+	for role, id := range identities {
+		table[role] = roleIdentity(id)
+	}
+	// A map of string keys to two strings always encodes, its keys in sorted order.
+	encoded, _ := json.Marshal(table)
+	return string(encoded)
+}
+
+// ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
+// "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
+// the object included), a role outside claim.Roles, or a name or an email that is empty or holds a
+// line break. An identity may hold fields it does not know, which it passes over: a role's image
+// may run a `legion` of another release than the daemon's, and a field a later daemon adds must not
+// turn its step off. The reason names no value, so the line it goes into stays one line.
+func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
+	if value == "" {
+		return nil, "empty"
+	}
+	var read map[string]*roleIdentity
+	if err := json.Unmarshal([]byte(value), &read); err != nil || read == nil {
+		return nil, "not a JSON object of each role's name and email"
+	}
+	table := map[claim.Role]GitIdentity{}
+	for _, name := range slices.Sorted(maps.Keys(read)) {
+		role, identity := claim.Role(name), read[name]
+		switch {
+		case !claim.IsRole(role):
+			return nil, fmt.Sprintf("a table with %q, which is no role", name)
+		case identity == nil || identity.Name == "":
+			return nil, "a table with an empty name for " + name
+		case identity.Email == "":
+			return nil, "a table with an empty email for " + name
+		case strings.ContainsAny(identity.Name, "\r\n"):
+			return nil, "a table with a line break in the name of " + name
+		case strings.ContainsAny(identity.Email, "\r\n"):
+			return nil, "a table with a line break in the email of " + name
+		}
+		table[role] = GitIdentity(*identity)
+	}
+	return table, ""
 }

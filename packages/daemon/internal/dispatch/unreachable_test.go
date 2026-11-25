@@ -78,7 +78,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				// The default client trusts no certificate the test server minted for itself.
-				return New(server.URL, "test-token")
+				return New(server.URL, BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -95,10 +95,8 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert, MaxVersion: tls.VersionTLS12}
 				server.StartTLS()
 				t.Cleanup(server.Close)
-				client := New(server.URL, "test-token")
 				// The client trusts the server's certificate, so the alert is all that fails.
-				client.httpClient = server.Client()
-				return client
+				return New(server.URL, BearerTransport("test-token", server.Client().Transport))
 			},
 			wantTransient: false,
 		},
@@ -109,7 +107,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				}))
 				t.Cleanup(server.Close)
-				return New("https://"+strings.TrimPrefix(server.URL, "http://"), "test-token")
+				return New("https://"+strings.TrimPrefix(server.URL, "http://"), BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -141,7 +139,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 						}()
 					}
 				}()
-				return New("https://"+listener.Addr().String(), "test-token")
+				return New("https://"+listener.Addr().String(), BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -154,7 +152,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}
 				addr := reserved.Addr().String()
 				reserved.Close() // nothing answers here now.
-				return New("http://"+addr, "test-token")
+				return New("http://"+addr, BearerTransport("test-token", nil))
 			},
 			wantTransient: true,
 		},

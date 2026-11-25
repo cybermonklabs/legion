@@ -16,9 +16,12 @@ import (
 // in use before is restored by a t.Cleanup, so a test calls this before it builds any server or
 // service: cleanups run last in first out, so the restore runs after the server's own cleanup has
 // stopped its room and settlement goroutines, which read the schema (a defer would restore it
-// first and race them). A test that calls it does not call t.Parallel.
+// first and race them). A test that calls it does not call t.Parallel, and the testing package
+// holds it to that: t.Setenv fails a test that has called t.Parallel, or whose parent has, and
+// t.Parallel fails one that has called t.Setenv. Nothing reads the variable.
 func UseBlockSchema(t testing.TB, schema pmdoc.BlockSchema) {
 	t.Helper()
+	t.Setenv("PMDOC_TEST_SWAPS_THE_BLOCK_SCHEMA", "1")
 	restore, err := pmdoc.SetBlockSchemaForTest(schema)
 	if err != nil {
 		t.Fatalf("use test block schema: %v", err)

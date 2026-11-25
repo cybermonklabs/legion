@@ -69,8 +69,12 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		defer cancel()
 		queued := c
 		queued.State = supervise.StateQueued
-		if err := one.PutClaim(bounded, queued); !errors.Is(err, context.DeadlineExceeded) {
+		err := one.PutClaim(bounded, queued)
+		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a write queued %s behind the pool's one connection under a %s bound over the whole write = %v, want the deadline: the queue alone outlasts it", held, write, err)
+		}
+		if began(err) {
+			t.Fatalf("a write cut in the pool's queue = %v answers WriteBegun, want no mark: the database was never handed it", err)
 		}
 		if err := <-ended; err != nil {
 			t.Fatalf("the transaction that held the connection: %v", err)
@@ -108,6 +112,9 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		if err == nil {
 			t.Fatalf("a write that holds its connection %s under a %s bound answered nil, want it cut", held, write)
 		}
+		if !began(err) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a write cut after its BEGIN = %v, want the deadline under the WriteBegun mark: the database was handed it", err)
+		}
 		if took := time.Since(started); took > held {
 			t.Fatalf("the slow write was cut after %s, want at about its %s bound, before the database's %s", took, write, held)
 		}
@@ -119,11 +126,22 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		defer cancel()
 		queued := c
 		queued.State = supervise.StateIdle
-		if err := one.PutClaim(bounded, queued); !errors.Is(err, errAcquireBound) || !errors.Is(err, context.DeadlineExceeded) {
+		err := one.PutClaim(bounded, queued)
+		if !errors.Is(err, errAcquireBound) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("a write that waited its whole 300ms for the pool's one connection = %v, want the acquire bound's error naming the deadline", err)
+		}
+		if began(err) {
+			t.Fatalf("a write the acquire bound ended = %v answers WriteBegun, want no mark: it never had a connection", err)
 		}
 		if err := <-ended; err != nil {
 			t.Fatalf("the transaction that held the connection: %v", err)
 		}
 	})
+}
+
+// began reports whether err is a supervise.BegunWriteError that answers WriteBegun, the one
+// contract supervise's cutByBound reads.
+func began(err error) bool {
+	var begun supervise.BegunWriteError
+	return errors.As(err, &begun) && begun.WriteBegun()
 }

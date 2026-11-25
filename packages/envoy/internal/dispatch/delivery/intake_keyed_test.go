@@ -193,7 +193,7 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	// After the fake's server, so it runs first: the server's Close waits for the fetch it holds.
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -237,7 +237,7 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	// Before startIntake, so it is restored only once the intake has stopped.
 	t.Cleanup(func() { decodeEnvelope = decode })
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	payload := `{"kind":"comment","action":"created","repo":"acme/widgets","number":"7","author":"octocat"}`
@@ -269,7 +269,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
-	stopFirst := runIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	stopFirst := runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -304,7 +304,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	}
 
 	// The ack wait is minutes; the second process is handed the message within seconds.
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process handles the message given back", events, want)
@@ -344,7 +344,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
-	first := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	first := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stopFirst := runIntake(t, first)
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -362,7 +362,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 
 	// The standby is running before the stop, as the second envoy-dispatch process of a rolling
 	// deploy is.
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
@@ -425,7 +425,7 @@ func TestAStoppingIntakeDoesNotWaitOutAGitHubCallThatDoesNotAnswer(t *testing.T)
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
-	stop := runIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	stop := runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
@@ -450,14 +450,13 @@ const bindReturnsAfterSignal = 2 * time.Second
 // A bind that subscribed before Run's ctx ended and returns after it -- a standby's bind poll under
 // way at the signal, whose JetStream calls do not watch ctx -- is stopped under the one stop budget,
 // which runs from ctx's end: the handler of the message the subscription was handed is given up
-// intakeStopBudget after the signal, however late the bind returned, and its message handed back,
+// the intake's stopBudget after the signal, however late the bind returned, and its message handed back,
 // so the next process to bind the durable redoes it at once. With the budget begun at the bind's
 // return, a late bind pushed the whole stop -- and cmd/dispatch's deregister and pool close behind
 // it -- that much later.
 func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.T) {
-	budget := intakeStopBudget
-	intakeStopBudget = 3 * time.Second
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = 3 * time.Second
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
@@ -465,7 +464,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	github := fake.newTestClient()
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	subscribed, bindReturns := make(chan struct{}), make(chan struct{})
 	intake.boundHook = func() {
 		close(subscribed)
@@ -496,7 +495,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	case <-time.After(20 * time.Second):
 		t.Fatal("the stopping intake did not return 20 s after its context ended")
 	}
-	if waited, within := time.Since(signalled), intakeStopBudget+time.Second; waited > within {
+	if waited, within := time.Since(signalled), tuning.stopBudget+time.Second; waited > within {
 		t.Fatalf("Run returned %s after its ctx ended, its bind %s after it; want within %s: the stop budget ran from the bind's return, not from ctx's end",
 			waited.Round(time.Millisecond), bindReturnsAfterSignal, within)
 	}
@@ -505,7 +504,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 		return fmt.Sprintf("pull request 1's events once Run returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -537,7 +536,7 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 	held := holdPullRequestOne(fake)
 	github := fake.newTestClient()
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stopFirst := runIntake(t, intake)
 	release := sync.OnceFunc(func() { close(unblock) })
 	t.Cleanup(release)
@@ -575,7 +574,7 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 		t.Fatalf("the stopping intake fetched the buffered pull request: %q", events)
 	}
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("9"), []string{"start 9", "end 9"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 9's events = %q, want %q: the next process handles the message given back", events, want)
@@ -599,9 +598,7 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	// two reads of the durable on a loaded runner. Above githubapp.RequestTimeout (20 s) it
 	// would buy nothing: the held fetch is given up by the GitHub client itself then, and the
 	// stop would end on a handler this row had not released.
-	budget := intakeStopBudget
-	intakeStopBudget = 20 * time.Second
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuningFor(t).stopBudget = 20 * time.Second
 
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -612,7 +609,7 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	// counts whatever another row left behind as well.
 	_, uri := testnats.Start(t)
 	natsClient := reconnectTestClient(t, uri)
-	stop := runIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	stop := runIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	// Registered after runIntake, so it runs before the stop that cleanup makes: a stop begun
 	// with both fetches still held waits out the whole budget before it gives them up.
 	t.Cleanup(held.release)
@@ -674,7 +671,7 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
-	wanted := deliveryConsumerConfig()
+	wanted := deliveryConsumerConfig(tuningFor(t))
 	// Starting at new messages, so a durable recreated on the package's shared stream is handed
 	// only this test's.
 	wanted.DeliverPolicy = natsgo.DeliverNewPolicy
@@ -684,7 +681,7 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 	if _, err := natsClient.JS().AddConsumer(bus.Stream, &wanted); err != nil {
 		t.Fatalf("create the delivery durable: %v", err)
 	}
-	intake := newIntake(natsClient, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	if _, err := intake.subscribe(wanted.DeliverSubject); err != nil {
 		t.Fatalf("subscribe at %s: %v", wanted.DeliverSubject, err)
 	}
@@ -711,7 +708,6 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 // back. A subscribe afterwards on the same client, at the deliver subject of the durable created
 // again, as a process that lost and regained the durable does, binds it and handles its messages.
 func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
@@ -722,7 +718,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	})
 	recreate := func() natsgo.ConsumerConfig {
 		t.Helper()
-		wanted := deliveryConsumerConfig()
+		wanted := deliveryConsumerConfig(tuningFor(t))
 		// Starting at new messages, so a durable recreated on the package's shared stream is handed
 		// only this test's.
 		wanted.DeliverPolicy = natsgo.DeliverNewPolicy
@@ -734,7 +730,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 		}
 		return wanted
 	}
-	intake := newIntake(natsClient, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	if _, err := intake.subscribe(recreate().DeliverSubject); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -781,6 +777,8 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 // hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
 // the durable handles the message.
 func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
+	// The default logger, not the intake's: the row requires that no component logged a line
+	// about a drain, the bus client among them.
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -794,7 +792,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 		hooked <- struct{}{}
 		return nil
 	})
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stop := runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -848,7 +846,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 		}
 	}
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("2"), []string{"start 2", "end 2"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 2's events = %q, want %q: the next process handles the message published during the stop", events, want)
@@ -1007,7 +1005,7 @@ func TestTheCopyUnderARepositorysFormerNameRunsNoSecondHandler(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())

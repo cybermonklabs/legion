@@ -6,7 +6,7 @@ Read it when you find a problem your issue does not cover (a defect in another c
 
 A finding outside your issue never becomes a `dispatch issue` you file. Take the first step that fits:
 
-1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in your handoff and the PR body.
+1. **Fix it here.** A defect with a clear fix, in code your tree touches or depends on, goes into your tree's own pull request; say so in the PR body.
 2. **Hand it over.** Any other clear defect goes to the controller with its evidence (*Send a finding to the controller*). It gives the work to the tree that owns the code, or files a Legion root when none does.
 3. **Ask.** A finding that needs a person's authority, taste or risk appetite (whether it is wanted, which design, who owns it, a change of scope, cost or risk) is a `dispatch ask` with one recommendation (*What the ask says*).
 

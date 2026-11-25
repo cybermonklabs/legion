@@ -38,7 +38,6 @@ import {
   type MarginDrawerPage,
   MarginSlotProvider,
 } from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
 import {
   type ShellNavigation,
   ShellNavigationContext,
@@ -51,6 +50,7 @@ import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -102,7 +102,7 @@ import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-writ
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
-import { FOOT_STATUS_INSET_PROPERTY, useFootInset } from "./hooks/useFootInset";
+import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
 import {
   backdrop50,
   badgeBlocking,
@@ -683,13 +683,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // The status corner floats over the foot of the screen as the composers it sits above do, so
-  // it publishes its own reach the same way: a control floating at that foot - the
-  // Conversation's `Jump to latest` - rides above the whole corner rather than under the
-  // pending-writes indicator or the connection pill. An empty corner has no box, so it publishes
-  // nothing and the property is unset.
+  // The status corner is the one float of the foot's status layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). The hook holds its height and its floor, so the
+  // top layer's floats keep clear of the whole corner rather than sit over the pending-writes
+  // indicator or the connection pill. An empty corner has no box, so it counts nothing.
   const statusCornerRef = useRef<HTMLDivElement>(null);
-  useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
+  useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
@@ -935,14 +934,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           Skip to content
         </a>
         {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. Above the highest composer fixed
-            at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
-            over its controls; otherwise just above the phone's bottom bar. Only what it shows
+            cannot keep for a reload above the connection pill. It is a float of the foot's status
+            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
+            stands 1rem above the banner layer's property, which the hook chooses so the corner
+            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
+            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
             takes the pointer. A socket Dispatch refuses carries no status the page can read, so
             nothing in the pill is terminal: once reconnecting has gone on for two minutes it
             offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
@@ -1076,7 +1077,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
             Contents pane and its column each keep the inset the prototype gives them, the pane
             against the rail, which `md:pl-14` makes room for. Its references open no card on
-            hover (R6). */}
+            hover (R6). Outside the frame, on a page that does not fill the screen, `main`
+            carries `data-document-scroll`, so the foot's end room goes here; in the frame the
+            column beside the Contents pane carries it (`IssueOutlinePage.tsx`; `FOOT_LAYERS` in
+            `hooks/useFootInset.ts` says why). */}
         <main
           className={
             issueFrame
@@ -1085,6 +1089,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           }
           data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
           {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
+          {...(!issueFrame && !fillsViewport ? { [DOCUMENT_SCROLL_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
@@ -1146,7 +1151,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>
   );

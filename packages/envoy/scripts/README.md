@@ -601,7 +601,8 @@ packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hoo
 It copies nats-server's module at the version it runs out of the module cache, applies
 `internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
 `testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
-`zz_measure_write.go` (its consumer state writer). It then runs
+`zz_measure_write.go` (its consumer state writer, and on 2.15.1 the duplicate-window hooks, which
+read that version's own fields). It then runs
 `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
@@ -610,7 +611,11 @@ or that holds a replace, is refused, and so is a module whose `go.mod` replaces 
 the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
-place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply`,
+`stream.apply`, and `dedupe.reset` and `dedupe.purged` (2.15.1 alone: a stream update past its
+re-arm of the purge of remembered duplicate ids and before it stores the new window, and a purge
+that has done its work with the dedupe lock held; 2.10.29's purge takes the lock its update holds
+across both steps, so no purge runs between them there);
 `hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
 before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
 hook releases every hold on that server at the first and parks none of its goroutines until the
@@ -633,8 +638,11 @@ line).
 those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
 an empty `-C`, a module that replaces nats-server), with the fixture package
 `internal/testnats/hooktest/skiponly`.
-`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
-twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
+forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
+alone, since the listener row would skip there and leave a package whose every forced-order test
+skipped. Its
 `daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
@@ -1569,9 +1577,11 @@ which has no statement pair: it times one whole pass of the release before this 
 pass of this build with no change, and eleven rounds each preceded by a hundred item writes
 outside the timed part, and reports the median of the eleven. It writes 1,100 items to the
 database it measures and leaves them there, so run it after the statement timings.
+Its verdict is the wall time of those passes, which a loaded machine moves as much as the code
+does, so it also needs `DISPATCH_BENCH_TIMING` set, and it skips without it.
 
 ```bash
-cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
+cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> DISPATCH_BENCH_TIMING=1 \
   go test -run TestRelatedTermsRefreshTiming -v -count=1 -timeout 90m ./internal/dispatch/api
 ```
 

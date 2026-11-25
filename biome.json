@@ -7,6 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
+    "maxSize": 2097152,
     "includes": [
       "**",
       "!!packages/contracts/fixtures/classification",
@@ -17,6 +18,7 @@
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
+      "!!packages/envoy/infra/scripts/testdata",
       "!!packages/envoy/internal/cipher/approval/templates",
       "!!packages/daemon/docker/language-servers/package-lock.json",
       "!!.legion"
@@ -49,6 +51,9 @@
       "recommended": true,
       "suspicious": {
         "noImportCycles": "error"
+      },
+      "nursery": {
+        "noFloatingPromises": "error"
       }
     }
   },
@@ -90,10 +95,12 @@
         "!packages/proof-editor/src/editor-change-decorations.ts",
         "!packages/proof-editor/src/document-reading.ts",
         "!packages/proof-editor/src/reference-decorations.ts",
+        "!packages/proof-editor/src/reference-picker.ts",
         "!packages/proof-editor/src/document-json.ts",
         "!packages/proof-editor/src/editor/schema/dom-attributes.ts",
         "!packages/proof-editor/src/editor/schema/leaf-marks.ts",
         "!packages/proof-editor/src/nested-links.ts",
+        "!packages/proof-editor/src/whole-addresses.ts",
         "!packages/proof-editor/src/tests/block-ids-cost.test.ts",
         "!packages/proof-editor/src/tests/reference-links-import.test.ts",
         "packages/proof-editor/upstream/**"

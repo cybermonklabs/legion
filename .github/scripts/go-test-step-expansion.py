@@ -106,8 +106,15 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
+  * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
+    the job's matrix, each with the row's value written in, since each row is a job of its own:
+    a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
+    xargs go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
+    is the number of rows. A matrix of lists is read, and nothing else: an
+    `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
+    has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names. A step whose run: holds that script's file name anywhere else, or with
@@ -139,6 +146,7 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 import shlex
 import subprocess
@@ -193,14 +201,17 @@ EXCEPTIONS = (
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
             "Dispatch-only change where envoy-infra-build does not, and in such a run those untagged "
-            "tests would otherwise run nowhere."
+            "tests would otherwise run nowhere. A -run of the tagged tests alone would make "
+            "check-ci-filters.sh's rule 15 hold envoy_infra_build's filter to every file envoy-smoke "
+            "reads, the listener image's inputs among them, and so start envoy-infra-build on each "
+            "change to the image to spare the twenty untagged tests' 0.17 s in envoy-smoke (job "
+            "137289139653)."
         ),
     ),
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -210,14 +221,14 @@ EXCEPTIONS = (
         requirement=(
             "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
             "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
-            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
-            "third step is the cleanup detector's, declared with the rest of the package below."
+            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one."
         ),
     ),
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -226,41 +237,26 @@ EXCEPTIONS = (
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
             "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
-            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
+            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one. "
+            "The unit step runs the package whole, for the reason the next entry gives."
         ),
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
         }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=None,
         requirement=(
-            "A3 (dispatch://INFRA-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
-            "runs this package in a Go mode no other step runs it in, GODEBUG=checkfinalizers=1, "
-            "and with -v, because the package's own count of the services its tests left alive is "
-            "printed from TestMain after they have run and a package-list run drops it. The mode "
-            "is what the job is for, and a cleanup the detector reports can be any test's, so the "
-            "lane takes the package whole rather than a -run of part of it."
-        ),
-    ),
-    Exception_(
-        steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
-        }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
-        functions=(
-            "TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound",
-            "TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound",
-            "TestUploadsToARoomInUseKeepMemoryWithinTheBound",
-        ),
-        requirement=(
-            "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
-            "room's memory, which the race build cannot measure, so the race listing does not "
-            "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
-            "runs them as part of the package under its own mode, for the reason above."
+            "The writer hold's rows of the NATS auth service read the broker's hold row from "
+            "Postgres and skip without BROKER_TEST_DATABASE_URL, and envoy-go-race's step runs "
+            "without -v, where a skip prints nothing. envoy-go's step \"Unit test envoy Go package\" "
+            "runs the package through packages/envoy/scripts/database-skips.sh, "
+            "which counts that run's skips and fails on any, so a hold row that stopped running "
+            "fails the pull request; envoy-go-race keeps the package's race run. The count takes "
+            "the package whole, since go test -json of a -run would leave a skip it did not select "
+            "uncounted."
         ),
     ),
     Exception_(
@@ -294,7 +290,7 @@ EXCEPTIONS = (
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
             "that same corpus, so both name the function. envoy-go's step \"Unit test envoy Go "
-            "package\" runs every broker package but the race lane's through "
+            "package\" runs every broker package through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -311,8 +307,8 @@ EXCEPTIONS = (
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
             "shapes a rules file may hold through both the Go validation and the Lean model's, "
             "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
-            "step \"Unit test envoy Go package\" runs every broker package but the "
-            "race lane's through packages/envoy/scripts/database-skips.sh, so a listing counts "
+            "step \"Unit test envoy Go package\" runs every broker package through "
+            "packages/envoy/scripts/database-skips.sh, so a listing counts "
             "the function run there too, but it skips there for want of AIRLOCK_MODEL, as that "
             "script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz "
             "step runs FuzzAirlock alone and does not name it."
@@ -361,6 +357,10 @@ SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
+MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+# How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
+JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
@@ -387,8 +387,9 @@ BACKEND_COUNT_TESTS = (
 )
 
 # envoy-go's unit step's -skip and --module-except, as ci_job_reads.UNIT_TEST_RUN writes them: the
-# web display fixture's two tests and BACKEND_COUNT_TESTS, and the race lane's packages, the text
-# checks, internal/integration and the packages envoy-go-build runs.
+# web display fixture's two tests and BACKEND_COUNT_TESTS, and the race lane's packages but those
+# whose skips the step counts, the text checks, internal/integration and the packages
+# envoy-go-build runs.
 UNIT_SKIP = ("'^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|"
              "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|"
              "TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|"
@@ -397,24 +398,25 @@ UNIT_EXCEPT = ("'/integration|/internal/textcheck$|/internal/dispatch/architectu
                "/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|"
                "/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|"
                "/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|"
-               "/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'")
+               "/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'")
 
 # Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
 # one `go test` it runs for each argument list a step passes it.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # counts its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths
-    # its DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them
-    # (the race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no
-    # -tags, -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument
-    # replaces those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the
-    # -timeout, and `--var NAME` decides only whether it runs at all. `--module-except P` adds to
-    # the run every package of `go list ./... | grep -Ev P`, in that order, and then each counted
-    # package P took out; P keeps every counted package here (ci_job_reads.hold_counted_in_unit_run),
-    # so the run is the listing alone. With `--report FILE` it reads a report and runs no test.
-    # envoy-go's unit step passes the first argument list below, whose command is that run in the
-    # listing form this script reads, and envoy-go-race-api's race step the second.
+    # counts its DEFAULT_PACKAGES, ./internal/cipher/..., ./cmd/cipherd/ and ./internal/holdrecord/,
+    # less the import paths its DEFAULT_EXCEPT takes out of `go list` of them with `grep -Ev`, none
+    # today since that pattern is empty (ci_job_reads.DATABASE_SKIPS_PATTERN, built from
+    # DATABASE_SKIPS_RACE_ONLY), with no -tags, -race, -run or -skip, under -timeout
+    # "${GO_TEST_TIMEOUT:-15m}". A package argument replaces those packages, `--race` adds -race,
+    # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
+    # whether it runs at all. `--module-except P` adds to the run every package of
+    # `go list ./... | grep -Ev P`, in that order, and then each counted package P took out; P
+    # keeps every counted package here (ci_job_reads.hold_counted_in_unit_run), so the run is the
+    # listing alone. With `--report FILE` it reads a report and runs no test. envoy-go's unit step
+    # passes the first argument list below, whose command is that run in the listing form this
+    # script reads, and envoy-go-race-api's race step the second.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -423,7 +425,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="5ee056e823d43b6c390442eac6f7ae1e374e0e14a6f112900dce281f8c692a8f",
+        sha256="b640fd0d9f4d7604a9114c1cd51f5334ef8e506ccddcf9ac8aafe12c5fdb2fc9",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -438,6 +440,20 @@ AUDITED_SCRIPTS = {
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
         sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+    ),
+    # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
+    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
+    # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
+    # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
+    # step, so neither verdict saw the module's race run: every untagged test of infra/core,
+    # infra/seed and infra/gcp read as compiled by the natslive step and run by no step, and
+    # infra/host's untagged tests, which envoy-smoke's pulumilive step runs plain, as run once.
+    "packages/envoy/infra/scripts/race-unit.sh": AuditedScript(
+        module="packages/envoy/infra",
+        commands={
+            "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
+        },
+        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -579,8 +595,34 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
                     continue
-                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                if not MATRIX_VALUE.search(script):
+                    steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                    continue
+                rows = matrix_rows(f"{path}'s {job} / {name}", body)
+                for row in rows:
+                    def value(match: re.Match[str], row: dict = row) -> str:
+                        if match.group(1) not in row:
+                            raise Refused(f"{path}'s {job} / {name}: its run: writes matrix.{match.group(1)}, "
+                                          f"which no row of the job's matrix has")
+                        return str(row[match.group(1)])
+                    label = ", ".join(f"{key} {row[key]}" for key in row)
+                    steps.append(Step(workflow=path, job=job, name=f"{name} ({label})", workdir=workdir,
+                                      script=JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
     return steps
+
+
+def matrix_rows(label: str, body: dict) -> list[dict]:
+    """The rows of a job's matrix of lists, each the values one of its jobs gets, in GitHub's
+    order. Any other shape is refused rather than guessed at: an `include` or `exclude` changes the
+    rows in ways this reading does not follow, and a matrix an expression computes is known only
+    when the run starts."""
+    matrix = ((body or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict) or not matrix:
+        raise Refused(f"{label}: its run: writes a matrix value, and the job has no matrix of lists to read it from")
+    if "include" in matrix or "exclude" in matrix or not all(isinstance(v, list) and v for v in matrix.values()):
+        raise Refused(f"{label}: its job's matrix is not a matrix of lists alone, which is the one shape read here")
+    keys = list(matrix)
+    return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
 
 
 def spellings(path: str, workdir: str) -> set[str]:

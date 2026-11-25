@@ -2686,11 +2686,12 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-    // The Legion daemon owns the status of an issue it runs: a status this session writes is
-    // undone, so neither answer may send it to issue-update.
+    // The Legion daemon owns the status of an issue it runs: Dispatch refuses a status this
+    // session writes where DISPATCH_LEGION_STATUS_SCOPE is on, and otherwise the daemon undoes
+    // it, so neither answer may send it to issue-update.
     const claimed = await run({ issue: "DSP-1" });
     expect(claimed.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(claimed.text).not.toContain("issue-update");
     expect(claimed.text).toContain(
@@ -2699,7 +2700,7 @@ describe("executeDispatchTool", () => {
 
     const released = await run({ issue: "DSP-1", release: true });
     expect(released.text).toContain(
-      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — a status written here is undone"
+      "Legion's daemon moves this issue's status on an issue it runs, so leave it alone — where Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status written here from a credential without the person or legion-status scope (403 LEGION_STATUS_SCOPE_REQUIRED), but for done, backlog, icebox or triage from an architect of an issue above with its own broker token, and otherwise the daemon undoes it"
     );
     expect(released.text).not.toContain("issue-update");
     expect(released.text).not.toContain("now reach you directly");
@@ -4858,6 +4859,83 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("runs as service example-fleet");
     expect(result.text).not.toMatch(/issues? you create/);
     expect(result.text).toContain("agent-secrets login");
+  });
+
+  // A read-only credential is refused every write with READ_ONLY_TOKEN, before any other check,
+  // so whoami names it as one that reads only, and its cut, rather than describing the issues it
+  // would create or the sign-in it would need.
+  test("dispatch_whoami names a read-only credential and its cut", async () => {
+    const whoami = async (answer: Record<string, unknown>): Promise<string> => {
+      const result = await executeDispatchTool({
+        tool: "dispatch_whoami",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: (async () => response(answer)) as unknown as typeof fetch,
+      });
+      return result.text;
+    };
+    const cut = "2026-11-19T08:30:00.123456Z";
+
+    const person = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person", "read"],
+      cut,
+    });
+    expect(person).toBe(
+      `Session session-1 acts for alice with a read-only credential: it may read, and Dispatch refuses every write it makes. Its cut is ${cut}, the past time it reads Dispatch at.`
+    );
+
+    // A service's read-only token with no cut: no sign-in to name, and no cut either.
+    const service = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "example-fleet",
+      session: "session-1",
+      project: "INFRA",
+      scopes: ["read"],
+      cut: null,
+    });
+    expect(service).toBe(
+      "Session session-1 runs as service example-fleet with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // An exchange entry's account token narrowed to reading: Dispatch answers it
+    // sign_in_required false, and it is told it reads only, never sent to a sign-in.
+    const account = await whoami({
+      kind: "agent",
+      owner: null,
+      service: "system:serviceaccount:example-ns:example-public",
+      session: "session-1",
+      project: null,
+      scopes: ["read"],
+      cut: null,
+      sign_in_required: false,
+    });
+    expect(account).toBe(
+      "Session session-1 runs as service example-ns/example-public with a read-only credential: it may read, and Dispatch refuses every write it makes."
+    );
+
+    // A credential that writes is told what a writing credential is told, and nothing of reading.
+    const writer = await whoami({
+      kind: "agent",
+      owner: "alice",
+      service: null,
+      session: "session-1",
+      project: null,
+      scopes: ["person"],
+      cut: null,
+    });
+    expect(writer).toContain("issues you create without an assignee are assigned to alice");
+    expect(writer).not.toContain("read-only");
   });
 
   // A current Dispatch answers the decision itself (sign_in_required), and the command reads it.
@@ -15847,9 +15925,10 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain("Status: open\nAssignee: alice\n");
     expect(result.text).toContain("Claimed by: Implementer since 2026-09-13T01:00:00Z");
     // The priorities the issue serves stand between what it touches and where it is routed,
-    // each marked own where the issue states it and inherited where an issue above it does.
+    // each marked own where the issue states it and inherited where an issue above it does, then
+    // the revision of the issue's own set, which a change of two or more priorities sends.
     expect(result.text).toContain(
-      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nAdvances: ship-the-daemon (own), legion-first (inherited)\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
+      "Labels: frontend, urgent\nComponents: web (inherited from DSP-40) (retired: legacy-ui)\nAdvances: ship-the-daemon (own), legion-first (inherited); revision 12\nRoute: none\nRepository: acme/widgets (inherited or project default)\nProgress: tasks 1/4\n"
     );
     // The pull request a person linked is on the read, as on the issue page; the reference graph
     // at the end carries none of it.
