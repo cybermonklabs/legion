@@ -354,7 +354,9 @@ does not give: timing, answer, afterSendBack, firstStarts, neverStarted, merges,
 diagnostic knob that keeps the record's conflicts (main+<knob>=<value>).
 A window collected with a run-out (collect --after) is replayed on past its end through the
 run-out, so the work the record shows after --to runs where the replay moves it; every measure
-reads the window's own span alone.
+reads the window's own span alone. --cap replays the window at one admission cap from its start to
+its end in place of the caps its record shows (0, the default, keeps the record's), and run.json
+names it.
 Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
@@ -371,7 +373,7 @@ repository, or from the whole window.`
 // newReplayRunCommand is `legion replay run` (replay.Run).
 func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--keep-db] [--trace-segments]",
+		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--cap <n>] [--keep-db] [--trace-segments]",
 		Short: "replay a recorded window under a slot rule, in a database of its own, and write what it ran and counted",
 		Long:  replayRunLong,
 		Args:  noArguments,
@@ -386,6 +388,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 	out := flags.String("out", "", "the directory the run's output is written to (required)")
 	keepDB := flags.Bool("keep-db", false, "keep the replay's database after the run")
 	traceSegments := flags.Bool("trace-segments", false, "write each work segment's n, m and length to segments.jsonl")
+	capOverride := flags.Int("cap", 0, "the admission cap the replay serves under for the whole window, in place of the record's (0 keeps the record's)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
 			return refuse(cmd, "--%s is required", missing)
@@ -401,13 +404,16 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		if *slowdown <= 0 {
 			return refuse(cmd, "--slowdown %v: the factor must be above zero", *slowdown)
 		}
+		if *capOverride < 0 {
+			return refuse(cmd, "--cap %d: the cap must be zero, which keeps the record's, or above it", *capOverride)
+		}
 		window, err := replay.ReadWindow(*windowDir)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
 		}
 		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
-			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit()})
+			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit(), Cap: *capOverride})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
@@ -417,8 +423,12 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			kept = "kept"
 		}
 		counted := result.Divergence
-		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
-			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
+		capWord := "the record's cap"
+		if *capOverride > 0 {
+			capWord = fmt.Sprintf("the cap %d", *capOverride)
+		}
+		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v, %s) in the database %s (%s); wrote %s\n",
+			*windowDir, rule.Name, branch.Name, *seed, *slowdown, capWord, result.Database, kept, *out)
 		if window.After > 0 {
 			fmt.Fprintf(stdout, "legion replay run: replayed on to %s through the window's run-out of %s; every measure reads %s to %s alone\n",
 				window.End().Format(time.RFC3339), time.Duration(window.After), window.From.Format(time.RFC3339), window.To.Format(time.RFC3339))
@@ -719,9 +729,12 @@ in a database of its own on the server --pg-dsn names. Each run's run.json, scor
 scorecard-line.json are written under --out, in <window>/<rule>/<branch>@<f>/seed-<n>/, beside the
 window's record.json; a run whose files are there already is not run again, and each run's log is
 deleted once the run has read it back, unless --keep-logs. With --main-only the main branch at f 1
-runs alone, with its seeds, in place of every branch. Either way the diagnostic branch
-main+conflicts=recorded, which keeps the record's conflicts and draws none, runs at f 1 beside
-them: its table is shown and tests nothing, and it never stands in place of the main branch.
+runs alone, with its seeds, in place of every branch. Either way R5's branch of the recorded
+conflicts, main+conflicts=recorded, which keeps the record's conflicts and draws none, runs at each
+of f 1, 1.2 and 1.6 beside them: it names, seed by seed, each issue the replay starts that the
+record did not start in the window and each issue the record filed in the window that the replay
+leaves out, and gates nothing; its table is shown and tests nothing, and it never stands in place
+of the main branch.
 
 It prints, for each branch and each measure, the recorded value, the replayed value (the mean of
 the seeds, with the lowest and the highest seed's), the gap, the allowance and the test; for each
@@ -735,6 +748,14 @@ replay gave a first slot that the record did not, and how many the record gave o
 did not; and for each branch the trees whose design gate stood closed more than 30% longer or shorter
 than in the record. A validation whose replays give no issue a first slot or a done is refused.
 
+With --cap-backtest --cap <n> the validation is the cap backtest: the main branch at f 1 alone, with
+its seeds, runs at the caps the record shows into --out and again at the one cap --cap from the
+window's start to its end into --out's cap-<n>, and it prints the slots each gives out in each span
+of one cap the daemon served against the record's: under the recorded caps each span within 10%,
+and under --cap each span whose cap is not --cap more than 10% off, a span at --cap not read. A
+backtest that fails either says that the tool cannot tell a change of the cap. A span of fewer than
+10 slots fails on a miss of one slot, and the backtest names each such span.
+
 With --from-runs nothing runs: the validation is read from the directories of runs a validate or
 a compare wrote, --window naming the window by its directory's name (needed only where they hold
 more than one) and --rule defaulting to the rule its daemon ran.`
@@ -742,7 +763,7 @@ more than one) and --rule defaulting to the rule its daemon ran.`
 // newReplayValidateCommand is `legion replay validate` (replay.RunValidate, replay.Runs.Validation).
 func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--main-only] | --from-runs <dir>... [--window <name>] [--rule <name>]",
+		Use:   "validate --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--parallel <n>] [--keep-logs] [--main-only | --cap-backtest --cap <n>] | --from-runs <dir>... [--window <name>] [--rule <name>]",
 		Short: "replay a window under the rule its daemon ran on every branch, and test each branch against the record",
 		Long:  replayValidateLong,
 		Args:  noArguments,
@@ -755,12 +776,14 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	parallel := flags.Int("parallel", 1, "how many runs run at once")
 	keepLogs := flags.Bool("keep-logs", false, "keep each run's log.jsonl")
 	mainOnly := flags.Bool("main-only", false, "run the main branch at f 1 alone, with its seeds, in place of every branch")
+	capBacktest := flags.Bool("cap-backtest", false, "run the cap backtest: the main branch at f 1 at the recorded caps and at --cap, read in each span of one cap")
+	capFlat := flags.Int("cap", 0, "with --cap-backtest, the one admission cap the backtest replays the window at from its start to its end")
 	fromRuns := flags.StringArray("from-runs", nil, "a directory of runs to read the validation from, running nothing; repeat for more")
 	asJSON := flags.Bool("json", false, "print the validation as JSON")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		var validation replay.Validation
 		if len(*fromRuns) > 0 {
-			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "main-only"); set != "" {
+			if set := changedFlag(cmd, "pg-dsn", "out", "parallel", "keep-logs", "main-only", "cap-backtest", "cap"); set != "" {
 				return refuse(cmd, "--from-runs reads runs and makes none, so --%s does not apply", set)
 			}
 			read, err := replay.ReadRuns(*fromRuns...)
@@ -798,9 +821,18 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			if *parallel < 1 {
 				return refuseParallel(cmd, *parallel)
 			}
+			switch {
+			case *capBacktest && *mainOnly:
+				return refuse(cmd, "--cap-backtest runs the main branch alone already, so --main-only does not apply")
+			case *capBacktest && *capFlat <= 0:
+				return refuse(cmd, "--cap-backtest needs --cap, the one cap above zero the window is replayed at")
+			case !*capBacktest && cmd.Flags().Changed("cap"):
+				return refuse(cmd, "--cap is the cap backtest's alone; give --cap-backtest with it")
+			}
 			var err error
 			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
-				Out: *out, KeepLogs: *keepLogs, MainOnly: *mainOnly, Progress: replayProgress(stderr, "validate"), BuildCommit: binaryCommit()})
+				Out: *out, KeepLogs: *keepLogs, MainOnly: *mainOnly, CapBacktest: *capBacktest, Cap: *capFlat, Progress: replayProgress(stderr, "validate"),
+				BuildCommit: binaryCommit()})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
 				return 1
@@ -825,15 +857,25 @@ the rule after the change, on the main branch (main at f 1) with 5 seeds where i
 seed 1 alone where it draws nothing, up to --parallel runs at once, each in a database of its own
 on the server --pg-dsn names; each run is written under --out as validate writes it, beside the
 record.json of both windows. The forecast is compared with the record of the window in --after,
-read from its line timeline as the replays are.
+read from its line timeline as the replays are. On the same branch it also replays the window in
+--before under the rule its daemon ran, the window in --after under the rule its daemon ran, and,
+the forecast's control, the window in --after under the rule the daemon of --before ran.
 
-It compares rates per hour, averages over time and shares, never totals, since the two windows
-differ in length and in work, and each passes within twice its gap. A send-back cause the change
-of the workflow redefines (red checks or a conflict, a conflict, a send-back by the architect or
-the merger) is scored only inside the total of all send-back loops; each cause both releases
-define the same way (a review that asks for changes, a failed test, a drop from the merge queue, a
-worker's own move back) is scored apart. It names the workflow commits between the two windows'
-daemons that the forecast carries beside the rule.
+It compares rates per hour, averages and shares, never totals, since the two windows differ in
+length and in work, and each passes within twice its gap: R5's gap, or, for the daily maxima of
+each count of issues, the loops of the redefined causes together and the wait of urgent work of P0
+and of P1, the replay's own error on the measure, the larger of the two windows' errors, each
+window replayed under its own rule against its own record. A send-back cause the change of the
+workflow redefines (red checks or a conflict, a conflict, a send-back by the architect or the
+merger) is scored only inside the total of all send-back loops and of those causes together; each
+cause both releases define the same way (a review that asks for changes, a failed test, a drop
+from the merge queue, a worker's own move back) is scored apart. The change moves a number where
+the forecast stands more than twice its gap from the window before replayed under its own rule;
+where the control too stands within twice its gap of the record after the change on such a
+number, the forecast says that it cannot tell the two rules apart on it. It names the workflow
+commits between the two windows' daemons that the forecast carries beside the rule. A run --out
+holds already, a validate's or an earlier forecast's, is not run again where this binary made it,
+and is refused where another did; the forecast names each part it found whole.
 
 With --from-runs nothing runs: the forecast is read from the directories of runs a forecast or a
 compare wrote, --before and --after naming the windows by their directories' names and --rule

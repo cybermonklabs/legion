@@ -151,22 +151,57 @@ func (m measuring) span(from, to time.Time) Scorecard {
 var urgentPriorities = [...]record.Priority{record.P0, record.P1}
 
 // urgentWaits is the wait of urgent work over the timeline (spec R4; `replay.md`, "The wait of
-// urgent work"), by priority, P0's and P1's apart (UrgentWait): each issue whose wait as urgent
-// work begins in the span (Course.Todo), counted in the highest of its own Dispatch priorities from
-// that moment to its first slot, the priority at the slot's moment included; with the minutes from
-// that moment to its first slot, the first one given at or after it, and to its done, its first
-// move to done at or after it, each by the end of the run (Timeline.End), and to that end, a cut
-// wait, where it has none by then. A priority no issue counts in has no entry.
+// urgent work"), by priority, P0's and P1's apart (UrgentWait): the median and the 90th percentile
+// of each priority's waits (urgentReadings), and how many of them are cut. A priority no issue
+// counts in has no entry.
 func (m measuring) urgentWaits() map[string]UrgentWait {
+	urgent := map[string]UrgentWait{}
+	for i, w := range m.urgentReadings() {
+		if len(w.toSlot) == 0 {
+			continue
+		}
+		urgent[urgentPriorities[i].String()] = UrgentWait{Issues: len(w.toSlot),
+			FirstSlot: WaitMinutes{MedianMinutes: median(w.toSlot), P90Minutes: percentile(w.toSlot, 0.9), Cut: w.slotCut},
+			Done:      WaitMinutes{MedianMinutes: median(w.toDone), P90Minutes: percentile(w.toDone, 0.9), Cut: w.doneCut}}
+	}
+	return urgent
+}
+
+// urgentMeans is the wait of urgent work over the timeline as means (UrgentMean), by priority,
+// P0's and P1's apart: the mean of each priority's waits to the first slot and to done
+// (urgentReadings), a cut wait at its length. A priority no issue counts in has no entry.
+func (m measuring) urgentMeans() map[string]UrgentMean {
+	means := map[string]UrgentMean{}
+	for i, w := range m.urgentReadings() {
+		if len(w.toSlot) == 0 {
+			continue
+		}
+		toSlot, _, _ := spread(w.toSlot)
+		toDone, _, _ := spread(w.toDone)
+		means[urgentPriorities[i].String()] = UrgentMean{FirstSlotMinutes: toSlot, DoneMinutes: toDone}
+	}
+	return means
+}
+
+// urgentReading is the waits of the urgent work of one priority over a timeline (urgentReadings):
+// each issue's minutes to its first slot and to its done, and how many of each are cut.
+type urgentReading struct {
+	toSlot, toDone   []float64
+	slotCut, doneCut int
+}
+
+// urgentReadings is the waits of urgent work over the timeline, by priority in the order of
+// urgentPriorities: each issue whose wait as urgent work begins in the span (Course.Todo), counted
+// in the highest of its own Dispatch priorities from that moment to its first slot, the priority at
+// the slot's moment included; with the minutes from that moment to its first slot, the first one
+// given at or after it, and to its done, its first move to done at or after it, each by the end of
+// the run (Timeline.End), and to that end, a cut wait, where it has none by then.
+func (m measuring) urgentReadings() [len(urgentPriorities)]urgentReading {
 	end := m.tl.End
 	if end.Before(m.tl.To) {
 		end = m.tl.To
 	}
-	type waits struct {
-		toSlot, toDone   []float64
-		slotCut, doneCut int
-	}
-	var read [len(urgentPriorities)]waits
+	var read [len(urgentPriorities)]urgentReading
 	for _, key := range m.keys {
 		c := m.tl.Issues[key]
 		if c.Todo.IsZero() {
@@ -209,16 +244,56 @@ func (m measuring) urgentWaits() map[string]UrgentWait {
 			w.doneCut++
 		}
 	}
-	urgent := map[string]UrgentWait{}
-	for i, w := range read {
-		if len(w.toSlot) == 0 {
-			continue
-		}
-		urgent[urgentPriorities[i].String()] = UrgentWait{Issues: len(w.toSlot),
-			FirstSlot: WaitMinutes{MedianMinutes: median(w.toSlot), P90Minutes: percentile(w.toSlot, 0.9), Cut: w.slotCut},
-			Done:      WaitMinutes{MedianMinutes: median(w.toDone), P90Minutes: percentile(w.toDone, 0.9), Cut: w.doneCut}}
+	return read
+}
+
+// forecastReadings fills what the forecast across a change of the rule reads of a line timeline
+// beside the measures of R4 that Measure reads from it, by one code for the record's line timeline
+// (scoreTrace) and a replay's (Run's line scorecard): each count's mean daily maximum
+// (Scorecard.DailyMaxima) and the wait of urgent work as means (Scorecard.UrgentMeans).
+func forecastReadings(card *Scorecard, tl Timeline) {
+	m := newMeasuring(tl)
+	card.DailyMaxima = m.dailyMaxima()
+	card.UrgentMeans = m.urgentMeans()
+}
+
+// dailyMaximaCounts is each count of issues a scorecard gives a maximum of, by its name, as a sweep
+// holds it: the counts Scorecard.DailyMaxima gives the mean daily maximum of, and the forecast reads.
+var dailyMaximaCounts = []struct {
+	name string
+	of   func(*sweep) occupancy
+}{
+	{"waitOnlyForSlot", func(s *sweep) occupancy { return s.waitOnlyForSlot }},
+	{"startedWithoutSlot", func(s *sweep) occupancy { return s.startedWithoutSlot }},
+	{"pastReviewHolding", func(s *sweep) occupancy { return s.pastReviewHolding }},
+	{"pastReviewNotHolding", func(s *sweep) occupancy { return s.pastReviewNotHolding }},
+	{"inFlight", func(s *sweep) occupancy { return s.inFlight }},
+}
+
+// dailyMaxima is, for each count of dailyMaximaCounts, the mean over the UTC days of the timeline's
+// span of each day's largest count, a day the span cuts read over its part in the span
+// (Scorecard.DailyMaxima): one sweep a day, each read as the sweep of the whole span reads its
+// maximum. Each count is 0 for a span of no length.
+func (m measuring) dailyMaxima() map[string]float64 {
+	maxima := make(map[string]float64, len(dailyMaximaCounts))
+	for _, c := range dailyMaximaCounts {
+		maxima[c.name] = 0
 	}
-	return urgent
+	days := 0
+	for from := m.tl.From.UTC(); from.Before(m.tl.To); days++ {
+		to := minTime(time.Date(from.Year(), from.Month(), from.Day()+1, 0, 0, 0, 0, time.UTC), m.tl.To)
+		day := newSweep(from, to, m.places).run(m.changes)
+		for _, c := range dailyMaximaCounts {
+			maxima[c.name] += float64(c.of(day).max)
+		}
+		from = to
+	}
+	if days > 0 {
+		for name := range maxima {
+			maxima[name] /= float64(days)
+		}
+	}
+	return maxima
 }
 
 // measureLoops adds to card the moves of key in [from, to): its move to done, and each move back
@@ -278,9 +353,18 @@ func (card *Scorecard) addRound(cause Cause, lasted time.Duration) {
 // own (Run's line scorecard): the issues of t's project Dispatch shows reaching done in [From, To)
 // by any actor (Scorecard.DoneByAnyone), each tree's hours of [From, To) its design gate stood
 // closed, read as the line timeline reads the gate (gateStepsOf), for each tree whose gate stood
-// closed at all (Scorecard.GateClosedHours).
+// closed at all (Scorecard.GateClosedHours), each issue of the project filed in [From, To), at its
+// issue.created event (Scorecard.Filed), and each moment in [From, To) a pass gave an issue of the
+// project a slot, as the line timeline reads it from the slot lines (Scorecard.SlotsGiven).
 func traceMeasures(card *Scorecard, t Trace) {
-	card.GateClosedHours = map[string]float64{}
+	within := func(at time.Time) bool { return !at.Before(t.From) && at.Before(t.To) }
+	card.GateClosedHours, card.Filed, card.SlotsGiven = map[string]float64{}, map[string]time.Time{}, []time.Time{}
+	for _, move := range t.Slots {
+		if iss, ok := t.Issues[move.Issue]; ok && move.Given && iss.Project == t.Project && within(move.At) {
+			card.SlotsGiven = append(card.SlotsGiven, move.At)
+		}
+	}
+	slices.SortStableFunc(card.SlotsGiven, time.Time.Compare)
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project {
@@ -288,6 +372,14 @@ func traceMeasures(card *Scorecard, t Trace) {
 		}
 		if doneIn(iss, t.From, t.To) {
 			card.DoneByAnyone++
+		}
+		for _, event := range iss.Dispatch {
+			if event.Type == "issue.created" {
+				if within(event.At) {
+					card.Filed[key] = event.At
+				}
+				break
+			}
 		}
 		if len(iss.Gates) == 0 {
 			continue

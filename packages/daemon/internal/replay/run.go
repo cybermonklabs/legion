@@ -60,6 +60,12 @@ type RunConfig struct {
 	// BuildCommit is the commit of the legion binary that runs the replay, which run.json names
 	// (runRecord.BuildCommit); unknownBuild where it is empty.
 	BuildCommit string
+	// Cap, where above zero, is the admission cap the replay's daemon serves under from the
+	// window's start to its end, in place of the caps the record shows (Window.Caps, processCap):
+	// the question what the same window would have done with more or fewer slots, which the cap
+	// backtest asks (CapBacktest). Zero keeps the record's caps, which a validation and every run
+	// of a comparison of rules read.
+	Cap int
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
@@ -379,6 +385,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	result.LineScorecard = d.scorecard(Measure(lined))
 	traceMeasures(&result.LineScorecard, linedTrace)
+	forecastReadings(&result.LineScorecard, lined)
 	result.Gaps = Gaps(result.Scorecard, result.LineScorecard)
 	if err := d.writeOutputs(result, began); err != nil {
 		return result, err
@@ -541,6 +548,7 @@ func (d *driver) lineTimeline() (Timeline, Trace, error) {
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
+// cap it served under in place of the record's (Cap, none where it kept the record's), the
 // scenario, every assumption it used by number, and the window's run-out it ran past the window's
 // end (After, none for a window with no run-out), its measures reading the window alone — what ran
 // it — the commit of the legion binary (BuildCommit, where RuleCommit is the commit the rule was
@@ -556,6 +564,7 @@ type runRecord struct {
 	Branch          Branch        `json:"branch"`
 	Seed            int64         `json:"seed"`
 	Slowdown        float64       `json:"slowdown"`
+	Cap             int           `json:"cap,omitempty"`
 	Scenario        string        `json:"scenario"`
 	Assumptions     []int         `json:"assumptions"`
 	After           Duration      `json:"after"`
@@ -584,7 +593,7 @@ func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 		mean = float64(d.passTime.Microseconds()) / 1000 / float64(d.facts)
 	}
 	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, BuildCommit: cmp.Or(d.cfg.BuildCommit, unknownBuild), Branch: d.cfg.Branch,
-		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, After: d.window.After,
+		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Cap: d.cfg.Cap, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, After: d.window.After,
 		Database: result.Database, KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
 		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
 		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts}

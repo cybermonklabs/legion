@@ -439,8 +439,9 @@ func distinctNames(before, after string) error {
 
 // ValidateConfig is a validation of one window (RunValidate): the window, the rule its daemon ran,
 // the server the runs make their databases on, how many run at once, the directory of runs they
-// are written under, whether the main branch runs alone, and the commit of the legion binary that
-// makes them (RunConfig.BuildCommit).
+// are written under, whether the main branch runs alone, whether the validation is the cap
+// backtest and at which flat cap, and the commit of the legion binary that makes them
+// (RunConfig.BuildCommit).
 type ValidateConfig struct {
 	Window      string
 	Rule        record.SlotRule
@@ -454,21 +455,30 @@ type ValidateConfig struct {
 	// branch: the check that the replay of the recorded rule meets R5's gaps on the branch R5 judges
 	// a window by, at a fraction of the runs of every branch.
 	MainOnly bool
+	// CapBacktest makes the validation the cap backtest (spec R5, CapBacktest): the main branch at
+	// f 1 alone, with its seeds, at the record's caps into Out and at the flat cap Cap, which
+	// replaces the window's caps from its start to its end (RunConfig.Cap), into CapBacktestDir.
+	// Cap is above zero exactly where CapBacktest is set.
+	CapBacktest bool
+	Cap         int
 
 	// plan, where set, replaces the validation's branches and seeds: a test's smaller one.
 	plan *runPlan
 }
 
 // validatePlan is the branches and seeds cfg's validation runs: a test's own plan where it set one
-// (ValidateConfig.plan); with MainOnly, the main branch at f 1 alone (MainBranchAt) with the seeds
-// of a branch with a draw; and every branch the tool offers, each with its seeds (fullPlan),
-// otherwise. Either runs the diagnostic branches beside them (DiagnosticBranches), which no
-// comparison runs.
+// (ValidateConfig.plan); with MainOnly or CapBacktest, the main branch at f 1 alone (MainBranchAt)
+// with the seeds of a branch with a draw; and every branch the tool offers, each with its seeds
+// (fullPlan), otherwise. Each but the cap backtest's runs R5's branches of the recorded conflicts
+// beside them (DiagnosticBranches), which no comparison runs.
 func validatePlan(cfg ValidateConfig) runPlan {
 	if cfg.plan != nil {
 		return *cfg.plan
 	}
 	plan := runPlan{branches: []BranchAt{MainBranchAt}, perDraw: SeedsPerDraw}
+	if cfg.CapBacktest {
+		return plan
+	}
 	if !cfg.MainOnly {
 		plan = fullPlan()
 	}
@@ -476,14 +486,30 @@ func validatePlan(cfg ValidateConfig) runPlan {
 	return plan
 }
 
+// CapBacktestDir is the directory of runs the cap backtest of a validation into out writes its
+// runs at the flat cap limit under: cap-<limit> in out, a directory of runs of its own beside the
+// windows', which a reader of out passes over (ReadRuns).
+func CapBacktestDir(out string, limit int) string {
+	return filepath.Join(out, fmt.Sprintf("cap-%d", limit))
+}
+
 // RunValidate runs cfg.Window under cfg.Rule on every branch with its seeds, or on the main branch
-// alone with its seeds under cfg.MainOnly (validatePlan), and on the diagnostic branches beside
-// either, into cfg.Out, up to cfg.Parallel runs at once, and answers its validation (spec R5), read
-// back from the runs. A rule other than the one the window's parts say its daemon ran is refused.
+// alone with its seeds under cfg.MainOnly or cfg.CapBacktest (validatePlan), and on R5's branches of
+// the recorded conflicts beside them but in the cap backtest, into cfg.Out, up to cfg.Parallel runs
+// at once, and answers its validation (spec R5), read back from the runs. The cap backtest runs its
+// branches again at the flat cap cfg.Cap into CapBacktestDir and gives the validation its
+// CapBacktest. A rule other than the one the window's parts say its daemon ran is refused, as is a
+// cap of the validation's own outside the cap backtest and a cap backtest at no cap above zero.
 func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	name, err := windowName(cfg.Window)
 	if err != nil {
 		return Validation{}, err
+	}
+	switch {
+	case cfg.CapBacktest && cfg.Cap <= 0:
+		return Validation{}, fmt.Errorf("replay: the cap backtest replays the window at one flat cap above zero, not %d", cfg.Cap)
+	case !cfg.CapBacktest && cfg.Cap != 0:
+		return Validation{}, fmt.Errorf("replay: a validation replays the window at the caps its record shows; a flat cap (%d) is the cap backtest's alone", cfg.Cap)
 	}
 	head, err := readWindowHead(cfg.Window)
 	if err != nil {
@@ -494,16 +520,38 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 		return Validation{}, fmt.Errorf("replay: the window %s ran the rule %s, and a validation replays the rule the daemon ran, not %s", name, ran, rule.Name)
 	}
 	plan := validatePlan(cfg)
+	options := runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw, keepLogs: cfg.KeepLogs, progress: cfg.Progress,
+		build: cfg.BuildCommit}
 	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches, diagnostics: plan.diagnostics}}}
-	if err := runWindows(ctx, []windowSpec{spec}, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
+	if err := runWindows(ctx, []windowSpec{spec}, options); err != nil {
 		return Validation{}, err
+	}
+	flat := options
+	if cfg.CapBacktest {
+		flat.root, flat.cap = CapBacktestDir(cfg.Out, cfg.Cap), cfg.Cap
+		spec.parts = []partSpec{{rule: rule, branches: plan.branches}}
+		if err := runWindows(ctx, []windowSpec{spec}, flat); err != nil {
+			return Validation{}, err
+		}
 	}
 	runs, err := ReadRuns(cfg.Out)
 	if err != nil {
 		return Validation{}, err
 	}
-	return runs.Validation(name, rule.Name)
+	v, err := runs.Validation(name, rule.Name)
+	if err != nil || !cfg.CapBacktest {
+		return v, err
+	}
+	flatRuns, err := ReadRuns(flat.root)
+	if err != nil {
+		return Validation{}, err
+	}
+	backtest, err := runs.CapBacktest(name, rule.Name, flatRuns, cfg.Cap)
+	if err != nil {
+		return Validation{}, err
+	}
+	v.CapBacktest = &backtest
+	return v, nil
 }
 
 // ForecastConfig is a forecast across a recorded change of the rule (RunForecast): the window
@@ -525,9 +573,14 @@ type ForecastConfig struct {
 	perDraw int
 }
 
-// RunForecast replays cfg.Before under cfg.Rule on the main branch with its seeds into cfg.Out, up
-// to cfg.Parallel runs at once, reads the record of cfg.After, and answers the forecast across the
-// change (spec R5), read back from the runs.
+// RunForecast replays, on the main branch with its seeds, cfg.Before under cfg.Rule, the forecast,
+// and under the rule its daemon ran, cfg.After under the rule its daemon ran and, the forecast's
+// control, under the rule cfg.Before's daemon ran, into cfg.Out, up to cfg.Parallel runs at once,
+// and answers the forecast across the change (spec R5), read back from the runs. Each run cfg.Out
+// holds already, a validate's or an earlier forecast's, is not run again where the legion binary of
+// cfg.BuildCommit made it and refused where another did (runOptions.sameBuild); the forecast names
+// each part whose every run it so kept (ForecastResult.Reused). A window whose parts name no one
+// rule its daemon ran is refused: it has no replay under its own rule.
 func RunForecast(ctx context.Context, cfg ForecastConfig) (ForecastResult, error) {
 	before, err := windowName(cfg.Before)
 	if err != nil {
@@ -541,19 +594,67 @@ func RunForecast(ctx context.Context, cfg ForecastConfig) (ForecastResult, error
 		return ForecastResult{}, err
 	}
 	rule := cfg.Rule.OrMain()
+	ran := make([]record.SlotRule, 2)
+	for i, dir := range []string{cfg.Before, cfg.After} {
+		head, err := readWindowHead(dir)
+		if err != nil {
+			return ForecastResult{}, err
+		}
+		name := partsRule(head.Parts)
+		if name == "" {
+			return ForecastResult{}, fmt.Errorf("replay: the parts of the window %s name no one rule its daemon ran, so the forecast has no replay of it under its own rule", dir)
+		}
+		var kept bool
+		if ran[i], kept = record.SlotRuleNamed(name); !kept {
+			return ForecastResult{}, fmt.Errorf("replay: the window %s ran the rule %s, which the repository does not keep", dir, name)
+		}
+	}
+	parts := func(rules ...record.SlotRule) []partSpec {
+		var parts []partSpec
+		for _, r := range rules {
+			if !slices.ContainsFunc(parts, func(p partSpec) bool { return p.rule.Name == r.Name }) {
+				parts = append(parts, partSpec{rule: r, branches: []BranchAt{MainBranchAt}})
+			}
+		}
+		return parts
+	}
 	specs := []windowSpec{
-		{dir: cfg.Before, name: before, parts: []partSpec{{rule: rule, branches: []BranchAt{MainBranchAt}}}},
-		{dir: cfg.After, name: after, order: 1},
+		{dir: cfg.Before, name: before, parts: parts(rule, ran[0])},
+		{dir: cfg.After, name: after, order: 1, parts: parts(ran[1], ran[0])},
+	}
+	type key struct{ window, rule string }
+	made, kept, builds := map[key]int{}, map[key]int{}, map[key]string{}
+	progress := func(done RunDone) {
+		k := key{done.Window, done.Rule}
+		made[k]++
+		if done.Kept {
+			kept[k]++
+			builds[k] = done.Build
+		}
+		if cfg.Progress != nil {
+			cfg.Progress(done)
+		}
 	}
 	if err := runWindows(ctx, specs, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: cmp.Or(cfg.perDraw, SeedsPerDraw),
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
+		keepLogs: cfg.KeepLogs, progress: progress, build: cfg.BuildCommit, sameBuild: true}); err != nil {
 		return ForecastResult{}, err
 	}
 	runs, err := ReadRuns(cfg.Out)
 	if err != nil {
 		return ForecastResult{}, err
 	}
-	return runs.Forecast(before, after, rule.Name)
+	f, err := runs.Forecast(before, after, rule.Name)
+	if err != nil {
+		return ForecastResult{}, err
+	}
+	for _, spec := range specs {
+		for _, part := range spec.parts {
+			if k := (key{spec.name, part.rule.Name}); made[k] > 0 && kept[k] == made[k] {
+				f.Reused = append(f.Reused, ReusedPart{Window: k.window, Rule: k.rule, Build: builds[k]})
+			}
+		}
+	}
+	return f, nil
 }
 
 // comparison is what the document of a comparison is written from, read from the runs and checked

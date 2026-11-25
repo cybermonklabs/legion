@@ -361,10 +361,10 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 
 // newChain builds the daemon's handler chain afresh, as each of the daemon's boots does: a new
 // engine and admission pass under the run's rule, on the simulated clock, with the window's
-// settings and the cap the daemon process running from at served under (processCap), the replay's
-// tables of what a rule the daemon does not run records (ruleTables), the replay's own handler
-// before the chain, and its reading of the recorded first starts right before the admission pass
-// (firstStartsHandler).
+// settings and the cap the daemon process running from at served under (processCap), or the run's
+// own cap where it names one (RunConfig.Cap), the replay's tables of what a rule the daemon does not
+// run records (ruleTables), the replay's own handler before the chain, and its reading of the
+// recorded first starts right before the admission pass (firstStartsHandler).
 func (d *driver) newChain(at time.Time) {
 	w := d.window
 	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), experimentStream))
@@ -377,7 +377,11 @@ func (d *driver) newChain(at time.Time) {
 	d.engine = workflow.New(d.records, workflow.Config{Project: w.Project, Steps: w.GateSteps, ReviewRoundCap: w.ReviewRoundCap,
 		Linger: time.Duration(w.Linger), Clock: d.clock.Now, Repositories: replayRepositories{branches: d.trace.Branches},
 		Experiments: w.Experiments, ExperimentSource: draw, SlotRule: d.rule}, d.log)
-	d.admission = admit.New(d.records, d.engine, d.processCap(at), w.Project, d.log)
+	limit := d.processCap(at)
+	if d.cfg.Cap > 0 {
+		limit = d.cfg.Cap
+	}
+	d.admission = admit.New(d.records, d.engine, limit, w.Project, d.log)
 	d.admission.UseRuleTables(ruleTables{})
 	d.admission.UseClock(d.clock.Now)
 	d.admission.UseExperiments(w.Experiments)
@@ -460,6 +464,51 @@ func capOfProcess(w Window, from, started, until time.Time) int {
 		return change.Cap
 	}
 	return limit
+}
+
+// CapSpan is a stretch of a window over which its daemon served one admission cap, as a replay
+// serves it (capSpans): from From to To, at Cap.
+type CapSpan struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"`
+	Cap  int       `json:"cap"`
+}
+
+// capSpans is each span of [w.From, w.To) over which w's daemon served one cap, in order, as a
+// replay serves it (processCap): each process's cap from its boot to the next one's, the boots
+// being the record's (Trace.Boots), the process running at w.From read from its own boot in the
+// window's reach; a stretch before every boot stands at the cap the window shows at w.From
+// (capAt). Adjacent processes of one cap make one span.
+func capSpans(w Window, boots []Boot) []CapSpan {
+	spans := []CapSpan{}
+	add := func(from, to time.Time, limit int) {
+		from, to = maxTime(from, w.From), minTime(to, w.To)
+		if !to.After(from) {
+			return
+		}
+		if n := len(spans); n > 0 && spans[n-1].Cap == limit && spans[n-1].To.Equal(from) {
+			spans[n-1].To = to
+			return
+		}
+		spans = append(spans, CapSpan{From: from, To: to, Cap: limit})
+	}
+	sorted := slices.SortedStableFunc(slices.Values(boots), func(a, b Boot) int { return a.At.Compare(b.At) })
+	if len(sorted) == 0 || sorted[0].At.After(w.From) {
+		end := w.To
+		if len(sorted) > 0 {
+			end = sorted[0].At
+		}
+		add(w.From, end, capAt(w, w.From))
+	}
+	for i, boot := range sorted {
+		var until time.Time
+		end := w.To
+		if i+1 < len(sorted) {
+			until, end = sorted[i+1].At, sorted[i+1].At
+		}
+		add(boot.At, end, capOfProcess(w, boot.At, boot.Started, until))
+	}
+	return spans
 }
 
 // replayRepositories is the replay's stand-in for the daemon's view of its repositories

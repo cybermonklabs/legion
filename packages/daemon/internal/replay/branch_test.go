@@ -41,9 +41,9 @@ func knobValuesOf(b Branch) map[string]string {
 // main+timing=wall, main+answer=wall, main+afterSendBack=less-slot-wait, main+firstStarts=rank,
 // main+neverStarted=drawn, main+neverStarted=drawn-done and main+merges=zero, each differing from
 // the main branch in its one named knob and read back whole by BranchNamed. The diagnostic knob of
-// the conflicts' source changes none of them: its one other value is the one diagnostic branch,
-// main+conflicts=recorded at f 1 (DiagnosticBranches), which BranchNamed reads back too. A name with
-// a value its knob does not take is refused.
+// the conflicts' source changes none of them: its one other value is R5's branch of the recorded
+// conflicts, main+conflicts=recorded, at each slowdown factor (DiagnosticBranches), which BranchNamed
+// reads back too. A name with a value its knob does not take is refused.
 func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 	branches := Branches()
 	if len(branches) != 24 {
@@ -57,10 +57,13 @@ func TestBranchesAreTheMainBranchAndEachOneKnobChange(t *testing.T) {
 		t.Errorf("the main branch is %v, want %v", got, wantMain)
 	}
 	diagnostics := DiagnosticBranches()
-	if len(diagnostics) != 1 || diagnostics[0].Label() != "main+conflicts=recorded@1" || !diagnostics[0].Branch.recordedConflicts() {
-		t.Errorf("the diagnostic branches are %v, want main+conflicts=recorded@1 alone", branchNames(diagnostics))
-	} else if parsed, err := BranchNamed(diagnostics[0].Branch.Name); err != nil || parsed != diagnostics[0].Branch {
-		t.Errorf("the diagnostic branch %+v reads back by its name as %+v (%v)", diagnostics[0].Branch, parsed, err)
+	if got, want := branchNames(diagnostics), []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}; !slices.Equal(got, want) {
+		t.Errorf("the branches of the recorded conflicts are %v, want %v", got, want)
+	}
+	for _, at := range diagnostics {
+		if parsed, err := BranchNamed(at.Branch.Name); err != nil || parsed != at.Branch || !parsed.recordedConflicts() {
+			t.Errorf("the branch of the recorded conflicts %+v reads back by its name as %+v (%v)", at.Branch, parsed, err)
+		}
 	}
 	for _, f := range []float64{1.0, 1.2, 1.6} {
 		var names []string

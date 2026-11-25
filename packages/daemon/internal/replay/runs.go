@@ -87,8 +87,9 @@ func partsRule(parts []Part) string {
 // where its parts name more than one), its record's scorecard (Score), the recorded stretches
 // inside its span, which its conflict model is fitted on (windowConflicts), with how many ended in
 // a conflict, which say whether a branch of it draws (draws), that model itself, whose terms the
-// comparison prints, and each wait on another issue that gave a slot back in its record
-// (waitsGaveBack), which the comparison reads what each rule's grace keeps from (graceKeeps).
+// comparison prints, each wait on another issue that gave a slot back in its record
+// (waitsGaveBack), which the comparison reads what each rule's grace keeps from (graceKeeps), and
+// each span of one cap its daemon served (capSpans), which the cap backtest reads.
 type windowRecord struct {
 	Name          string         `json:"name"`
 	Order         int            `json:"order"`
@@ -103,6 +104,7 @@ type windowRecord struct {
 	Conflicted    int            `json:"conflicted"`
 	Conflicts     ConflictModel  `json:"conflicts"`
 	WaitsGaveBack []waitGaveBack `json:"waitsGaveBack"`
+	CapSpans      []CapSpan      `json:"capSpans"`
 }
 
 // draws says whether a replay of the window on branch draws anything with its seed: a conflict,
@@ -142,7 +144,7 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 func (in *windowInputs) record(w Window, name string, order int) windowRecord {
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, After: w.After, Rule: partsRule(w.Parts), Parts: w.Parts,
 		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, Conflicts: in.conflicts,
-		WaitsGaveBack: waitsGaveBack(in.trace)}
+		WaitsGaveBack: waitsGaveBack(in.trace), CapSpans: capSpans(w, in.trace.Boots)}
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -167,11 +169,12 @@ func (r partRun) label() string {
 }
 
 // partRecord is a part's part.json: the window and the rule it ran, each branch it ran with its
-// seeds, the factors of the break-even search it ran the main branch at beyond its branches', the
-// diagnostic branches a validation ran beside them (DiagnosticBranches), and what the part took —
-// the wall time of its window, whose parts' runs share one pool (runWindow), so every part of one
-// window writes the same time; how many runs it ran at once; and the process's peak memory — so a
-// later Job can be sized from it (each run's own counts are in its run.json).
+// seeds, the factors of the break-even search it ran the main branch at beyond its branches', R5's
+// branches of the recorded conflicts a validation ran beside them (DiagnosticBranches), the cap its
+// runs served under in place of the record's (Cap, none where they kept the record's), and what the
+// part took — the wall time of its window, whose parts' runs share one pool (runWindow), so every
+// part of one window writes the same time; how many runs it ran at once; and the process's peak
+// memory — so a later Job can be sized from it (each run's own counts are in its run.json).
 type partRecord struct {
 	Window          string    `json:"window"`
 	Rule            string    `json:"rule"`
@@ -179,13 +182,15 @@ type partRecord struct {
 	Branches        []partRun `json:"branches"`
 	BreakEven       []partRun `json:"breakEven"`
 	Diagnostics     []partRun `json:"diagnostics,omitempty"`
+	Cap             int       `json:"cap,omitempty"`
 	Parallel        int       `json:"parallel"`
 	WallSeconds     float64   `json:"wallSeconds"`
 	PeakMemoryBytes uint64    `json:"peakMemoryBytes"`
 }
 
 // partSpec is one part a process runs: one window under one rule, over branches, the main branch
-// at the factors breakEven names beyond them, and the diagnostic branches a validation runs.
+// at the factors breakEven names beyond them, and R5's branches of the recorded conflicts a
+// validation runs.
 type partSpec struct {
 	rule        record.SlotRule
 	branches    []BranchAt
@@ -203,16 +208,18 @@ type windowSpec struct {
 }
 
 // RunDone is one run of a part as it ends: which run it was, whether its files were already there
-// so it was not run again (Kept), what its run.json counted — its facts, passes, wall time and peak
-// memory, and its admissions with no work with the slot-hours they hold (Divergence) — and how
-// many runs of the process have ended of how many it has planned so far (Ended, Of): a window's
-// runs are planned when its turn comes, since its seeds rest on its record.
+// so it was not run again (Kept), the commit of the legion binary that made it (Build, as run.json
+// names it), what its run.json counted — its facts, passes, wall time and peak memory, and its
+// admissions with no work with the slot-hours they hold (Divergence) — and how many runs of the
+// process have ended of how many it has planned so far (Ended, Of): a window's runs are planned
+// when its turn comes, since its seeds rest on its record.
 type RunDone struct {
 	Window           string
 	Rule             string
 	Branch           BranchAt
 	Seed             int64
 	Kept             bool
+	Build            string
 	Facts            int
 	Passes           int
 	WallSeconds      float64
@@ -224,16 +231,20 @@ type RunDone struct {
 
 // runOptions is how a process runs its parts: the directory of runs, the server each run makes its
 // database on, how many runs at once, the seeds of a branch with a draw, whether each run's log is
-// kept, who is told of each run as it ends, and the commit of the legion binary that makes the runs
-// (RunConfig.BuildCommit).
+// kept, who is told of each run as it ends, the commit of the legion binary that makes the runs
+// (RunConfig.BuildCommit), the cap every run serves under in place of the record's
+// (RunConfig.Cap, 0 for the record's), and whether a run there already is kept only where the same
+// commit made it (sameBuild).
 type runOptions struct {
-	root     string
-	pgDSN    string
-	parallel int
-	perDraw  int
-	keepLogs bool
-	progress func(RunDone)
-	build    string
+	root      string
+	pgDSN     string
+	parallel  int
+	perDraw   int
+	keepLogs  bool
+	progress  func(RunDone)
+	build     string
+	cap       int
+	sameBuild bool
 }
 
 // runWindows runs every part of windows, one window at a time so one window's inputs are in memory
@@ -280,7 +291,7 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 	var runs []planned
 	for i, part := range ws.parts {
 		plan := partRecord{Window: ws.name, Rule: part.rule.Name, RuleCommit: part.rule.Commit, Branches: []partRun{}, BreakEven: []partRun{},
-			Parallel: max(opts.parallel, 1)}
+			Cap: opts.cap, Parallel: max(opts.parallel, 1)}
 		add := func(list *[]partRun, at BranchAt) {
 			seeds := rec.seeds(at.Branch, opts.perDraw)
 			*list = append(*list, partRun{Branch: at.Branch.Name, Slowdown: at.Slowdown, Seeds: seeds})
@@ -327,11 +338,41 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 	}
 	for _, plan := range plans {
 		plan.WallSeconds, plan.PeakMemoryBytes = time.Since(began).Seconds(), peakMemory()
-		if err := writeJSON(filepath.Join(opts.root, ws.name, plan.Rule, partFile), plan); err != nil {
+		path := filepath.Join(opts.root, ws.name, plan.Rule, partFile)
+		var held partRecord
+		if readJSON(path, &held) == nil && held.Cap == plan.Cap {
+			plan = held.with(plan)
+		}
+		if err := writeJSON(path, plan); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// with is the part.json of a part held there already, held, with the runs plan made too: each
+// branch, break-even factor and branch of the recorded conflicts of either, plan's seeds where both
+// name one, and plan's counts of what the part took. So a forecast or a validation of the main
+// branch alone, run into the directory of a validation of every branch, leaves each of its branches
+// in the part, and each report reads every run the directory holds.
+func (held partRecord) with(plan partRecord) partRecord {
+	merge := func(held, made []partRun) []partRun {
+		merged := slices.Clone(held)
+		for _, run := range made {
+			if i := slices.IndexFunc(merged, func(h partRun) bool { return h.label() == run.label() }); i >= 0 {
+				merged[i] = run
+			} else {
+				merged = append(merged, run)
+			}
+		}
+		return merged
+	}
+	plan.Branches, plan.BreakEven, plan.Diagnostics = merge(held.Branches, plan.Branches), merge(held.BreakEven, plan.BreakEven),
+		merge(held.Diagnostics, plan.Diagnostics)
+	if len(plan.Diagnostics) == 0 {
+		plan.Diagnostics = nil
+	}
+	return plan
 }
 
 // windowRecordFor is the record of ws's window w, as record.json under root holds it where a
@@ -339,16 +380,18 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 // read from the window's inputs (windowInputs.record), as it is where the record there was written
 // before it held the waits that gave a slot back (WaitsGaveBack nil), the conflict model with its
 // phases (ConflictModel.Phases nil), the measures its trace alone gives (Scorecard.GateClosedHours
-// nil, traceMeasures) or the wait of urgent work and priority taken in today's line's order
-// (Scorecard.UrgentWaits nil, which Measure gives with them); either way it is written back with
-// ws's place, where that changes the file.
+// or Scorecard.Filed nil, traceMeasures), the wait of urgent work and priority taken in today's
+// line's order (Scorecard.UrgentWaits nil, which Measure gives with them), what the forecast reads
+// of its line timeline (Scorecard.DailyMaxima nil, forecastReadings) or the spans of one cap its
+// daemon served (CapSpans nil); either way it is written back with ws's place, where that changes
+// the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
 		!rec.To.Equal(w.To) || rec.After != w.After || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil ||
-		rec.Scorecard.UrgentWaits == nil {
+		rec.Scorecard.UrgentWaits == nil || !holdsLineReadings(rec.Scorecard) || rec.CapSpans == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -368,9 +411,10 @@ func runDir(root, window, rule string, at BranchAt, seed int64) string {
 }
 
 // runOne makes the run p plans of w, whose inputs inputs answers, under rule on opts.pgDSN's
-// server, unless its three files are there already, and deletes its log unless opts keeps it: the
-// run reads its log back for its line scorecard (Run), and a window's log is the largest file a run
-// writes.
+// server at opts.cap, unless its three files are there already, and deletes its log unless opts
+// keeps it: the run reads its log back for its line scorecard (Run), and a window's log is the
+// largest file a run writes. A run there already that ran at another cap is refused, and so, where
+// opts asks for the same build, is one that another commit of the legion binary made.
 func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error), window string, rule record.SlotRule, p planned,
 	opts runOptions) (RunDone, error) {
 	done := RunDone{Window: window, Rule: rule.Name, Branch: p.at, Seed: p.seed}
@@ -381,9 +425,16 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 		if err := decodeJSON(path, kept, &ran); err != nil {
 			return done, err
 		}
+		if ran.Cap != opts.cap {
+			return done, fmt.Errorf("replay: the run in %s ran at the cap %d (0 for the record's), and this one runs at %d", p.dir, ran.Cap, opts.cap)
+		}
+		if build := cmp.Or(opts.build, unknownBuild); opts.sameBuild && cmp.Or(ran.BuildCommit, unknownBuild) != build {
+			return done, fmt.Errorf("replay: the run in %s was made by the legion binary of %s, not this one's %s: delete it or give another directory of runs",
+				p.dir, cmp.Or(ran.BuildCommit, unknownBuild), build)
+		}
 	} else {
 		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir,
-			BuildCommit: opts.build, inputs: inputs}); err != nil {
+			BuildCommit: opts.build, Cap: opts.cap, inputs: inputs}); err != nil {
 			return done, fmt.Errorf("replay: %s under %s on %s, seed %d: %w", window, rule.Name, p.at.Label(), p.seed, err)
 		}
 		if !opts.keepLogs {
@@ -395,6 +446,7 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 			return done, err
 		}
 	}
+	done.Build = cmp.Or(ran.BuildCommit, unknownBuild)
 	done.Facts, done.Passes, done.WallSeconds, done.PeakMemoryBytes = ran.Facts, ran.Passes, ran.WallSeconds, ran.PeakMemoryBytes
 	done.NoWorkAdmissions, done.NoWorkSlotHours = ran.Divergence.NoWorkAdmissions, ran.Divergence.NoWorkSlotHours
 	return done, nil
@@ -514,6 +566,9 @@ func ReadRuns(dirs ...string) (Runs, error) {
 				return Runs{}, fmt.Errorf("replay: %s was written before a scorecard held the wait of urgent work and priority taken in today's line's order (urgentWaits, priorityTakenBanded); "+
 					"run its window again, which writes it anew", path)
 			}
+			if !holdsLineReadings(rec.Scorecard) {
+				return Runs{}, fmt.Errorf("replay: %s was written before a scorecard held %s; run its window again, which writes it anew", path, lineReadingsNames)
+			}
 			if _, seen := runs.windows[rec.Name]; !seen {
 				runs.windows[rec.Name] = rec
 			}
@@ -603,7 +658,9 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 // readRun reads one run's three files from dir; keepIssues keeps each issue's times of its line
 // scorecard. A run whose scorecards were written before they held the wait of urgent work and
 // priority taken in today's line's order (Scorecard.UrgentWaits nil, which Measure gives with
-// them) is refused, naming it: read, it would give every report 0 in each of those measures.
+// them), or whose line scorecard was written before it held what a line timeline alone gives
+// beside the measures of R4 (holdsLineReadings), is refused, naming it: read, it would give every
+// report 0 in each of those measures.
 func readRun(dir string, keepIssues bool) (runRead, error) {
 	var read runRead
 	var ran runRecord
@@ -620,6 +677,10 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 		return runRead{}, fmt.Errorf("replay: the run in %s was written before its scorecards held the wait of urgent work and priority taken in today's line's order (urgentWaits, priorityTakenBanded); "+
 			"it must be run again: delete its directory and run its part again", dir)
 	}
+	if !holdsLineReadings(read.line) {
+		return runRead{}, fmt.Errorf("replay: the run in %s was written before its line scorecard held %s; it must be run again: delete its directory and run its part again",
+			dir, lineReadingsNames)
+	}
 	read.costs = costsOf(read.snapshot)
 	dropIssueTimes(&read.snapshot)
 	if !keepIssues {
@@ -635,15 +696,28 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 	return read, nil
 }
 
-// dropIssueTimes empties card's times of each issue, and its first day's, which only a
-// validation's, a forecast's and a comparison's issues file's line scorecards are read for.
+// dropIssueTimes empties card's times of each issue, and its first day's, and the moments it gave
+// out each slot (Scorecard.SlotsGiven), which only a validation's, a forecast's, a cap backtest's
+// and a comparison's issues file's line scorecards are read for.
 func dropIssueTimes(card *Scorecard) {
-	card.FirstSlot, card.DoneAt = nil, nil
+	card.FirstSlot, card.DoneAt, card.Filed, card.SlotsGiven = nil, nil, nil, nil
 	if card.FirstDayApart != nil {
 		day := *card.FirstDayApart
 		day.FirstSlot, day.DoneAt = nil, nil
 		card.FirstDayApart = &day
 	}
+}
+
+// lineReadingsNames names, as a refusal says them, what a line scorecard holds beside the measures
+// of R4 that a record or a run written before it held them lacks (holdsLineReadings).
+const lineReadingsNames = "the issues filed, the moments each slot was given out, the daily maxima and the means of the wait of urgent work (filed, slotsGiven, dailyMaxima, urgentMeans)"
+
+// holdsLineReadings says whether card, a record's or a run's line scorecard, holds what a line
+// timeline alone gives beside the measures of R4, R5's branch of the recorded conflicts, the cap
+// backtest and the forecast read (Scorecard.Filed, SlotsGiven, DailyMaxima and UrgentMeans): each
+// is nil in a scorecard written before it held them.
+func holdsLineReadings(card Scorecard) bool {
+	return card.Filed != nil && card.SlotsGiven != nil && card.DailyMaxima != nil && card.UrgentMeans != nil
 }
 
 // Windows is the name of each window the runs hold a record of, in their order among the windows
@@ -728,8 +802,12 @@ func (r Runs) Validation(window, rule string) (Validation, error) {
 }
 
 // Forecast is the forecast across the change from the window before to the window after under rule
-// (spec R5), read from the runs: the main branch of the part of before under rule against the
-// record of after.
+// (spec R5), read from the runs, every part's main branch: the part of before under rule against
+// the record of after, beside the part of before under the rule its daemon ran and the part of
+// after under its own, which say which numbers the change moves and the replay's own error on a
+// measure, and the forecast's control, the part of after under the rule before's daemon ran. A
+// window whose record names no one rule its daemon ran, or runs that hold none of those parts, are
+// refused.
 func (r Runs) Forecast(before, after, rule string) (ForecastResult, error) {
 	from, err := r.window(before)
 	if err != nil {
@@ -739,20 +817,45 @@ func (r Runs) Forecast(before, after, rule string) (ForecastResult, error) {
 	if err != nil {
 		return ForecastResult{}, err
 	}
-	part, err := r.part(before, rule)
-	if err != nil {
-		return ForecastResult{}, err
+	for _, w := range []windowRecord{from, to} {
+		if w.Rule == "" {
+			return ForecastResult{}, fmt.Errorf("replay: the record of the window %s names no one rule its daemon ran, so the forecast has no replay of it under its own rule", w.Name)
+		}
 	}
-	runs, ok := part.runs[MainBranchAt.Label()]
-	if !ok {
-		return ForecastResult{}, fmt.Errorf("replay: the part of %s under %s holds no run of its main branch %s", before, rule, MainBranchAt.Label())
+	main := func(window, rule, what string) ([]Scorecard, error) {
+		part, err := r.part(window, rule)
+		if err != nil {
+			return nil, fmt.Errorf("replay: the forecast reads %s: %w", what, err)
+		}
+		runs, ok := part.runs[MainBranchAt.Label()]
+		if !ok {
+			return nil, fmt.Errorf("replay: the forecast reads %s, and the part of %s under %s holds no run of its main branch %s", what, window, rule, MainBranchAt.Label())
+		}
+		return lineCards(runs), nil
 	}
-	f := ForecastResult{Before: before, After: after, Rule: rule, Branch: MainBranchAt, FromCommit: lastCommit(from.Parts), ToCommit: firstCommit(to.Parts)}
-	cards := lineCards(runs)
-	for _, card := range cards {
+	cards := ForecastCards{Before: from.Scorecard, After: to.Scorecard}
+	for _, read := range []struct {
+		into                *[]Scorecard
+		window, rule, which string
+	}{
+		{&cards.Forecasts, before, rule, "the window before under the rule after the change"},
+		{&cards.Own, before, from.Rule, "the window before under its own rule"},
+		{&cards.AfterOwn, after, to.Rule, "the window after under its own rule"},
+		{&cards.Controls, after, from.Rule, "its control, the window after under the rule before the change"},
+	} {
+		if *read.into, err = main(read.window, read.rule, read.which); err != nil {
+			return ForecastResult{}, err
+		}
+	}
+	f := ForecastResult{Before: before, After: after, Rule: rule, BeforeRule: from.Rule, Branch: MainBranchAt, FromCommit: lastCommit(from.Parts),
+		ToCommit: firstCommit(to.Parts)}
+	for _, card := range cards.Forecasts {
 		f.Seeds = append(f.Seeds, card.Seed)
 	}
-	f.Checks = ForecastChecks(to.Scorecard, cards)
+	for _, card := range cards.Controls {
+		f.ControlSeeds = append(f.ControlSeeds, card.Seed)
+	}
+	f.Checks = ForecastChecks(cards)
 	return f, nil
 }
 

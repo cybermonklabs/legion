@@ -419,6 +419,13 @@ func compareMeasure(diffs *[]string, path string, got, want reflect.Value) {
 			}
 		}
 	case reflect.Slice:
+		if got.Type().Elem() == reflect.TypeFor[time.Time]() {
+			g, w := got.Interface().([]time.Time), want.Interface().([]time.Time)
+			if !slices.EqualFunc(g, w, time.Time.Equal) {
+				differs("got %v, want %v", g, w)
+			}
+			return
+		}
 		g, w := sortedCopy(got), sortedCopy(want)
 		if !reflect.DeepEqual(g, w) {
 			differs("got %v, want %v", g, w)
@@ -435,7 +442,7 @@ func compareMeasure(diffs *[]string, path string, got, want reflect.Value) {
 }
 
 // sortedCopy is a slice of numbers as a set reads it: a sorted copy, empty for none. The one slice
-// a Scorecard holds is its assumptions, whose order says nothing.
+// of numbers a Scorecard holds is its assumptions, whose order says nothing.
 func sortedCopy(v reflect.Value) []int64 {
 	numbers := make([]int64, 0, v.Len())
 	for i := range v.Len() {

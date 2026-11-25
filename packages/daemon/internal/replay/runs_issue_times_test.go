@@ -12,12 +12,13 @@ import (
 // its first slot at recordedAt: one part under rule with one seed of the main branch and one of
 // main+timing=wall, each run's line scorecard giving ACME-1's first slot at replayedAt, or none where
 // replayedAt is zero. With named, the window's record names rule as the rule its daemon ran;
-// otherwise it names none, as window.json with no parts does.
+// otherwise it names none, as window.json with no parts does. The record's and each run's line
+// scorecard hold the readings only a line timeline gives (lineReadings).
 func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, recordedAt, replayedAt time.Time) []BranchAt {
 	t.Helper()
 	rec := windowRecord{Name: name, Project: "ACME", From: from, To: to,
-		Scorecard: Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{"ACME-1": recordedAt}, DoneAt: map[string]time.Time{},
-			UrgentWaits: map[string]UrgentWait{}},
+		Scorecard: lineReadings(Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{"ACME-1": recordedAt}, DoneAt: map[string]time.Time{},
+			UrgentWaits: map[string]UrgentWait{}}),
 		WaitsGaveBack: []waitGaveBack{}}
 	if named {
 		rec.Rule = rule
@@ -36,7 +37,7 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 	for _, at := range branches {
 		part.Branches = append(part.Branches, partRun{Branch: at.Branch.Name, Slowdown: at.Slowdown, Seeds: []int64{1}})
 		run := runDir(dir, name, rule, at, 1)
-		line := Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}, UrgentWaits: map[string]UrgentWait{}}
+		line := lineReadings(Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}, UrgentWaits: map[string]UrgentWait{}})
 		if !replayedAt.IsZero() {
 			line.FirstSlot["ACME-1"] = replayedAt
 		}
@@ -178,5 +179,65 @@ func TestRunsWrittenBeforeTheUrgentWaitsAreRefused(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// lineReadings is card with the readings only a line timeline gives (holdsLineReadings), each
+// empty: no issue filed, no slot given out, no count in flight and no urgent work.
+func lineReadings(card Scorecard) Scorecard {
+	card.Filed, card.SlotsGiven, card.DailyMaxima, card.UrgentMeans = map[string]time.Time{}, []time.Time{}, map[string]float64{}, map[string]UrgentMean{}
+	return card
+}
+
+// A run whose line scorecard was written before it held the readings only a line timeline gives —
+// the issues filed (filed), the moments each slot was given out (slotsGiven), the daily maxima
+// (dailyMaxima) and the means of the wait of urgent work (urgentMeans), which R5's branch of the
+// recorded conflicts, the cap backtest and the forecast read — is refused by every report read
+// from runs, with an error that names the run and says it must be run again: read, it would name
+// every issue the record filed as left out, count no slot in any span of one cap, and forecast 0 in
+// each of those numbers. So is a window's record.json written before its scorecard held them. The
+// test writes the runs of issueTimesRuns and then takes each reading out of the main branch's line
+// scorecard, and, apart, out of the window's record.json.
+func TestRunsWrittenBeforeTheLineReadingsAreRefused(t *testing.T) {
+	const window, rule = "old-line-runs", "legion-v20.42.5"
+	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
+	for _, reading := range []string{"filed", "slotsGiven", "dailyMaxima", "urgentMeans"} {
+		for _, old := range []struct {
+			name string
+			file func(dir string) string
+		}{
+			{"a run's scorecard-line.json", func(dir string) string {
+				return filepath.Join(runDir(dir, window, rule, MainBranchAt, 1), lineScorecardFile)
+			}},
+			{"the window's record.json", func(dir string) string { return filepath.Join(dir, window, recordFile) }},
+		} {
+			t.Run(reading+" out of "+old.name, func(t *testing.T) {
+				dir := t.TempDir()
+				issueTimesRuns(t, dir, window, rule, true, from, from.Add(24*time.Hour), from.Add(time.Hour), from.Add(time.Hour))
+				if _, err := ReadRuns(dir); err != nil {
+					t.Fatalf("the runs as written are refused: %v", err)
+				}
+				path := old.file(dir)
+				patchJSON(t, path, func(fields map[string]any) {
+					if inner, ok := fields["scorecard"].(map[string]any); ok {
+						fields = inner
+					}
+					delete(fields, reading)
+				})
+				_, err := ReadRuns(dir)
+				if err == nil {
+					t.Fatalf("runs with %s written before it held %s are read", old.name, reading)
+				}
+				named := filepath.Dir(path)
+				if old.name == "the window's record.json" {
+					named = path
+				}
+				for _, want := range []string{named, reading, "again"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("the refusal %q does not say %q", err, want)
+					}
+				}
+			})
+		}
 	}
 }

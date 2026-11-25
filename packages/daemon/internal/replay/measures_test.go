@@ -393,8 +393,9 @@ func TestSlotHoursByTurn(t *testing.T) {
 // course, so its record's scorecard is the one its README works out by hand, but for what a replay
 // alone names: the source is the record, and a record runs under no rule, branch, seed or
 // slowdown, rests on none of a replay's assumptions and takes no never-started scenario. What a
-// scorecard reads from its trace alone (traceMeasures), which the replay's snapshot scorecard in
-// expect.json holds none of, is not compared here.
+// scorecard reads from its trace alone (traceMeasures) and what the forecast reads of its line
+// timeline (forecastReadings), which the replay's snapshot scorecard in expect.json holds none of,
+// is not compared here.
 func TestScorecardOfTheRecord(t *testing.T) {
 	scored := 0
 	for _, name := range fixtureWindowNames(t) {
@@ -411,7 +412,8 @@ func TestScorecardOfTheRecord(t *testing.T) {
 			}
 			want.Source, want.Rule, want.Branch, want.Seed, want.Slowdown = "record", "", "", 0, 0
 			want.Assumptions, want.Scenario = []int{}, ""
-			want.DoneByAnyone, want.GateClosedHours = got.DoneByAnyone, got.GateClosedHours
+			want.DoneByAnyone, want.GateClosedHours, want.Filed, want.SlotsGiven = got.DoneByAnyone, got.GateClosedHours, got.Filed, got.SlotsGiven
+			want.DailyMaxima, want.UrgentMeans = got.DailyMaxima, got.UrgentMeans
 			for _, diff := range scorecardDiffs(got, want) {
 				t.Errorf("the record of %s: %s", name, diff)
 			}

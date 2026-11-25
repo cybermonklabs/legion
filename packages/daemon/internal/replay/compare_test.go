@@ -26,7 +26,9 @@ const compareHours = 6
 
 // sampleCard is a scorecard over [compareFrom, compareFrom+hours) with a value in every measure of
 // R4 and three issues with times: ACME-1 with a first slot at the start and a done two hours on,
-// ACME-2 with a first slot half an hour on, ACME-3 with none; it gives no urgent work.
+// ACME-2 with a first slot half an hour on, ACME-3 with none; it gives no urgent work, files no
+// issue, and holds the readings only a line timeline gives, a daily maximum of each count among
+// them.
 func sampleCard(hours int) Scorecard {
 	date := compareFrom.Format(time.DateOnly)
 	return Scorecard{
@@ -48,6 +50,10 @@ func sampleCard(hours int) Scorecard {
 		FirstSlot:             map[string]time.Time{"ACME-1": compareFrom, "ACME-2": compareFrom.Add(30 * time.Minute)},
 		DoneAt:                map[string]time.Time{"ACME-1": compareFrom.Add(2 * time.Hour)},
 		UrgentWaits:           map[string]UrgentWait{},
+		Filed:                 map[string]time.Time{},
+		SlotsGiven:            []time.Time{},
+		DailyMaxima:           map[string]float64{"waitOnlyForSlot": 4, "startedWithoutSlot": 5, "pastReviewHolding": 2, "pastReviewNotHolding": 3, "inFlight": 8},
+		UrgentMeans:           map[string]UrgentMean{},
 		Assumptions:           []int{},
 		Scenario:              MainBranch.NeverStarted,
 	}
@@ -273,9 +279,9 @@ func TestBranchThatFailsGivesNoComparison(t *testing.T) {
 	})
 }
 
-// A forecast across a recorded change compares rates per hour, averages over time and shares, never
-// totals, each within twice its gap (spec R5): a window half as long with half the work forecasts
-// the same rates, and each kind passes at twice its gap and fails past it.
+// A forecast across a recorded change compares rates per hour, averages and shares, never totals,
+// each within twice its gap (spec R5): a window half as long with half the work forecasts the same
+// rates, and each kind passes at twice its gap and fails past it.
 func TestForecastScoresRatesNeverTotals(t *testing.T) {
 	after := sampleCard(100)
 	after.Done, after.SlotsGivenByDay = 100, map[string]int{"2001-03-05": 100, "2001-03-06": 100}
@@ -304,10 +310,10 @@ func TestForecastScoresRatesNeverTotals(t *testing.T) {
 		}
 		return checks[i]
 	}
-	checks := ForecastChecks(after, []Scorecard{half()})
+	checks := forecastAgainst(half(), after, half())
 	for _, c := range checks {
 		if !slices.Contains(kinds, c.Kind) {
-			t.Errorf("the forecast scores %s as %q, which is no rate per hour, average over time or share", c.Quantity, c.Kind)
+			t.Errorf("the forecast scores %s as %q, which is no rate per hour, average or share", c.Quantity, c.Kind)
 		}
 		if !c.Pass {
 			t.Errorf("the forecast fails %s (%v against %v), though the window half as long has half the work", c.Quantity, c.Forecast, c.After)
@@ -333,21 +339,28 @@ func TestForecastScoresRatesNeverTotals(t *testing.T) {
 		atBound, past := half(), half()
 		b.bound(&atBound)
 		b.past(&past)
-		check := checkOf(ForecastChecks(after, []Scorecard{atBound}), b.name)
+		check := checkOf(forecastAgainst(half(), after, atBound), b.name)
 		if !check.Pass || check.Kind != b.kind || check.Gap.String() != b.want {
 			t.Errorf("%s at twice its gap: pass %t, kind %s, gap %s; want a pass, %s, %s", b.name, check.Pass, check.Kind, check.Gap, b.kind, b.want)
 		}
-		if check := checkOf(ForecastChecks(after, []Scorecard{past}), b.name); check.Pass {
+		if check := checkOf(forecastAgainst(half(), after, past), b.name); check.Pass {
 			t.Errorf("%s past twice its gap passes (%v against %v)", b.name, check.Forecast, check.After)
 		}
 	}
 }
 
+// forecastAgainst is the checks of the forecast of after by forecast, one seed, from the window
+// before whose record and whose replay under its own rule are both before, and whose window after's
+// replay under its own rule is its record, so the replay's own error is 0 on every measure.
+func forecastAgainst(before, after, forecast Scorecard) []ForecastCheck {
+	return ForecastChecks(ForecastCards{Before: before, After: after, Forecasts: []Scorecard{forecast}, Own: []Scorecard{before}, AfterOwn: []Scorecard{after}})
+}
+
 // A forecast scores the causes the workflow change redefines only inside the total of all
-// send-back loops and each cause both releases define the same way apart, and names each cause in
-// each group (plan D3): a forecast whose loops are all red checks where the window after had
-// conflicts and send-backs passes on the total, holds no number of a redefined cause, and fails a
-// cause defined the same way that it misses.
+// send-back loops and of the redefined causes together, and each cause both releases define the
+// same way apart, and names each cause in each group (plan D3): a forecast whose loops are all red
+// checks where the window after had conflicts and send-backs passes on both totals, holds no number
+// of a redefined cause apart, and fails a cause defined the same way that it misses.
 func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 	after := sampleCard(compareHours)
 	after.Loops = map[string]LoopHours{string(CauseConflict): {Rounds: 10, Hours: 50}, string(CauseSendBack): {Rounds: 10, Hours: 50},
@@ -355,7 +368,7 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 	forecast := sampleCard(compareHours)
 	forecast.Loops = map[string]LoopHours{string(CauseRedChecksOrConflict): {Rounds: 20, Hours: 100},
 		string(CauseReviewChanges): {Rounds: 5, Hours: 20}, string(CauseTestFailed): {Rounds: 5, Hours: 10}}
-	checks := ForecastChecks(after, []Scorecard{forecast})
+	checks := forecastAgainst(forecast, after, forecast)
 	for _, c := range checks {
 		if !c.Pass {
 			t.Errorf("the forecast fails %s (%v against %v): a cause the change redefines is scored only inside the total", c.Quantity, c.Forecast, c.After)
@@ -366,10 +379,11 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{LoopsAll + ".rounds per hour", LoopsAll + ".hours per hour"} {
+	for name, causes := range map[string][]Cause{LoopsAll + ".rounds per hour": Causes, LoopsAll + ".hours per hour": Causes,
+		LoopsRedefined + ".rounds per hour": ForecastGroups[GroupRedefined], LoopsRedefined + ".hours per hour": ForecastGroups[GroupRedefined]} {
 		i := slices.IndexFunc(checks, func(c ForecastCheck) bool { return c.Quantity == name })
-		if i < 0 || !slices.Equal(checks[i].Causes, Causes) {
-			t.Errorf("the forecast holds no %s over every cause", name)
+		if i < 0 || !slices.Equal(checks[i].Causes, causes) {
+			t.Errorf("the forecast holds no %s over the causes %v", name, causes)
 		}
 	}
 	for _, cause := range ForecastGroups[GroupSame] {
@@ -383,7 +397,7 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 	missed := forecast
 	missed.Loops = maps.Clone(forecast.Loops)
 	missed.Loops[string(CauseReviewChanges)] = LoopHours{Rounds: 20, Hours: 20}
-	missedChecks := ForecastChecks(after, []Scorecard{missed})
+	missedChecks := forecastAgainst(forecast, after, missed)
 	if i := slices.IndexFunc(missedChecks, func(c ForecastCheck) bool { return c.Quantity == "loops[review_changes].rounds per hour" }); i < 0 || missedChecks[i].Pass {
 		t.Errorf("a forecast four times the review rounds of the window after passes them")
 	}
@@ -394,7 +408,7 @@ func TestForecastGroupsTheRedefinedCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, sentence := range []string{
-		"The causes the workflow change redefines (redefined): `red_checks_or_conflict`, `conflict`, `send_back`; each is scored only inside the total of all send-back loops, `loops[all]`.",
+		"The causes the workflow change redefines (redefined): `red_checks_or_conflict`, `conflict`, `send_back`; each is scored only inside the total of all send-back loops, `loops[all]`, and of the redefined causes together, `loops[redefined]`.",
 		"The causes both releases define the same way (same): `review_changes`, `test_failed`, `queue_drop`, `other_backward`; each is scored apart",
 		"The forecast also carries the workflow commits between `1111111111111111111111111111111111111111` and `2222222222222222222222222222222222222222`",
 	} {
@@ -1256,24 +1270,28 @@ func TestTheDocumentGivesDoneByAnyoneBesideLegionsDone(t *testing.T) {
 	}
 }
 
-// A validation runs its diagnostic branches beside R5's tests (DiagnosticBranches): the plan of
-// every validation holds them, with the main branch alone or with every branch, and a comparison's
-// plan holds none. The validation read from the runs holds a diagnostic branch apart from its
-// branches, so whether the window's main branch passes and which branches give a comparison never
-// read it, and it prints the diagnostic's table as one that tests nothing and never stands in place
-// of the main branch. The runs are made up: the main branch passes R5, and the diagnostic branch,
-// whose issues finished stand at twice the record's, fails it.
+// A validation runs R5's branch of the recorded conflicts beside R5's tests, at every slowdown
+// factor (DiagnosticBranches): the plan of every validation holds it, with the main branch alone or
+// with every branch, and neither a comparison's plan nor the cap backtest's holds it. The
+// validation read from the runs holds each such branch apart from its branches, so whether the
+// window's main branch passes and which branches give a comparison never read it, and it prints
+// each one's table as one whose measures test nothing and that never stands in place of the main
+// branch. The runs are made up: the main branch passes R5, and the branch of the recorded conflicts,
+// whose issues finished stand at twice the record's at each factor, fails it.
 func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 	for _, run := range []struct {
 		name string
 		cfg  ValidateConfig
 	}{{"main only", ValidateConfig{MainOnly: true}}, {"every branch", ValidateConfig{}}} {
 		if got := validatePlan(run.cfg).diagnostics; !slices.Equal(got, DiagnosticBranches()) {
-			t.Errorf("%s: the validation runs the diagnostic branches %v, want %v", run.name, branchNames(got), branchNames(DiagnosticBranches()))
+			t.Errorf("%s: the validation runs the branches of the recorded conflicts %v, want %v", run.name, branchNames(got), branchNames(DiagnosticBranches()))
 		}
 	}
 	if got := fullPlan().diagnostics; len(got) != 0 {
-		t.Errorf("a comparison runs the diagnostic branches %v, want none", branchNames(got))
+		t.Errorf("a comparison runs the branches of the recorded conflicts %v, want none", branchNames(got))
+	}
+	if got := validatePlan(ValidateConfig{CapBacktest: true, Cap: 73}).diagnostics; len(got) != 0 {
+		t.Errorf("the cap backtest runs the branches of the recorded conflicts %v, want none", branchNames(got))
 	}
 	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)[:1]
 	dir := t.TempDir()
@@ -1304,24 +1322,200 @@ func TestTheDiagnosticBranchStandsBesideTheValidation(t *testing.T) {
 	if got := labels(v.Branches); !slices.Equal(got, []string{MainBranchAt.Label()}) {
 		t.Errorf("the validation's branches are %v, want the main branch alone", got)
 	}
-	if got := labels(v.Diagnostics); !slices.Equal(got, []string{"main+conflicts=recorded@1"}) {
-		t.Fatalf("the validation's diagnostics are %v, want main+conflicts=recorded@1", got)
+	want := []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}
+	if got := labels(v.Diagnostics); !slices.Equal(got, want) {
+		t.Fatalf("the validation's branches of the recorded conflicts are %v, want %v", got, want)
 	}
-	if v.Diagnostics[0].Pass() {
-		t.Errorf("the diagnostic branch passes R5's tests, want it to fail its issues finished")
+	for _, b := range v.Diagnostics {
+		if b.Pass() {
+			t.Errorf("%s passes R5's tests, want it to fail its issues finished", b.Branch.Label())
+		}
 	}
 	if !v.MainPasses() || len(v.NoComparison()) != 0 {
-		t.Errorf("main passes %t and the branches that give no comparison are %v; the failing diagnostic branch moves neither", v.MainPasses(),
+		t.Errorf("main passes %t and the branches that give no comparison are %v; the failing branches of the recorded conflicts move neither", v.MainPasses(),
 			v.NoComparison())
 	}
 	var out bytes.Buffer
 	if err := v.Write(&out, 1, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range []string{"## `main+conflicts=recorded@1`: a diagnostic, never a test of R5", "never in place of the main branch"} {
+	for _, line := range []string{"## `main+conflicts=recorded@1`: R5's branch of the recorded conflicts, whose measures test nothing",
+		"## `main+conflicts=recorded@1.6`: R5's branch of the recorded conflicts, whose measures test nothing", "never in place of the main branch"} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("the validation prints no %q:\n%s", line, out.String())
 		}
+	}
+}
+
+// R5's branch of the recorded conflicts (spec R5): validate runs main+conflicts=recorded under the
+// window's recorded rule at every slowdown factor, and names, seed by seed, each issue the replay
+// starts that the record did not start in the window and each issue the record filed in the window
+// that the replay leaves out; the names gate nothing. The record's scorecard and a replay's line
+// scorecard give each issue of the window's project filed in the window, at its filing (filed):
+// priorityWorkWindow files ACME-1 to ACME-6 from 09:00 to 09:55 and ACME-7 at 08:30, before the
+// window; firstStartsWindow files ACME-1, ACME-2 and ACME-3, and a replay of it under main on the
+// branch, which keeps each person's filing at its recorded time, files the same three at the same
+// times. The validation is made up: the record starts ACME-1 and ACME-2 and files ACME-4 at 10:00
+// and ACME-5 at 11:00; at f 1 the branch starts ACME-3 too and files ACME-4 alone, at f 1.2 it starts
+// ACME-3 and ACME-6 and files neither, and at f 1.6 it starts and files what the record did. The main
+// branch passes R5, and the names move neither its verdict nor which branches give a comparison.
+func TestTheRecordedConflictBranchNamesEveryBreaker(t *testing.T) {
+	var labels []string
+	for _, at := range DiagnosticBranches() {
+		labels = append(labels, at.Label())
+	}
+	factors := []string{"main+conflicts=recorded@1", "main+conflicts=recorded@1.2", "main+conflicts=recorded@1.6"}
+	if !slices.Equal(labels, factors) {
+		t.Errorf("validate runs the recorded conflicts' branch as %v, want %v: at every slowdown factor", labels, factors)
+	}
+	filedOf := func(card Scorecard) map[string]time.Time {
+		var read struct {
+			Filed map[string]time.Time `json:"filed"`
+		}
+		scorecardJSON(t, card, &read)
+		return read.Filed
+	}
+	card, err := Score(priorityWorkWindow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFiled := map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 10), "ACME-3": clock(9, 20), "ACME-4": clock(9, 40),
+		"ACME-5": clock(9, 50), "ACME-6": clock(9, 55)}
+	if got := filedOf(card); !maps.EqualFunc(got, wantFiled, time.Time.Equal) {
+		t.Errorf("the record's scorecard gives the issues filed in the window as %v, want %v", got, wantFiled)
+	}
+	recorded, err := BranchNamed("main+conflicts=recorded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := firstStartsWindow(t)
+	card, err = Score(window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: recorded, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: t.TempDir()})
+	if err != nil {
+		t.Fatalf("replay the window on %s: %v", recorded.Name, err)
+	}
+	wantFiled = map[string]time.Time{"ACME-1": clock(9, 0), "ACME-2": clock(9, 1), "ACME-3": clock(10, 20)}
+	for name, got := range map[string]map[string]time.Time{"the record's scorecard": filedOf(card), "the replay's line scorecard": filedOf(result.LineScorecard)} {
+		if !maps.EqualFunc(got, wantFiled, time.Time.Equal) {
+			t.Errorf("%s of firstStartsWindow gives the issues filed in the window as %v, want %v", name, got, wantFiled)
+		}
+	}
+
+	recordFiled := map[string]time.Time{"ACME-4": clock(10, 0), "ACME-5": clock(11, 0)}
+	type replayed struct {
+		started []string
+		filed   map[string]time.Time
+	}
+	byFactor := map[float64]replayed{
+		1:   {started: []string{"ACME-3"}, filed: map[string]time.Time{"ACME-4": clock(10, 0)}},
+		1.2: {started: []string{"ACME-3", "ACME-6"}, filed: map[string]time.Time{}},
+		1.6: {filed: recordFiled},
+	}
+	var branches []BranchAt
+	for _, f := range Slowdowns {
+		branches = append(branches, BranchAt{Branch: recorded, Slowdown: f})
+	}
+	windows := madeUpWindows(record.MainRule.Name, record.MainRule.Name)[:1]
+	dir := t.TempDir()
+	writeMadeUpRuns(t, dir, windows, []record.SlotRule{replayedRule(t, record.MainRule.Name)},
+		runPlan{branches: []BranchAt{MainBranchAt}, diagnostics: branches, perDraw: 1},
+		func(w windowRecord, r int, rule record.SlotRule, at BranchAt, seed int64) (Scorecard, Scorecard, runRecord) {
+			snapshot, line, ran := madeUpRun(w, r, rule, at, seed)
+			if at.Branch.recordedConflicts() {
+				for _, key := range byFactor[at.Slowdown].started {
+					line.FirstSlot[key] = compareFrom.Add(time.Hour)
+				}
+			}
+			return snapshot, line, ran
+		})
+	patchJSON(t, filepath.Join(dir, windows[0].Name, recordFile), func(fields map[string]any) {
+		fields["scorecard"].(map[string]any)["filed"] = recordFiled
+	})
+	for _, at := range append([]BranchAt{MainBranchAt}, branches...) {
+		filed := recordFiled
+		if at.Branch.recordedConflicts() {
+			filed = byFactor[at.Slowdown].filed
+		}
+		patchJSON(t, filepath.Join(runDir(dir, windows[0].Name, record.MainRule.Name, at, 1), lineScorecardFile), func(fields map[string]any) {
+			fields["filed"] = filed
+		})
+	}
+	runs, err := ReadRuns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := runs.Validation(windows[0].Name, record.MainRule.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.MainPasses() || len(v.NoComparison()) != 0 {
+		t.Errorf("main passes %t and the branches that give no comparison are %v; the names of the recorded conflicts' branch gate nothing",
+			v.MainPasses(), v.NoComparison())
+	}
+	var read struct {
+		Diagnostics []struct {
+			Branch struct {
+				Slowdown float64 `json:"slowdown"`
+			} `json:"branch"`
+			Breakers []struct {
+				Seed               int64    `json:"seed"`
+				StartedNotRecorded []string `json:"startedNotRecorded"`
+				FiledLeftOut       []string `json:"filedLeftOut"`
+			} `json:"breakers"`
+		} `json:"diagnostics"`
+	}
+	asJSON(t, v, &read)
+	want := map[float64][2][]string{1: {{"ACME-3"}, {"ACME-5"}}, 1.2: {{"ACME-3", "ACME-6"}, {"ACME-4", "ACME-5"}}, 1.6: {nil, nil}}
+	if len(read.Diagnostics) != len(want) {
+		t.Errorf("the validation holds %d branches of the recorded conflicts, want %d", len(read.Diagnostics), len(want))
+	}
+	for _, b := range read.Diagnostics {
+		names, ok := want[b.Branch.Slowdown]
+		if !ok || len(b.Breakers) != 1 || b.Breakers[0].Seed != 1 || !slices.Equal(b.Breakers[0].StartedNotRecorded, names[0]) ||
+			!slices.Equal(b.Breakers[0].FiledLeftOut, names[1]) {
+			t.Errorf("at f %v the branch names the breakers %+v, want, at the seed 1, %v started that the record did not start and %v filed by the record and left out",
+				b.Branch.Slowdown, b.Breakers, names[0], names[1])
+		}
+	}
+	var out bytes.Buffer
+	if err := v.Write(&out, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"| `main+conflicts=recorded@1` | 1 | ACME-3 | ACME-5 |", "| `main+conflicts=recorded@1.2` | 1 | ACME-3, ACME-6 | ACME-4, ACME-5 |",
+		"| `main+conflicts=recorded@1.6` | 1 | none | none |", "gates nothing"} {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("the validation prints no %q:\n%s", line, out.String())
+		}
+	}
+}
+
+// asJSON reads v as JSON writes it into into, so a test reads a value by its JSON name.
+func asJSON(t *testing.T, v, into any) {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, into); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// patchJSON rewrites the JSON object in path with change, as a test makes a file of runs that a
+// type does not write.
+func patchJSON(t *testing.T, path string, change func(fields map[string]any)) {
+	t.Helper()
+	var fields map[string]any
+	if err := readJSON(path, &fields); err != nil {
+		t.Fatal(err)
+	}
+	change(fields)
+	if err := writeJSON(path, fields); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -37,8 +37,10 @@ type Branch struct {
 	// Conflicts is where the conflicts of the replay come from: "drawn", each stretch drawing its
 	// own at the fitted rate (assumption 3), or "recorded", the record's own conflicts made through
 	// the daemon's path where the record shows them and no other drawn (assumption 44). It is a
-	// diagnostic knob (knob.diagnostic): a validation runs its other value beside R5's tests, to read
-	// the admission alone at the record's conflicts, and no comparison runs it.
+	// diagnostic knob (knob.diagnostic): a validation runs its other value at every slowdown factor
+	// as R5's branch of the recorded conflicts, which names each issue its replay of the recorded
+	// rule starts that the record did not and each the record filed that it leaves out, and gates
+	// nothing; no comparison runs it.
 	Conflicts string `json:"conflicts"`
 }
 
@@ -76,8 +78,9 @@ var MainBranch = Branch{
 }
 
 // knob is one knob of a branch: its JSON name, the field of a Branch it sets, and its values,
-// the main branch's first. A diagnostic knob is one only a validation runs, beside R5's tests
-// (DiagnosticBranches): no comparison runs it (Branches), and no test of R5 reads it.
+// the main branch's first. A diagnostic knob is one only a validation runs, as R5's branch of the
+// recorded conflicts beside R5's tests (DiagnosticBranches): no comparison runs it (Branches), and
+// what it names gates nothing.
 type knob struct {
 	name       string
 	field      func(*Branch) *string
@@ -129,17 +132,22 @@ func Branches() []BranchAt {
 	return branches
 }
 
-// DiagnosticBranches is every branch a validation runs beside R5's tests and no comparison runs:
-// the main branch with one diagnostic knob changed to one of its other values, at f 1. Its table
-// is read beside R5's and never in place of the main branch's.
+// DiagnosticBranches is R5's branch of the recorded conflicts, which a validation runs beside R5's
+// tests and no comparison runs: the main branch with the diagnostic knob changed to its other value,
+// at each slowdown factor of Slowdowns. On it the replay of the recorded rule should start no issue
+// the record did not start and file each issue the record filed in the window; its validation names
+// each issue that breaks either (BranchValidation.Breakers), which gates nothing, and its table is
+// read beside the main branch's, never in place of it.
 func DiagnosticBranches() []BranchAt {
 	var branches []BranchAt
 	for _, k := range knobs {
 		if !k.diagnostic {
 			continue
 		}
-		for _, branch := range k.changes() {
-			branches = append(branches, BranchAt{Branch: branch, Slowdown: 1})
+		for _, f := range Slowdowns {
+			for _, branch := range k.changes() {
+				branches = append(branches, BranchAt{Branch: branch, Slowdown: f})
+			}
 		}
 	}
 	return branches

@@ -578,10 +578,11 @@ Nothing that moves an issue's work reads what a holder took, but the merger's st
 | `--branch <name>` | The branch, `main` or `main+<knob>=<value>` ([The branches](#the-branches)). |
 | `--seed <n>` | The seed of every draw (1 by default). |
 | `--slowdown <f>` | The factor f for each 42 issues in flight above the record's number (1 by default). |
+| `--cap <n>` | The admission cap that the replay serves under from the window's start to its end, in place of the caps that its record shows (0, the default, keeps the record's), which `run.json` names as `cap`. |
 | `--keep-db` | Keep the run's database after the run. |
 | `--trace-segments` | Write each work segment's issue, phase, start, n, m, recorded length and replayed length to `segments.jsonl`. |
 
-`run` prints the window, the rule, the branch, the seed, f and the database.
+`run` prints the window, the rule, the branch, the seed, f, the cap and the database.
 It prints each move that the daemon's code refused, with the reason, and counts what the replay could not enter as recorded, the recorded conflicts that it kept for a loop that runs to `--to`, and the conflicts past the review that it left to the merger.
 It counts the issues that the replay admitted with no work, recorded or drawn, and the slot-hours that they hold to `--to` (assumption 8), which `run.json` gives as `divergence.noWorkAdmissions` and `divergence.noWorkSlotHours`.
 Under `neverStarted=drawn` or `drawn-done` it counts how many issues drew their work from issues of their own tree, from issues of their priority and repository, and from the whole window, which `run.json` gives as `divergence.drawnWork`.
@@ -723,7 +724,7 @@ Up to `--parallel` runs run at once, each in a database of its own.
 Each run's files go under `--out` in `<window>/<rule>/<branch>@<f>/seed-<n>/`, and a run whose files are there already does not run again.
 `validate` deletes each run's log once it has read it, unless `--keep-logs`.
 With `--main-only` it runs the main branch at f = 1 alone, with its seeds, in place of every branch.
-Either way it also runs the diagnostic branch `main+conflicts=recorded` at f = 1, with the seed 1 alone, which keeps the record's conflicts and draws none ([The branches](#the-branches), assumption 44).
+Either way it also runs R5's branch of the recorded conflicts, `main+conflicts=recorded`, at f = 1, 1.2 and 1.6, each with the seed 1 alone, which keeps the record's conflicts and draws none ([The branches](#the-branches), assumption 44).
 
 It prints, for each branch and each measure, the recorded value, the replayed value, the gap, the allowance and the test.
 The replayed value is the mean of the seeds, with the values of the lowest and the highest seed.
@@ -754,14 +755,41 @@ Beside the tests, `validate` prints three diagnostics, which test nothing:
 
 - For each branch, the trees whose design gate stood closed in the replay more than 30% longer or shorter than in the record (`gateClosedHours`).
 
-- The table of the diagnostic branch `main+conflicts=recorded`, in a section of its own.
+- The table of each branch of the recorded conflicts, in a section of its own.
   It shows how the admission alone stands against the record, with the record's own conflicts in place of drawn ones.
   It gives no comparison, and it is read beside the main branch, never in place of the main branch: no test of R5, no verdict of a window and no decision of a comparison reads it.
+
+On R5's branch of the recorded conflicts, the replay of the recorded rule should start no issue that the record did not start in the window, and file each issue that the record filed in the window.
+`validate` names, for each f and each seed, the issues that break either, in the section "The issues that break R5's branch of the recorded conflicts":
+
+- each issue that the replay gives a first slot in the window and the record gives none
+
+- each issue of the window's project that the record files in the window and the replay does not file in it, read from each scorecard's `filed`
+
+The names gate nothing: no test of R5, no verdict of the window and no decision of a comparison reads them.
+`--json` gives them as `breakers` on each branch of `diagnostics`, with `startedNotRecorded` and `filedLeftOut` for each seed.
 
 A validation whose replays give no issue a first slot or a done, where the record gives some, is refused, with an error that names the window, because each issue's error would stand at `--to` less the record's time.
 `--from-runs <dir>` reads the validation from the runs that a `validate` or a `compare` wrote, and runs nothing.
 A window whose record names no rule, because its parts name none or more than one, keeps each issue's times in every part that it is validated under.
 `--json` prints the validation as JSON.
+
+With `--cap-backtest --cap <n>`, `validate` runs the cap backtest of R5 in place of every branch.
+It runs the main branch at f = 1, with its seeds, twice: at the caps that the record shows, into `--out`, and at the one cap `--cap` from the window's start to its end, into `cap-<n>` in `--out`.
+It then counts the slots that each replay and the record give out in each span of one cap that the daemon served.
+A span runs from the boot of a daemon process to the next boot, at the cap that the process served under, and the spans of adjacent processes of one cap are one span.
+It prints the validation of the main branch at the recorded caps, and after it the backtest, with a row for each span.
+The backtest passes when both of these hold:
+
+- at the recorded caps, each span gives out the record's slots within 10%
+
+- at the cap `--cap`, each span whose cap is not `--cap` misses the record's slots by more than 10%, and a span at `--cap` is not read
+
+A backtest that fails either, or that reads no span, says that the tool cannot tell a change of the cap.
+A span of a cap that the daemon served for a few hours can give out as few as about five slots, and there a miss of one slot fails the span.
+So the backtest names each span in which one slot is more than 10% of the record's count.
+Collect the window of a cap backtest with no run-out, so that its replays end at `--to`.
+`--json` gives the backtest as `capBacktest`, with each span's `from`, `to`, `cap`, `recorded`, `atRecordedCaps`, `atFlatCap`, `recordedPass`, `flatRead` and `flatPass`.
 
 ### `legion replay forecast`
 
@@ -773,13 +801,37 @@ legion replay forecast \
 
 `forecast` replays the window recorded before a change of the daemon's rule under the rule after the change, on the main branch.
 It compares that forecast with the record of the window after the change.
-It compares rates per hour, averages over time and shares, never totals, because the two windows differ in length and in work.
+On the same branch, it also replays the window before under the rule that its daemon ran, the window after under the rule that its daemon ran, and, as the forecast's control, the window after under the rule before the change.
+A window whose parts name no one rule that its daemon ran is refused.
+
+It compares rates per hour, averages and shares, never totals, because the two windows differ in length and in work.
+An average is over time, or, for the wait of urgent work, over the issues.
 Each number passes within twice its allowance, because a forecast carries the model's error twice: once for the window and once for the rule.
-A send-back cause that the change of the workflow defines again is scored only inside the total of all send-back loops.
+A send-back cause that the change of the workflow defines again is scored only inside the total of all send-back loops, `loops[all]`, and inside the total of those causes, `loops[redefined]`.
 Those causes are red checks or a conflict, a conflict, and a send-back by the architect or the merger.
 Each cause that both releases define the same way is scored apart.
+
+Beside the numbers that R5 gives an allowance, the forecast gives one number for each measure of R4 that has no rate, average or share of its own:
+
+- `<count>.max daily mean`, for `waitOnlyForSlot`, `startedWithoutSlot`, `pastReviewHolding`, `pastReviewNotHolding` and `inFlight`: the mean over the window's UTC days of the day's largest count, which each scorecard's `dailyMaxima` gives
+
+- `loops[redefined].rounds per hour` and `loops[redefined].hours per hour`: the loops of the causes that the change defines again, together
+
+- for P0 and for P1 apart, `urgentWaits[<P>].issues per hour`, `urgentWaits[<P>].firstSlot.meanMinutes` and `urgentWaits[<P>].done.meanMinutes`, the mean wait over the issues with a cut wait at its length, which each scorecard's `urgentMeans` gives, and `urgentWaits[<P>].firstSlot.cut share` and `urgentWaits[<P>].done.cut share`, the cut waits as a share of the issues
+
+The gap of each of these numbers is the replay's own error on its measure, which R7 reads.
+That error is the larger of the two windows' errors, each window replayed under its own rule against its own record.
+The output marks these numbers as measured, and `--json` gives the error as `error`.
+
+A number that the change moves is one where the forecast stands more than twice its gap from the window before replayed under its own rule.
+On such a number, where the control too stands within twice its gap of the record after the change, the forecast cannot tell the two rules apart.
+The output names each such number, and gives, for every number, the window before under its own rule, whether the change moves it, and the control.
+The control gates nothing: the forecast passes or fails on its own numbers alone.
 The forecast also names the workflow commits between the two windows' daemons, which it carries beside the rule.
-With `--from-runs`, `--before` and `--after` name the windows by the names of their directories.
+With `--from-runs`, `--before` and `--after` name the windows by the names of their directories, and the runs must hold all four replays.
+A forecast into an `--out` that holds runs already, a `validate`'s or an earlier forecast's, runs none of them again where the same `legion` binary made them, and refuses a run that another binary made.
+It names each part that it so found whole, with the commit of the binary that made it.
+A run into the directory of a `validate` of every branch keeps each branch of that part in its `part.json`.
 `--json`, `--parallel` and `--keep-logs` work as in `validate`.
 
 ### `legion replay compare`
@@ -806,7 +858,7 @@ The document gives:
 
 - each window's validation under its own rule, with the branches that give no comparison
 
-- the forecast across the change, with the workflow commits that it carries too
+- the forecast across the change, with the workflow commits that it carries too, its control and each number on which it cannot tell the two rules apart
 
 - which window measures how a rule changes conflicts
 
@@ -1022,6 +1074,17 @@ A replay reads each issue's first todo and its priorities from the record's Disp
   A tree whose gate never stood closed has no entry.
   Like `doneByAnyone`, only a trace gives it, the record's and a replay's own log, by one code, so `validate` can compare them.
 
+- `filed[<KEY>]`: each issue of the window's project that Dispatch shows filed in the window, at its filing.
+  R5's branch of the recorded conflicts reads it ([`legion replay validate`](#legion-replay-validate)).
+
+- `slotsGiven`: each moment in the window at which a pass gave out a slot, in order, the moments that `slotsGivenByDay` counts.
+  The cap backtest reads it.
+
+- `dailyMaxima[<count>]`: for each count that has a `.max`, the mean over the window's UTC days of the day's largest count, a day that the window cuts read over its part in the window.
+
+- `urgentMeans[P0]` and `urgentMeans[P1]`: the wait of urgent work as means over its issues, `.firstSlotMinutes` and `.doneMinutes`, a cut wait counted at its length.
+  The forecast reads them and `dailyMaxima` ([`legion replay forecast`](#legion-replay-forecast)).
+
 - `rule`, `branch`, `seed` and `slowdown`: what a replay ran.
   A record's scorecard carries none of them.
 
@@ -1029,6 +1092,10 @@ A replay reads each issue's first todo and its priorities from the record's Disp
   A record's scorecard names none, because a record rests on no assumption of a replay.
 
 - `scenario`: the work that the run gave an issue that never started, `none`, `drawn` or `drawn-done`.
+
+Like `doneByAnyone`, only a line timeline gives `filed`, `slotsGiven`, `dailyMaxima` and `urgentMeans`, the record's scorecard and a replay's `scorecard-line.json`, by one code.
+`scorecard.json` gives none of them, nor does `firstDayApart`.
+A report refuses a record or a run written before its scorecard held them, and says to run it again.
 
 ## The slot rules
 
@@ -1490,14 +1557,14 @@ A result that rests on a knob runs under each value of that knob, so that you re
 | `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues in the window, or the board's rank. | 36 |
 | `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished: from the issues of its own tree where the tree has any, else from those of its priority and repository, else from the whole window. | 8 |
 | `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero, with the base and the phase terms kept. | 3 |
-| `conflicts` | `drawn`, `recorded` | Where the conflicts come from, each stretch drawing its own, or the record's conflicts made as recorded with no stretch drawing, which only `validate` runs, as a diagnostic. | 44 |
+| `conflicts` | `drawn`, `recorded` | Where the conflicts come from, each stretch drawing its own, or the record's conflicts made as recorded with no stretch drawing, which only `validate` runs, as R5's branch of the recorded conflicts. | 44 |
 
 Beside the first six knobs, the slowdown factor f is the seventh, with the values 1, 1.2 and 1.6 (assumption 1).
 The main branch is `offset`, `offset`, `recorded`, `recorded`, `none`, `fitted` and `drawn`, at f = 1.
 Each other branch changes one knob, and takes the name `main+<knob>=<value>`, for example `main+timing=wall`.
 The tool offers the main branch and the 7 branches that change one of the first six knobs, each at f = 1, 1.2 and 1.6, which makes 24 branches for each rule and window.
 The knob `conflicts` is a diagnostic knob, which changes none of these 24 branches.
-`validate` runs its one other value, `main+conflicts=recorded`, at f = 1 beside them, and `compare` never runs it.
+`validate` runs its one other value, `main+conflicts=recorded`, at f = 1, 1.2 and 1.6 beside them, as R5's branch of the recorded conflicts, which names each issue that breaks it and gates nothing, and `compare` never runs it.
 Under it, each stretch that the record ends in a conflict conflicts through the daemon's own path, as a kept conflict does (assumption 35), and its issue runs its own recorded loop; each other stretch ends as recorded.
 A run's directory names its branch as `<branch>@<f>`, for example `main@1.2`.
 Under the rule that made the record, both values of `timing` and of `answer` give the record's times, because every anchor falls at its recorded time.

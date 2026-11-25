@@ -138,7 +138,8 @@ type ErrorSummary struct {
 // tests it fails, by name. A branch that fails one gives no comparison. Beside the tests it gives
 // two diagnostics, which no test reads: each seed's first starts against the record's (Starts), and
 // each tree whose hours of a closed design gate stand past gapGateHours from the record's
-// (GateTrees).
+// (GateTrees). On R5's branch of the recorded conflicts it names, seed by seed, each issue that
+// breaks the branch (Breakers), which gates nothing.
 type BranchValidation struct {
 	Branch        BranchAt       `json:"branch"`
 	Seeds         []int64        `json:"seeds"`
@@ -150,6 +151,19 @@ type BranchValidation struct {
 	Failed        []string       `json:"failed"`
 	Starts        []SeedStarts   `json:"starts"`
 	GateTrees     []TreeGate     `json:"gateTrees"`
+	Breakers      []SeedBreakers `json:"breakers,omitempty"`
+}
+
+// SeedBreakers is one seed's issues that break R5's branch of the recorded conflicts (spec R5),
+// which keeps the window's recorded conflicts and draws none, so that the replay of the recorded
+// rule should start no issue the record did not start and file every issue the record filed in the
+// window: each issue the seed gives a first slot in the window that the record gives none
+// (StartedNotRecorded), and each issue the record filed in the window that the seed does not file
+// in it (FiledLeftOut, Scorecard.Filed), each by key in order.
+type SeedBreakers struct {
+	Seed               int64    `json:"seed"`
+	StartedNotRecorded []string `json:"startedNotRecorded"`
+	FiledLeftOut       []string `json:"filedLeftOut"`
 }
 
 // SeedStarts is one seed's first starts against the record's: how many issues the seed gave a
@@ -184,11 +198,15 @@ func (b BranchValidation) Pass() bool { return len(b.Failed) == 0 }
 // The record's scorecard and each replay's are read from line timelines (Score, and
 // RunResult.LineScorecard), so the gaps compare like with like (design 10.1). A measure one side
 // does not give stands at 0 there. Beside the tests it counts each seed's first starts against the
-// record's (startsOf) and names the trees whose gates the replay holds closed otherwise than the
-// record (gateTreesOf).
+// record's (startsOf), names the trees whose gates the replay holds closed otherwise than the record
+// (gateTreesOf) and, on R5's branch of the recorded conflicts, the issues that break it
+// (breakersOf).
 func ValidateBranch(recorded Scorecard, at BranchAt, replays []Scorecard) BranchValidation {
 	v := BranchValidation{Branch: at, Seeds: make([]int64, 0, len(replays)), Failed: []string{}, Starts: startsOf(recorded, replays),
 		GateTrees: gateTreesOf(recorded, replays)}
+	if at.Branch.recordedConflicts() {
+		v.Breakers = breakersOf(recorded, replays)
+	}
 	for _, card := range replays {
 		v.Seeds = append(v.Seeds, card.Seed)
 	}
@@ -259,6 +277,28 @@ func startsOf(recorded Scorecard, replays []Scorecard) []SeedStarts {
 		starts = append(starts, s)
 	}
 	return starts
+}
+
+// breakersOf is each of replays' issues that break R5's branch of the recorded conflicts
+// (SeedBreakers), in their order: the issues each gives a first slot in the window that recorded
+// gives none, and those recorded files in the window that it does not.
+func breakersOf(recorded Scorecard, replays []Scorecard) []SeedBreakers {
+	breakers := make([]SeedBreakers, 0, len(replays))
+	for _, card := range replays {
+		b := SeedBreakers{Seed: card.Seed, StartedNotRecorded: []string{}, FiledLeftOut: []string{}}
+		for _, key := range slices.Sorted(maps.Keys(card.FirstSlot)) {
+			if _, both := recorded.FirstSlot[key]; !both {
+				b.StartedNotRecorded = append(b.StartedNotRecorded, key)
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(recorded.Filed)) {
+			if _, both := card.Filed[key]; !both {
+				b.FiledLeftOut = append(b.FiledLeftOut, key)
+			}
+		}
+		breakers = append(breakers, b)
+	}
+	return breakers
 }
 
 // gapGateHours is how far a tree's replayed hours of a closed design gate may stand from the
@@ -424,16 +464,19 @@ var MainBranchAt = BranchAt{Branch: MainBranch, Slowdown: 1}
 
 // Validation is a window's validation (spec R5): the replay of the rule its daemon ran, on every
 // branch, against its record. A branch that fails a test gives no comparison of rules, and a
-// window whose main branch fails gives none at all. Diagnostics is each diagnostic branch the
-// validation ran (DiagnosticBranches) against the same record: shown beside R5's tests, it gives
-// no comparison and never stands in place of the main branch, so no method of a Validation and no
-// decision reads it.
+// window whose main branch fails gives none at all. Diagnostics is R5's branch of the recorded
+// conflicts at each slowdown factor the validation ran it at (DiagnosticBranches) against the same
+// record: each names the issues that break it (BranchValidation.Breakers), and its tests are shown
+// beside R5's; it gives no comparison and never stands in place of the main branch, so no method
+// of a Validation and no decision reads it. CapBacktest is the cap backtest, where the validation
+// is one (ValidateConfig.CapBacktest).
 type Validation struct {
 	Window      string             `json:"window"`
 	Rule        string             `json:"rule"`
 	Record      Scorecard          `json:"record"`
 	Branches    []BranchValidation `json:"branches"`
 	Diagnostics []BranchValidation `json:"diagnostics"`
+	CapBacktest *CapBacktest       `json:"capBacktest,omitempty"`
 }
 
 // branch is the validation of the branch at, and false where the validation did not run it.
@@ -475,11 +518,13 @@ func (v Validation) NoComparison() []BranchAt {
 // Write prints v as Markdown, its headings at depth (2 for "##"): whether the window's main branch
 // passes every test of R5, or how many of them it fails, and which branches give no comparison, a
 // line for each branch with its verdict, the tests it fails and its issues' errors, each branch's
-// and each diagnostic branch's first starts that only one side made, seed by seed, and then each
-// branch's every measure — recorded, replayed with its lowest and highest seed, the gap, R5's
-// allowance and the test — the trees whose design gate it holds closed otherwise than the record
-// and, for each branch issuesOf names, each issue's error. Each diagnostic branch follows, in a
-// section of its own that says it tests nothing.
+// and each branch of the recorded conflicts' first starts that only one side made, seed by seed,
+// the issues that break R5's branch of the recorded conflicts, seed by seed, and then each branch's
+// every measure — recorded, replayed with its lowest and highest seed, the gap, R5's allowance and
+// the test — the trees whose design gate it holds closed otherwise than the record and, for each
+// branch issuesOf names, each issue's error. Each branch of the recorded conflicts follows, in a
+// section of its own that says its measures test nothing, and last the cap backtest, where v holds
+// one.
 func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) error {
 	p := &printer{w: w}
 	heading := strings.Repeat("#", depth)
@@ -534,6 +579,22 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 			}
 		}
 	}
+	if len(v.Diagnostics) > 0 {
+		p.line("")
+		p.line("%s# The issues that break R5's branch of the recorded conflicts", heading)
+		p.line("")
+		p.line("On the branch that keeps the window's recorded conflicts and draws none, `%s`, at each slowdown factor, the replay of the recorded rule should start no issue that the record did not start in the window, and file each issue that the record filed in it.",
+			DiagnosticBranches()[0].Branch.Name)
+		p.line("Each seed's issues that break either are named here, and the naming gates nothing: no test of R5, no verdict of the window and no decision of a comparison reads them.")
+		p.line("")
+		p.line("| branch | seed | issues it starts that the record did not start | issues the record filed that it leaves out |")
+		p.line("| --- | --- | --- | --- |")
+		for _, b := range v.Diagnostics {
+			for _, s := range b.Breakers {
+				p.line("| `%s` | %d | %s | %s |", b.Branch.Label(), s.Seed, keyList(s.StartedNotRecorded), keyList(s.FiledLeftOut))
+			}
+		}
+	}
 	for _, b := range v.Branches {
 		p.line("")
 		p.line("%s# `%s`: each measure", heading, b.Branch.Label())
@@ -542,13 +603,25 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	}
 	for _, b := range v.Diagnostics {
 		p.line("")
-		p.line("%s# `%s`: a diagnostic, never a test of R5", heading, b.Branch.Label())
+		p.line("%s# `%s`: R5's branch of the recorded conflicts, whose measures test nothing", heading, b.Branch.Label())
 		p.line("")
 		p.line("Its tests are shown and judge nothing: it gives no comparison, and it is read beside the main branch, never in place of the main branch.")
 		p.line("")
 		b.write(p, issuesOf)
 	}
+	if v.CapBacktest != nil && p.err == nil {
+		p.line("")
+		p.err = v.CapBacktest.Write(w, depth+1)
+	}
 	return p.err
+}
+
+// keyList is keys as a report lists them, separated by commas, or "none".
+func keyList(keys []string) string {
+	if len(keys) == 0 {
+		return "none"
+	}
+	return strings.Join(keys, ", ")
 }
 
 // write prints b's every measure with R5's test of it, its issues' errors, the trees whose design

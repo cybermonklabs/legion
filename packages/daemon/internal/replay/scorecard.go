@@ -80,6 +80,26 @@ type Scorecard struct {
 	// the gates has GateClosedHours nil, and one read since an empty map where no tree has a gate.
 	DoneByAnyone    int                `json:"doneByAnyone"`
 	GateClosedHours map[string]float64 `json:"gateClosedHours"`
+	// Filed is each issue of the window's project that Dispatch shows filed in [From, To), by key,
+	// at its issue.created event, and SlotsGiven each moment in [From, To) a pass gave an issue of
+	// the project a slot, in order, the moments SlotsGivenByDay counts. Both are read from a trace
+	// alone (traceMeasures), as DoneByAnyone is: R5's branch of the recorded conflicts names each
+	// issue the record filed that a replay leaves out (Filed), and the cap backtest counts the
+	// slots given out in each span of one cap (SlotsGiven).
+	Filed      map[string]time.Time `json:"filed"`
+	SlotsGiven []time.Time          `json:"slotsGiven"`
+	// DailyMaxima and UrgentMeans are what the forecast across a change of the rule reads of a
+	// line timeline beside the measures of R4 (forecastReadings): DailyMaxima is, for each count
+	// a scorecard gives a maximum of (waitOnlyForSlot, startedWithoutSlot, pastReviewHolding,
+	// pastReviewNotHolding and inFlight), the mean over the UTC days of [From, To) of each day's
+	// largest count, a day the span cuts read over its part in the span; UrgentMeans is the wait of
+	// urgent work as means over its issues (UrgentMean), P0's and P1's apart, each where an issue
+	// counts in it.
+	//
+	// A snapshot scorecard holds none of these four, nor does the first day apart. A record or a
+	// run read before a scorecard held them has them nil, and is refused (ReadRuns, readRun).
+	DailyMaxima map[string]float64    `json:"dailyMaxima"`
+	UrgentMeans map[string]UrgentMean `json:"urgentMeans"`
 	// Assumptions is the assumptions of the spec this run's measures rest on, by number.
 	Assumptions []int `json:"assumptions"`
 	// Scenario is the never-started scenario the run took (Branch.NeverStarted).
@@ -124,6 +144,14 @@ type WaitMinutes struct {
 	Cut           int     `json:"cut"`
 }
 
+// UrgentMean is the wait of the urgent work of one priority as means over its issues
+// (urgentMeans): the mean minutes from the start of each issue's wait to its first slot and to its
+// done, a cut wait at its length to the end of the run.
+type UrgentMean struct {
+	FirstSlotMinutes float64 `json:"firstSlotMinutes"`
+	DoneMinutes      float64 `json:"doneMinutes"`
+}
+
 // Score is the scorecard of w read from its record alone, with no replay (spec R4: "The tool also
 // reads each measure from the record of a window"): the line timeline of its trace (lineTimeline),
 // the ranks its own Dispatch events show and, at each moment, the rule its daemon ran then, read by
@@ -139,11 +167,14 @@ func Score(w Window) (Scorecard, error) {
 }
 
 // scoreTrace is the scorecard of the record t is the trace of (Score), for a reader that builds the
-// trace once for more than the scorecard, with what its trace alone gives (traceMeasures).
+// trace once for more than the scorecard, with what its trace alone gives (traceMeasures) and what
+// the forecast reads of its line timeline (forecastReadings).
 func scoreTrace(t Trace) Scorecard {
-	card := Measure(lineTimeline(t, ranksOf(t), t.ruleAt))
+	timeline := lineTimeline(t, ranksOf(t), t.ruleAt)
+	card := Measure(timeline)
 	card.Source, card.Unplaced, card.Assumptions = "record", unplacedAtStart(t), []int{}
 	traceMeasures(&card, t)
+	forecastReadings(&card, timeline)
 	return card
 }
 
