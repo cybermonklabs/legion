@@ -59,6 +59,11 @@ func ProjectSettingTypes() []string { return slices.Clone(projectSettingTypes) }
 //     since each create numbers its issue in the transaction that appends it (api/issue_create.go).
 //   - last_seq: the newest seq of the project's own events at the cut, as the append sets it.
 //   - key, name and created_at: no write changes them.
+//   - owner, visibility, slack_channels and slack_channels_changed_at: the row's, as they stand
+//     now. They decide who may see the project and where its credentials may post, and no event
+//     records them (project.access_changed names the change and no value). Who may see what is
+//     read as it stands now at a cut, as graph_nodes' visibility is (CutReadTables), so an answer
+//     at a cut gives nothing its reader may not see today. No read at a cut reads them yet.
 //
 // Each column read from events is a scalar subquery of the select list, so a statement that
 // joins a project for its key alone reads none of its events.
@@ -88,6 +93,10 @@ func projectsShadow(cut string) string {
 				select from public.events e
 				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at > ` + cut + `)
 			then p.gated_steps else '{}'::text[] end) as gated_steps,
+		p.owner as owner,
+		p.visibility as visibility,
+		p.slack_channels as slack_channels,
+		p.slack_channels_changed_at as slack_channels_changed_at,
 		case
 			when exists (
 				select from public.events e
