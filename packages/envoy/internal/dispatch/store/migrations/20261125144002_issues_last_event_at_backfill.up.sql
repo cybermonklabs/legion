@@ -11,11 +11,13 @@
 -- It is one statement in a migration of its own rather than a pass in batches
 -- (store.FillEmbeddingProjectKeys is that shape, for work of hours) or a boot pass: issues holds
 -- one row per issue, 13,298 in a seed of production's counts, far below
--- pgmigrate.CensusTableLimit, so the census counts it, and the statement costs one index probe
--- of events and one new tuple for each row. It takes issues' ROW EXCLUSIVE lock, which holds off
--- no read and no write of another table, and a lock on each row it writes until it commits: an
--- append to an issue waits at most for this one statement. The ALTER that took the table's
--- ACCESS EXCLUSIVE lock committed in 20261125143901, so no reader of issues waits on it.
+-- pgmigrate.CensusTableLimit, which the census holds the table this statement writes to before a
+-- deploy applies it; its census answers 0, for the reason its census file gives. The statement
+-- costs one index probe of events and one new tuple for each row. It takes issues' ROW
+-- EXCLUSIVE lock, which holds off no read and no write of another table, and a lock on each row
+-- it writes until it commits: an append to an issue waits at most for this one statement. The
+-- ALTER that took the table's ACCESS EXCLUSIVE lock committed in 20261125143901, so no reader of
+-- issues waits on it.
 --
 -- It waits on no row: `unfilled` selects the rows it writes `for no key update skip locked`, and
 -- the update joins it, so a row another transaction holds is left out rather than waited for. A
