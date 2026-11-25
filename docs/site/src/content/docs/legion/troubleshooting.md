@@ -1190,19 +1190,34 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
+- A `git commit` whose caller asks git for an isolated configuration, as hermetic tests do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, such as `1`, or `GIT_CONFIG_GLOBAL=/dev/null`.
+  `legion git` then hands the commit to git as written, so its message and commit id are what git alone makes.
+
 - Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
-**The git author and committer name no role.**
+**Inside the shared working copy, the git author and committer can name another role.**
 jj sets a commit's git author and committer by its own rules in the shared workspace.
 They depend on which role's jj command made or last rewrote the shared working-copy commit `@`, and not on which role committed.
-So a commit can show the GitHub App of another role as its author, and its trailers still name the role that made it.
+So inside the shared working copy, a commit can still show the GitHub App of another role as its author, and its trailers still name the role that made it.
+
+**Each push sets the author from the `Legion-Role` trailer.**
+Before each `jj git push`, the push step of `legion jj` gives each commit that the push sends the author of the role that its first `Legion-Role` trailer names, with the exceptions below.
+It takes that role's identity from `LEGION_ROLE_IDENTITIES`, which the daemon writes into every workflow role's process.
+It prints one line for each commit it rewrote: `legion jj: <role>: <old commit id> -> <new commit id>`.
+A commit with no `Legion-Role` trailer keeps the author that jj gave it.
+So do a commit whose role has no identity in the table, a commit that a remote bookmark holds, and an immutable commit.
+So does a commit that only a git tag or another ref of git's other than `HEAD` and a local branch names, and every commit of a push where the step prints that it could not read what the push sends or could not set the author, but one with an empty author that the step filled first (`docs/deployment.md`).
+A role process with no table runs no step, such as a pane of a release without daemon API contract entry `20261125161436`.
+In a pod the image's jj wrapper hands each push to the step.
+Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper where that is the first jj on the daemon's `PATH` (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
 **The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
 The shim runs `jj log` on `@`, which snapshots the working copy.
 Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
-The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author, and `jj git push` refuses such a commit.
+The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author.
+`jj git push` refuses such a commit, unless the push step first gives it the author of the role that its `Legion-Role` trailer names.
 An adoption can also make one role the author of edits that another role left in `@`.
 
 **Which tasks adopt the working copy.**

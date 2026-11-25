@@ -78,6 +78,7 @@ dispatch_token_file: ./dispatch-token
 envoy_url: http://envoy.example.com:9020
 envoy_token_file: ./envoy-token
 nats_urls: [nats://nats.example.com:4222]
+# private_name_rules_file: ./private-name-rules.toml  # the gitleaks rule file every role's leak guard runs
 
 projects:
   WIDGETS: {}                          # each Dispatch project the daemon runs; it names no
