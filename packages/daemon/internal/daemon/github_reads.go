@@ -92,6 +92,15 @@ type githubPullRequest struct {
 	MergeCommitSHA string    `json:"merge_commit_sha"`
 }
 
+// The states GitHub documents for a pull request (githubPullRequest.State), as GitHub writes them.
+const (
+	pullOpen   = "open"
+	pullClosed = "closed"
+)
+
+// pullStates are those states, the closed set a line names one of.
+var pullStates = []string{pullOpen, pullClosed}
+
 // pullRequestBase is a pull request's base as GitHub answers it: the branch, GitHub's words
 // (githubText).
 type pullRequestBase struct {
