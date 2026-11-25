@@ -34,9 +34,9 @@ import {
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import {
+  entryScriptPath,
   fetchedChunk,
   PENDING_WRITES_CHUNK,
-  pageAssetPath,
   recordTabReloads,
   shellLoads,
   tabReloads,
@@ -1746,11 +1746,7 @@ async function keptOnAPageThatLoadsSignedOut(
     await expect.poll(() => keptWrites(page)).toBe(2);
     const spent = await recordTabReloads(page, [3, 2, 1]);
 
-    const entry = await pageAssetPath(
-      /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
-      "module script",
-      baseUrl
-    );
+    const entry = await entryScriptPath(baseUrl);
     expect(entry, "index.html did not name an entry script under /assets/").toMatch(
       /^\/assets\/[^/]+\.js$/u
     );

@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
+import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { ChunkBoundary } from "./ChunkBoundary";
-import { chunk, chunkComponent } from "./chunk-component";
 
 function Throwing(): never {
   throw new Error("The part failed to render");
@@ -56,12 +56,7 @@ test("a part that renders draws as it is", () => {
 // whose chunk cannot load draws nothing, as it does with no write to show, while one whose render
 // threw draws an alert (`features/writes/write-hosts.tsx`).
 test("a chunk under it that fails to download draws what the host names for that, or nothing, and never the fallback", async () => {
-  const NotLoaded = chunkComponent(
-    chunk<object>(() =>
-      Promise.reject(new TypeError("Failed to fetch dynamically imported module"))
-    ),
-    null
-  );
+  const NotLoaded = failingChunkComponent();
   const logged = quietConsoleError();
   const view = render(
     <div>

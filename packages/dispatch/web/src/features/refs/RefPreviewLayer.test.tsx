@@ -1,7 +1,8 @@
 import { expect, mock, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the pointer sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget), and a caret moved inside an editable root has no user-event form at all.
+// biome-ignore lint/style/noRestrictedImports: the pointer sites below need a pointer event user-event cannot send (a pointerType, a held button, a relatedTarget).
 import { act, fireEvent, render, screen } from "@testing-library/react";
 
+import { caretAt } from "../../__tests__/caret";
 import { CardAsked } from "./RefPreviewLayer";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
 
@@ -41,13 +42,6 @@ function drawPage(ask: () => void) {
       <CardAsked ask={ask} />
     </>
   );
-}
-
-/** One move of the caret, as a browser reports it. */
-function caretAt(node: Node, offset: number): void {
-  document.getSelection()?.collapse(node, offset);
-  // user-event has no form that moves the caret inside an editable root.
-  fireEvent(document, new Event("selectionchange"));
 }
 
 // A failed layer asks for its chunk again for a hover over a marked reference, and for no other

@@ -9,6 +9,7 @@ import {
   pageInkText,
 } from "../../theme/classes";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
+import { inputMethodKey } from "../shell/keymap";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
 
@@ -253,7 +254,7 @@ export function IssueTitleRow({
             // The Escape that cancels an IME composition and the Enter that confirms one are the
             // input method's keys, not the reader ending the edit. Safari sends them after its
             // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (inputMethodKey(event.nativeEvent)) return;
             if (event.key === "Escape") {
               // Puts back the issue's title, or while a write is out the title it carries, which
               // the issue is about to hold (decision 316).

@@ -45,23 +45,46 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * 496,982 bytes, 3,018 under this budget, at `1293f3d9` the same day 497,475, and at `06c1e7b2`
  * (2026-11-21), built with a 40-character build id as CI builds it, it is 497,539 bytes, 2,461
  * under. The third, the merge of `4b22ece4` (2026-11-23, the default branch's dialog focus, #4985),
- * wrote 500,672, and `01fc0e41` the same day answered it with the two moves `web/vite.config.ts`'s
- * build comment names. It refused the loading box and the alert of the surfaces a key opens too
- * (`4afe19c7`, 2026-11-24, 500,530 bytes), and `4e9171bc` the same
- * day answered it by taking `features/refs/AgentName.tsx` out of the entry (497,401 bytes); at
- * `540b1fe2` the entry was 497,933 bytes, the two lists' alert for a render error
- * (`features/writes/write-hosts.tsx`) takes it to 498,553, and the sign-in page's list of kept
- * writes, in the entry so that its warning depends on no chunk (`features/writes/KeptWrites.tsx`),
- * takes it to 499,583, each with a 39-character build id. The merge of the default branch's
- * correction and deletion of a post (#3512, 2026-11-24) then wrote 500,975, and three moves the
- * same day answered it with no new lazy load, the ones `web/vite.config.ts`'s build comment
- * names, to 498,776; with the correction's mark in the event map's chunk the entry read
- * 498,590 bytes with a 39-character build id. The forward merges of the default branch after
- * it, whose layers of the page's foot (#4631) added about 6,500 bytes, and the fixes after them
- * wrote 506,935, over this budget again; the page addresses the shell reads then left
+ * wrote 500,672, and `01fc0e41` the same day answered it with two moves, to 499,380. The Inbox's
+ * `Blocked on you` strip and the project page's pill left the entry for a file of their own,
+ * `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the project page's
+ * chunks share; without that move the entry at `01fc0e41` measured 500,104 bytes. And the
+ * modulepreload polyfill, 710 bytes of the entry, is off, for the reason beside `modulePreload`
+ * in `web/vite.config.ts`. `97c0cde6`'s focus helper then added 105, so the build at `4935c4af`,
+ * with a 39-character build id, read 499,485 bytes, 515 under this budget, and the same at the
+ * merges `4548096d` and `e15ee5e4` (CI's 40-character id writes one byte more, by the rule
+ * below). On that day, 2026-11-23, the default branch's own build at `d795b25c` wrote 1,144,188
+ * bytes.
+ * This budget refused the loading box and the alert of the surfaces a key opens too
+ * (`features/shell/asked-surface.tsx`, review 6034817973; `4afe19c7`, 2026-11-24, 500,530 bytes),
+ * and `4e9171bc` the same day answered it by taking `features/refs/AgentName.tsx` out of the
+ * entry (497,401 bytes): the rail's pinned agents draw a session from that module's session half
+ * alone (`features/refs/SessionName.tsx`), so the rest of it is a chunk the pages' chunks share.
+ * At `540b1fe2`, after the changes since, Details' one Escape rule among them
+ * (`escapeClosesDrawer`, `features/shell/useDialog.ts`), the entry was 497,933 bytes, the two
+ * lists' alert for a render error (`features/writes/write-hosts.tsx`) takes it to 498,553, and the
+ * sign-in page's list of kept writes, in the entry so that its warning depends on no chunk
+ * (`features/writes/KeptWrites.tsx`), takes it to 499,583, each with a 39-character build id. The
+ * merge of the default branch's correction and deletion of a post (#3512, 2026-11-24) then wrote
+ * 500,975, and three moves the same day took code that no first paint draws out of the entry,
+ * none of them a new lazy load, to 498,776:
+ * - a held send refreshes a comment list under `ownerCommentsQuery`'s key, so
+ *   `features/conversation/composer-model.ts` is out of the entry (411 bytes);
+ * - the rail's state mark reads its relative time from `features/refs/relative-time.ts`, so
+ *   `<Timestamp>` is a chunk the pages' chunks share (646 bytes);
+ * - the recent items read a document's route from `features/refs/routes.ts`, so the search bar's
+ *   chip (`features/search/bar-scope.ts`) is a chunk that the bar and the issue list share
+ *   (1,142 bytes).
+ * With the correction's mark in the event map's chunk (`api/event-refresh-load.ts`) the entry read
+ * 498,590 bytes with a 39-character build id. The forward merges of the default branch after it,
+ * whose layers of the page's foot (#4631) added about 6,500 bytes, and the fixes after them wrote
+ * 506,935, over this budget again. The page addresses the shell reads then left
  * `features/refs/routes.ts` for a module of their own (`features/refs/page-routes.ts`), with no
- * new lazy load, so the grammar of references and the modules only it imports left the entry,
- * which reads 492,802 bytes with a 39-character build id, 7,198 under this budget.
+ * new lazy load, so the grammar of references and the modules only it imports left the entry as
+ * two chunks that the pages' chunks share (`routes-*.js`, 10,989 bytes, and
+ * `dispatch-block-ref-*.js`, 3,632), and the entry read 492,802 bytes with a 39-character build
+ * id on 2026-11-25, 7,198 under this budget. The simplify pass of pull request #3513 the same day
+ * took it to 492,840 bytes with a 39-character build id, 7,160 under this budget.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character
@@ -79,12 +102,9 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * three sizes of `61e5c402` above - the entry, the Mermaid worker and the ECharts chunk - were
  * measured that way on 2026-11-16, and the entry sizes after them are this check's readings at
  * the commit or merge each names; the two older entry sizes are the readings of 2026-10-29 and
- * 2026-11-11 named above. `web/vite.config.ts` records the entry: the merge of 4b22ece4
- * (2026-11-23) read 500,672 bytes, the cut in `01fc0e41` brought it to 499,380, and `97c0cde6`
- * added 105, so the build at `4935c4af`, with a 39-character build id, reads 499,485
- * bytes, 515 under this budget (CI's 40-character id writes one byte more, by the rule above).
- * It records the sizes of `53286717` the same day too, seven days after `61e5c402`: the Mermaid
- * worker and the ECharts chunk at the sizes above.
+ * 2026-11-11 named above. The Mermaid worker and the ECharts chunk read the same at `53286717`
+ * on 2026-11-23, seven days after `61e5c402` (`web/vite.config.ts`, beside
+ * `chunkSizeWarningLimit`, which keeps only the entry's size now and no history).
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

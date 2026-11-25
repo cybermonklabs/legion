@@ -23,7 +23,12 @@ import { MarkdownPreview } from "./MarkdownPreview";
 import { EditedMark, PostPreview } from "./PostBody";
 import { type PostDeletion, postDeletion } from "./post-marks";
 import * as previewCard from "./ref-preview-card";
-import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
+import {
+  caretRefPreviewTrigger,
+  REF_PREVIEW_CARD_ID,
+  refPreviewCardContains,
+  refPreviewTriggerOf,
+} from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import {
   artifactTextQuery,
@@ -42,11 +47,6 @@ import {
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { type TextSource, textSourceOf } from "./text-references";
-
-/** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
- * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
- * `data-dispatch-ref` — see `referenceTriggerProps` (`reference-trigger.ts`). */
-const TRIGGER_SELECTOR = "[data-dispatch-ref],[data-dispatch-href]";
 
 interface PreviewTarget {
   readonly anchor: HTMLElement;
@@ -148,17 +148,14 @@ function subscribe(notify: () => void): () => void {
   };
 }
 
-function triggerOf(node: EventTarget | null): HTMLElement | null {
-  return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
-}
-
 /** The one region the pointer may roam without closing the card: the current target's anchor -
  * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
  * transition is judged against this predicate, in the document listeners alone, so no close
  * depends on the order in which two event systems see one `pointerout`. */
 function inHoverZone(node: EventTarget | null): boolean {
   return (
-    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
+    state !== undefined &&
+    (refPreviewTriggerOf(node) === state.target.anchor || refPreviewCardContains(node))
   );
 }
 
@@ -261,8 +258,8 @@ function attachTriggers(): () => void {
     if (event.pointerType === "touch" || event.buttons !== 0) {
       return;
     }
-    const trigger = triggerOf(event.target);
-    if (trigger === null || trigger === triggerOf(event.relatedTarget)) {
+    const trigger = refPreviewTriggerOf(event.target);
+    if (trigger === null || trigger === refPreviewTriggerOf(event.relatedTarget)) {
       return;
     }
     startHover(trigger);
@@ -294,7 +291,7 @@ function attachTriggers(): () => void {
     refPreview.leave();
   };
   const onFocusIn = ({ target }: { target: EventTarget | null }) => {
-    const trigger = triggerOf(target);
+    const trigger = refPreviewTriggerOf(target);
     // `:focus-visible` is the browser's own keyboard-versus-pointer verdict: a mouse click or a
     // tap focuses a link without matching it, so only keyboard navigation opens the card.
     if (trigger === null || !trigger.matches(":focus-visible")) {
@@ -306,7 +303,7 @@ function attachTriggers(): () => void {
     }
   };
   const onFocusOut = (event: FocusEvent) => {
-    const trigger = triggerOf(event.target);
+    const trigger = refPreviewTriggerOf(event.target);
     // Focus moving from the anchor into its own card is not leaving: a press on the card's link
     // while the anchor holds focus (dnd-kit hands focus back to a board card's link after a
     // drop) must reach the link as a click, not unmount it under the pointer.
@@ -320,10 +317,8 @@ function attachTriggers(): () => void {
    *  card closed by Escape stays closed - and the caret leaving it closes the card it opened. */
   let caretIn: HTMLElement | undefined;
   const onSelectionChange = () => {
-    const at = document.getSelection()?.anchorNode ?? null;
-    const element = at instanceof Element ? at : (at?.parentElement ?? null);
-    const trigger = triggerOf(element);
-    if (trigger?.isContentEditable && previewCard.hoverPreviewsOff(trigger)) {
+    const trigger = caretRefPreviewTrigger();
+    if (trigger !== null) {
       const route = routeOf(trigger);
       if (route !== undefined && caretIn !== trigger) {
         caretIn = trigger;
@@ -366,7 +361,9 @@ function attachTriggers(): () => void {
     window.matchMedia?.("(hover: hover)").matches &&
     document.querySelector(":active") === null
   ) {
-    const trigger = triggerOf([...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null);
+    const trigger = refPreviewTriggerOf(
+      [...document.querySelectorAll<HTMLElement>(":hover")].at(-1) ?? null
+    );
     if (trigger !== null) startHover(trigger);
   }
   return () => {

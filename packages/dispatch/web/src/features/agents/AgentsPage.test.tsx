@@ -20,6 +20,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ownReplies } from "../../__tests__/own-replies";
@@ -1359,10 +1360,9 @@ test("Agents sends without an issue through the agent message route", async () =
 // `isComposing`, but Safari sends that key after the composition's end, unmarked, with keyCode
 // 229, so the composer keeps it from the keymap too. A plain Escape after it is the composer's
 // alone: over a draft it asks first, and the focus does not go back to the row as well.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition in an agent's composer, marked by %s, leaves the draft and the focus there", async (_mark, composing) => {
+test.each(
+  COMPOSITION_MARKS
+)("an Escape that ends an IME composition in an agent's composer, marked by %s, leaves the draft and the focus there", async (_mark, composing) => {
   const user = userEvent.setup();
   const page = renderAgents();
 

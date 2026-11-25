@@ -8,8 +8,8 @@
  * browser suite's rows pays it as well as each person opening a page. The Inbox's graph holds the
  * card list, the ask cards, the thread bodies and the Markdown surfaces under them, none of which
  * an issue, a board or a document draws. Keeping it in its own chunk spares every other route from
- * parsing it. The entry's measured sizes live in one place, the `build` comment of
- * `web/vite.config.ts`.
+ * parsing it. The entry's measured sizes live in one place, `MAX_ENTRY_BYTES` in
+ * `web/src/asset-sizes-in-build.ts`.
  *
  * What a reader loses by its being late, and when it is fetched. Where the Inbox is the page,
  * the list is what the reader came for, so the download starts with the navigation rather than

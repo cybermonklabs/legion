@@ -22,7 +22,7 @@ import type * as InboxChunk from "./inbox-chunk";
  * every page parses before it draws anything, and a browser context with a cold cache has none
  * of it, so an issue, a board or a document paid for the Inbox to be shown none of it. It was
  * the largest such part of the entry; what the entry cost then and costs now is measured in one
- * place, the `build` comment of `web/vite.config.ts`.
+ * place, `MAX_ENTRY_BYTES` in `web/src/asset-sizes-in-build.ts`.
  *
  * Both hosts below load the one module (`inbox-chunk.ts`), so the page and the drawer share one
  * download: a reader who peeks at the Inbox from an issue and then opens `/` fetches nothing the

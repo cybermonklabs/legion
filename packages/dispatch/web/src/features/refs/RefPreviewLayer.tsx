@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useReducer, useState } from "react";
 import { ChunkBoundary } from "../shell/ChunkBoundary";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import { useContentDrawn } from "../shell/content-drawn";
-import { hoverPreviewsOff } from "./ref-preview-card";
+import { caretRefPreviewTrigger, hoverPreviewsOff, refPreviewTriggerOf } from "./ref-preview-card";
 
 /**
  * Where the shell mounts the reference-preview layer, and where that layer's code is fetched:
@@ -52,23 +52,6 @@ const RefPreviewHost = chunkComponent(
   null
 );
 
-/** The marks a reference carries for its card: `TRIGGER_SELECTOR` in `RefPreview.tsx`. That
- *  module is the card, so this file cannot import it without the card coming into the entry. */
-const REFERENCE = "[data-dispatch-ref],[data-dispatch-href]";
-
-/** The reference `node` is in, if any. A text node is read as the element it is in. */
-function referenceOf(node: EventTarget | null | undefined): HTMLElement | null {
-  const element = node instanceof Node && !(node instanceof Element) ? node.parentElement : node;
-  return element instanceof Element ? element.closest<HTMLElement>(REFERENCE) : null;
-}
-
-/** The link of an editable document the caret is in, on a surface that opens no card on hover:
- *  the one kind of link the caret opens a card for (`onSelectionChange` in `RefPreview.tsx`). */
-function caretLink(): HTMLElement | null {
-  const link = referenceOf(document.getSelection()?.anchorNode);
-  return link?.isContentEditable && hoverPreviewsOff(link) ? link : null;
-}
-
 /** What the boundary draws in place of a layer that has failed: nothing, and listeners that call
  *  `ask` when the reader asks for a card. Each one matches the card's own listener
  *  (`attachTriggers` in `RefPreview.tsx`) on the gesture and surface:
@@ -86,14 +69,14 @@ export function CardAsked({ ask }: { ask: () => void }): null {
   useEffect(() => {
     const listening = new AbortController();
     const options = { signal: listening.signal };
-    let caretIn = caretLink();
+    let caretIn = caretRefPreviewTrigger();
     document.addEventListener(
       "pointerover",
       (event) => {
-        const reference = referenceOf(event.target);
+        const reference = refPreviewTriggerOf(event.target);
         if (
           reference !== null &&
-          reference !== referenceOf(event.relatedTarget) &&
+          reference !== refPreviewTriggerOf(event.relatedTarget) &&
           event.pointerType !== "touch" &&
           event.buttons === 0 &&
           !hoverPreviewsOff(reference)
@@ -106,7 +89,7 @@ export function CardAsked({ ask }: { ask: () => void }): null {
     document.addEventListener(
       "focusin",
       (event) => {
-        if (referenceOf(event.target)?.matches(":focus-visible")) ask();
+        if (refPreviewTriggerOf(event.target)?.matches(":focus-visible")) ask();
       },
       options
     );
@@ -114,7 +97,7 @@ export function CardAsked({ ask }: { ask: () => void }): null {
       "selectionchange",
       () => {
         const was = caretIn;
-        caretIn = caretLink();
+        caretIn = caretRefPreviewTrigger();
         if (caretIn !== null && caretIn !== was) ask();
       },
       options

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 
 import { dangerText, secondaryButtonCompact, textSecondaryOnSurface } from "../../theme/classes";
-import { keptRecords, keptWrites } from "./shown-writes";
-import { useNotTakenUp, useWriteSelection, useWrites } from "./write-store";
+import type { KeptWrite } from "./write-storage";
+import { useWrites, type Write } from "./write-store";
 
 /** Where focus goes when a Discard takes its button off the page: the next Discard button in the
  *  list (else the one before it), and once none is left, the next control after the list or the
@@ -35,12 +35,18 @@ function nextControlAfterDiscard(button: HTMLButtonElement): HTMLElement | null 
  * the store takes one up it shows by its name and by where its record says it stood - one kept
  * refused reads "Not saved" and offers Discard, which drops its record (`Writes.discardKept`) -
  * and from then on as the store's own row. A page that loads signed out holds only such records:
- * the store takes up nothing until someone signs in (`app.tsx`).
+ * the store takes up nothing until someone signs in (`app.tsx`). Its host reads both, `rows` of
+ * the store's and `records` of what the reload kept, to know whether to draw the list at all
+ * (`KeptWritesHost`), and hands them in.
  */
-export function KeptWrites(): ReactNode {
+export function KeptWrites({
+  records,
+  rows,
+}: {
+  records: readonly KeptWrite[];
+  rows: readonly Write[];
+}): ReactNode {
   const writes = useWrites();
-  const rows = useWriteSelection("kept-while-signed-out", keptWrites);
-  const records = keptRecords(useNotTakenUp());
   const shown = [...rows, ...records].sort((a, b) => a.pressedAt - b.pressedAt);
   if (shown.length === 0) return null;
   const logins = [...new Set(shown.map((write) => write.login))];
@@ -67,8 +73,13 @@ export function KeptWrites(): ReactNode {
                         className={secondaryButtonCompact}
                         onClick={(event) => {
                           const button = event.currentTarget;
+                          // The focus goes on only after a key pressed the button. Chromium
+                          // focuses a button that the pointer presses and draws it no focus
+                          // ring, so a hand-off would put the focus, unseen, on the next row's
+                          // Discard, and the next Space or Enter would discard that write too
+                          // (`usePanelFocusReturn` in `PendingWritesIndicator.tsx`).
                           const next =
-                            document.activeElement === button
+                            document.activeElement === button && button.matches(":focus-visible")
                               ? nextControlAfterDiscard(button)
                               : null;
                           const dropped =

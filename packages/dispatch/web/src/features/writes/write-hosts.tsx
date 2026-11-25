@@ -31,10 +31,10 @@ import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from ".
  * The kept list is in the entry, with no chunk. It is the reader's one warning, before they sign
  * in as someone else, of the writes that sign-in drops, so it draws with the sign-in page,
  * whatever becomes of any download: as a chunk of its own it would draw one download late on a
- * page that loads signed out, and not at all where that download failed online. That warning
- * costs every page 1,030 bytes of the entry, the record's Discard (`Writes.discardKept`)
- * included. It is drawn only while it holds a row, of the store's or of what the reload kept that
- * the store has not taken up (`KeptWritesHost`).
+ * page that loads signed out, and not at all where that download failed online. At `80d018f6`
+ * that warning cost every page 1,030 bytes of the entry, the record's Discard
+ * (`Writes.discardKept`) included. It is drawn only while it holds a row, of the store's or of
+ * what the reload kept that the store has not taken up (`KeptWritesHost`).
  *
  * The indicator is drawn through `chunkComponent` (`features/shell/chunk-component.tsx`), as the
  * issue page's tab panels, a document's decision cards and the reference-preview layer are; a
@@ -47,12 +47,12 @@ import { kindsRegistered, useNotTakenUp, useWriteSelection, type Write } from ".
  * online draws nothing, as it would with no write to show; a list whose render throws draws an
  * alert in its place (`CouldNotShow`). A change of which writes a list shows, or of where one
  * stands - a write pressed or gone, one refused or late - draws the list afresh (`reset`,
- * `shownWritesKey`), which asks for the indicator's chunk again; the indicator's last write going
- * is no such change, since the list it would draw is empty (`PendingWritesHost`). A boundary that
- * never reset would leave the reader on a page no recovery reload follows - the boundary says
- * when none does - with no Retry, Discard or Stop trying for the life of the page. The
- * indicator's chunk is started once the page has drawn, so a reader who presses a write usually
- * finds it in already.
+ * `shownWritesKey`, `keptRecordsKey`), which asks for the indicator's chunk again; the
+ * indicator's last write going is no such change, since the list it would draw is empty
+ * (`PendingWritesHost`). A boundary that never reset would leave the reader on a page no recovery
+ * reload follows - the boundary says when none does - with no Retry, Discard or Stop trying for
+ * the life of the page. The indicator's chunk is started once the page has drawn, so a reader who
+ * presses a write usually finds it in already.
  */
 const pendingWritesChunk = chunk<object>(() =>
   import("./PendingWritesIndicator").then((module) => module.PendingWritesIndicator)
@@ -120,17 +120,20 @@ function prefetchWriteKinds(): void {
   prefetchChunk(() => writeKinds().then(kindsRegistered));
 }
 
-/** What a list's boundary draws afresh on (`ChunkBoundary`'s `reset`): which writes it shows
- *  (both the store's rows and any kept records not yet taken up), and where each stands. A change
- *  of either may be the reader's way to the list's controls - a write pressed or gone, one
- *  refused with Retry and Discard, one late with Stop trying - while an upload's progress, which
- *  changes a row at every percent, changes neither: a boundary whose chunk keeps failing would
- *  otherwise ask for it again at every percent of an upload. */
-function shownWritesKey(rows: readonly Write[], records: readonly KeptWrite[] = []): string {
-  const storeRows = rows.map((row) => `${row.id}:${row.status}`).join(",");
-  if (records.length === 0) return storeRows;
-  const kept = records.map((record) => `${record.key}:${record.state.status}`).join(",");
-  return `${storeRows}|${kept}`;
+/** What a list's boundary draws afresh on (`ChunkBoundary`'s `reset`): which of the store's
+ *  writes it shows, and where each stands. A change of either may be the reader's way to the
+ *  list's controls - a write pressed or gone, one refused with Retry and Discard, one late with
+ *  Stop trying - while an upload's progress, which changes a row at every percent, changes
+ *  neither: a boundary whose chunk keeps failing would otherwise ask for it again at every
+ *  percent of an upload. */
+function shownWritesKey(rows: readonly Write[]): string {
+  return rows.map((row) => `${row.id}:${row.status}`).join(",");
+}
+
+/** The same for the kept records the store has not taken up, which only the kept list shows:
+ *  which records it shows, and where each stands. */
+function keptRecordsKey(records: readonly KeptWrite[]): string {
+  return records.map((record) => `${record.key}:${record.state.status}`).join(",");
 }
 
 /** The pending-writes indicator, for the shell's status corner. */
@@ -217,14 +220,15 @@ export function KeptWritesHost(): ReactNode {
   // - the store's rows or the kept records it has not taken up - or of where one stands draws it
   // again, so a fault that one write's row brings ends with that row. The alert goes with the
   // last write as well: once neither `rows` nor `records` holds anything, this host draws
-  // nothing and unmounts the boundary.
-  const reset = useMemo(() => shownWritesKey(rows, records), [rows, records]);
+  // nothing and unmounts the boundary. `records` is a new array at each render, so the key is
+  // read afresh each time.
+  const reset = `${shownWritesKey(rows)}|${keptRecordsKey(records)}`;
   return rows.length === 0 && records.length === 0 ? null : (
     <ChunkBoundary
       fallback={<CouldNotShow className="mt-6" list="the changes this page kept" />}
       reset={reset}
     >
-      <KeptWrites />
+      <KeptWrites records={records} rows={rows} />
     </ChunkBoundary>
   );
 }

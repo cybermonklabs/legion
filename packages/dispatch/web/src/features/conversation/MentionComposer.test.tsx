@@ -7,6 +7,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -1701,10 +1702,9 @@ test("Ctrl+Enter sends while Enter, whitespace, and IME composition leave the dr
 // nothing for it, and the draft stays as the reader wrote it. Chromium and Firefox mark such a
 // key `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229.
 // A plain Escape after it is the reader's, and asks before it drops the draft.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition, marked by %s, closes nothing and keeps the draft", async (_mark, composing) => {
+test.each(
+  COMPOSITION_MARKS
+)("an Escape that ends an IME composition, marked by %s, closes nothing and keeps the draft", async (_mark, composing) => {
   const user = userEvent.setup();
   const { view } = renderComposer();
 
@@ -1729,10 +1729,9 @@ test.each([
 
 // A reply is the composer's too: the Escape that ends an IME composition leaves it as it is, and
 // a plain Escape after it ends it.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends an IME composition, marked by %s, leaves the reply open", async (_mark, composing) => {
+test.each(
+  COMPOSITION_MARKS
+)("an Escape that ends an IME composition, marked by %s, leaves the reply open", async (_mark, composing) => {
   await warmMarkdownRenderer();
   const user = userEvent.setup();
   let cancelled = 0;

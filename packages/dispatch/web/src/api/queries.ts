@@ -9,6 +9,7 @@ import {
   replaceEqualDeep,
 } from "@tanstack/react-query";
 
+import type { ComposerOwner } from "../features/conversation/composer-model";
 import { credentialPendingQuery } from "../features/credentials/pending";
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import type { AdvancesListing } from "../features/project/issues-table-data";
@@ -220,6 +221,12 @@ export const issueDecisionsQuery = (key: string) =>
  *  their comments, their asks, their subscribers, their unread threads: the issue by its key,
  *  or the document by its artifact's id. */
 export type ListOwner = { readonly issue: string } | { readonly artifact: string };
+
+/** The list owner of a composer that writes on an issue or in a project document: the issue by
+ *  its key, or the document by its artifact's id. */
+export function listOwnerOf(owner: Exclude<ComposerOwner, { kind: "session" }>): ListOwner {
+  return owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId };
+}
 
 /** The owner's whole comment list: the issue's (`GET /api/v1/issues/{key}/comments`), or a
  *  project document's own (`GET /api/v1/artifacts/{id}/comments`). The margin

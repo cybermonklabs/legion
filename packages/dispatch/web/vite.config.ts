@@ -205,61 +205,23 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The entry - the one `assets/index-*.js` that dist/index.html names - read 499,485 bytes,
-    // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` at `4935c4af` (the
-    // same at the merges 4548096d and e15ee5e4) on 2026-11-23; the build id is in the entry, so
-    // CI's 40-character commit writes one byte more. On that day the default branch's own build
-    // at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109
-    // split the shell: the Inbox and its peek, the ask card, the search bar, the Create issue
-    // dialog, the shortcut sheet, the reference-preview layer, the event-refresh map, the headless
-    // Markdown engine the shell warms at boot, the new issue page's frame shell, the pending-writes
-    // indicator and the kinds of write are each a chunk of their own now, and
-    // `@legion/contracts`' subpaths keep that package's reference table and zod's schema modules
-    // out of a page that reads neither - in the editor's chunks too, which import that package
-    // by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
-    // The merge of 4b22ece4 read 500,672 bytes, over the budget; the cut in `01fc0e41` brought it
-    // to 499,380, and `97c0cde6`'s focus helper added 105, so `4935c4af` reads those 499,485 bytes,
-    // 515 under the budget. That cut made two moves. The Inbox's `Blocked on you` strip and the
-    // project page's pill left the entry for a file of
-    // their own, `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the
-    // project page's chunks share, and without that move the entry at `01fc0e41` measured 500,104
-    // bytes. The modulepreload polyfill, 710 bytes of the entry, is off, for the reason beside
-    // `modulePreload` below.
-    // The other sizes here were measured the same way at `53286717` the same day: the largest
-    // chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the Delivery page
-    // loads.
-    // The loading box and the alert of the surfaces a key opens
-    // (`features/shell/asked-surface.tsx`, review 6034817973) then took the entry to 500,530
-    // bytes, over the budget again. The rail's pinned agents answered it: they draw a session
-    // from `AgentName.tsx`'s session half alone (`features/refs/SessionName.tsx`), so the rest of
-    // that module is a chunk the pages' chunks share, and the entry read 497,401 bytes with a
-    // 39-character `DISPATCH_BUILD` on 2026-11-24. After the changes since, Details' one Escape
-    // rule among them (`escapeClosesDrawer`, `features/shell/useDialog.ts`), the entry read
-    // 497,933 bytes with a 39-character `DISPATCH_BUILD` the same day, and the two lists' alert
-    // for a render error (`features/writes/write-hosts.tsx`) takes it to 498,553. The sign-in
-    // page's list of kept writes, in the entry so that its warning depends on no chunk
-    // (`features/writes/KeptWrites.tsx`), takes it to 499,583. The merge of the default branch's
-    // correction and deletion of a post (#3512) took it to 500,975, over the budget. Three moves
-    // then took code that no first paint draws out of the entry, none of them a new lazy load, and
-    // the entry reads 498,776 bytes with a 39-character `DISPATCH_BUILD` on 2026-11-24: a held
-    // send refreshes a comment list under `ownerCommentsQuery`'s key, so
-    // `features/conversation/composer-model.ts` is out of the entry (411 bytes); the
-    // rail's state mark reads its relative time from `features/refs/relative-time.ts`, so
-    // `<Timestamp>` is a chunk the pages' chunks share (646 bytes); and the recent items read a
-    // document's route from `features/refs/routes.ts`, so the search bar's chip
-    // (`features/search/bar-scope.ts`) is a chunk that the bar and the issue list share
-    // (1,142 bytes). That left 498,776 bytes; the correction's mark then joined the event map's
-    // chunk (`api/event-refresh-load.ts`), and the entry read 498,590. The forward merges of the
-    // default branch after it, whose layers of the page's foot (#4631) added about 6,500 bytes,
-    // and the fixes after them took the entry to 506,935, over the budget. The page addresses
-    // that the shell reads then left `features/refs/routes.ts` for a module of their own
-    // (`features/refs/page-routes.ts`), with no new lazy load: the grammar of references and the
-    // modules that only it imports are two chunks that the pages' chunks share (`routes-*.js`,
-    // 10,989 bytes, and `dispatch-block-ref-*.js`, 3,632), and the entry reads 492,802 bytes with
-    // a 39-character `DISPATCH_BUILD` on 2026-11-25.
-    // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
-    // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
-    // warning and is over the ECharts chunk alone.
+    // The entry - the one `assets/index-*.js` that dist/index.html names - reads 492,840 bytes,
+    // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` on 2026-11-25; the
+    // build id is in the entry, so CI's 40-character commit writes one byte more.
+    // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps the history of
+    // its size - each reading, and each move that took code out of the entry - and
+    // `bun run check:asset-sizes` reads it again.
+    // The build splits out of the entry what no first paint draws, so every page parses less
+    // before it draws anything (dispatch://INFRA-1109): the Inbox and its peek, the ask card, the
+    // search bar, the Create issue dialog, the shortcut sheet, the reference-preview layer, the
+    // event-refresh map, the headless Markdown engine the shell warms at boot, the new issue
+    // page's frame shell, the pending-writes indicator and the kinds of write are each a chunk of
+    // their own, and `@legion/contracts`' subpaths keep that package's reference table and zod's
+    // schema modules out of a page that reads neither - in the editor's chunks too, which import
+    // that package by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
+    // This `chunkSizeWarningLimit` is Vite's own warning, and it is over the ECharts chunk alone.
+    // The sizes below were measured the same way at `53286717` on 2026-11-23: the largest chunk
+    // is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the Delivery page loads.
     // beautiful-mermaid and ELK live only in the Mermaid worker's bundle
     // (features/refs/mermaid-render.worker.ts, 1,565,608 bytes), fetched once a body or a
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.

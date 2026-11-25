@@ -6,6 +6,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -267,14 +268,11 @@ const editors: Record<"parent" | "route" | "title", (user: UserEvent) => Promise
 // and the parent's editor each stay open with the reader's draft. Chromium and Firefox mark such
 // a key `isComposing`; Safari sends it after the composition's end, unmarked, with keyCode 229.
 // A plain Escape after it is the reader's, and drops the draft and closes the editor.
-test.each([
-  ["title", "isComposing"],
-  ["title", "keyCode 229"],
-  ["route", "isComposing"],
-  ["route", "keyCode 229"],
-  ["parent", "isComposing"],
-  ["parent", "keyCode 229"],
-] as const)("an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft", async (editor, mark) => {
+test.each(
+  (["title", "route", "parent"] as const).flatMap((editor) =>
+    COMPOSITION_MARKS.map(([mark, marked]) => [editor, mark, marked] as const)
+  )
+)("an Escape that ends an IME composition in the %s's editor, marked by %s, leaves the editor open with its draft", async (editor, _mark, marked) => {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -284,12 +282,7 @@ test.each([
     await waitFor(() => expect(field).toHaveFocus());
     await view.user.clear(field);
     await view.user.type(field, "CORE-7");
-    fireEvent.keyDown(
-      field,
-      mark === "isComposing"
-        ? { isComposing: true, key: "Escape" }
-        : { isComposing: false, key: "Escape", keyCode: 229 }
-    );
+    fireEvent.keyDown(field, { ...marked, key: "Escape" });
     expect(field).toBeInTheDocument();
     expect(field).toHaveValue("CORE-7");
     expect(field).toHaveFocus();
@@ -317,11 +310,8 @@ test("an Enter that ends an IME composition in the title's editor keeps the edit
     await waitFor(() => expect(field).toHaveFocus());
     await view.user.clear(field);
     await view.user.type(field, typed);
-    for (const composing of [
-      { isComposing: true, key: "Enter" },
-      { isComposing: false, key: "Enter", keyCode: 229 },
-    ]) {
-      fireEvent.keyDown(field, composing);
+    for (const [, marked] of COMPOSITION_MARKS) {
+      fireEvent.keyDown(field, { ...marked, key: "Enter" });
       expect(field).toBeInTheDocument();
       expect(field).toHaveValue(typed);
       expect(field).toHaveFocus();

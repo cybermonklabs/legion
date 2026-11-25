@@ -10,7 +10,7 @@ import {
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentMessagesQuery, ownerCommentsQuery } from "../../api/queries";
+import { agentMessagesQuery, listOwnerOf, ownerCommentsQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
@@ -129,9 +129,7 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
   // The owner's comment list, under the key that every reader of the list takes from
   // `ownerCommentsQuery`. That factory is in the entry chunk already. A key helper in
   // `composer-model.ts` would put the functions of that module in the entry too.
-  const listOwner =
-    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId };
-  void client.invalidateQueries({ queryKey: ownerCommentsQuery(listOwner).queryKey });
+  void client.invalidateQueries({ queryKey: ownerCommentsQuery(listOwnerOf(owner)).queryKey });
   void client.invalidateQueries({ queryKey: ["inbox"] });
   if (anchor !== undefined) {
     void client.invalidateQueries({ queryKey: ["artifact", anchor.artifact, "blocks"] });

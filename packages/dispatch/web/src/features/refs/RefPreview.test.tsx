@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { type ReactNode, useEffect, useRef } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
+import { caretAt } from "../../__tests__/caret";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
@@ -379,13 +380,6 @@ test("on the issue page, the caret in an editor's link opens its card, and leavi
   try {
     const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
     if (link === null) throw new Error("the editable body drew no link mark");
-    const caretAt = (node: Node, offset: number) => {
-      // One move of the caret, as a browser reports it: emptying the selection first would report
-      // a caret outside every link in between.
-      document.getSelection()?.collapse(node, offset);
-      // user-event has no form that moves the caret inside an editable root.
-      fireEvent(document, new Event("selectionchange"));
-    };
     act(() => {
       caretAt(link.firstChild as Node, 3);
     });

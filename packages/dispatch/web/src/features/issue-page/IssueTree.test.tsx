@@ -18,6 +18,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
 import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
@@ -4175,10 +4176,9 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 // A Tab pressed in an input method's composition is the input method's - marked `isComposing`,
 // or unmarked with keyCode 229 as Safari sends the key that ends one - and ends no editing: the
 // focus stays in the row's editor, and the row keeps its editing.
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
+test.each(
+  COMPOSITION_MARKS
+)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
   setViewport(1440);
   const user = userEvent.setup();
   const { editable, view } = await caretInStatement(user);

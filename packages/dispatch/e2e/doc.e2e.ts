@@ -1344,6 +1344,12 @@ test("a preview layer that arrives while a button is held on a link opens no car
   });
 });
 
+/** Whether `message` is the page's report of a chunk whose download failed: an error that names
+ *  the dynamically imported module. */
+function importFailure(message: { text(): string; type(): string }): boolean {
+  return message.type() === "error" && message.text().includes("dynamically imported module");
+}
+
 // The preview layer mounts once the page has drawn, with no reader action, and the shell draws it
 // outside the page's error boundary (`web/src/features/refs/RefPreviewLayer.tsx`). Its chunk
 // failing online in a tab whose three reloads are spent reloads nothing
@@ -1373,8 +1379,6 @@ test("a preview layer whose chunk fails online with the tab's reloads spent leav
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     const spent = await recordTabReloads(page, [3, 2, 1]);
     const failed = await failAssetWhen(page, REF_PREVIEW_CHUNK, async () => undefined);
-    const importFailure = (message: { text(): string; type(): string }) =>
-      message.type() === "error" && message.text().includes("dynamically imported module");
     const caught = page.waitForEvent("console", importFailure);
 
     await page.goto(`/issues/${source.key}/conversation`);
@@ -1450,11 +1454,7 @@ test("a preview layer whose chunk failed online asks for it again for a hover on
     await expect(page.getByText("Signed in as alice")).toBeVisible();
     await recordTabReloads(page, [3, 2, 1]);
     const failed = await failAssetWhen(page, REF_PREVIEW_CHUNK, async () => undefined);
-    const caught = page.waitForEvent(
-      "console",
-      (message) =>
-        message.type() === "error" && message.text().includes("dynamically imported module")
-    );
+    const caught = page.waitForEvent("console", importFailure);
 
     await page.goto(`/issues/${source.key}/spec`);
     await expect(documentEditor(page).getByRole("link", { name: "the card link" })).toBeVisible();

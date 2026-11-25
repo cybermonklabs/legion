@@ -6,8 +6,10 @@ import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
+import { COMPOSITION_MARKS } from "../../__tests__/composition-marks";
+import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { type AskedSurfaceProps, askedSurface } from "./asked-surface";
-import { type Chunk, chunk, chunkComponent } from "./chunk-component";
+import { type Chunk, chunk } from "./chunk-component";
 import { chunkLoadsOut, onlyPrefetchesOut } from "./chunk-loads";
 
 /** A surface as the bar and the peek are: mounted while closed, drawing nothing then. */
@@ -144,10 +146,9 @@ test("Tab and Shift+Tab leave the focus in the box, and the open stands", async 
 // surface: the open stands, and what the reader typed stays. Chromium marks that Escape
 // `isComposing`; Safari sends it after its compositionend with `isComposing` false and keyCode
 // 229 (WebKit bug 165004).
-test.each([
-  ["isComposing", { isComposing: true }],
-  ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("an Escape that ends a composition, marked by %s, leaves the open standing with what was typed", async (_mark, marked) => {
+test.each(
+  COMPOSITION_MARKS
+)("an Escape that ends a composition, marked by %s, leaves the open standing with what was typed", async (_mark, marked) => {
   const user = userEvent.setup();
   const { promise, resolve } = Promise.withResolvers<typeof Surface>();
   const view = render(<Shell source={chunk(() => promise)} />);
@@ -256,12 +257,7 @@ test("a surface whose render throws draws an alert in its place, whose Close giv
 // well as for a render that threw (`notLoaded`), so the surface does not go with no word.
 test("a chunk the surface draws from that fails to download draws the alert in its place", async () => {
   const user = userEvent.setup();
-  const Card = chunkComponent(
-    chunk<object>(() =>
-      Promise.reject(new TypeError("Failed to fetch dynamically imported module"))
-    ),
-    null
-  );
+  const Card = failingChunkComponent();
   function WithCard({ open }: AskedSurfaceProps): ReactNode {
     return open === false ? null : <Card />;
   }

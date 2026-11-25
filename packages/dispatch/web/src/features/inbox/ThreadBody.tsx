@@ -25,6 +25,7 @@ import {
   agentMessagesQuery,
   askThreadQuery,
   issueQuery,
+  listOwnerOf,
   myRepliesKey,
   ownerCommentsQuery,
 } from "../../api/queries";
@@ -308,8 +309,7 @@ function CommentThreadBody({
   const queryClient = useQueryClient();
   // The thread's owner as the reads of an owner's lists name it: its unread threads and its
   // comments.
-  const listOwner =
-    owner.kind === "issue" ? { issue: owner.issueKey } : { artifact: owner.artifactId };
+  const listOwner = listOwnerOf(owner);
   const markNewest = useThreadRead(thread, listOwner);
   const issueKey = owner.kind === "issue" ? owner.issueKey : undefined;
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });

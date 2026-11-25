@@ -5,7 +5,7 @@ import { focusThePage } from "./issue-page-g";
 import { onBody, openIssue } from "./keyboard-issue";
 import { keptWrites } from "./keyed-writes";
 import { navigateInApp } from "./sends";
-import { chunkFile, holdAsset, holdAssetUntilReleased, pageAssetPath, ranChunk } from "./shell";
+import { chunkFile, entryScriptPath, holdAsset, holdAssetUntilReleased, ranChunk } from "./shell";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -452,11 +452,7 @@ async function afterAnyWrite(page: Page): Promise<void> {
  *  brings nothing in.
  */
 async function chunkIn(page: Page, name: string): Promise<void> {
-  const entry = await pageAssetPath(
-    /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
-    "module script",
-    baseUrl
-  );
+  const entry = await entryScriptPath(baseUrl);
   const source = await (await fetch(new URL(entry, baseUrl))).text();
   const file = new RegExp(`${name}-[\\w-]{8}\\.js`, "u").exec(source)?.[0];
   if (file === undefined) throw new Error(`the entry chunk names no ${name} chunk`);
@@ -732,71 +728,63 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   // SearchPaletteHost.tsx`), so each row holds that download on the wire, and the press finds the
   // chunk not in. The box that holds the keys is found by the name it carries for its surface,
   // "<name> (loading)" (`Placeholder` in `web/src/features/shell/asked-surface.tsx`).
-  test("? then 1 while the shortcut sheet's chunk is on its way writes no priority, and the sheet opens with 1 in its filter", async ({
-    browser,
-  }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Held sheet" });
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await page.setViewportSize({ width: 1280, height: 900 });
-      const { release } = await holdAssetUntilReleased(page, chunkFile("ShortcutHelp"));
-      const patched = await patchesOf(page, issue.key);
-      await openIssue(page, issue.key, "Held sheet");
+  for (const surface of [
+    {
+      chunk: "ShortcutHelp",
+      dialog: "Keyboard shortcuts",
+      field: { name: "Filter shortcuts", role: "searchbox" },
+      fieldWord: "filter",
+      key: "?",
+      keyWord: "?",
+      loading: "Keyboard shortcuts (loading)",
+      name: "shortcut sheet",
+      noun: "sheet",
+    },
+    {
+      chunk: "SearchPalette",
+      dialog: "Search",
+      field: { name: "Search", role: "combobox" },
+      fieldWord: "box",
+      key: "ControlOrMeta+k",
+      keyWord: "$mod+k",
+      loading: "Search (loading)",
+      name: "search bar",
+      noun: "bar",
+    },
+  ] as const) {
+    test(`${surface.keyWord} then 1 while the ${surface.name}'s chunk is on its way writes no priority, and the ${surface.noun} opens with 1 in its ${surface.fieldWord}`, async ({
+      browser,
+    }) => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: `Held ${surface.noun}` });
+      const context = await asUser(browser, "alice");
+      try {
+        const page = await context.newPage();
+        await page.setViewportSize({ width: 1280, height: 900 });
+        const { release } = await holdAssetUntilReleased(page, chunkFile(surface.chunk));
+        const patched = await patchesOf(page, issue.key);
+        await openIssue(page, issue.key, `Held ${surface.noun}`);
 
-      await page.keyboard.press("?");
-      await page.keyboard.press("1");
-      await afterAnyWrite(page);
-      expect(patched()).toBe(0);
-      expect(await keptWrites(page)).toBe(0);
-      const box = page.getByRole("textbox", { exact: true, name: "Keyboard shortcuts (loading)" });
-      await expect(box).toBeFocused();
-      await expect(box).toHaveValue("1");
-      release();
-      const filter = page
-        .getByRole("dialog", { name: "Keyboard shortcuts" })
-        .getByRole("searchbox", { name: "Filter shortcuts" });
-      await expect(filter).toHaveValue("1");
-      await expect(filter).toBeFocused();
-      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
-    } finally {
-      await context.close();
-    }
-  });
-
-  test("$mod+k then 1 while the search bar's chunk is on its way writes no priority, and the bar opens with 1 in its box", async ({
-    browser,
-  }) => {
-    await createProject({ key: "CORE", name: "Core" });
-    const issue = await createIssue({ project: "CORE", title: "Held bar" });
-    const context = await asUser(browser, "alice");
-    try {
-      const page = await context.newPage();
-      await page.setViewportSize({ width: 1280, height: 900 });
-      const { release } = await holdAssetUntilReleased(page, chunkFile("SearchPalette"));
-      const patched = await patchesOf(page, issue.key);
-      await openIssue(page, issue.key, "Held bar");
-
-      await page.keyboard.press("ControlOrMeta+k");
-      await page.keyboard.press("1");
-      await afterAnyWrite(page);
-      expect(patched()).toBe(0);
-      expect(await keptWrites(page)).toBe(0);
-      const box = page.getByRole("textbox", { exact: true, name: "Search (loading)" });
-      await expect(box).toBeFocused();
-      await expect(box).toHaveValue("1");
-      release();
-      const search = page
-        .getByRole("dialog", { name: "Search" })
-        .getByRole("combobox", { name: "Search" });
-      await expect(search).toHaveValue("1");
-      await expect(search).toBeFocused();
-      await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
-    } finally {
-      await context.close();
-    }
-  });
+        await page.keyboard.press(surface.key);
+        await page.keyboard.press("1");
+        await afterAnyWrite(page);
+        expect(patched()).toBe(0);
+        expect(await keptWrites(page)).toBe(0);
+        const box = page.getByRole("textbox", { exact: true, name: surface.loading });
+        await expect(box).toBeFocused();
+        await expect(box).toHaveValue("1");
+        release();
+        const field = page
+          .getByRole("dialog", { name: surface.dialog })
+          .getByRole(surface.field.role, { name: surface.field.name });
+        await expect(field).toHaveValue("1");
+        await expect(field).toBeFocused();
+        await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
+      } finally {
+        await context.close();
+      }
+    });
+  }
 
   // Tab and Shift+Tab stay in the box that holds the keys, as they stay in an open dialog
   // (`Placeholder` in `web/src/features/shell/asked-surface.tsx`). Letting Shift+Tab leave the box

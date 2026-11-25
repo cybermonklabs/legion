@@ -8,7 +8,9 @@
  * what every page parses first (`web/src/asset-sizes-in-build.ts` holds it to its budget), and
  * rollup puts all of a module in one chunk. So the grammar of `dispatch://` references and the
  * addresses no module of the entry reads are in `routes.ts`, which imports this module, and only
- * the chunks of the pages and of the reference surfaces load it.
+ * the chunks of the pages and of the reference surfaces load it. This module reads two Inbox
+ * types from `routes.ts` (`InboxGroupBy`, `InboxSort`), as types only, so no code of `routes.ts`
+ * comes into the entry.
  */
 import { hasControlCharacter, itemFromSearch } from "@legion/contracts/dispatch-href";
 import { matchPath } from "react-router-dom";

@@ -5,9 +5,9 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
+import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
 import { ApiError, api } from "../../api/client";
-import { chunk, chunkComponent } from "../shell/chunk-component";
 import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, plainWrite, writesOf } from "./write-store";
@@ -114,10 +114,7 @@ function Fault(): never {
  *  a deploy. It stands for that chunk, which a row cannot fail: once any row of this process has
  *  drawn the indicator, its chunk is in, and `chunk` keeps it. This one keeps no failed download,
  *  so each mount asks again and fails again. The kept list holds no chunk: it is in the entry. */
-const NotLoaded = chunkComponent(
-  chunk<object>(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module"))),
-  null
-);
+const NotLoaded = failingChunkComponent();
 
 /** Each list of writes, by its host: the name of the list's own region, and the name of the
  *  alert that stands in its place once its render has thrown. */
@@ -319,6 +316,51 @@ test("Discard on the last row of the sign-in page's kept list moves focus to the
       signIn,
       "Discard on the last row left focus on the body instead of the sign-in link"
     ).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A Discard pressed with the pointer hands the focus on to no other control. Chromium focuses a
+// button that the pointer presses and draws it no focus ring, so a hand-off would put the focus,
+// unseen, on the next row's Discard, and the next Space or Enter would discard that write too.
+// happy-dom matches `:focus-visible` on every focused element, so this row makes the pressed
+// button answer as Chromium does after a pointer press.
+test("Discard pressed with the pointer on the sign-in page's kept list moves no focus to the next Discard", async () => {
+  const user = userEvent.setup();
+  const first = keyMinted(Date.now());
+  const second = keyMinted(Date.now() + 1);
+  for (const [key, label] of [
+    [first, "CORE-1 set to done"],
+    [second, "CORE-2 set to todo"],
+  ] as const) {
+    keepWrite(window.sessionStorage, key, {
+      label,
+      state: { refusal: { kind: "stopped" }, status: "refused" },
+    });
+  }
+  const client = new QueryClient();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <KeptWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    const kept = screen.getByRole("region", { name: "Kept changes" });
+    const row = kept.querySelector(`[data-kept-write="${first}"]`) as HTMLElement;
+    const discard = within(row).getByRole("button", { name: "Discard" });
+    const matches = discard.matches.bind(discard);
+    spyOn(discard, "matches").mockImplementation(
+      (selectors: string) => selectors !== ":focus-visible" && matches(selectors)
+    );
+
+    await user.click(discard);
+    expect(kept.querySelector(`[data-kept-write="${first}"]`)).toBeNull();
+    const next = within(kept).getByRole("button", { name: "Discard" });
+    expect(
+      next,
+      "a Discard pressed with the pointer moved the focus to the next Discard"
+    ).not.toHaveFocus();
   } finally {
     view.unmount();
   }

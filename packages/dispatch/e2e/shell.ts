@@ -24,6 +24,15 @@ export async function pageAssetPath(
   return new URL(asset, origin).pathname;
 }
 
+/** The path of the page's entry chunk: the module script Vite writes into index.html. */
+export function entryScriptPath(origin: string): Promise<string> {
+  return pageAssetPath(
+    /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
+    "module script",
+    origin
+  );
+}
+
 /**
  * Answers the page's entry chunk 404, as a server whose deployment never built it does, whenever
  * `missing` says so for that request (numbered from 1; it may hold the request until it answers),
@@ -34,12 +43,7 @@ export async function missEntryChunk(
   missing: (request: number) => boolean | Promise<boolean>,
   origin: string
 ) {
-  // The entry chunk: the module script Vite writes into index.html.
-  const entry = await pageAssetPath(
-    /<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"/u,
-    "module script",
-    origin
-  );
+  const entry = await entryScriptPath(origin);
   const counts = { documents: 0, entryRequests: 0 };
   page.on("request", (request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
