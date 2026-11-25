@@ -18,6 +18,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 
 	"golang.org/x/oauth2"
 
@@ -121,6 +122,12 @@ func UnmarshalData(data []byte, into any) error { return redact.UnmarshalData(da
 func Unanswered(err error, request *http.Request, shown string) error {
 	return redact.Unanswered(err, request, shown)
 }
+
+// AskedURL is redact.AskedURL: u, the URL a request asked, as Unanswered names it (its scheme,
+// host and path, never its user information, query or fragment, and redact.NotPrinted where the
+// URL rule refuses what remains), for a line about a request that got an answer, so the URL has
+// one name wherever it prints.
+func AskedURL(u *url.URL) string { return redact.AskedURL(u) }
 
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
 // its standard reason phrase, never the phrase the answering party wrote (Response.Status).
