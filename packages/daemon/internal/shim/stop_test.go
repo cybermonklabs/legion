@@ -21,6 +21,24 @@ import (
 // (hangingJJ), so it does not outlive its test.
 func commandBudget(t *testing.T) time.Duration { return testwait.Remaining(t) + time.Minute }
 
+// stopLimit is how long the shim may take to return once it is stopped: by its context, by the
+// daemon's shutdown frame, or by the kill that ends its agent's grace. The whole stop is the
+// command's SIGTERM to its process group, the moment the group needs to go, the agent's own
+// SIGTERM and its exit: tens of milliseconds, with the rest for a loaded machine. It bounds the
+// product's own stop, which the launcher SIGKILLs once its grace is spent, so each case measures it
+// from the stop and fails a shim that returns later, while awaitExit still waits for a shim that
+// never returns until the binary's deadline, and names it there.
+const stopLimit = 5 * time.Second
+
+// returnedWithin fails t when the shim returned more than stopLimit after stopped, the moment
+// what names was sent.
+func returnedWithin(t *testing.T, r *running, stopped time.Time, what string) {
+	t.Helper()
+	if took := time.Since(stopped); took > stopLimit {
+		t.Errorf("the shim returned %v after %s, past %v: the stop is the shim's own, and the launcher kills a shim that outlasts its grace; log:\n%s", took, what, stopLimit, r.log)
+	}
+}
+
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
 // process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption
 // used to get it because it shared the pane's process group. Each command has a group of its own
@@ -86,10 +104,12 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, record, _ := shimRunningACommand(t, tc.workspace(t), tc.request)
 
+			stopped := time.Now()
 			r.cancel()
 			// A jj the stop did not reach would end only at the request's own budget, and the shim
 			// waits for its commands before it returns.
 			r.awaitExit(t)
+			returnedWithin(t, r, stopped, "its stop")
 			for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 				testwait.Until(t, "the request's jj to record "+strings.TrimSpace(want)+": the stop signals the command's whole process group", func() (string, bool) {
 					got := recorded(t, record)
@@ -105,10 +125,12 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			TimeoutMs: int(commandBudget(t).Milliseconds()),
 		})
 
+		stopped := time.Now()
 		p.send(t, shimwire.Shutdown{})
 		// A jj that outlived that stop would end only at the request's own budget, and the shim
 		// waits for its commands before it returns.
 		r.awaitExit(t)
+		returnedWithin(t, r, stopped, "the daemon's shutdown")
 		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 			if !strings.Contains(recorded(t, record), want) {
 				t.Errorf("the request's jj recorded\n%swant a line %q by the time the shim returned: the stop of the command's whole process group is this process's own to send, and after it has returned there is nobody left to send it",
@@ -164,8 +186,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			t.Errorf("the shim bounded the commands' drain by %v, want at most %v and under procgroup's whole stop span %v: the commands had been ended for %v by the time the agent was killed, and that is span this wait must not spend over again; log:\n%s",
 				drain.d, left, span, ended, r.log)
 		}
+		drained := time.Now()
 		drain.elapse()
 		r.awaitExit(t)
+		returnedWithin(t, r, drained, "the drain's bound ran out, the agent killed at the end of its grace")
 		// The drain's bound ran out with the command's jj still ignoring its SIGTERM, so the shim
 		// left it running, and the pane's last lines are where a person reads that it did.
 		if n := r.log.count("a command the daemon asked for is still running"); n != 1 {
@@ -210,8 +234,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		if left := procgroup.StopGrace + procgroup.WaitDelay - time.Since(answered); left > 0 {
 			time.Sleep(left)
 		}
+		killed := time.Now()
 		clock.next(t, grace).elapse()
 		r.awaitExit(t)
+		returnedWithin(t, r, killed, "the agent was killed at the end of its grace")
 
 		// Run has returned, so every wait it took is on the clock by now: a drain whose commands
 		// have all returned takes none, and a wait of 0 — which is the whole of the bound left
