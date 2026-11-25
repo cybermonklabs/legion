@@ -21,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -29,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // withdrawnGoingStream is everything the stream writes for a withdrawn run whose ending holds
@@ -276,25 +276,16 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 		rig.handler.ServeHTTP(sink, request)
 	}()
 	const first = "id: 1\nevent: text\ndata: {\"text\":\"Before the delete, \"}\n\n"
-	waitUntil(t, 30*time.Second, "the open stream writing the answer's first frame", func() bool {
+	waitUntil(t, "the open stream writing the answer's first frame", func() bool {
 		return sink.text() == first
 	})
 
 	deleteThreadComment(t, rig.handler, comment.ID, "alice")
 	release()
-	select {
-	case err := <-answerer.stored:
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("storing the rest of the answer answered %v, want it stored or refused as an ended run's", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the answer did not finish within 30s of its release")
+	if err := testwait.Receive(t, "the rest of the answer, stored once its release came", answerer.stored); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("storing the rest of the answer answered %v, want it stored or refused as an ended run's", err)
 	}
-	select {
-	case <-served:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the open stream did not end within 60s of the delete")
-	}
+	testwait.Receive(t, "the end of the open stream after the delete", served)
 
 	ending, err := readGoingTerminalEvent(ctx, rig.server.deps.Store.Pool, run.ID)
 	if err != nil {

@@ -288,10 +288,20 @@ The broker gives out a token only when GitHub's answer shows that it holds no mo
 asked.
 
 An `agent-secrets` of an earlier release took this narrowing as flags of its own, and sent it in the
-request's `github_app` field. The broker refuses every body that carries that field with
-`400 GITHUB_APP_FIELD_REMOVED` before it writes anything or asks anyone, so such a client runs
-nothing. This release refuses those flags itself, with exit 2, and names `--target` and the
-profile form.
+request's `github_app` field. Until every client has moved to `--target`, the broker answers that
+field as it did before profiles, for the services and people
+`BROKER_GITHUB_APP_FIELD_REQUESTERS` names and for a person asking for their own App: it serves
+the run as the profile of the stored secret it names that the caller may have at once, narrowed to
+the account and repositories the flags name, and hands the command a real narrowed token outside
+the airlock (`--github-read-only` asks for contents, metadata, pull requests, Actions runs, check
+runs and commit statuses at read, each where the profile holds it). Your own App is answered this way only while
+`BROKER_GITHUB_APP_FIELD_SECRETS` names it: that setting lists the stored Apps the deployment
+lets this answer hand over outside the airlock, and unset it names none. A deployment that sets
+`BROKER_GITHUB_APP_FIELD=off` refuses the field with `400 GITHUB_APP_FIELD_REMOVED` before it
+writes anything or asks anyone, and so does every broker for an App that setting does not name,
+for a requester the requester list does not name, and for a run it cannot serve that way, so such
+a client runs nothing. This release refuses those
+flags itself, with exit 2, and names `--target` and the profile form.
 
 The target applies to this read only. The next read of the profile without `--target` gives the
 token for every account and repository that the profile names. Keep a narrowed token apart from

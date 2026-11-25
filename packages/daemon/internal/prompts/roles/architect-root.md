@@ -95,8 +95,9 @@ and comes however full the cap is. An answered root stands in the admission line
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon
 starts you again by itself on that pass. Beside the place, `waitingLine` gives the line's own
-fields: `part` and `kind`, `partPlace` of `partLength` inside that part, `holdsSlot`, true for
-your root, which holds its slot already, `since` for an issue whose work came back or
+fields: `priority`, the priority it waits at, `part` and `kind`, `partPlace` of `partLength`
+inside its priority and part, `holdsSlot`, true for your root, which holds its slot already,
+`since` for an issue whose work came back or
 `rootRank`, `ownRank` and `rootKey` for one that has not started, and `reason`, the daemon's
 own sentence for that place. `why` on any issue of your tree that is not working now says the
 same in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this

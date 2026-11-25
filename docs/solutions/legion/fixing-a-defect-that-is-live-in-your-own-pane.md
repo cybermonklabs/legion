@@ -79,8 +79,11 @@ Round 2's review was clean pending the `.legion/` deletion and listed a docs-onl
 commits", and a runbook calling a load-bearing scrub "belt and braces"). Landing it before the
 deletion cost one tester bare-gate pass and one short reviewer re-check — the same price round
 1's fast-follow paid — and left the PR with no follow-up. The alternative, a follow-up LEGION
-issue for wording, is a deferral in disguise; Sami's rule is no deferrals. The order that works:
-fast-follow commit → push → `legion threads resolve` (every thread accepted so far resolves, and
+issue for wording, is a deferral in disguise. Sami's instructions put deferrals off the table by
+default, with exceptions when he says to defer, access is missing, or the task's direction would
+change (https://github.com/sjawhar/dotfiles/blob/b44037a470cfd1740c26f811dec98a7550598b49/.claude/CLAUDE.md#L42-L44).
+The order that works: fast-follow commit → push → `legion threads resolve` (every thread accepted
+so far resolves, and
 its output describes the pushed head) → tester bare gates → reviewer re-check → approval of
 that head → retro. Before sjawhar/legion#2354 a `.legion/` deletion push sat between the re-check and
 the approval, and the fast-follow had to land before it. (2026-09-25, LEGION-285: the tester and

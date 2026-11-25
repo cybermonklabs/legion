@@ -53,10 +53,12 @@ var storeWriteCallSites = map[string]string{
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
-	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it
-	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
-	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The comment path, which the comment route and the comment an issue write leaves share: the
+	// comment's node before the comments row that names it (queueCommentRow, through
+	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
+	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored).
+	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and
@@ -87,12 +89,13 @@ var storeWriteCallSites = map[string]string{
 	// event. Its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the
 	// owner lock writeReasoningNodes takes first too.
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
-	// the issue's owner lock (lockPatchOwners), the issue's row, then, on a context that carries a
-	// run alone, the issue's node as PlanChangedForRun plans it (QueueNodes), the issue's own
-	// event, and what the node states with its changed_by_run under that event (QueueCaused). api's
-	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
-	"api/issue_patch.go#patchIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// An issue's own field write made for a run (api/issue_patch.go's writeIssue, the write core the
+	// PATCH and each step of a status change run), which names the issue changed: the issue's owner
+	// lock (lockPatchOwners), the issue's row, then, on a context that carries a run alone, the
+	// issue's node as PlanChangedForRun plans it (QueueNodes), the issue's own event, and what the
+	// node states with its changed_by_run under that event (QueueCaused). api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps, through the PATCH.
+	"api/issue_patch.go#writeIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
 	// which names the ask or the comment changed: the owner lock of the ask or the comment, under
 	// which it reads the row, then, in its write phase, the row's update, then, on a context that

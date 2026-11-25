@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 )
@@ -330,7 +329,7 @@ func TestTheLiveSocketUpgradesForACallerThatTakesGzip(t *testing.T) {
 	header.Set("Accept-Encoding", "gzip")
 	client := rig.dial(t, header)
 	client.send(t, deliverySubscribe("live", presetView(deliveryLiveTimeline, 7, "")))
-	client.snapshot(t, 10*time.Second, "live")
+	client.snapshot(t, "live")
 }
 
 // A handler that takes the connection reaches the connection through this layer: the upgrade's
@@ -350,7 +349,7 @@ func TestAHandlerThatHijacksReachesTheConnection(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
+	conn, response, err := dialLive(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
 	if err != nil {
 		t.Fatalf("upgrade through the compression layer: %v", err)
 	}

@@ -24,8 +24,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// fenceWait is how long a step of this test waits for another backend to queue behind a row it
-// holds, and for a pass it started on a connection of its own to answer.
+// fenceWait is how long a step of this test waits for a writer it started on a connection of its
+// own to finish once the owed row it waited behind is released.
 const fenceWait = 30 * time.Second
 
 // highestTuple is the last sequence the tuple log holds: the mark a step's own appends are read
@@ -347,6 +347,7 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 // and for a revision test in refs.IndexOwedItemBlocks, which R23 reads as a writer outside the
 // fence.
 func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	document := createOwedDocument(t, database, service, "CORE-1", "", "race", raceVersion1, "")
@@ -491,6 +492,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 // commits on that row, one statement at a time; and only then does the pass queue its write
 // phase (store.RunWrite of refs.BlockIndexing.Queue) and commit.
 func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -779,7 +781,7 @@ func requireTheWriteIsFenced(t *testing.T, database *store.Store, service *Servi
 			return written{version, err}
 		}()
 	}()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered, fenceWait); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, pid, answered); early {
 		t.Fatalf("%s answered version %d, %v, without ever waiting on the owner", writer, answer.version, answer.err)
 	}
 	requireWaitingAtTheOwner(t, writer, race, statementOf(t, database, pid))
@@ -922,9 +924,7 @@ func requireTheTickIsFenced(t *testing.T, database *store.Store, service *Servic
 		}
 		ticked <- tick
 	}()
-	if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-		t.Fatalf("the tick never queued behind %s", race.name)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	// The tick runs on the pool, so its backend is the one the holder blocks.
 	var tickPID uint32
 	if err := database.Pool.QueryRow(ctx, `
@@ -1022,7 +1022,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 		report, err := graphcensus.Backfill(ctx, backfiller, io.Discard)
 		answered <- backfillAnswer{report, err}
 	}()
-	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered, fenceWait); done {
+	if early, done := storetest.WaitForQueuedBehind(t, holder, pid, answered); done {
 		t.Fatalf("%s answered (report %#v, err %v) without waiting on the owed row", writer, early.report, early.err)
 	}
 	requireWaitingAtTheOwedRow(t, writer, statementOf(t, database, pid))

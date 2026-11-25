@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -191,6 +192,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // no row of the store. The rebuild writes refs and marks work owed and writes no row of
 // document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
+	t.Parallel()
 	requireEveryPassReadsItsSource(t)
 	if t.Failed() {
 		// The source tree holds a pass nobody has said the input of, so whatever the
@@ -339,6 +341,9 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if err != nil {
 			t.Fatalf("begin the holder of %s: %v", step.name, err)
 		}
+		// The holder is rolled back however the step ends: a wait below that fails the test leaves
+		// the tick queued behind it otherwise. A rollback after the step's own is a no-op.
+		testcleanup.Add(t, func() { _ = holder.Rollback(context.Background()) })
 		if err := step.hold(holder, document); err != nil {
 			holder.Rollback(ctx)
 			t.Fatalf("hold %s: %v", step.name, err)
@@ -350,10 +355,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			}
 			close(ticked)
 		}()
-		if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
-			holder.Rollback(ctx)
-			t.Fatalf("the tick never queued behind %s", step.name)
-		}
+		storetest.WaitForLockWaiters(t, holder, 1)
 		if running := waitingStatement(t, holder); !strings.Contains(running, step.wantStatement) {
 			t.Errorf("the tick waiting on %s is running %q, want the statement that takes it", step.name, running)
 		}
@@ -526,6 +528,11 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#editComment":   "the edit request's own body, the comment's row it locked and the comment's own event",
 	"api/asks.go#editAsk":                  "the edit request's own body, the ask's row it locked and the ask's own event",
 	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	// The comment's row and its node, and what it states under its comment.created, which the
+	// comment route and the comment an issue write leaves both queue: each reads the comment its
+	// caller writes, and its own artifacts' addresses (commentStored).
+	"api/comment_create.go#queueCommentRow":     "the comment its caller writes: the create request's own body, or the issue write's own words",
+	"api/comment_create.go#queueCommentCreated": "the facts the comment's row write stated and the comment.created event it appended",
 	// An edit of an issue message's words and a delete of a message or a comment, each made for a
 	// run, restate the post's node from the row they locked, caused by their own event, so the
 	// run's change of the post is named (changed_by_run). None reads a row of either side to
@@ -621,10 +628,11 @@ var indexPasses = map[string]string{
 	// node taken gone takes its whole part_of subtree gone in the same write, each node from its own
 	// row, which the write reads through the current part_of tuples (graphstore.WriteState).
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row, the rows of every node under a node it takes gone, and the issue it stands under",
-	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
-	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
-	// is named (changed_by_run). It reads no row of either side to decide what the other says.
-	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// An issue's own field write made for a run: the issue's node, restated from the write's own
+	// fields and the issue's row it locked, and caused by the issue's own event, so the run's change
+	// of the issue is named (changed_by_run). It reads no row of either side to decide what the
+	// other says.
+	"api/issue_patch.go#writeIssue": "the write's own fields (the PATCH's body, or a status change step's), the issue's row it locked and the issue's own event",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
