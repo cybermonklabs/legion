@@ -1693,7 +1693,7 @@ A process that finds it held tries again
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
   Its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again after it:
-  at once when this process's queue first embeds successfully after the pass skipped the identity steps for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, so a vector an old-configuration process commits during a roll is dropped, and the inputs of an issue edited since the run before are recorded and the coverage report stops building its text.
+  at once when this process's queue first embeds successfully after the pass skipped the identity steps for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, so a vector an old-configuration process commits during a roll is dropped, and the inputs of an issue edited since the run before are recorded, so the refresh of its state row stops building and hashing its text.
   Only the process whose embedder has the active identity drops or re-admits anything;
   a process whose identity is not active sends no canary and looks again on the timer, since the identity it is configured with becomes active once no live process carries the one before it.
 
@@ -4070,7 +4070,9 @@ past it the statement counts nothing and the route answers `503 SEARCH_COVERAGE_
 The bound is the database's own so that it ends the statement while its caller still waits (the coverage probe gives up at 30 s), which then gets that answer rather than a cut connection and a `500`;
 and it holds where the caller's own cancel cannot arrive: pgx answers a caller's context that ends mid-statement by sending Postgres a CancelRequest, which needs a connection of its own, and a saturated server may refuse one.
 The boot pass reads the same report, under the same bound, for its closing log line;
-a report that fails there while the process still runs, past its bound or before the counts are filled, is logged at WARN (`dispatch embedqueue: coverage pass report failed`, with what the pass changed) and the pass returns, since every step before it is done, rather than failing and running again whole every `identityRecheckInterval`.
+a report that fails there while the process still runs, past its bound or for any other reason, is logged at WARN (`dispatch embedqueue: coverage pass report failed`, with what the pass changed),
+and one that finds the counts not filled yet, as the first start after their migration does since the fill starts only once the server listens, is logged at INFO (`dispatch embedqueue: coverage pass; the search coverage counts are not filled yet, so it reports no coverage`, with what the pass changed);
+either way the pass returns, since every step before it is done, rather than failing and running again whole every `identityRecheckInterval`.
 The `backfill-embeddings` subcommand, which did the pass's first job by hand, is gone, with its checkpoint table (0119).
 
 One embedder identity is active at a time, the one row of `embedder_active` (migration `20261101030538_embedder_active`, `internal/dispatch/embedqueue/active.go`).

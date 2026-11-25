@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
-	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // searchCoverage answers GET /api/v1/search/coverage: how much of what meaning search ranks has a
@@ -44,8 +43,7 @@ func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
 			"the search coverage counts are not filled yet; try again later"))
 	case errors.Is(err, embedqueue.ErrCoverageFoldBehind):
 		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_FOLD_BEHIND",
-			"more than %s rows of writes are not folded into the search coverage counts yet; try again later",
-			pgmigrate.Thousands(embedqueue.CoverageDeltaBound)))
+			"%s; try again later", embedqueue.ErrCoverageFoldBehind))
 	case err != nil:
 		s.writeHandlerError(w, err)
 	default:

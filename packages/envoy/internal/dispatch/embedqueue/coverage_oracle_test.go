@@ -470,7 +470,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireMainsAnswer(t, database, "before any record run")
 
 	if recordOnce(t, database) == 0 {
-		t.Fatal("the record step recorded no issue's source, so the report would read no hash from a row")
+		t.Fatal("the record step recorded no issue's source, so the refresh would read no hash from a row")
 	}
 	mains, heads := requireMainsAnswer(t, database, "after the record step")
 	trusted, stale := trustedIssues(t, database, configuredIdentity)

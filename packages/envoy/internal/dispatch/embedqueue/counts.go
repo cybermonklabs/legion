@@ -50,7 +50,6 @@ const (
 // Job, rounded up to the next 10 s. The second is four times the longer of two production runs of
 // main's coverage statement, a first run and a second run right after it, through INFRA-4863's
 // read login; where that login's 30 s statement bound cut a run, the bound is at least 120 s.
-// Both rest on the first time alone so far; no production run is in them.
 //
 // The Job is the builds Job infra-4864-coverage-scale-dgpdj at 4c73bcc9 (2026-11-24), at scale 3.6
 // of scripts/coverage-scale.sh's corpus: 3,582,232 items, 2.2 times production's 1,622,093 on
@@ -180,15 +179,14 @@ type countsGroup struct {
 
 // countsGroups is every group the recount counts, in the order it counts them: the issue, whose
 // state rows the recount refreshes first (refreshIssueStates), the window kinds, and each
-// not-indexed kind a count keeps (notIndexedKinds but the session), one class of every row of its
-// table.
+// not-indexed kind a count keeps (notIndexedKinds' kept), one class of every row of its table.
 var countsGroups = func() []countsGroup {
 	groups := []countsGroup{
 		{kinds: []string{issueKind}, statement: recountStatement(issueClasses)},
 		{kinds: windowCoverageKinds, statement: recountStatement(windowClasses), planned: true},
 	}
 	for _, kind := range notIndexedKinds {
-		if kind.kind == sessionKind {
+		if !kind.kept {
 			continue
 		}
 		groups = append(groups, countsGroup{

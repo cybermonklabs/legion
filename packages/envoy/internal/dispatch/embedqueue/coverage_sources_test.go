@@ -37,9 +37,10 @@ func repairOnce(t *testing.T, database *store.Store) int64 {
 	return repaired
 }
 
-// sourceMatches reports whether the report reads key's hash from the issue's row rather than
-// building its text: whether the source recorded for it is its current one, in the very
-// expressions the report reads (issueSourceFrom, issueSource).
+// sourceMatches reports whether the refresh of key's state row (search_coverage_issue_refresh)
+// reads key's hash from the issue's row rather than building its text: whether the source
+// recorded for it is its current one, in the very expressions the refresh compares
+// (issueSourceFrom, issueSource).
 func sourceMatches(t *testing.T, database *store.Store, key string) bool {
 	t.Helper()
 	var matches bool
@@ -62,7 +63,7 @@ func recordedSource(t *testing.T, database *store.Store, key string) (source, xm
 	return source, xmin
 }
 
-// An issue whose row holds the hash of its current text is recorded once, and the report then
+// An issue whose row holds the hash of its current text is recorded once, and the refresh then
 // reads its hash from the row rather than building its text (sourceMatches). A second run records
 // nothing and rewrites nothing: the source row keeps its xmin.
 func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
@@ -70,7 +71,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	seedIssue(t, database, "RCRD", "RCRD-1", "An issue its trigger enqueued")
 	seedSpec(t, database.Pool, "RCRD", "RCRD-1", "## Summary\n\nIts spec.\n")
 	if sourceMatches(t, database, "RCRD-1") {
-		t.Fatal("before any record run the report reads RCRD-1's hash from its row")
+		t.Fatal("before any record run the refresh reads RCRD-1's hash from its row")
 	}
 
 	if recorded := recordOnce(t, database); recorded != 1 {
@@ -78,7 +79,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	}
 	_, xmin := recordedSource(t, database, "RCRD-1")
 	if !sourceMatches(t, database, "RCRD-1") {
-		t.Error("once recorded, the report still builds RCRD-1's text rather than reading its hash from the row")
+		t.Error("once recorded, the refresh still builds RCRD-1's text rather than reading its hash from the row")
 	}
 
 	if recorded := recordOnce(t, database); recorded != 0 {
@@ -90,7 +91,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 }
 
 // An issue whose row is stale - its title changed with its trigger off, so the row's content_hash
-// is not the hash of the issue's text - is not recorded: the report must build and hash its text.
+// is not the hash of the issue's text - is not recorded: the refresh must build and hash its text.
 // The pass's repair points the row at the current text, and the run after the repair records it.
 func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 	database := storetest.Open(t)
@@ -112,7 +113,7 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 		t.Fatalf("the run after the repair recorded %d sources, want RSTL-1's", recorded)
 	}
 	if !sourceMatches(t, database, "RSTL-1") {
-		t.Error("once recorded after the repair, the report still builds RSTL-1's text")
+		t.Error("once recorded after the repair, the refresh still builds RSTL-1's text")
 	}
 }
 
@@ -168,7 +169,7 @@ func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 	} {
 		edit.edit()
 		if sourceMatches(t, database, "REDT-1") {
-			t.Errorf("after %s REDT-1's recorded source still matches, so the report would read the hash of the text before it", edit.name)
+			t.Errorf("after %s REDT-1's recorded source still matches, so the refresh would read the hash of the text before it", edit.name)
 		}
 		stage := "after " + edit.name
 		if edit.triggersOff {
@@ -195,7 +196,7 @@ func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 			t.Errorf("the run after %s recorded %d sources, want REDT-1's again", edit.name, recorded)
 		}
 		if !sourceMatches(t, database, "REDT-1") {
-			t.Errorf("once recorded after %s, the report still builds REDT-1's text", edit.name)
+			t.Errorf("once recorded after %s, the refresh still builds REDT-1's text", edit.name)
 		}
 		embedRowAs(t, database.Pool, "issue", "REDT-1", configuredIdentity)
 		requireMainsAnswer(t, database, "once recorded and embedded after "+edit.name)

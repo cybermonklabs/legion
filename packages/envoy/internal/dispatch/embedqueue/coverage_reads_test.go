@@ -51,7 +51,7 @@ type coverageReadSide struct {
 // it explains each side three times in turn, main's first, each run in a read-only transaction it
 // rolls back: main's route statement (mainRouteCoverageStatement) under the settings main's
 // planCoverage ran it under (mainRouteCoverageSettings), and the head's read
-// (CoverageReadStatement) under planCoverage's, both for the seeded embedder's identity. Neither
+// (coverageReadStatement) under planCoverage's, both for the seeded embedder's identity. Neither
 // runs under the route's 10 s bound, so main's statement is read to its end whatever it takes.
 //
 // It prints one line that starts `coverage-reads:` for each run of each side, with its shared hit
@@ -77,7 +77,7 @@ func TestTheCoverageReadsOfMainAndTheHead(t *testing.T) {
 			_, err := tx.Exec(ctx, mainRouteCoverageSettings)
 			return err
 		}},
-		{"CoverageReadStatement", CoverageReadStatement(), planCoverage},
+		{"coverageReadStatement", coverageReadStatement, planCoverage},
 	}
 	var failures []string
 	runs := make([][]coverageReadBuffers, len(sides))

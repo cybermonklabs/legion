@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -139,8 +141,7 @@ var windowKindArray = "'{" + strings.Join(windowCoverageKinds, ",") + "}'::text[
 
 // issueSourceFrom is every issue (issues i) beside what its source (issueSource) is computed from
 // and compared with, for the step that records sources (recordIssueSources) and for the recount's
-// find of the issues whose state rows are stale (staleIssueKeys), which migration
-// 20261124011834_search_coverage_counts's search_coverage_issue_refresh reads word for word:
+// find of the issues whose state rows are stale (staleIssueKeys):
 //
 //   - spec: the id and the row version (xmin) of the latest version of the issue's primary
 //     document, the version whose markdown issue_embedding_spec (0140) returns. That function
@@ -153,6 +154,11 @@ var windowKindArray = "'{" + strings.Join(windowCoverageKinds, ",") + "}'::text[
 //     is the cost the source exists to save.
 //   - e: the issue's embeddings row, when it has one.
 //   - r: the issue's recorded source (embedding_issue_sources), when it has one.
+//
+// Migration 20261124011834_search_coverage_counts's search_coverage_issue_refresh renders the two
+// again, word for word, and TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike holds the two
+// renderings equal. Were they to differ no count would be wrong, but every refresh would build and
+// hash its issue's text and every recount would find every issue stale.
 const issueSourceFrom = `issues i
 	left join lateral (
 		select v.id, v.xmin
@@ -499,14 +505,16 @@ func runIdentitySteps(ctx context.Context, deps Deps, identity string) (identity
 // whose text has nothing to embed and, for the kind it builds (issueKind), adds a row for
 // each item that has none, repairs each row whose text is stale and records, for each issue whose
 // row holds its current text, the inputs that text was built from (recordIssueSources), so the
-// report need not build that text again; then, when the configured embedder's identity is the
-// active one (embedderActive) and that embedder has answered (decideIdentitySteps), it drops each
-// vector another identity made and re-admits each other row dead under another identity; and it
-// logs one line with what it changed, whether it skipped those two steps, which identity is
-// active, and the coverage that leaves (Coverage). A report that fails while ctx is live is
-// logged at WARN with what the pass changed and fails nothing: the steps before it are done, and
-// a pass that failed on its report alone would be run again whole every identityRecheckInterval
-// for as long as the report failed (runCoverage).
+// refresh of the issue's state row (search_coverage_issue_refresh) need not build that text again;
+// then, when the configured embedder's identity is the active one (embedderActive) and that
+// embedder has answered (decideIdentitySteps), it drops each vector another identity made and
+// re-admits each other row dead under another identity; and it logs one line with what it
+// changed, whether it skipped those two steps, which identity is active, and the coverage that
+// leaves (Coverage). A report that fails while ctx is live is logged with what the pass changed,
+// at INFO when the counts are not filled yet (ErrCoverageNotFilled) and otherwise at WARN, and
+// fails nothing: the steps before it are done, and a pass that failed on its report alone would
+// be run again whole every identityRecheckInterval for as long as the report failed
+// (runCoverage).
 // Every step is a statement of at most coverageStatementRows rows in its own short transaction,
 // repeated until one changes nothing, and each is idempotent and safe beside a live write and
 // beside another process's pass, so it takes no lease: every envoy-dispatch process runs it, as
@@ -566,6 +574,12 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 		if ctx.Err() != nil {
 			return identityRun{}, fmt.Errorf("coverage pass: %w", err)
 		}
+		// The counts loop fills the counts only once the server listens, after this pass has
+		// started, so the first start after the migration that made them finds them not filled.
+		if errors.Is(err, ErrCoverageNotFilled) {
+			slog.Info("dispatch embedqueue: coverage pass; the search coverage counts are not filled yet, so it reports no coverage", changed...)
+			return steps, nil
+		}
 		slog.Warn("dispatch embedqueue: coverage pass report failed", append([]any{"error", err}, changed...)...)
 		return steps, nil
 	}
@@ -615,11 +629,10 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // stopping at the first clean run.
 //
 // So does the record step. Every edit of an issue's title or spec, and every new text its
-// trigger writes, changes the issue's inputs from the ones recorded, and the report builds and
-// hashes that issue's text on every call until a run records the new inputs - about 0.4 ms an
-// issue on a test Postgres, so a few hundred edits between two runs cost the report about a tenth
-// of a second, where recording them only at boot would let that cost grow for as long as the
-// process lives.
+// trigger writes, changes the issue's inputs from the ones recorded, and until a run records the
+// new inputs the refresh of the issue's state row (search_coverage_issue_refresh) builds and
+// hashes its text at each write of those inputs and at each recount that finds the issue stale,
+// where recording them only at boot would let that cost grow for as long as the process lives.
 //
 // What that costs, while there is nothing to do, is activeIdentity's reads - the one
 // embedder_active row and the live server processes - and two statements more: foreignRows, the
@@ -684,19 +697,21 @@ func runCoverage(ctx context.Context, deps Deps) {
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
 //
-// The coverage counts keep each of these counts but the session one, which the report reads from
-// route_roster's one row, and the recount counts each from its table (countsGroups).
-var notIndexedKinds = []struct{ kind, items string }{
-	{"component", "(select count(*) from components)"},
-	{sessionKind, "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
-	{"document_version", "(select count(*) from artifact_versions)"},
-	{"result", "(select count(*) from check_results)"},
-	{"handoff", "(select count(*) from handoffs)"},
+// kept says whether the coverage counts keep the kind's count. Each kind's is kept but the
+// session's: the recount counts a kept kind from its table (items) into its one class
+// (countsGroups) and the report reads that class, while route_roster holds one row whatever the
+// sessions it lists, so the report reads the session count (items) from that row itself
+// (coverageReadStatement).
+var notIndexedKinds = []struct {
+	kind, items string
+	kept        bool
+}{
+	{"component", "(select count(*) from components)", true},
+	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)", false},
+	{"document_version", "(select count(*) from artifact_versions)", true},
+	{"result", "(select count(*) from check_results)", true},
+	{"handoff", "(select count(*) from handoffs)", true},
 }
-
-// sessionKind is the one not-indexed kind no count keeps: route_roster holds one row whatever the
-// sessions it lists, so the report reads that row.
-const sessionKind = "session"
 
 // notIndexedPositions is each notIndexedKinds kind's place in the report's list, so the rows of
 // one statement, whose order no union all promises, land in the order declared above.
@@ -725,8 +740,10 @@ var ErrCoverageNotFilled = errors.New("the search coverage counts are not filled
 
 // ErrCoverageFoldBehind is what Coverage answers when it read more than CoverageDeltaBound delta
 // rows: the counts are the base rows plus every delta row not yet folded into them, and the report
-// refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND.
-var ErrCoverageFoldBehind = fmt.Errorf("more than %d rows of writes are not folded into the search coverage counts", CoverageDeltaBound)
+// refuses rather than read more. The route answers it 503 SEARCH_COVERAGE_FOLD_BEHIND with its
+// text, which writes the bound with thousands separators ("100,000").
+var ErrCoverageFoldBehind = errors.New(message.NewPrinter(language.English).Sprintf(
+	"more than %d rows of writes are not folded into the search coverage counts yet", CoverageDeltaBound))
 
 // coverageReadStatement is the report's one statement (coverageRead), so one snapshot and one
 // now() answer every count and every age. $1 is the identity, the empty string when none is
@@ -787,7 +804,7 @@ var coverageReadStatement = func() string {
 	}
 	for _, kind := range notIndexedKinds {
 		items, from := "coalesce(sum(items), 0)", " from classes where kind = '"+kind.kind+"'"
-		if kind.kind == sessionKind {
+		if !kind.kept {
 			items, from = kind.items, ""
 		}
 		arms = append(arms, "select '"+kind.kind+"'::text, false, ("+items+")::bigint, 0::bigint, 0::bigint, null::bigint"+from)
@@ -806,12 +823,6 @@ var coverageReadStatement = func() string {
 		select (select count(*) from deltas), exists (select 1 from search_coverage_filled where id), counted.*
 		from (` + strings.Join(arms, "\n\t\tunion all ") + `) counted`
 }()
-
-// CoverageReadStatement is the text of the report's one statement (coverageReadStatement), for the
-// production check, which runs it under EXPLAIN where the report runs, on a deployment's database.
-func CoverageReadStatement() string {
-	return coverageReadStatement
-}
 
 // coverageStatementTimeout is the statement_timeout Coverage holds its statement to: Postgres ends
 // a statement that runs past it, and Coverage answers that as ErrCoverageTimedOut, which the

@@ -915,6 +915,93 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 	}
 }
 
+// TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike holds the two renderings of an issue's
+// source equal: this package's (issueSourceFrom, issueSource), which the record step records
+// (recordIssueSources) and the recount's find of stale issues compares (staleIssueKeys), and
+// search_coverage_issue_refresh's own (migration 20261124011834_search_coverage_counts), which
+// compares the recorded source and writes the state row's inputs. Were they to differ no count
+// would be wrong, so no other test would fail, but every refresh would build and hash its issue's
+// text and every recount would find every issue stale. It seeds an issue of each shape of input
+// the rendering reads - a primary document of two versions, one of one version, one of none, a
+// document of the issue that is not its primary one, no document, an embeddings row and none -
+// records their sources and fills the counts, and then the find answers no key. As its control,
+// a title written with its table's triggers off makes the find answer that issue's key alone.
+func TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	q := database.Pool
+	const project = "RNDR"
+	seedIssue(t, database, project, "RNDR-1", "An issue whose primary document has two versions")
+	twoVersions := seedSpec(t, q, project, "RNDR-1", "## Summary\n\nThe first version.\n")
+	addVersion(t, q, twoVersions, 2, "## Summary\n\nThe latest version.\n")
+	seedIssue(t, database, project, "RNDR-2", "An issue whose primary document has one version")
+	seedSpec(t, q, project, "RNDR-2", "## Summary\n\nIts one version.\n")
+	seedIssue(t, database, project, "RNDR-3", "An issue whose primary document has no version")
+	mustExec(t, q, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('RNDR-3', $1, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')`, project)
+	seedIssue(t, database, project, "RNDR-4", "An issue whose one document is not its primary one")
+	var notes string
+	if err := q.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ('RNDR-4', $1, 'notes', 'notes.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning id::text`, project).Scan(&notes); err != nil {
+		t.Fatalf("seed RNDR-4's document: %v", err)
+	}
+	addVersion(t, q, notes, 1, "Notes, not the spec.")
+	seedIssue(t, database, project, "RNDR-5", "An issue with no document")
+	seedIssue(t, database, project, "RNDR-6", "An issue the queue holds no row of")
+	mustExec(t, q, `delete from embeddings where kind = 'issue' and id = 'RNDR-6'`)
+
+	// stale is what the recount's find answers over every issue, and for each key it answers, the
+	// inputs its state row records beside the inputs the find renders.
+	stale := func() (keys, differences []string) {
+		t.Helper()
+		rows, err := q.Query(ctx, staleIssueKeys, "", coverageStatementRows)
+		if err != nil {
+			t.Fatalf("find the stale issues: %v", err)
+		}
+		if keys, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			t.Fatalf("read the stale issues: %v", err)
+		}
+		rows, err = q.Query(ctx, `
+			select i.key, coalesce(s.inputs, '(no state row)'), search_coverage_issue_inputs(`+issueSource+`, i.created_at, e.id, e.xmin)
+			from `+issueSourceFrom+`
+			left join search_coverage_issues s on s.key = i.key
+			where i.key = any($1) order by i.key`, keys)
+		if err != nil {
+			t.Fatalf("read the stale issues' inputs: %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key, recorded, rendered string
+			if err := rows.Scan(&key, &recorded, &rendered); err != nil {
+				t.Fatalf("read a stale issue's inputs: %v", err)
+			}
+			differences = append(differences, fmt.Sprintf("%s: its state row records %q, staleIssueKeys renders %q", key, recorded, rendered))
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the stale issues' inputs: %v", err)
+		}
+		return keys, differences
+	}
+
+	recordOnce(t, database)
+	fillCounts(t, database)
+	if keys, differences := stale(); len(keys) > 0 {
+		t.Fatalf("after the fill staleIssueKeys answers %d issues, want none: search_coverage_issue_refresh and issueSourceFrom with issueSource render their inputs apart:\n%s",
+			len(keys), strings.Join(differences, "\n"))
+	}
+
+	withTableTriggersOff(t, database, "issues", func(q querier) {
+		mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = 'RNDR-1'`)
+	})
+	if keys, differences := stale(); !slices.Equal(keys, []string{"RNDR-1"}) {
+		t.Fatalf("after RNDR-1's title was written with its table's triggers off staleIssueKeys answers %v, want RNDR-1 alone:\n%s",
+			keys, strings.Join(differences, "\n"))
+	}
+}
+
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
 
 // setForTest sets variable to value until the test ends, as shortenIdentityRecheck sets the

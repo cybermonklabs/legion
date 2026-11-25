@@ -200,12 +200,13 @@ language sql stable parallel safe as $$
 $$;
 
 -- issueSourceFrom and issueSource are embedqueue's, word for word but for the schema each name is
--- written with; the text test and the hash are those of the issue arm of main's statement
--- (mainRouteCoverageStatement, embedqueue/coverage_main_statement_test.go, main at df18d9be). The
--- loop takes the state row's lock: a row another transaction inserted after the select's snapshot
--- is not seen by it, so the insert meets that row and does nothing and the loop selects it again
--- under a new snapshot; a row another transaction deleted while the select waited for it is gone,
--- so the insert makes it again.
+-- written with, and TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike
+-- (embedqueue/coverage_counts_test.go) holds the two renderings equal; the text test and the hash
+-- are those of the issue arm of main's statement (mainRouteCoverageStatement,
+-- embedqueue/coverage_main_statement_test.go, main at df18d9be). The loop takes the state row's
+-- lock: a row another transaction inserted after the select's snapshot is not seen by it, so the
+-- insert meets that row and does nothing and the loop selects it again under a new snapshot; a row
+-- another transaction deleted while the select waited for it is gone, so the insert makes it again.
 create function public.search_coverage_issue_refresh(p_key text) returns void
 language plpgsql as $$
 begin
