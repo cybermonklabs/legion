@@ -286,3 +286,19 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 		line.BootStarts = c.ProjectReleased()
 	}
 }
+
+// podlessStops is every claim of stop on an issue that has no pod among pods, the controller's
+// left out, which the release stops after the issue pods.
+func podlessStops(stop []store.ProjectReleaseClaim, pods []*releasePod) []claim.Token {
+	withPod := map[string]bool{}
+	for _, pod := range pods {
+		withPod[pod.sandbox.Issue] = true
+	}
+	var podless []claim.Token
+	for _, c := range stop {
+		if c.Issue != "" && !withPod[c.Issue] {
+			podless = append(podless, c.Token)
+		}
+	}
+	return podless
+}
