@@ -1356,14 +1356,12 @@ func TestALaunchThatFailsAfterRunningLeavesItsSandboxSuspended(t *testing.T) {
 func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 	// Not parallel: the error reads the controller's condition from the runtime's store when the
 	// boot timeout runs out (waitedOut), so the store must catch up with the patch inside that
-	// span, which other tests' load would move; with every Sandbox event 400 ms late it misses
-	// at the rig's 2 s as at 300 ms.
+	// span, which other tests' load would move.
 	blocked := metav1.Condition{
 		Type: conditionReady, Status: metav1.ConditionFalse, Reason: "PodSchedulingBlocked",
 		Message: "0/3 nodes are available: 3 Insufficient cpu.",
 	}
-	// The rig's 2 s boot timeout: the pod never comes, so the wait still runs out.
-	g := newRig(t, nil)
+	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = 300 * time.Millisecond }))
 	g.hold.Store(true)
 	// The controller reports on the generation it observed, and a condition of an earlier one is
 	// not read as this launch's, so the rig writes it as the controller would: after the Running
