@@ -27,47 +27,56 @@
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
   # daemon-go (.github/workflows/ci-job-daemon-go.yaml, job daemon-go-legs): plain, every package
-  # but the race step's and the text checks. Leg 1 is internal/store's, whose 501 s sets its time,
-  # beside the next three, each on a core of its own; leg 2 is the rest, about 794 s of package
-  # time over four cores, and the steps that run no leg's packages (the race-impossible tests, the
-  # stamped shape gate, the forced-order tests and the Stage 1 proof).
+  # but the race step's and the text checks. The two long packages that keep more than one core
+  # busy run in different legs: cmd/legion (1.1 cores alone at main, about 2.4 once its tests run
+  # beside each other, #5514) in leg 1, internal/runtime/sandbox (1.2) in leg 2, with
+  # internal/classify (1.2, for 16 s). Leg 1 is cmd/legion's, whose 432 s sets its time, beside
+  # internal/store and four packages that mostly wait on Postgres or a child (under half a core
+  # each); leg 2 is the rest, about 866 s of package time over four cores, and the steps that run
+  # no leg's packages (the race-impossible tests, the stamped shape gate, the forced-order tests and
+  # the Stage 1 proof). Its times are not the four groups' above: they are the medians of the last
+  # ten green merge groups that ran these legs (2026-11-25 20:27Z-22:55Z: runs 45695186634,
+  # 45696132960, 45700055287, 45700222985, 45708557702, 45711933885, 45712646870, 45713803817,
+  # 45715584525 and 45717072988), internal/runtime/sandbox's of the seven since its tests run in
+  # parallel (#5507). A package's cores are its CPU over its time run alone on 4 CPUs (build-cluster
+  # Jobs legion-ci-cmdlegion-4jtkm and -tl98h).
   daemon-go:
     1:
-      - internal/store                          # 501 s
-      - internal/runtime/sandbox                # 299 s
-      - cmd/legion                              # 246 s
-      - internal/workflow                       # 223 s
+      - cmd/legion                              # 432 s
+      - internal/store                          # 274 s
+      - internal/api                            # 84 s
+      - internal/leakguard                      # 54 s
+      - internal/record                         # 25 s
+      - internal/repocache                      # 20 s
     2:
-      - internal/workspace                      # 171 s
-      - internal/admit                          # 134 s
-      - internal/api                            # 90 s
-      - internal/leakguard                      # 51 s
-      - internal/classify                       # 39 s
+      - internal/workspace                      # 176 s
+      - internal/runtime/sandbox                # 156 s
+      - internal/workflow                       # 156 s
+      - internal/admit                          # 129 s
       - internal/runtime/tmux                   # 38 s
-      - internal/record                         # 29 s
-      - internal/testnats                       # 28 s
-      - internal/repocache                      # 28 s
-      - internal/shim                           # 24 s
-      - internal/podsafety                      # 20 s
-      - internal/supervise                      # 16 s
-      - internal/capabilities                   # 13 s
-      - internal/modeltoken                     # 12 s
-      - internal/stream                         # 12 s
-      - internal/memoryguard                    # 11 s
-      - internal/cipher                         # 11 s
-      - internal/appauth                        # 10 s
+      - internal/classify                       # 38 s
+      - internal/supervise                      # 13 s
+      - internal/shim                           # 12 s
+      - internal/memoryguard                    # 12 s
+      - internal/modeltoken                     # 11 s
+      - internal/stream                         # 11 s
+      - internal/capabilities                   # 10 s
+      - internal/cipher                         # 9 s
       - internal/procgroup                      # 9 s
-      - internal/pause                          # 9 s
-      - internal/claudebridge                   # 9 s
-      - internal/natsauth                       # 8 s
-      - internal/ompsessions                    # 5 s
-      - internal/fixtureenv                     # 4 s
-      - internal/blockers                       # 3 s
+      - internal/natsauth                       # 9 s
+      - internal/claudebridge                   # 8 s
+      - internal/pause                          # 8 s
+      - internal/appauth                        # 8 s
+      - internal/podsafety                      # 7 s
+      - internal/ompsessions                    # 3 s
+      - internal/fixtureenv                     # 2 s
+      - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
-      - internal/testpg/testdb                  # 1 s
-      - internal/projection                     # 1 s
+      - internal/testnats                       # 28 s
+      - internal/testpg/testdb                  # 2 s
       - internal/testpg                         # 1 s
-      - internal/config                         # 1 s
+      - internal/projection                     # 1 s
+      - internal/config
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts

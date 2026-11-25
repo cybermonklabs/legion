@@ -51,6 +51,18 @@ is then plain leg 1, internal/store's: 506 s of job in run 45678673783, against 
 longest race leg (a group of internal/daemon) and 385 s for race leg 4, where the merge group
 waited 940 s for daemon-go.
 
+Those legs put the packages that compete for the runner's cores in one leg. In the ten green merge
+groups that ran the legs from 20:27Z to 22:55Z on 2026-11-25 (runs 45695186634 to 45717072988),
+plain leg 1 took a median 578 s of job and leg 2 376 s; in leg 1, cmd/legion took a median 432 s,
+internal/store 274 s, internal/runtime/sandbox 156 s (its tests in parallel since #5507) and
+internal/workflow 156 s. Run alone on 4 CPUs, each with its CPU over its time (build-cluster Jobs
+legion-ci-cmdlegion-4jtkm and -tl98h), cmd/legion keeps 1.1 cores busy, about 2.4 once its tests
+run beside each other (#5514), and internal/runtime/sandbox 1.2; internal/store, internal/workflow
+and the other long packages mostly wait on Postgres or a child, under half a core each. So the two
+that need cores run in different legs: plain leg 1 is cmd/legion's, beside internal/store and four
+waiting packages; plain leg 2 has internal/runtime/sandbox, internal/workspace, internal/workflow,
+internal/admit and the rest, about 866 s of package time over four cores.
+
 The rules the legs keep:
 
 - **Each package runs once, in one leg.** `.github/scripts/go_legs.py`, which each leg's go test
