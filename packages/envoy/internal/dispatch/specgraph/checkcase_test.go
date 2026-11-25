@@ -20,8 +20,9 @@ var (
 
 // The nodes of TestCheckState: the top statement T, the leaf L under it, and L's program check C,
 // which reads the code; and the checks that some rows add under L: P, a query of production, and
-// A, an agent of production; G, a query of the graph; Q, a program check of production, and its
-// like of the graph; and K, an agent of the code, and its like that is a query.
+// A, an agent of production; G, a query of the graph, and its like that is an agent; Q, a program
+// check of production, and its like of the graph; and K, an agent of the code, and its like that is
+// a query.
 var (
 	checkStateTop = Statement{ID: "messages-reach-sessions", Kind: KindBehavior,
 		Text: "Envoy delivers each message to the session that it is for."}
@@ -47,6 +48,11 @@ var (
 		Subject: SubjectGraph, Procedure: ProcedureQuery,
 		Claim:          "Each message record of the graph has a delivery record.",
 		ProcedureText:  "The query reads each message record of the graph.\nIt returns each message record that has no delivery record.",
+		FailingExample: "A copy of the graph with one message record that has no delivery record."}
+	checkStateGraphAgent = Check{ID: "an-agent-finds-a-delivery-of-each-message", Serves: "a-stored-message-survives-a-restart",
+		Subject: SubjectGraph, Procedure: ProcedureAgent,
+		Claim:          "Each message record of the graph has a delivery record.",
+		ProcedureText:  "An agent reads each message record of the graph.\nIt names each message record that has no delivery record.",
 		FailingExample: "A copy of the graph with one message record that has no delivery record."}
 	checkStateProductionProgram = Check{ID: "a-production-restart-loses-no-message", Serves: "a-stored-message-survives-a-restart",
 		Subject: SubjectProduction, Procedure: ProcedureProgram,
@@ -327,6 +333,18 @@ func (s *checkCase) codeResults(k Check, runCommit string) {
 	s.Subject.Commit = "c2"
 	s.Results = append(s.Results, Result{Check: k.ID, Kind: ResultRun, Outcome: OutcomePass, Commit: runCommit, At: checkStateRun},
 		Result{Check: k.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Commit: "c1", At: checkStateRun.Add(5 * time.Minute)})
+}
+
+// runsAgainAt adds, for each run of the case at a commit, the same run at commit an hour later: CI
+// runs a check's job again at a new commit, and a run counts only at its own commit, while a
+// failing example that the test caught counts there too while no file of the check's tie changed.
+func (s *checkCase) runsAgainAt(commit string) {
+	for _, r := range slices.Clone(s.Results) {
+		if r.Kind == ResultRun && r.Commit != "" {
+			r.Commit, r.At = commit, r.At.Add(time.Hour)
+			s.Results = append(s.Results, r)
+		}
+	}
 }
 
 // specNodeID is the id of a statement or a check.

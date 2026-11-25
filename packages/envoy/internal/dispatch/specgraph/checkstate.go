@@ -53,14 +53,15 @@ func subjectFault(p Point, now time.Time) string {
 // moves a state toward true, and a refusal by CI makes its check read unknown at its commit and
 // cancels the results of that commit that support true wherever they count (R48, CheckStates step
 // 2), so each can move a state away from what the evidence without it gives, and never toward
-// true, and the caller gives JobRuns and
-// Uncited, empty for none, and Input.check refuses nil. With no tie, or no history, no result
-// carries: a result counts only at its own commit, so a failure at another commit then says nothing
-// about this one. So a caller that gives no Ties or no History is refused too, and one that states
-// that it has none gives CommitTies{} or
-// FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil, and gets no carry,
-// as R8 reads a tie that is not known ("A check whose tie to its code is unknown runs on each push
-// to the branch"). The command gives the ties and the history of its scenario.
+// true, and the caller gives JobRuns and Uncited, empty for none, and Input.check refuses nil. A run
+// counts only at its own commit, and a failing example also at another commit, by the ties and the
+// history (the rule that replaces The Spec's R8: "A result counts only at the commit that it read";
+// "A failing example that a check's test caught (The Spec R9) counts at another commit only while
+// no file that the test reads changed"). With no tie, or no history, no failing example counts at
+// another commit, so a caught fault at another commit then says nothing about this one. So a caller
+// that gives no Ties or no History is refused too, and one that states that it has none gives
+// CommitTies{} or FixtureHistory{Commits: []FixtureCommit{}}, the empty values that are not nil.
+// The command gives the ties and the history of its scenario.
 type Input struct {
 	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
 	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
@@ -145,21 +146,19 @@ const (
 //     or false at S.Commit. Of the own results of a commit where CI refused C, the candidates of
 //     step 3 whose commit is that commit (resultCommit; for a failing example of a program check
 //     of the code, the commit that it counts from, faultCommit), those that support true, a pass
-//     and a failing example that caught its fault, count nowhere, at it or where R8 would carry
-//     them; its failures, its runs that could not run and its failing examples that missed their
-//     fault count wherever they would, since at another subject R7 decides ("a later failure
-//     cancels an earlier pass") and R9's unknown cases read "never as true", so a refusal never
-//     moves a state toward true (withoutRefused). With such a result taken out that would count at
-//     S and no run left that counts at S: unknown, uncited, Detail the least rule by its name of
-//     those refusals, so that the order of the results does not choose it. The own results of
-//     every other commit are R7's and R8's, whatever CI refused elsewhere: a refusal cancels no
-//     result of another commit, so a pass and a failure of one procedure at one commit read
-//     unknown, disagree, and whether a result carries across the refused commit is the question of
-//     the ties and the history (R8: "A
-//     result at one commit also counts at another commit when no code that the check runs changed
-//     between the two"). A query or an agent of production or of the graph has no commit of a
-//     result, so only CI's refusal at S.Commit counts for it, whatever commit a result's TestCommit
-//     names. A run of the job is no result, and no refusal takes one out.
+//     and a failing example that caught its fault, count nowhere, at it or at another commit; its
+//     failures, its runs that could not run and its failing examples that missed their fault count
+//     wherever they would, since at another subject R7 decides ("a later failure cancels an earlier
+//     pass") and R9's unknown cases read "never as true", so a refusal never moves a state toward
+//     true (withoutRefused). With such a result taken out that would count at S and no run left
+//     that counts at S: unknown, uncited, Detail the least rule by its name of those refusals, so
+//     that the order of the results does not choose it. The own results of every other commit
+//     stay, whatever CI refused elsewhere: a refusal cancels no result of another commit, so a pass
+//     and a failure of one procedure at one commit read unknown, disagree, and whether a failing
+//     example counts across the refused commit is the question of the ties and the history (step
+//     7). A query or an agent of production or of the graph has no commit of a result, so only CI's
+//     refusal at S.Commit counts for it, whatever commit a result's TestCommit names. A run of the
+//     job is no result, and no refusal takes one out.
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -167,44 +166,49 @@ const (
 //     above it (R7: "A change to the text of a statement makes every result under it suspect").
 //     Results that pass the other tests and are all older than that approval: unknown,
 //     statement_changed.
-//  4. The runs that count at S. For a code check, a run at S.Commit, or at another commit A when
-//     C's tie is known at A and at S.Commit and no path that changed between them is covered by the
-//     tie at either commit (R8; R18: "At each commit, Dispatch derives four ties"), every such
-//     commit, and with a tie that is not known at one of the two only runs at S.Commit. For a
-//     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none
-//     when S names no transaction (R7: "A result counts only for the procedure that ran it and for
-//     the subject that it read"); a run of the graph names the transaction that it read or tried to
-//     read, and Input.check refuses one that names none. For a program check of production or the
-//     graph, only a run whose TestCommit counts at S.Commit by the same rule, as for its failing
-//     example (R7: "The procedure is the text of the check and the code that runs it, so a change to
-//     either ends the standing of earlier results"); Input.check refuses a result of such a check
-//     that names no TestCommit, as it refuses one that names no subject of its check's kind. A run of
-//     C's job counts at S at each commit whose results of C would count at S by the same rule,
-//     S.Commit among them, whether or not that commit holds a result of C: it is the newest answer
-//     of its commit (R9: "When a check has no result that counts after a run of its job ends, it
-//     reads unknown, and Dispatch reports a fault of CI"; R7: "silence is not a pass"), unlike a
-//     refusal of step 2. No run counts: unknown, ci_fault when a run of C's job that counts at S
-//     ended (R9), else subject_moved when C has a run, else no_result, since a run of the job that
-//     has not ended is no fault of CI. A code check, or a program check of production or the graph,
-//     with a run of its job that counts at S in a leg with no run that counts: unknown, ci_fault,
-//     Detail the first such leg by name whose run ended (R7: "silence is not a pass"; R12: "Each
-//     leg of a matrix reports its own result, and no leg replaces the result of another"), else
-//     unknown, no_result, Detail the first such leg by name, since a leg whose run has not ended is
-//     no silent leg and no pass (legWithNoResult).
-//  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
+//  4. The runs that count at S. For a code check, the runs at S.Commit alone: a run at another
+//     commit does not count at S, even where no file of C's tie changed between the two (runCounts;
+//     the rule that replaces The Spec's R8: "A result counts only at the commit that it read. A CI
+//     job's result counts only at the commit that the job tested"). For a production check, the
+//     runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none when S names no
+//     transaction (R7: "A result counts only for the procedure that ran it and for the subject that
+//     it read"); a run of the graph names the transaction that it read or tried to read, and
+//     Input.check refuses one that names none.
+//     For a program check of production or the graph, only a run whose test is the test at
+//     S.Commit: its TestCommit is S.Commit, or C's tie is known at TestCommit and at S.Commit and no
+//     path that changed between them is covered by the tie at either commit (carries; R18: "At each
+//     commit, Dispatch derives four ties"; R7: "The procedure is the text of the check and the code
+//     that runs it, so a change to either ends the standing of earlier results"); Input.check
+//     refuses a result of such a check that names no TestCommit, as it refuses one that names no
+//     subject of its check's kind. A run of C's job counts at S at each commit where a run of C
+//     would count at S, S.Commit among them, whether or not that commit holds a result of C: it is
+//     the newest answer of its commit (R9: "When a check has no result that counts after a run of
+//     its job ends, it reads unknown, and Dispatch reports a fault of CI"; R7: "silence is not a
+//     pass"), unlike a refusal of step 2. No run counts: unknown, ci_fault when a run of C's job
+//     that counts at S ended (R9), else subject_moved when C has a run, else no_result, since a run
+//     of the job that has not ended is no fault of CI. A code check, or a program check of
+//     production or the graph, with a run of its job that counts at S in a leg with no run that
+//     counts: unknown, ci_fault, Detail the first such leg by name whose run ended (R7: "silence is
+//     not a pass"; R12: "Each leg of a matrix reports its own result, and no leg replaces the
+//     result of another"), else unknown, no_result, Detail the first such leg by name, since a leg
+//     whose run has not ended is no silent leg and no pass (legWithNoResult).
+//  5. For a code check, at S.Commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
-//     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
-//     pass and a failure on one such subject and one procedure make the state unknown", "a later
-//     pass does not end the report"). For each check, newest runs of two legs that disagree:
-//     unknown, disagree. A production check skips the first test: in each leg its newest run under
-//     S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is ordinary"). Then
-//     a newest run that could not run: unknown, could_not_run.
+//     failure that counts: unknown, disagree (R7: "A pass and a failure on one such subject and one
+//     procedure make the state unknown", "a later pass does not end the report"). For each check,
+//     newest runs of two legs that disagree: unknown, disagree. A production check skips the first
+//     test: in each leg its newest run under S.Deploy decides (R7: "A pass, then a failure, then a
+//     pass across deploys is ordinary"). Then a newest run that could not run: unknown,
+//     could_not_run.
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
 //  7. The newest failing example that counts. For a program check of the code, one whose record
 //     names the commit that the step planted its fault on (PlantedOn) and one path of the fault or
 //     more (FaultPaths), each a source file and no file of a test (isFaultPath) and each covered by
-//     C's tie at PlantedOn where that tie is known, and that counts at S from PlantedOn as a run of
-//     PlantedOn would, by the rule of step 4; never at a subject at its Commit, the commit that CI
+//     C's tie at PlantedOn where that tie is known, and that counts at S from PlantedOn: PlantedOn is
+//     S.Commit, or C's tie is known at PlantedOn and at S.Commit and no path that changed between
+//     them is covered by the tie at either commit (carries; the rule that replaces The Spec's R8: "A
+//     failing example that a check's test caught (The Spec R9) counts at another commit only while
+//     no file that the test reads changed"); never at a subject at its Commit, the commit that CI
 //     tested, whatever its PlantedOn names (R9: "For a check that a program runs, the failing
 //     example is a fault that a step plants in the code"; faultCommit, countingFaults). Beside
 //     those, each failing example of such a check whose record does not say where the step planted
@@ -215,10 +219,9 @@ const (
 //     PlantedOn that is its own Commit, or planted_on_outside_history with the unknown commit as
 //     Detail, since a later answer of the step decides (R7: "the latest counts"), and such a record
 //     says nothing of the code where its fault was planted. For a query or an agent of the code, one
-//     that counts at S as a run does
-//     (R8: it counts "only while no file that the test reads changed"); for a program check of
-//     production or the graph, one whose TestCommit counts at S.Commit by the rule of step 4 (R9:
-//     "its test, as it is now"); for a query or an agent of production or the graph, the newest.
+//     that counts at S from its commit by the same rule; for a program check of production or the
+//     graph, one whose TestCommit counts at S.Commit by the same rule (R9: "its test, as it is
+//     now"); for a query or an agent of production or the graph, the newest.
 //     None: unknown, no_failing_example; it did not fail: unknown, failing_example_missed; for a
 //     program check, its record does not show that an agent that did not write the test wrote the
 //     fault (R9): it names no author of the fault, no author of the test, or the author of the
@@ -522,10 +525,13 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 	return newest, at
 }
 
-// countingRuns is the runs of c that count at the subject (step 4).
+// countingRuns is the runs of c that count at the subject (step 4): for a check whose results count
+// at a commit (CountsAtACommit), the runs of a commit where a run of c counts at the subject
+// (runCounts); and for a check of production or of the graph, of those, the runs that read the
+// subject's deploy or its transaction of the graph.
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	if CountsAtACommit(c) {
-		runs = resultsWhere(runs, func(r Result) bool { return j.carries(c.ID, resultCommit(r)) })
+		runs = resultsWhere(runs, func(r Result) bool { return j.runCounts(c, resultCommit(r)) })
 	}
 	if c.Subject == SubjectCode {
 		return runs
@@ -535,9 +541,25 @@ func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
 	return resultsWhere(runs, func(r Result) bool { return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
 }
 
-// CountsAtACommit is whether a result of c counts at the commit where its job ran (resultCommit),
-// by the rule of carries: a check of the code, and a program check of production or of the graph,
-// whose test is code (R7: "The procedure is the text of the check and the code that runs it"). A
+// runCounts is whether a run of c, or a run of c's job, at commit counts at the subject (step 4).
+// For a check of the code, commit is the commit that the run read, and the commit that its job
+// tested, so the run counts there alone: only at the subject's own commit, also where no file that
+// c's tie covers changed between the two. For a program check of production or of the graph,
+// commit is the commit of its test, and the run read a deploy or a transaction of the graph, which
+// countingRuns matches with the subject's; the run counts only while its test, which is code, is
+// the test at the subject's commit (carries), so no run counts across a change of the test.
+func (j *checkJudge) runCounts(c Check, commit string) bool {
+	if c.Subject == SubjectCode {
+		return commit == j.in.Subject.Commit
+	}
+	return j.carries(c.ID, commit)
+}
+
+// CountsAtACommit is whether the commit where the job of a result of c ran (resultCommit) decides
+// where the result counts: for a check of the code, a run counts only at that commit (runCounts),
+// and a failing example also at a commit where no file that its test reads changed (carries); for a
+// program check of production or of the graph, whose test is code (R7: "The procedure is the text
+// of the check and the code that runs it"), a result counts only while that test is unchanged. A
 // query or an agent of production or of the graph reads no commit.
 func CountsAtACommit(c Check) bool {
 	return c.Subject == SubjectCode || c.Procedure == ProcedureProgram
@@ -675,7 +697,10 @@ func isFaultPath(path string) bool {
 	return endsIn(".go", ".ts", ".tsx") && !endsIn("_test.go", ".test.ts", ".test.tsx", ".e2e.ts") && !slices.ContainsFunc(dirs, testDir)
 }
 
-// carries is whether a result at commit counts at the subject's commit for the check id (R8): the
+// carries is whether a failing example of the check id at commit, or a result of the test of a
+// program check of production or of the graph at commit, counts at the subject's commit (steps 4
+// and 7; the rule that replaces The Spec's R8, which keeps a rule on files for a failing example
+// alone and never makes a pass of the code count at another commit): the
 // two are one commit, or the check's tie is known at both commits and no path that differs between
 // their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
 // each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
@@ -724,21 +749,21 @@ func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string
 	if !CountsAtACommit(c) {
 		return "", false, runs, faults
 	}
-	kept := func(commitOf func(Result) string) func(Result) bool {
+	kept := func(commitOf func(Result) string, counts func(commit string) bool) func(Result) bool {
 		return func(r Result) bool {
 			commit := commitOf(r)
 			other, at := j.in.Uncited[commit][c.ID]
 			if !at || !supportsTrue(r) {
 				return true
 			}
-			if j.carries(c.ID, commit) && (!refused || other < rule) {
+			if counts(commit) && (!refused || other < rule) {
 				rule, refused = other, true
 			}
 			return false
 		}
 	}
-	keptRuns = resultsWhere(runs, kept(resultCommit))
-	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }))
+	keptRuns = resultsWhere(runs, kept(resultCommit, func(commit string) bool { return j.runCounts(c, commit) }))
+	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }, func(commit string) bool { return j.carries(c.ID, commit) }))
 	return rule, refused, keptRuns, keptFaults
 }
 
@@ -752,20 +777,20 @@ func supportsTrue(r Result) bool {
 	return r.Outcome == OutcomePass
 }
 
-// jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the
-// subject, its commit among them.
+// jobEnded is whether a run of job, in any leg, ended at a commit where a run of c counts at the
+// subject (runCounts): for a check of the code, the subject's commit alone.
 func (j *checkJudge) jobEnded(c Check, job string) bool {
-	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && *r.Ended && j.carries(c.ID, r.Commit) })
+	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && *r.Ended && j.runCounts(c, r.Commit) })
 }
 
-// legWithNoResult is the first leg, by name, of a run of job at a commit whose results of c count at
-// the subject, its commit among them, in which no run of c counts, newest being the newest run of
+// legWithNoResult is the first leg, by name, of a run of job at a commit where a run of c counts at
+// the subject (runCounts), in which no run of c counts, newest being the newest run of
 // each leg that counts: of the runs that ended, else of the runs that have not ended; ended is
 // whether its run ended, and found whether there is one.
 func (j *checkJudge) legWithNoResult(c Check, job string, newest map[string]Result) (leg string, ended, found bool) {
 	var silent, running []string
 	for _, r := range j.in.JobRuns {
-		if _, reported := newest[*r.Leg]; r.Job != job || reported || !j.carries(c.ID, r.Commit) {
+		if _, reported := newest[*r.Leg]; r.Job != job || reported || !j.runCounts(c, r.Commit) {
 			continue
 		}
 		if *r.Ended {
@@ -783,8 +808,8 @@ func (j *checkJudge) legWithNoResult(c Check, job string, newest map[string]Resu
 	return "", false, false
 }
 
-// answersDisagree is whether the runs of c that count, which read subjects that cannot change
-// (commits of the same code of the check's tie, or the transaction of the subject), give two answers
+// answersDisagree is whether the runs of c that count, which read one subject that cannot change
+// (the subject's commit, or its transaction of the graph), give two answers
 // (step 5): a pass and a failure at one subject, or a pass recorded after a failure. Only a failure
 // recorded after every pass is a later answer, which cancels them (R7).
 func answersDisagree(c Check, counting []Result) bool {

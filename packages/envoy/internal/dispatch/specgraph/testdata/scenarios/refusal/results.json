@@ -48,5 +48,29 @@
     "leg": "",
     "at": "2026-11-12T12:00:00Z",
     "seq": 4
+  },
+  {
+    "check": "a-restart-loses-no-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "pass",
+    "commit": "c2",
+    "job": "go-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-13T09:00:00Z",
+    "seq": 5
+  },
+  {
+    "check": "a-restart-loses-no-message",
+    "check_version": 1,
+    "kind": "run",
+    "outcome": "pass",
+    "commit": "m2",
+    "job": "go-checks",
+    "leg": "",
+    "attempt": 1,
+    "at": "2026-11-13T09:30:00Z",
+    "seq": 6
   }
 ]

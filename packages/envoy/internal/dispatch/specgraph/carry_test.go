@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-// R8: "A result at one commit also counts at another commit when no code that the check runs
-// changed between the two (R18)", "A check whose tie to its code is unknown runs on each push to the
-// branch", and "A failing example that the check's test caught counts at another commit only while
-// no file that the test reads changed". R18: "At each commit, Dispatch derives four ties". A result
-// at commit A counts at the subject's commit B only when the check's tie is known at A and at B and
-// no path that changed between them is covered by the tie at A or by the tie at B, for a run and a
-// failing example of a code check by their commit, and of a program check of production by the
-// commit of its test. Each row is TestCheckState's base with subject c2, whose tree is c1's with
-// docs/x.md changed, and with one more change: narrow is C's tie with no entry of testdata.
+// The rule that replaces The Spec's R8: "A result counts only at the commit that it read", and "A
+// failing example that a check's test caught (The Spec R9) counts at another commit only while no
+// file that the test reads changed". R18: "At each commit, Dispatch derives four ties". A failing
+// example of a code check, and a result of the test of a program check of production, at commit A
+// counts at the subject's commit B only when the check's tie is known at A and at B and no path
+// that changed between them is covered by the tie at A or by the tie at B. Each row is
+// TestCheckState's base with subject c2, whose tree is c1's with docs/x.md changed, with a pass of
+// C at c2, so that c1's caught failing example decides for C, and with one more change: narrow is
+// C's tie with no entry of testdata.
 func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 	t.Parallel()
 	const deleted = "packages/envoy/cmd/listener/testdata/a.json" // a file of c1, under testdata
@@ -26,6 +26,7 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 		return func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 			change(c)
 		}
 	}
@@ -42,37 +43,33 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 		want   CheckState // ID "" is C
 	}{
 		{name: "control: no path that changed is in either tie", change: code(func(*checkCase) {}),
-			want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+			want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		{name: "control: the ties differ, and no path that changed is in either", change: code(func(c *checkCase) { c.Ties["c2"][c.check] = narrow }),
-			want: CheckState{State: "true", Reason: "passed", From: "c1"}},
-		{name: "(a) c2 deletes a file that only the tie at c1 covers", change: code(func(c *checkCase) {
+			want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		{name: "(a) c2 deletes a file that only the tie at c1, where the test caught the fault, covers", change: code(func(c *checkCase) {
 			delete(c.files2(), deleted)
 			c.Ties["c2"][c.check] = narrow
-		}), want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		}), want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "control: c2 deletes a file that both ties cover", change: code(func(c *checkCase) { delete(c.files2(), deleted) }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "c2 adds a file that only the tie at c2 covers", change: code(func(c *checkCase) {
 			c.files2()["packages/envoy/cmd/listener/testdata/b.json"] = "c2"
 			c.Ties["c1"][c.check] = narrow
-		}), want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		}), want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "(c) c1 has no ties", change: code(func(c *checkCase) { delete(c.Ties, "c1") }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "(d) the check has a tie at c2 only", change: code(func(c *checkCase) { delete(c.Ties["c1"], c.check) }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "the check has a tie at c1 only", change: code(func(c *checkCase) { delete(c.Ties["c2"], c.check) }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		// A caller that knows no tie, or has no history, says so with an empty value, which the entry
-		// takes (TestTheDerivationRefusesAnInputThatIsNotWhole), and no result carries with it.
+		// takes (TestTheDerivationRefusesAnInputThatIsNotWhole), and no failing example counts at
+		// another commit with it; a history that holds no commit holds none that the fault was
+		// planted on, so that record cannot be placed.
 		{name: "an empty map of ties: no tie is known", change: code(func(c *checkCase) { c.Ties = CommitTies{} }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "a FixtureHistory of no commit: the history holds neither commit", change: code(func(c *checkCase) { c.History = FixtureHistory{Commits: []FixtureCommit{}} }),
-			want: CheckState{State: "unknown", Reason: "subject_moved"}},
-		{name: "(a), a failing example: c2 runs the test again and deletes a file that only the tie at c1, where the test caught the fault, covers",
-			change: code(func(c *checkCase) {
-				delete(c.files2(), deleted)
-				c.Ties["c2"][c.check] = narrow
-				c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
-			}), want: CheckState{State: "unknown", Reason: "no_failing_example"}},
+			want: CheckState{State: "unknown", Reason: "planted_on_outside_history", Detail: "c1"}},
 		{name: "(b) a program check of production: c2 deletes a file that only the tie at c1, where its test caught the fault, covers",
 			change: program(func(c *checkCase) {
 				delete(c.files2(), deleted)

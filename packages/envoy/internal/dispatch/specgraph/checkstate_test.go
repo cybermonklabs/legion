@@ -8,13 +8,15 @@ import (
 	"time"
 )
 
-// The state of a check at one subject, in the decision order of R7, R8 and R9. Each row is the base
+// The state of a check at one subject, in the decision order of R7 and R9, where a run counts only
+// at its own commit and a failing example also at another commit while no file of the check's tie
+// changed (the rule that replaces The Spec's R8). Each row is the base
 // with one change: at c1 a pass of C's job and a failing example on which C's test failed, with a
 // fault that author-b planted in the test of author-a, both after the approval of L and T; subject
 // the head c1 of branch b; Now one hour after the newest result. "c2 differs in X" means c2's tree
 // is c1's with X changed. A row keeps the base's caught failing example unless it says so, so a
 // row that reads false reads false by its run alone. A failure decides only after each unknown case
-// of R9 (R9: "Five cases read as unknown, and never as true"), which the rows marked B2 pin.
+// of R9 (R9: "Six cases read as unknown, and never as true"), which the rows named "a failure" pin.
 func TestCheckState(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -43,7 +45,7 @@ func TestCheckState(t *testing.T) {
 			c.replace(withTimeLimit(checkStateCheck, 24*time.Hour))
 			c.Now = checkStateRun.Add(25 * time.Hour)
 		}, want: CheckState{State: "unknown", Reason: "expired"}},
-		{name: "v-state 5, a failure (B2): the failure is older than the time limit", change: func(c *checkCase) {
+		{name: "v-state 5, a failure: the failure is older than the time limit", change: func(c *checkCase) {
 			c.replace(withTimeLimit(checkStateCheck, 24*time.Hour))
 			c.Results[0].Outcome = OutcomeFail
 			c.Now = checkStateRun.Add(25 * time.Hour)
@@ -60,32 +62,32 @@ func TestCheckState(t *testing.T) {
 		{name: "v-state 7, v-suspect 3, prototype: a pass and a fail with one time", change: func(c *checkCase) {
 			c.Results = append(c.Results, legRun("c1", "", 2, OutcomeFail, checkStateRun))
 		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
-		{name: "v-state 7, two legs (B1): leg linux passes and leg arm fails", change: func(c *checkCase) {
+		{name: "v-state 7, two legs: leg linux passes and leg arm fails", change: func(c *checkCase) {
 			c.Results = []Result{
 				legRun("c1", "linux", 1, OutcomePass, checkStateRun), legRun("c1", "arm", 1, OutcomeFail, checkStateRun),
 				caughtFault("c1", checkStateRun.Add(5*time.Minute)),
 			}
 		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
-		{name: "v-state 7, legs and attempts (B1): leg linux fails at attempt 1 and leg arm passes at attempt 2", change: func(c *checkCase) {
+		{name: "v-state 7, legs and attempts: leg linux fails at attempt 1 and leg arm passes at attempt 2", change: func(c *checkCase) {
 			c.Results = []Result{
 				legRun("c1", "linux", 1, OutcomeFail, checkStateRun), legRun("c1", "arm", 2, OutcomePass, checkStateRun.Add(10*time.Minute)),
 				caughtFault("c1", checkStateRun.Add(15*time.Minute)),
 			}
 		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
-		{name: "legs across commits: leg linux passes at c1 and leg arm fails at c2", change: func(c *checkCase) {
+		{name: "legs across commits: leg linux's pass at c1 does not count at c2, where leg arm fails", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results = []Result{
 				legRun("c1", "linux", 1, OutcomePass, checkStateRun), caughtFault("c1", checkStateRun.Add(5*time.Minute)),
 				legRun("c2", "arm", 1, OutcomeFail, checkStateRun.Add(time.Hour)),
 			}
-		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
-		{name: "a disagreement carries: a pass and a fail at c1, then a pass at c2", change: func(c *checkCase) {
+		}, want: CheckState{State: "false", Reason: "failed", From: "c2"}},
+		{name: "a disagreement of c1 does not count at c2: a pass and a fail at c1, then a pass at c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results,
 				legRun("c1", "", 2, OutcomeFail, checkStateRun.Add(10*time.Minute)), checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
-		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		{name: "a leg could not run", change: func(c *checkCase) {
 			c.Results = []Result{
 				legRun("c1", "linux", 1, OutcomePass, checkStateRun), legRun("c1", "arm", 1, OutcomeCouldNotRun, checkStateRun),
@@ -96,16 +98,39 @@ func TestCheckState(t *testing.T) {
 			c.Results[0].Leg = new("linux")
 			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)}}
 		}, want: CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}},
+		// R7: "A step that left no result reads as unknown: silence is not a pass." A leg with no
+		// result whose run of the job has not ended is no silent leg and no pass: it reads unknown
+		// (no_result) until it reports, and a run of the job that has not ended is no fault of CI; a
+		// leg that has a result reads that result, whether or not a newer run of it has ended.
+		{name: "a leg that has not reported: leg linux passed, and the run of leg arm has not ended", change: func(c *checkCase) {
+			c.Results[0].Leg = new("linux")
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(false)}}
+		}, want: CheckState{State: "unknown", Reason: "no_result", Detail: "arm"}},
+		{name: "a silent leg beside one that has not reported: leg arm ended with no result, and the run of leg x86 has not ended", change: func(c *checkCase) {
+			c.Results[0].Leg = new("linux")
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)},
+				{Job: "go-checks", Leg: new("x86"), Commit: "c1", Ended: new(false)}}
+		}, want: CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}},
+		{name: "control: legs linux and arm passed, and a newer run of leg arm has not ended", change: func(c *checkCase) {
+			c.Results[0].Leg = new("linux")
+			c.Results = append(c.Results, legRun("c1", "arm", 1, OutcomePass, checkStateRun))
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(true)},
+				{Job: "go-checks", Leg: new("arm"), Commit: "c1", Ended: new(false)}}
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		{name: "no run of C, and the run of its job has not ended: no fault of CI", change: func(c *checkCase) {
+			c.Results = c.Results[1:]
+			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(false)}}
+		}, want: CheckState{State: "unknown", Reason: "no_result"}},
 		{name: "v-state 8: no failing-example result", change: func(c *checkCase) { c.Results = c.Results[:1] },
 			want: CheckState{State: "unknown", Reason: "no_failing_example"}},
-		{name: "v-state 8, a failure (B2): the run fails, no failing-example result", change: func(c *checkCase) {
+		{name: "v-state 8, a failure: the run fails, no failing-example result", change: func(c *checkCase) {
 			c.Results = c.Results[:1]
 			c.Results[0].Outcome = OutcomeFail
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
-		{name: "v-state 11: a merge changes no file of the tie", change: func(c *checkCase) {
+		{name: "v-state 11, ended: a merge that changes no file of the tie does not carry c1's pass to c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "v-state 12: the check runs again after its code changed", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c2"
@@ -123,7 +148,7 @@ func TestCheckState(t *testing.T) {
 		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "v-state 15: the author of the test wrote the fault", change: func(c *checkCase) { c.Results[1].FaultAuthor = "author-a" },
 			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
-		{name: "v-state 15, a failure (B2): the run fails and the author of the test wrote the fault", change: func(c *checkCase) {
+		{name: "v-state 15, a failure: the run fails and the author of the test wrote the fault", change: func(c *checkCase) {
 			c.Results[0].Outcome = OutcomeFail
 			c.Results[1].FaultAuthor = "author-a"
 		}, want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
@@ -233,22 +258,22 @@ func TestCheckState(t *testing.T) {
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
-		{name: "B5, a read that the repository records: c2 changes a fixture of another package", change: func(c *checkCase) {
+		{name: "a read that the repository records: c2 changes a fixture of another package", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/contracts/fixtures/dispatch-targeted-delivery.json")
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
-		{name: "B5, the job ran at c2", change: func(c *checkCase) {
+		{name: "the job ran at c2, and C passed there", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
 			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
-		{name: "R8, the job ran and its test did not (v-citations 5)", change: func(c *checkCase) {
+		{name: "the job ran at c2 and its test did not (v-citations 5): c1's pass does not count at c2, so CI's fault", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		}, want: CheckState{State: "unknown", Reason: "ci_fault"}},
 		{name: "R6, another job: the pass was reported by job envoy-go", change: func(c *checkCase) { c.Results[0].Job = "envoy-go" },
 			want: CheckState{State: "unknown", Reason: "no_result"}},
 		{name: "R6 is about runs: the caught fault names no job", change: func(c *checkCase) { c.Results[1].Job = "" },
@@ -266,14 +291,15 @@ func TestCheckState(t *testing.T) {
 			changed.Text = "Envoy delivers each message to the session that it is for, and to no other session."
 			c.reapprove(checkStateRun.Add(2*time.Hour), changed)
 		}, want: CheckState{State: "unknown", Reason: "statement_changed", Detail: checkStateTop.ID}},
-		{name: "B4, a squash outside the tie", change: func(c *checkCase) {
+		{name: "a squash outside the tie: b1's caught failing example counts at m2, beside m2's own pass", change: func(c *checkCase) {
 			c.commit("m1", "c1")
 			c.commit("b1", "m1", "packages/envoy/cmd/listener/main.go")
 			c.commit("m2", "m1", "docs/x.md")["packages/envoy/cmd/listener/main.go"] = "b1" // the squash of b1 on m1
 			c.Subject = Point{Commit: "m2", Branch: "main"}
 			c.Results[0].Commit, c.Results[1] = "b1", plantedOn(c.Results[1], "b1")
-		}, want: CheckState{State: "true", Reason: "passed", From: "b1"}},
-		{name: "B4, a squash inside the tie: main changed a file of the tie before the squash", change: func(c *checkCase) {
+			c.Results = append(c.Results, checkRun("m2", OutcomePass, checkStateRun.Add(time.Hour)))
+		}, want: CheckState{State: "true", Reason: "passed", From: "m2"}},
+		{name: "a squash inside the tie: main changed a file of the tie before the squash", change: func(c *checkCase) {
 			c.commit("m1", "c1")
 			c.commit("b1", "m1", "packages/envoy/cmd/listener/restart_test.go")
 			c.commit("m1b", "m1", "packages/envoy/cmd/listener/main.go")
@@ -281,12 +307,13 @@ func TestCheckState(t *testing.T) {
 			c.Subject = Point{Commit: "m2", Branch: "main"}
 			c.Results[0].Commit, c.Results[1] = "b1", plantedOn(c.Results[1], "b1")
 		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
-		{name: "Review focus 4, another branch: the results at x1 count at c2", change: func(c *checkCase) {
+		{name: "Review focus 4, another branch: the caught failing example of x1 counts at c2, beside c2's own pass", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.commit("x1", "c2", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results[0].Commit, c.Results[1] = "x1", plantedOn(c.Results[1], "x1")
-		}, want: CheckState{State: "true", Reason: "passed", From: "x1"}},
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		{name: "Review focus 4, a commit the history cannot read", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
@@ -302,18 +329,36 @@ func TestCheckState(t *testing.T) {
 		// count nowhere, a failing example's commit too, the commit that its fault was planted on for a
 		// program check of the code, and for a program check of production the commit of its test; the
 		// results of another commit stay.
-		{name: "R48, a refusal at the commit of the caught failing example alone takes out that example at c2, where that commit's results count", change: func(c *checkCase) {
+		{name: "R48, a refusal at the commit of the caught failing example alone takes out that example at c2, where that commit's failing examples count", change: func(c *checkCase) {
 			c.commit("x1", "c1", "docs/x.md")
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results[1] = plantedOn(c.Results[1], "x1")
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 			c.Uncited = map[string]map[string]string{"x1": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
 		{name: "control: a refusal at the fault's own commit, which CI tested, takes out nothing: the example counts from the commit that its fault was planted on", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 			c.Uncited = map[string]map[string]string{c.Results[1].Commit: {c.check: "test-not-in-code"}}
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		// The results of every other commit stay, whatever CI refused elsewhere: a refusal at c1 takes
+		// out c1's caught failing example, and one planted on x1, whose tree is c1's outside the tie,
+		// counts at c2 beside c2's own pass. Of two refusals at commits whose taken-out results would
+		// count at the subject, where no run counts, the state names the least rule by its name, so
+		// the order of the results does not choose it.
+		{name: "R48, a refusal at c1 takes out c1's caught failing example, and one planted on x1 counts at c2 beside c2's own pass", change: func(c *checkCase) {
+			c.commit("x1", "c1", "docs/x.md")
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Results = append(c.Results, caughtFault("x1", checkStateRun.Add(10*time.Minute)), checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+			c.Uncited = map[string]map[string]string{"c1": {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		{name: "R48, refusals at c1 and at x1, whose caught failing examples count at c2, where no run counts: the least rule by its name", change: refusedAtC1AndX1(false),
+			want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-did-not-run"}},
+		{name: "R48, the same with the results in the other order", change: refusedAtC1AndX1(true),
+			want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-did-not-run"}},
 		// R9 and the plan's t-graph-3: a failing example of a program check of the code counts from
 		// the commit that its fault was planted on, "never at the commit that CI tested", and a record
 		// that does not say where the step planted its fault counts nowhere; as the newest failing
@@ -329,6 +374,15 @@ func TestCheckState(t *testing.T) {
 		{name: "R9, a later failing example that missed its fault and names its own commit as planted_on: unknown (planted_on_tested_commit)", change: func(c *checkCase) {
 			c.Results = append(c.Results, laterMissed(func(r *Result) { r.Commit = r.PlantedOn }))
 		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
+		// The same of c1's caught failing example, the newest one: a record that does not say where
+		// its fault was planted counts nowhere, whatever its commit.
+		{name: "R9, c1's caught failing example names no fault path: unknown (no_fault_paths)", change: func(c *checkCase) { c.Results[1].FaultPaths = nil },
+			want: CheckState{State: "unknown", Reason: "no_fault_paths"}},
+		{name: "R9, c1's caught failing example names no planted_on: unknown (no_planted_on)", change: func(c *checkCase) { c.Results[1].PlantedOn = "" },
+			want: CheckState{State: "unknown", Reason: "no_planted_on"}},
+		{name: "R9, c1's caught failing example names no planted_on, and c1 as its commit: unknown (no_planted_on)", change: func(c *checkCase) {
+			c.Results[1].PlantedOn, c.Results[1].Commit = "", "c1"
+		}, want: CheckState{State: "unknown", Reason: "no_planted_on"}},
 		{name: "R48, a refusal at planted_on does not take out a later record with no fault path", change: func(c *checkCase) {
 			c.commit("c3", "c1", "docs/x.md")
 			c.Results = append(c.Results, laterMissed(func(r *Result) {
@@ -407,6 +461,11 @@ func TestCheckState(t *testing.T) {
 		{name: "control: the later failing example that missed its fault, planted on c1 with its path: unknown (failing_example_missed)", change: func(c *checkCase) {
 			c.Results = append(c.Results, laterMissed(func(*Result) {}))
 		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		{name: "a later failing example planted on c1 that missed its fault counts at c2, where no file of the tie changed, beside c2's own pass", change: func(c *checkCase) {
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Results = append(c.Results, laterMissed(func(*Result) {}), checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
 		// A fault path that is empty or only white space is no path: a record whose paths are all
 		// such reads as one with no path, and one with such a path beside a real one reads unknown with
 		// a reason of its own, and is neither left out nor counted.
@@ -427,19 +486,31 @@ func TestCheckState(t *testing.T) {
 			unplanted.PlantedOn, unplanted.At = "", checkStateRun.Add(time.Minute)
 			c.Results = slices.Insert(c.Results, 1, unplanted)
 		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+		// R7: "Of several results that count, the latest counts." The order of record is the time
+		// of a result, then its seq: of two failing examples at one time, the one recorded later
+		// decides.
+		{name: "R7, a later failing example that missed its fault, at the time of c1's caught one and recorded after it: unknown (failing_example_missed)", change: func(c *checkCase) {
+			c.Results = append(c.Results, laterMissed(func(r *Result) { r.At = c.Results[1].At }))
+		}, want: CheckState{State: "unknown", Reason: "failing_example_missed"}},
+		{name: "control: the same failing example recorded before c1's caught one: true", change: func(c *checkCase) {
+			c.Results = slices.Insert(c.Results, 1, laterMissed(func(r *Result) { r.At = c.Results[1].At }))
+		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
 		{name: "R9, c1's caught failing example names c1, which CI tested, as planted_on: unknown (planted_on_tested_commit) at c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results[1].Commit = "c1"
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "unknown", Reason: "planted_on_tested_commit"}},
 		{name: "R9, the subject is the fault's own commit, which CI tested, with the tree and the ties of c1, where the fault was planted: unknown (no_failing_example)", change: func(c *checkCase) {
 			c.commit(c.Results[1].Commit, "c1")
 			c.Subject.Commit = c.Results[1].Commit
+			c.Results = append(c.Results, checkRun(c.Results[1].Commit, OutcomePass, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "unknown", Reason: "no_failing_example"}},
-		{name: "control: a subject with the tree and the ties of c1 at another commit than the fault's: true from c1", change: func(c *checkCase) {
+		{name: "control: a subject with the tree and the ties of c1 at another commit than the fault's: true from its own pass", change: func(c *checkCase) {
 			c.commit("c2", "c1")
 			c.Subject.Commit = "c2"
-		}, want: CheckState{State: "true", Reason: "passed", From: "c1"}},
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+		}, want: CheckState{State: "true", Reason: "passed", From: "c2"}},
 		{name: "R48, a refusal of a program check of production at the commit of the test that caught its fault takes out that example", change: func(c *checkCase) {
 			c.productionProgram("docs/x.md", "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
@@ -497,6 +568,11 @@ func TestCheckState(t *testing.T) {
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
 			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "could_not_run"}},
+		{name: "R48, a refusal of a program check of the graph at the commit of the test of a newer run that could not run keeps that run", change: func(c *checkCase) {
+			c.programPass(checkStateGraphProgram, "c2", "c2")
+			c.Results = append(c.Results, programResult(checkStateGraphProgram, ResultRun, OutcomeCouldNotRun, "c1", 2*time.Hour))
+			c.Uncited = map[string]map[string]string{"c1": {checkStateGraphProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "could_not_run"}},
 		{name: "R48, a refusal of a program check of production at the commit of the test of a newer failing example that missed its fault keeps that example", change: func(c *checkCase) {
 			c.programPass(checkStateProductionProgram, "c2", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultFailingExample, OutcomePass, "c1", 70*time.Minute))
@@ -511,14 +587,16 @@ func TestCheckState(t *testing.T) {
 			c.programPass(checkStateProductionProgram, "c2", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c1", 2*time.Hour))
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "false", Reason: "failed", From: "d2"}},
-		// An agent or a query of the code counts its results at their commit, as C does
-		// (CountsAtACommit): a refusal there takes them out at c2, where they count, its runs and its
-		// failing examples alike. With its pass at c1 the refusal at c1 takes out the run; with its
-		// pass at c2 the failing example of c1 decides, and the refusal takes out that example.
-		{name: "control: an agent of the code whose results at c1 count at c2", change: func(c *checkCase) {
+		// An agent or a query of the code counts its runs at their own commit alone, and its failing
+		// examples also at another commit, by C's rule for files (CountsAtACommit): a refusal at c1
+		// takes out its caught failing example at c2, where it counts. With its pass at c1, no run
+		// counts at c2, so it reads subject_moved with no refusal, and uncited with the refusal at
+		// c1, which took out a result that would count at c2; with its pass at c2 the failing example
+		// of c1 decides, and the refusal takes out that example.
+		{name: "control: an agent of the code whose pass at c1 does not count at c2", change: func(c *checkCase) {
 			c.codeResults(checkStateCodeAgent, "c1")
-		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "true", Reason: "passed", From: "c1"}},
-		{name: "R48, a refusal of an agent of the code at c1, the commit of its results, takes them out at c2, where they count", change: func(c *checkCase) {
+		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "unknown", Reason: "subject_moved"}},
+		{name: "R48, a refusal of an agent of the code at c1, the commit of its results, takes out its failing example, which counts at c2, where no run counts", change: func(c *checkCase) {
 			c.codeResults(checkStateCodeAgent, "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeAgent.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
@@ -529,10 +607,10 @@ func TestCheckState(t *testing.T) {
 			c.codeResults(checkStateCodeAgent, "c2")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeAgent.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateCodeAgent.ID, State: "unknown", Reason: "no_failing_example"}},
-		{name: "control: a query of the code whose results at c1 count at c2", change: func(c *checkCase) {
+		{name: "control: a query of the code whose pass at c1 does not count at c2", change: func(c *checkCase) {
 			c.codeResults(checkStateCodeQuery, "c1")
-		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "true", Reason: "passed", From: "c1"}},
-		{name: "R48, a refusal of a query of the code at c1, the commit of its results, takes them out at c2, where they count", change: func(c *checkCase) {
+		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "unknown", Reason: "subject_moved"}},
+		{name: "R48, a refusal of a query of the code at c1, the commit of its results, takes out its failing example, which counts at c2, where no run counts", change: func(c *checkCase) {
 			c.codeResults(checkStateCodeQuery, "c1")
 			c.Uncited = map[string]map[string]string{"c1": {checkStateCodeQuery.ID: "test-not-in-code"}}
 		}, want: CheckState{ID: checkStateCodeQuery.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
@@ -548,19 +626,19 @@ func TestCheckState(t *testing.T) {
 			c.Subject.Commit = "c2"
 			c.JobRuns = []JobRun{{Job: "go-checks", Leg: new(""), Commit: "c2", Ended: new(true)}}
 		}, want: CheckState{State: "unknown", Reason: "ci_fault"}},
-		{name: "a later failure cancels a carried pass", change: func(c *checkCase) {
+		{name: "a failure at c2 decides there, and c1's pass does not count at c2", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
 			c.Results = append(c.Results, checkRun("c2", OutcomeFail, checkStateRun.Add(time.Hour)))
 		}, want: CheckState{State: "false", Reason: "failed", From: "c2"}},
-		{name: "item 17: a failure and a later pass at two commits of one tie", change: func(c *checkCase) {
+		{name: "item 17, ended: a failure at c2 and a later pass at c1 do not count at c3", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.commit("c3", "c1", "docs/x.md")
 			c.Subject.Commit = "c3"
 			c.Results = append(c.Results,
 				checkRun("c2", OutcomeFail, checkStateRun.Add(time.Hour)), legRun("c1", "", 2, OutcomePass, checkStateRun.Add(2*time.Hour)))
-		}, want: CheckState{State: "unknown", Reason: "disagree", Disagree: true}},
-		{name: "item 17: a fix that changes a file of the tie ends the carry of the failure", change: func(c *checkCase) {
+		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		{name: "item 17: a failure at c2 does not count at c3, which passes after a fix to a file of the tie", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.commit("c3", "c2", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c3"
@@ -606,6 +684,10 @@ func TestCheckState(t *testing.T) {
 			change: newestRunFailsAtC1(checkStateProductionAgent), want: CheckState{ID: checkStateProductionAgent.ID, State: "false", Reason: "failed", From: "d2"}},
 		{name: "R48, an agent of production whose newest failing example missed its fault and names test_commit c1, where CI refused the agent",
 			change: newestFaultMissedAtC1(checkStateProductionAgent), want: CheckState{ID: checkStateProductionAgent.ID, State: "unknown", Reason: "failing_example_missed"}},
+		{name: "R48, a query of the graph whose newest run fails and names test_commit c1, where CI refused the query",
+			change: newestGraphRunFailsAtC1(checkStateGraph), want: CheckState{ID: checkStateGraph.ID, State: "unknown", Reason: "disagree", Disagree: true}},
+		{name: "R48, an agent of the graph whose newest run fails and names test_commit c1, where CI refused the agent",
+			change: newestGraphRunFailsAtC1(checkStateGraphAgent), want: CheckState{ID: checkStateGraphAgent.ID, State: "unknown", Reason: "disagree", Disagree: true}},
 		{name: "production on a branch head is not judged", change: func(c *checkCase) {
 			c.add(checkStateProduction)
 			c.Subject = Point{Commit: "c9", Branch: "b"}
@@ -651,6 +733,23 @@ func TestCheckState(t *testing.T) {
 				t.Errorf("CheckStates:\n got %+v\nwant %+v", states[i], want)
 			}
 		})
+	}
+}
+
+// refusedAtC1AndX1 is the change of a row of TestCheckState: subject c2, whose tree is c1's outside
+// the tie, where no run of C counts; c1's caught failing example and one planted on x1, whose tree
+// is c1's outside the tie too, after it, each of which counts at c2; and CI's refusals of C at c1
+// (test-not-in-code) and at x1 (test-did-not-run). With reversed, the results in the other order.
+func refusedAtC1AndX1(reversed bool) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.commit("x1", "c1", "docs/x.md")
+		c.commit("c2", "c1", "docs/x.md")
+		c.Subject.Commit = "c2"
+		c.Results = append(c.Results, caughtFault("x1", checkStateRun.Add(10*time.Minute)))
+		if reversed {
+			slices.Reverse(c.Results)
+		}
+		c.Uncited = map[string]map[string]string{"c1": {c.check: "test-not-in-code"}, "x1": {c.check: "test-did-not-run"}}
 	}
 }
 
@@ -716,6 +815,202 @@ func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
 			}
 			if states := checkStates(t, s.input()); !slices.Contains(states, want) {
 				t.Errorf("CheckStates with the failing example %q:\n got %+v\nwant %+v", row.text, states, want)
+			}
+		})
+	}
+}
+
+// A result counts only at the commit that it read, and a run of a CI job only at the commit that
+// the job tested. So a run of a check of the code counts at its own commit alone, also at a later
+// commit where no file that the check's tie covers changed; a run of the check's job that ended
+// there with no result of the check is no fault of CI at the later commit; and a program, a query
+// and an agent of the code each read their runs so. Each row is TestCheckState's base, a pass of
+// C's job at c1 and a failing example planted on c1, with the row's change at the subject c2, whose
+// tree is c1's with docs/x.md changed, a file that no tie covers. Each control holds a record of
+// c2 itself, which counts there.
+func TestARunCountsOnlyAtTheCommitItRead(t *testing.T) {
+	t.Parallel()
+	atC2 := func(change func(c *checkCase)) func(c *checkCase) {
+		return func(c *checkCase) {
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			change(c)
+		}
+	}
+	ended := func(commit, leg string) JobRun {
+		return JobRun{Job: "go-checks", Leg: new(leg), Commit: commit, Ended: new(true)}
+	}
+	later := checkStateRun.Add(time.Hour)
+	q, k := checkStateCodeQuery.ID, checkStateCodeAgent.ID
+	for _, row := range []struct {
+		name   string
+		change func(c *checkCase)
+		want   CheckState // ID "" is C
+	}{
+		{name: "a pass at c1", change: atC2(func(*checkCase) {}),
+			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		{name: "control: a pass at c1 and a pass at c2", change: atC2(func(c *checkCase) {
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, later))
+		}), want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		{name: "a failure at c1 and a later pass at c2", change: atC2(func(c *checkCase) {
+			c.Results[0].Outcome = OutcomeFail
+			c.Results = append(c.Results, checkRun("c2", OutcomePass, later))
+		}), want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		{name: "a run of the job at c1 that ended with no result in leg arm, and a pass at c2 in leg linux", change: atC2(func(c *checkCase) {
+			c.Results[0].Leg = new("linux")
+			c.Results = append(c.Results, legRun("c2", "linux", 1, OutcomePass, later))
+			c.JobRuns = []JobRun{ended("c1", "linux"), ended("c1", "arm"), ended("c2", "linux")}
+		}), want: CheckState{State: "true", Reason: "passed", From: "c2"}},
+		{name: "control: the run of the job at c2 ended with no result in leg arm", change: atC2(func(c *checkCase) {
+			c.Results[0].Leg = new("linux")
+			c.Results = append(c.Results, legRun("c2", "linux", 1, OutcomePass, later))
+			c.JobRuns = []JobRun{ended("c1", "linux"), ended("c2", "linux"), ended("c2", "arm")}
+		}), want: CheckState{State: "unknown", Reason: "ci_fault", Detail: "arm"}},
+		{name: "no run of C, and a run of the job at c1 that ended", change: atC2(func(c *checkCase) {
+			c.Results = c.Results[1:]
+			c.JobRuns = []JobRun{ended("c1", "")}
+		}), want: CheckState{State: "unknown", Reason: "no_result"}},
+		{name: "control: no run of C, and a run of the job at c2 that ended", change: atC2(func(c *checkCase) {
+			c.Results = c.Results[1:]
+			c.JobRuns = []JobRun{ended("c2", "")}
+		}), want: CheckState{State: "unknown", Reason: "ci_fault"}},
+		{name: "a query of the code: a pass at c1", change: func(c *checkCase) { c.codeResults(checkStateCodeQuery, "c1") },
+			want: CheckState{ID: q, State: "unknown", Reason: "subject_moved"}},
+		{name: "control: a query of the code with a pass at c2", change: func(c *checkCase) { c.codeResults(checkStateCodeQuery, "c2") },
+			want: CheckState{ID: q, State: "true", Reason: "passed", From: "c2"}},
+		{name: "an agent of the code: a pass at c1", change: func(c *checkCase) { c.codeResults(checkStateCodeAgent, "c1") },
+			want: CheckState{ID: k, State: "unknown", Reason: "subject_moved"}},
+		{name: "control: an agent of the code with a pass at c2", change: func(c *checkCase) { c.codeResults(checkStateCodeAgent, "c2") },
+			want: CheckState{ID: k, State: "true", Reason: "passed", From: "c2"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			row.change(s)
+			want := row.want
+			if want.ID == "" {
+				want.ID = checkStateCheck.ID
+			}
+			states := checkStates(t, s.input())
+			if i := slices.IndexFunc(states, func(c CheckState) bool { return c.ID == want.ID }); i < 0 || states[i] != want {
+				t.Errorf("CheckStates = %+v\nwant %+v", states, want)
+			}
+		})
+	}
+}
+
+// A failing example keeps the rule on files that a run does not have: one that a check's test
+// caught counts at another commit while no file that the test reads changed between the two, by
+// the check's tie at each commit, and stops counting where such a file changed. Each row is
+// TestCheckState's base, a pass of C's job at c1 and a failing example planted on c1, with Q, a
+// query of the code with C's tie, and a failing example of Q at c1; c2, whose tree is c1's with
+// docs/x.md changed, a file that no tie covers; c3, whose tree is c2's with checkStateFaultPath
+// changed, a file of the tie; and a pass of each check at the row's subject, so that the failing
+// example decides there whatever the rule for runs at another commit.
+func TestAFailingExampleStillCountsWhereNoTiedFileChanged(t *testing.T) {
+	t.Parallel()
+	q := checkStateCodeQuery
+	counts := func(commit string) []CheckState {
+		return []CheckState{
+			{ID: checkStateCheck.ID, State: "true", Reason: "passed", From: commit},
+			{ID: q.ID, State: "true", Reason: "passed", From: commit},
+		}
+	}
+	for _, row := range []struct {
+		subject string
+		want    []CheckState
+	}{
+		{"c1", counts("c1")},
+		{"c2", counts("c2")},
+		{"c3", []CheckState{
+			{ID: checkStateCheck.ID, State: "unknown", Reason: "no_failing_example"},
+			{ID: q.ID, State: "unknown", Reason: "no_failing_example"},
+		}},
+	} {
+		t.Run("subject "+row.subject, func(t *testing.T) {
+			t.Parallel()
+			s := newCheckCase(t)
+			s.add(q)
+			s.tieLikeC(q.ID)
+			s.commit("c2", "c1", "docs/x.md")
+			s.commit("c3", "c2", checkStateFaultPath)
+			s.Results = append(s.Results, Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, Commit: "c1", At: checkStateRun.Add(5 * time.Minute)})
+			at := checkStateRun.Add(time.Hour)
+			if row.subject != "c1" {
+				s.Results = append(s.Results, checkRun(row.subject, OutcomePass, at))
+			}
+			s.Results = append(s.Results, Result{Check: q.ID, Kind: ResultRun, Outcome: OutcomePass, Commit: row.subject, At: at})
+			s.Subject.Commit = row.subject
+			states := checkStates(t, s.input())
+			for _, want := range row.want {
+				if !slices.Contains(states, want) {
+					t.Errorf("CheckStates = %+v\nwant %+v among them", states, want)
+				}
+			}
+		})
+	}
+}
+
+// R9: "For a check that a program runs, the failing example is a fault that a step plants in the
+// code." A failing example of a program check of the code counts only when each path of its fault
+// is a source file, one that ends in .go, .ts or .tsx, and no file of a test (isFaultPath), and the
+// check's tie at the commit that the fault was planted on, where that tie is known, covers it; a
+// path of only white space is no path, so a record of such paths alone reads as one with none, and
+// one beside a real path has a reason of its own. Each row is TestCheckState's base, whose caught
+// failing example planted on c1 is the newest, with the row's fault paths, at the subject c1 and at
+// c2, whose tree is c1's with docs/x.md changed, a file that no tie covers, and which holds a pass
+// of C; sender is a source file outside C's tie, which a row adds to the tie at the commits that it
+// names, so the tie at c1 and the tie at c2 can differ.
+func TestAFaultPathIsASourceFileThatTheTieAtPlantedOnCovers(t *testing.T) {
+	t.Parallel()
+	const sender = "packages/envoy/cmd/sender/main.go"
+	none := CheckState{ID: checkStateCheck.ID, State: "unknown", Reason: "no_failing_example"}
+	at := func(reason string) [2]CheckState {
+		state := CheckState{ID: checkStateCheck.ID, State: "unknown", Reason: reason}
+		return [2]CheckState{state, state}
+	}
+	counts := [2]CheckState{{ID: checkStateCheck.ID, State: "true", Reason: "passed", From: "c1"}, {ID: checkStateCheck.ID, State: "true", Reason: "passed", From: "c2"}}
+	for _, row := range []struct {
+		name   string
+		paths  []string
+		tiedAt []string      // the commits whose tie of C also covers packages/envoy/cmd/sender/*
+		want   [2]CheckState // at c1 and at c2
+	}{
+		{"control: the fault path is a source file of the tie", []string{checkStateFaultPath}, nil, counts},
+		{"the fault path is the test's own _test.go file", []string{"packages/envoy/cmd/listener/restart_test.go"}, nil, [2]CheckState{none, none}},
+		{"the fault path is a source file under testdata, a directory of the tie that starts with test", []string{"packages/envoy/cmd/listener/testdata/fault.go"}, nil, [2]CheckState{none, none}},
+		{"the fault path is a source file outside the tie", []string{sender}, nil, [2]CheckState{none, none}},
+		{"the fault path is a file of the tie that is no source file", []string{"packages/contracts/fixtures/dispatch-targeted-delivery.json"}, nil, [2]CheckState{none, none}},
+		{"one of two fault paths is the test's own _test.go file", []string{checkStateFaultPath, "packages/envoy/cmd/listener/restart_test.go"}, nil, [2]CheckState{none, none}},
+		{"the one fault path is a space, which is no path", []string{" "}, nil, at("no_fault_paths")},
+		{"one of two fault paths is a tab, which is no path", []string{checkStateFaultPath, "\t"}, nil, at("blank_fault_path")},
+		{"control: the fault path is a source file of the tie with a space in its name", []string{"packages/envoy/cmd/listener/main two.go"}, nil, counts},
+		{"the fault path is a .tsx source file of the tie", []string{"packages/envoy/cmd/listener/view.tsx"}, nil, counts},
+		{"the fault path is a .ts source file of the tie", []string{"packages/envoy/cmd/listener/client.ts"}, nil, counts},
+		{"two fault paths, each a source file of the tie", []string{checkStateFaultPath, "packages/envoy/cmd/listener/store.go"}, nil, counts},
+		{"the tie at c1, where the fault was planted, does not cover its path, and the tie at c2 does", []string{sender}, []string{"c2"}, [2]CheckState{none, none}},
+		{"control: the ties at c1 and at c2 cover the fault's path", []string{sender}, []string{"c1", "c2"}, counts},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			wide, err := NewTie(append(slices.Clone(checkStateTie), "packages/envoy/cmd/sender/*"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, subject := range []string{"c1", "c2"} {
+				s := newCheckCase(t)
+				s.commit("c2", "c1", "docs/x.md")
+				for _, commit := range row.tiedAt {
+					s.Ties[commit][s.check] = wide
+				}
+				s.Results[1].FaultPaths = row.paths
+				if subject == "c2" {
+					s.Results = append(s.Results, checkRun("c2", OutcomePass, checkStateRun.Add(time.Hour)))
+				}
+				s.Subject.Commit = subject
+				if states := checkStates(t, s.input()); !slices.Contains(states, row.want[i]) {
+					t.Errorf("at %s: CheckStates = %+v\nwant %+v among them", subject, states, row.want[i])
+				}
 			}
 		})
 	}

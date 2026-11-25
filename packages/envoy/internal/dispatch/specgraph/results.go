@@ -88,7 +88,7 @@ type Result struct {
 	FaultPaths []string `json:"fault_paths" input:"zero: it names no path of a fault, so a failing example of a program check of the code counts nowhere and, as the newest, reads no_fault_paths"`
 }
 
-// resultCommit is the commit where the job of r ran, and where r counts (R8; CheckStates, steps 2,
+// resultCommit is the commit where the job of r ran, which r counts from (CheckStates, steps 2,
 // 4 and 7): the Commit of a result of a check of the code, and else the TestCommit, the commit of
 // the test of a program check of production or of the graph, whose results name no commit (fault).
 // It is the one reading of that fact for a check whose results count at a commit

@@ -130,14 +130,16 @@ func TestStatementState(t *testing.T) {
 		{name: "v-two-specs: a revert takes L2 out after it read met", change: func(s *checkCase) {
 			s.commit("c2", "c1", "docs/x.md")
 			s.Subject.Commit = "c2"
+			s.runsAgainAt("c2")
 			s.drop(L2, C2)
 		}, want: []StatementState{missing(L2), held(T, "not_built", "not_built", L2, "met"), met(L1)}},
-		{name: "B3: a top statement Q whose only check reads production; subject the head of a branch", change: func(s *checkCase) {
+		{name: "a top statement Q whose only check reads production; subject the head of a branch", change: func(s *checkCase) {
 			s.addNodes(statementFast, statementFastCheck)
 		}, want: []StatementState{held(Q, "met", "checks_true", "", "met"), met(T)}},
-		{name: "B3: the same, subject c9 under deploy d2, its check true there", change: func(s *checkCase) {
+		{name: "a top statement Q whose only check reads production; subject c9 under deploy d2, its check true there", change: func(s *checkCase) {
 			s.addNodes(statementFast, statementFastCheck)
 			s.commit("c9", "c1")
+			s.runsAgainAt("c9")
 			s.Subject = Point{Commit: "c9", Deploy: "d2"}
 			s.Results = append(s.Results, productionPassed(statementFastCheck, "d2")...)
 		}, want: []StatementState{met(Q), met(T)}, waits: map[string]bool{Q: false}},
@@ -195,7 +197,7 @@ func TestStatementState(t *testing.T) {
 		// (not met)", and a failing result reads not met for "its statement and each statement above
 		// it". So T follows the state of L1, which follows the state of its supporter S, at each
 		// level. S supports L1 and S2 supports S.
-		{name: "R1 (the acceptance run's S2): S's check is false, so L1, which S supports, is not met, and so is T above it", change: func(s *checkCase) {
+		{name: "R1: S's check is false, so L1, which S supports, is not met, and so is T above it", change: func(s *checkCase) {
 			s.addCheck(statementLeafSupporterCheck, statementLeafSupporter)
 			s.runOutcome(statementLeafSupporterCheck.ID, OutcomeFail)
 		}, want: []StatementState{

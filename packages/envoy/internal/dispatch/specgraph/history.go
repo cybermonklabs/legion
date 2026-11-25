@@ -14,11 +14,11 @@ import (
 // History is the paths whose content differs between the trees of two commits, both paths of a
 // move included, as `git diff --no-renames --name-only -z from to --` gives them with no setting of
 // the clone or of the machine (GitHistory); ok is false only when the history does not hold one of
-// the two commits, which R8 reads as a tie that is not known, so no result carries. err is a fault
-// of the history itself, such as a directory that is no clone: a history that could list nothing
-// has not read two equal trees, and the derivation then gives no state. It reads trees, never
-// ancestry: main's commits are squash commits, so the commit of a result on a branch is no ancestor
-// of the main commit that holds its change.
+// the two commits, which the derivation reads as a tie that is not known, so no failing example
+// counts across them. err is a fault of the history itself, such as a directory that is no clone: a
+// history that could list nothing has not read two equal trees, and the derivation then gives no
+// state. It reads trees, never ancestry: main's commits are squash commits, so the commit of a
+// result on a branch is no ancestor of the main commit that holds its change.
 type History interface {
 	Changed(from, to string) (paths []string, ok bool, err error)
 }
@@ -73,9 +73,9 @@ func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 // files, whose tree holds no path, or whose tree has a path that is no repository path
 // (isRepoPath) or a content label of no letter and no digit (hasWord), which names no content,
 // the least such path by its order being the one named. Each would read as a tree or a content
-// that another such commit shares, or as a change that no tie covers, so a result would carry
-// between them (R8); and a history that does not set its commits is not one that knows that it
-// has none.
+// that another such commit shares, or as a change that no tie covers, so a failing example would
+// count across them (CheckStates, step 7); and a history that does not set its commits is not one
+// that knows that it has none.
 func (h FixtureHistory) check() error {
 	if h.Commits == nil {
 		return errors.New("specgraph: history: it sets no commits; a history of no commit sets an empty list")

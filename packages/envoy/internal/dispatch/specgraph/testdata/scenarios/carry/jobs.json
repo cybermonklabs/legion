@@ -1,4 +1,6 @@
 [
   { "job": "go-checks", "leg": "", "commit": "c1", "ended": true },
-  { "job": "go-checks", "leg": "", "commit": "c3", "ended": true }
+  { "job": "go-checks", "leg": "", "commit": "c3", "ended": true },
+  { "job": "go-checks", "leg": "", "commit": "c2", "ended": true },
+  { "job": "go-checks", "leg": "", "commit": "m2", "ended": true }
 ]

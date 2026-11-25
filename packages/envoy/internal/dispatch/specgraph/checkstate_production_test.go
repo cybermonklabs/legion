@@ -64,9 +64,10 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 // run of the job ended with no result that counts reads unknown, and legs whose newest results
 // disagree read unknown. Each row: Q at subject c2 under deploy d2, where c2 differs from c1 outside
 // the tie, or, in a row that carries, at c3, which differs from c2 outside the tie too, so that the
-// results of the test at c2 count there (R8); the runs of legs linux and arm of Q's job ended at c2;
-// the row's runs under d2 at the test of c2, and a failing example that the test at c2 caught; C
-// taken out. A leg that ended with no result at c2 counts wherever the results of c2 count.
+// results of the test at c2 count there (the test of c2 is the test of c3, CheckStates step 4); the
+// runs of legs linux and arm of Q's job ended at c2; the row's runs under d2 at the test of c2, and a
+// failing example that the test at c2 caught; C taken out. A leg that ended with no result at c2
+// counts wherever the results of the test of c2 count.
 func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 	t.Parallel()
 	q := checkStateProductionProgram
@@ -222,5 +223,21 @@ func newestFaultMissedAtC1(p Check) func(c *checkCase) {
 			Result{Check: p.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)},
 			Result{Check: p.ID, Kind: ResultFailingExample, Outcome: OutcomePass, TestCommit: "c1", At: checkStateRun.Add(130 * time.Minute)})
 		c.Uncited = map[string]map[string]string{"c1": {p.ID: "test-not-in-code"}}
+	}
+}
+
+// newestGraphRunFailsAtC1 is the change of a row of TestCheckState for g, a query or an agent of
+// the graph: subject c9 under deploy d2 at the transaction tx1; a pass of g at tx1, a failure there
+// an hour later that names test_commit c1, and a caught failing example; and CI's refusal of g at
+// c1.
+func newestGraphRunFailsAtC1(g Check) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.add(g)
+		c.Subject = Point{Commit: "c9", Deploy: "d2", GraphTx: "tx1"}
+		c.Results = append(c.Results,
+			Result{Check: g.ID, Kind: ResultRun, Outcome: OutcomePass, GraphTx: "tx1", At: checkStateRun.Add(2 * time.Hour)},
+			Result{Check: g.ID, Kind: ResultRun, Outcome: OutcomeFail, GraphTx: "tx1", TestCommit: "c1", At: checkStateRun.Add(3 * time.Hour)},
+			Result{Check: g.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, At: checkStateRun.Add(125 * time.Minute)})
+		c.Uncited = map[string]map[string]string{"c1": {g.ID: "test-not-in-code"}}
 	}
 }

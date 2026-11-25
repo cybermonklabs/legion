@@ -12,7 +12,7 @@ import (
 // sweeps are the tree sweep (TestNoInputThatSaysNothingMovesAStateTowardTrue), the members added
 // (TestAddingAMemberMovesNoStateTowardTrue), the texts inside a block and the attributes left out
 // (TestNoNameOfNothingInsideABlockMovesAStateTowardTrue), and the refusals added
-// (TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults). A sweep that reads
+// (TestAddingARefusalOfCIMovesNoStateTowardTrue). A sweep that reads
 // or refuses fewer inputs of a base fails by name (atFloor), and so does a base with no floor or a
 // floor of no base (floorsCover), so a sweep that builds no input of a base, or drops some, does not
 // pass as one that judged them. The counts are floors: a sweep that gains inputs passes, and its row
@@ -22,11 +22,10 @@ func sweepFloors() map[string]map[string]sweepFloor {
 	return map[string]map[string]sweepFloor{
 		"tree": {
 			"carry": {read: 92, refused: 887},
-			"carry with a failure of c0, c1's parent, and a later pass of c2":            {read: 120, refused: 1114},
 			"carry with a later failing example planted by no step":                      {read: 104, refused: 934},
 			"carry with a later failing example planted on c1 that missed its fault":     {read: 106, refused: 936},
 			"carry with a later failing example planted on c9, no commit of the history": {read: 106, refused: 936},
-			"carry with c2's failure at 10:30 and a later pass of m2":                    {read: 107, refused: 1024},
+			"carry with m2's failure and a later pass of m2":                             {read: 107, refused: 1024},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 107, refused: 1010},
 			"carry with its failing example planted by no step":                          {read: 88, refused: 878},
 			"earlier-text":           {read: 37, refused: 397},
@@ -51,11 +50,10 @@ func sweepFloors() map[string]map[string]sweepFloor {
 		},
 		"members": {
 			"carry": {read: 103, refused: 22},
-			"carry with a failure of c0, c1's parent, and a later pass of c2":            {read: 193, refused: 33},
 			"carry with a later failing example planted by no step":                      {read: 132, refused: 26},
 			"carry with a later failing example planted on c1 that missed its fault":     {read: 123, refused: 26},
 			"carry with a later failing example planted on c9, no commit of the history": {read: 132, refused: 27},
-			"carry with c2's failure at 10:30 and a later pass of m2":                    {read: 180, refused: 32},
+			"carry with m2's failure and a later pass of m2":                             {read: 180, refused: 32},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 180, refused: 32},
 			"carry with its failing example planted by no step":                          {read: 108, refused: 21},
 			"earlier-text":           {read: 33, refused: 7},
@@ -80,11 +78,10 @@ func sweepFloors() map[string]map[string]sweepFloor {
 		},
 		"texts": {
 			"carry": {read: 201, refused: 374},
-			"carry with a failure of c0, c1's parent, and a later pass of c2":            {read: 201, refused: 374},
 			"carry with a later failing example planted by no step":                      {read: 201, refused: 374},
 			"carry with a later failing example planted on c1 that missed its fault":     {read: 201, refused: 374},
 			"carry with a later failing example planted on c9, no commit of the history": {read: 201, refused: 374},
-			"carry with c2's failure at 10:30 and a later pass of m2":                    {read: 201, refused: 374},
+			"carry with m2's failure and a later pass of m2":                             {read: 201, refused: 374},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 201, refused: 374},
 			"carry with its failing example planted by no step":                          {read: 201, refused: 374},
 			"earlier-text":           {read: 107, refused: 193},
@@ -109,11 +106,10 @@ func sweepFloors() map[string]map[string]sweepFloor {
 		},
 		"attributes": {
 			"carry": {read: 10, refused: 16},
-			"carry with a failure of c0, c1's parent, and a later pass of c2":            {read: 10, refused: 16},
 			"carry with a later failing example planted by no step":                      {read: 10, refused: 16},
 			"carry with a later failing example planted on c1 that missed its fault":     {read: 10, refused: 16},
 			"carry with a later failing example planted on c9, no commit of the history": {read: 10, refused: 16},
-			"carry with c2's failure at 10:30 and a later pass of m2":                    {read: 10, refused: 16},
+			"carry with m2's failure and a later pass of m2":                             {read: 10, refused: 16},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 10, refused: 16},
 			"carry with its failing example planted by no step":                          {read: 10, refused: 16},
 			"earlier-text":           {read: 10, refused: 12},
@@ -138,11 +134,10 @@ func sweepFloors() map[string]map[string]sweepFloor {
 		},
 		"refusals": {
 			"carry": {read: 14, refused: 0},
-			"carry with a failure of c0, c1's parent, and a later pass of c2":            {read: 18, refused: 0},
 			"carry with a later failing example planted by no step":                      {read: 16, refused: 0},
 			"carry with a later failing example planted on c1 that missed its fault":     {read: 16, refused: 0},
 			"carry with a later failing example planted on c9, no commit of the history": {read: 18, refused: 0},
-			"carry with c2's failure at 10:30 and a later pass of m2":                    {read: 16, refused: 0},
+			"carry with m2's failure and a later pass of m2":                             {read: 16, refused: 0},
 			"carry with c2's failure between c1's pass and c1's failing example":         {read: 16, refused: 0},
 			"carry with its failing example planted by no step":                          {read: 12, refused: 0},
 			"earlier-text":           {read: 5, refused: 0},

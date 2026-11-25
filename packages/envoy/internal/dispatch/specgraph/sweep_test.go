@@ -68,9 +68,10 @@ func notRepoPaths(path string) []string {
 // whose reading moves a state toward true is wrong. The reader may refuse the input. A record taken
 // out whole, such as a result, is another input, not one that says nothing
 // (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and so is a named leg written where a
-// record has "": it states that the job had legs there, which an older result of that leg answers
-// by right (R8). The scenarios hold each shape that a rule reads: a check of the code with a matrix
-// and a silent leg, its failing example planted on a commit (planted_on, fault_paths), a wait on
+// record has "": it states that the job had legs there, which an older result of that leg there
+// answers by right (R12: "Each leg of a matrix reports its own result"). The scenarios hold each
+// shape that a rule reads: a check of the code with a matrix and a silent leg, its failing example
+// planted on a commit (planted_on, fault_paths), a wait on
 // its statement, a failure of production at the at of its pass, a refusal of CI, and, in
 // production-and-graph, a program check of production whose runs name the commit of their test
 // (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
@@ -91,8 +92,9 @@ func notRepoPaths(path string) []string {
 // or drops some, fails by name too. One right, which sweepInputs gives the input where it writes
 // it: a repository path of a tree written " " is a real path, since git holds a file of that name
 // (git ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a
-// tie covers, and a result there, a failure among them, carries no more across it (R8); a base
-// whose failure at one commit carries to another shows it. A path of a fault written " " is no
+// tie covers, and a failing example planted before it, a missed one among them, counts across it no
+// more (the rule that replaces The Spec's R8); a base whose missed failing example planted on one
+// commit counts at another shows it. A path of a fault written " " is no
 // path, as one of only white space is none, so its record does not say what its fault changed, and
 // as the newest failing example it reads unknown, no_fault_paths where it was the one path and
 // blank_fault_path beside a real one: it has no right, and a base whose failing example of two
@@ -325,39 +327,33 @@ type refusalOut struct {
 // call.
 func refusalsTakeOut() map[string][]refusalOut {
 	const code, program = "a-restart-loses-no-message", "a-production-restart-loses-no-message"
-	// The rows that several bases share: of carry and of most bases built from it, a refusal of its
-	// check at c1 takes out its pass at c1 (seq 1) and its failing example planted on c1 (seq 2), and
-	// one at c3 its pass at c3 (seq 3); of each base of production-and-graph that keeps its program
-	// check of production, a refusal at c1 takes out that check's pass and caught failing example of
-	// test_commit c1 (seq 1 and 2), and keeps its failing run (seq 3); and of each base of wait-cycle,
-	// a refusal at b1 takes out the pass and the caught failing example of each of its two passing
-	// checks there, and the caught failing example alone of the third, whose run failed.
-	carry := []refusalOut{{"c1", code, []int64{1, 2}}, {"c3", code, []int64{3}}}
+	// The rows that several bases share: of carry and of each base built from it that keeps its
+	// caught failing example, a refusal of its check at c1 takes out that failing example planted on
+	// c1 (seq 2), which counts at c2 and at m2 by the ties, while its pass at c1, as each run, counts
+	// at c1 alone (the rule that replaces The Spec's R8: "A result counts only at the commit that it
+	// read"); of each base of production-and-graph that keeps its program check of production, a
+	// refusal at c1 takes out that check's pass and caught failing example of test_commit c1 (seq 1
+	// and 2), and keeps its failing run (seq 3); and of each base of wait-cycle, a refusal at b1 takes
+	// out the caught failing example planted on b1 of each of its checks, whose runs read m1. A base
+	// whose only subject is the refused commit, as one-commit-two-answers, has no row: no result of
+	// it counts at another subject.
+	carry := []refusalOut{{"c1", code, []int64{2}}}
 	production := []refusalOut{{"c1", program, []int64{1, 2}}}
 	waitCycle := []refusalOut{
-		{"b1", "a-sent-message-reaches-a-listener", []int64{1, 2}},
-		{"b1", "a-late-session-gets-the-message", []int64{3, 4}},
+		{"b1", "a-sent-message-reaches-a-listener", []int64{2}},
+		{"b1", "a-late-session-gets-the-message", []int64{4}},
 		{"b1", "a-restart-keeps-the-message", []int64{6}},
 	}
 	return map[string][]refusalOut{
 		"carry": carry,
-		"carry with a failure of c0, c1's parent, and a later pass of c2": slices.Concat(carry,
-			[]refusalOut{{"c2", code, []int64{6, 7}}}),
 		"carry with a later failing example planted by no step":                      carry,
-		"carry with a later failing example planted on c1 that missed its fault":     {{"c1", code, []int64{1, 2}}, {"c3", code, []int64{3}}},
+		"carry with a later failing example planted on c1 that missed its fault":     carry,
 		"carry with a later failing example planted on c9, no commit of the history": carry,
-		"carry with c2's failure at 10:30 and a later pass of m2": slices.Concat(carry,
-			[]refusalOut{{"m2", code, []int64{6, 7}}}),
 		"carry with c2's failure between c1's pass and c1's failing example": slices.Concat(carry,
-			[]refusalOut{{"c2", code, []int64{6, 7}}}),
-		"carry with its failing example planted by no step": {{"c1", code, []int64{1}}, {"c3", code, []int64{3}}},
-		"earlier-text": {{"c0", "messages-come-in-the-order-of-their-writes", []int64{1, 2}}},
-		"one-commit-two-answers": {
-			{"c1", "relay-answers-within-the-limit", []int64{1, 2}},
-			{"c1", "relay-answers-on-linux-and-arm", []int64{3, 4, 5}},
-			{"c1", "relay-answers-once-per-request", []int64{6, 7, 8}},
-			{"c1", "relay-refuses-a-malformed-request", []int64{9, 10}},
-		},
+			[]refusalOut{{"c2", code, []int64{9}}}),
+		"carry with m2's failure and a later pass of m2": slices.Concat(carry,
+			[]refusalOut{{"m2", code, []int64{9}}}),
+		"earlier-text":         {{"c0", "messages-come-in-the-order-of-their-writes", []int64{2}}},
 		"production-and-graph": production,
 		"production-and-graph with CI's refusal at c1 of its check of the graph as a query of production":                 production,
 		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent":                              production,
@@ -369,11 +365,11 @@ func refusalsTakeOut() map[string][]refusalOut {
 		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent of production": production,
 		"production-and-graph with test_commit c1 on the failing run of its query of the graph":                           production,
 		"refusal":    carry,
-		"silent-leg": {{"c1", code, []int64{1, 2, 3}}},
-		"silent-leg with its matrix dropped at m2": {{"c1", code, []int64{1, 2, 3}}},
+		"silent-leg": {{"c1", code, []int64{2}}},
+		"silent-leg with its matrix dropped at m2": {{"c1", code, []int64{2}}},
 		"wait-cycle": waitCycle,
 		"wait-cycle with a second, passing check of a-message-survives-a-restart": slices.Concat(waitCycle,
-			[]refusalOut{{"b1", "a-restart-keeps-the-order", []int64{7, 8}}}),
+			[]refusalOut{{"b1", "a-restart-keeps-the-order", []int64{8}}}),
 		"wait-cycle with the outcomes of its two first runs swapped": waitCycle,
 	}
 }
@@ -451,9 +447,9 @@ func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
 }
 
 // plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit
-// of the history: R8 decides whether that record counts at a subject, and where it does not, the
-// older evidence decides, as with no such record.
-const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where R8 carries it; elsewhere older evidence decides`
+// of the history: the ties decide whether that record counts at a subject (the rule that replaces
+// The Spec's R8), and where it does not, the older evidence decides, as with no such record.
+const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where the ties carry it; elsewhere older evidence decides`
 
 // withoutResult is the states of base with result i of results.json taken out (scenarioStates).
 func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
@@ -497,7 +493,7 @@ type addableRecords struct {
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
 // that no step planted moves no state: it counts from planted_on only with both, and with one of
 // the two it reads unknown with the reason that names the other (CheckStates, step 7). A planted_on
-// that names a commit of the history has one right: where R8 does not carry that commit to a
+// that names a commit of the history has one right: where the ties do not carry that commit to a
 // subject, the record counts nowhere there and the base without that record decides
 // (plantedOnElsewhere). A planted_on that names no commit of the history has none: such a record
 // reads unknown, planted_on_outside_history.
@@ -642,7 +638,7 @@ type sweepInput struct {
 
 // pathOfOneSpace is the right of a repository path of a tree of the history written " ": a real
 // path, since git holds a file of that name, so the tree changed at a path that a tie covers.
-const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
+const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and a failing example counts across it no more (the rule that replaces The Spec's R8)`
 
 // sweepInputs is each input of the sweep of the scenario base, and base with each JSON file written
 // again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base. Each input
@@ -740,13 +736,15 @@ func recordKinds() map[string][][]string {
 // fact did not happen. A record that states a fact against a check, taken out, can move a state
 // toward true by right, and each kind of record has a row here, with the state of the check with
 // the record and with it taken out, and its reason; a kind with no row fails the test. A file taken
-// out of a commit's tree is not there at that commit, so it changed, and the carry of each result
-// across it ends, a failure's as a pass's (R8: "A result at one commit also counts at another
-// commit when no code that the check runs changed between the two"), as a changed label ends it:
-// it moves a state away from true where a pass carried, and toward true where a failure carried (a
-// row of each), as a path of a tree written " " does in
-// TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the subject of its
-// scenario with the record, and with the record taken out; setup makes the scenario first.
+// out of a commit's tree is not there at that commit, so it changed, and a failing example planted
+// before it counts across it no more, a caught one as a missed one (the rule that replaces The
+// Spec's R8: "A failing example that a check's test caught (The Spec R9) counts at another commit
+// only while no file that the test reads changed"; a run counts only at the commit that it read),
+// as a changed label ends it: it moves a state away from true where a caught failing example
+// counted, and toward true where a missed one counted (a row of each), as a path of a tree written
+// " " does in TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the
+// subject of its scenario with the record, and with the record taken out; setup makes the scenario
+// first.
 func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	t.Parallel()
 	const c = "a-restart-loses-no-message"
@@ -761,23 +759,28 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		check         string // whose state the row reads
 		with, without string // the state of the check with the record and with it taken out
 	}
-	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
-	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
-	carriedFailure := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
-		return editTree(t, fsys, "results.json", failureCarriedToC2())
+	// missCarried is carry with a caught failing example planted on c2, and a later failing example
+	// planted on c1 that missed its fault, which counts at c2 by the ties: c2 reads unknown
+	// (failing_example_missed). linuxPassAtM2 is silent-leg with a pass of leg linux at m2, where
+	// leg arm's run ended with no result: m2 reads unknown (ci_fault).
+	missCarried := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
+		return editTree(t, fsys, "results.json", missCarriedToC2())
+	}
+	linuxPassAtM2 := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
+		return editTree(t, fsys, "results.json", resultsAdded([]addedResult{{0, map[string]any{"commit": "m2", "at": "2026-11-13T10:00:00Z", "seq": 7}}}))
 	}
 	rows := []row{
-		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's pass carries no more to c2 (R8)",
+		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so the failing example caught at c1 counts no more at c2, and c2's pass has no failing example that counts (the rule that replaces The Spec's R8)",
 			scenario: "carry", file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
 			subject: 1, check: c, with: "true", without: "unknown"},
-		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's failure carries no more to c2, and c2's own pass and caught failing example count (R8)",
-			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
+		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so the failing example planted on c1 that missed its fault counts no more at c2, and c2's own pass and caught failing example count (the rule that replaces The Spec's R8)",
+			scenario: "carry", setup: missCarried, file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
 			subject: 1, check: c, with: "unknown", without: "true"},
 		{kind: "a failing result", reason: "the failure is the record against the check, and the history without it holds no failure (R7: \"a later failure cancels an earlier pass\")",
 			scenario: "silent-leg", file: "results.json", place: []string{"5"},
 			subject: 3, check: q, with: "false", without: "true"},
-		{kind: "a run of a job", reason: "with no run of leg arm that ended, no leg is silent (R9: \"after a run of its job ends\")",
-			scenario: "silent-leg", file: "jobs.json", place: []string{"1"},
+		{kind: "a run of a job", reason: "with no run of leg arm that ended, no leg is silent, and leg linux's pass at m2 counts (R9: \"after a run of its job ends\")",
+			scenario: "silent-leg", setup: linuxPassAtM2, file: "jobs.json", place: []string{"1"},
 			subject: 1, check: c, with: "unknown", without: "true"},
 		{kind: "the refusals of CI at a commit", reason: "CI then refused no check at the commit (R48)",
 			scenario: "refusal", file: "uncited.json", place: []string{"c2"},
@@ -785,15 +788,15 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		{kind: "a refusal of CI", reason: "CI then refused no check at the commit (R48)",
 			scenario: "refusal", file: "uncited.json", place: []string{"c2", c},
 			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "the ties at a commit", reason: "no tie is then known at the commit, and a tie that is not known carries no result (R18, R8), so the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "ties.json", place: []string{"c1"},
+		{kind: "the ties at a commit", reason: "no tie is then known at the commit, and a failing example planted where no tie is known counts at no other commit (R18; the rule that replaces The Spec's R8), so the missed one planted there counts at c2 no more",
+			scenario: "carry", setup: missCarried, file: "ties.json", place: []string{"c1"},
 			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "a tie", reason: "the tie is then not known at the commit, and a tie that is not known carries no result (R18, R8), so the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "ties.json", place: []string{"c1", c},
+		{kind: "a tie", reason: "the tie is then not known at the commit, and a failing example planted where its tie is not known counts at no other commit (R18; the rule that replaces The Spec's R8), so the missed one planted there counts at c2 no more",
+			scenario: "carry", setup: missCarried, file: "ties.json", place: []string{"c1", c},
 			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "a commit of the history", reason: "the history then holds no tree of the commit, so no result carries from it (R8), and the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "1"},
-			subject: 1, check: c, with: "unknown", without: "true"},
+		{kind: "a commit of the history", reason: "the history then holds no commit c1, so the failing example caught there counts from no commit (planted_on_outside_history), and c2's pass has no failing example",
+			scenario: "carry", file: "history.json", place: []string{"commits", "1"},
+			subject: 1, check: c, with: "true", without: "unknown"},
 	}
 	kinds := recordKinds()
 	for kind := range maps.Keys(kinds) {
@@ -832,20 +835,17 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	}
 }
 
-// failureCarriedToC2 is the writer of carry's results.json that adds a failure of its first
-// record's check at c1 after its pass, a pass at c2 after it, and a copy of its caught failing
-// example planted on c2 (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight).
-func failureCarriedToC2() treeEdit {
+// missCarriedToC2 is the writer of carry's results.json that adds a copy of its caught failing
+// example planted on c2, and a later copy planted on c1 on which the test missed its fault
+// (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight).
+func missCarriedToC2() treeEdit {
 	return func(v any) any {
 		results := v.([]any)
-		run := func(commit, outcome, at string, seq int) map[string]any {
-			r := maps.Clone(results[0].(map[string]any))
-			r["commit"], r["outcome"], r["at"], r["seq"] = commit, outcome, at, seq
-			return r
-		}
-		fault := maps.Clone(results[1].(map[string]any))
-		fault["commit"], fault["planted_on"], fault["at"], fault["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
-		return append(results, run("c1", "fail", "2026-11-12T10:10:00Z", 5), run("c2", "pass", "2026-11-13T09:00:00Z", 6), fault)
+		caught := maps.Clone(results[1].(map[string]any))
+		caught["commit"], caught["planted_on"], caught["at"], caught["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
+		missed := maps.Clone(results[1].(map[string]any))
+		missed["commit"], missed["outcome"], missed["at"], missed["seq"] = "f2", "pass", "2026-11-13T12:00:00Z", 8
+		return append(results, caught, missed)
 	}
 }
 

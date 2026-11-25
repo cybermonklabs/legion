@@ -195,8 +195,8 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1"}}}
 		}, want: `specgraph: history: commit "c1": it sets no files`},
 		// A tree with no path, or a content label of no letter and no digit, would read as a tree, or
-		// a content, that other commits share, so a result would carry between them (R8), and a label
-		// changed to " " as a change of a file that a tie covers, so a failure would carry no more.
+		// a content, that other commits share, so a failing example would count across them
+		// (CheckStates, step 7), and a label changed to " " as a change of a file that a tie covers.
 		{name: "a commit of the history whose tree holds no path", change: func(in *Input) {
 			in.History = &FixtureHistory{Commits: []FixtureCommit{{ID: "c1", Files: map[string]string{}}}}
 		}, want: `specgraph: history: commit "c1": its files hold no path, and the tree of a commit holds at least one file`},
@@ -323,9 +323,9 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
 		// another." "" is the leg of no matrix, and one job at one commit has legs or it has none: its
 		// runs and its run results there in both forms say two things that cannot both be true, and an
-		// older run result of the leg "" would answer a run of no matrix where the job had legs, at a
-		// commit where the results of that commit count (TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs).
-		// A state reads no leg of a failing example, and the runs of one job at two commits can differ.
+		// older run result of the leg "" would answer a run of no matrix where the job had legs, at
+		// the commit of that result. A state reads no leg of a failing example, and the runs of one job
+		// at two commits can differ.
 		{name: `job runs of one job at one commit in the leg "" and in a named leg`, change: func(in *Input) {
 			in.Results[0].Leg = new("linux")
 			in.JobRuns = []JobRun{{Job: "go-checks", Leg: new("linux"), Commit: "c1", Ended: new(true)}, {Job: "go-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
@@ -409,6 +409,19 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
 					Deploy: "d1", Job: "production-checks", Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
 			}},
+		{name: `control: a run result of a query of the graph that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateGraph}, change: func(in *Input) {
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: checkStateGraph.ID, CheckDigest: checkStateGraph.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: "production-checks", Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
+		{name: `control: a run result of an agent of the graph that names that job and test_commit c1, in a named leg`,
+			add: []Check{checkStateGraphAgent}, change: func(in *Input) {
+				a := checkStateGraphAgent
+				in.JobRuns = []JobRun{{Job: "production-checks", Leg: new(""), Commit: "c1", Ended: new(true)}}
+				in.Results = append(in.Results, Result{Check: a.ID, CheckDigest: a.Digest(), Kind: ResultRun, Outcome: OutcomeFail,
+					GraphTx: "tx1", Job: "production-checks", Leg: new("linux"), TestCommit: "c1", At: checkStateRun, Seq: 3})
+			}},
 		{name: `control: run results of an older text of a program check of production at one test_commit, in the leg "" and in a named leg`,
 			add: []Check{checkStateProductionProgram}, change: func(in *Input) {
 				q := checkStateProductionProgram
@@ -463,7 +476,7 @@ func TestTheDerivationRefusesAnInputThatIsNotWhole(t *testing.T) {
 			in.Approved.Nodes[checkStateLeaf.ID] = n
 		}, want: `specgraph: approved node "a-stored-message-survives-a-restart": it sets no partly_checked; a statement whose checks decide all of it sets false`},
 		// M1: a path of a tree of the history is a repository path, by the rule of NewTie
-		// (isRepoPath): no tie covers "./go.work", so a change there would carry a result (R8).
+		// (isRepoPath): no tie covers "./go.work", so a failing example would count across a change there.
 		{name: "a path of the history that starts with ./", change: func(in *Input) { in.History = historyWithPath("./go.work") },
 			want: `specgraph: history: commit "c1": the path "./go.work" is no repository path, whose parts "/" separates and none of which is empty, "." or ".."`},
 		{name: "a path of the history that starts with /", change: func(in *Input) { in.History = historyWithPath("/go.work") },
