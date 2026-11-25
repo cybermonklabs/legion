@@ -54,8 +54,9 @@ var storeWriteCallSites = map[string]string{
 	// comment's node before the comments row that names it (queueCommentRow, through
 	// graphstore.QueueNodes), then its tuples and its cause under the event appended after both,
 	// and who wrote it (queueCommentCreated, through QueueCaused and QueueAuthored). The comment
-	// route itself opens each mention's delivery attempt, its node before the row that names it
-	// (createCommentFor, through QueueNodes).
+	// route writes the node of each delivery attempt its mentions open before the attempt's row
+	// itself (createCommentFor, through QueueNodes), which the comment's event causes
+	// (queueCommentCreated).
 	"api/comment_create.go#createCommentFor":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_create.go#queueCommentCreated": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_create.go#queueCommentRow":     "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
@@ -76,6 +77,7 @@ var storeWriteCallSites = map[string]string{
 	// whose foreign key names it. No lock-step test drives these sites: api's
 	// TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads what it
 	// states of its attempt.
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#recordCommentDeliveryResolution": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#standDown":                       "api#TestMentionsAreTuplesAndEveryAttemptIsANode",

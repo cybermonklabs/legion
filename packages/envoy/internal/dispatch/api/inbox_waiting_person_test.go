@@ -473,17 +473,6 @@ func refuseTupleTrigger(t *testing.T, database *store.Store, when, body string) 
 	})
 }
 
-// issueEventCount is how many events of eventType the issue key holds.
-func issueEventCount(t *testing.T, database *store.Store, key, eventType string) int {
-	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from events where issue_key = $1 and type = $2`, key, eventType).Scan(&count); err != nil {
-		t.Fatalf("count the %s events of %s: %v", eventType, key, err)
-	}
-	return count
-}
-
 // TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn races a move of a
 // project's default assignee against the two writes that read or move who an ask that falls
 // through to it waits on, and holds each pair to ending with one standing delivered_to, to the

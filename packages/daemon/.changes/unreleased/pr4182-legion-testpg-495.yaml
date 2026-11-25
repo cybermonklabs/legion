@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=495` rather than 491, because a Dispatch process may now open 118 connections rather than 117: the reference forms drain and the parents' status fix at boot each hold a lease connection. That is four processes at 118, the suite's own 20 clients (`testlimits.ServerConnections`), and the three slots Postgres reserves for superusers.
+time: 2026-11-25T07:10:00Z
+custom:
+    Issue: pr4182

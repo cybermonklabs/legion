@@ -2090,6 +2090,18 @@ func (row statusChangeKeyRow) pointKeys() []string {
 	return keys
 }
 
+// issueEventCount is how many events of kind issue holds.
+func issueEventCount(t *testing.T, database *store.Store, issue, kind string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from events where issue_key = $1 and type = $2
+	`, issue, kind).Scan(&count); err != nil {
+		t.Fatalf("count the %s events of %s: %v", kind, issue, err)
+	}
+	return count
+}
+
 // requireEachClosedOnce fails t unless each of keys holds one issue.closed event.
 func requireEachClosedOnce(t *testing.T, database *store.Store, keys ...string) {
 	t.Helper()

@@ -426,9 +426,10 @@ export async function seedOpenPage(): Promise<OpenPageSeed> {
     indexedRow((row) => row.block_id === OPEN_ANSWERED),
   ]);
 
-  // Question 8's answer writes `state="answered"` into its block in the version the answer's own
-  // transaction saves. The live text serves no server-owned attribute, so the newest version's
-  // stored markdown is where the state shows.
+  // Question 8's answer puts `state="answered"` on its block's opening line, and the document's
+  // settlement then writes the version that stores it. The live text serves no server-owned
+  // attribute, so the newest version's stored markdown is where the state shows.
+  // kept for one release: stored-ask-state
   await answerAsk(
     answered.id,
     { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },

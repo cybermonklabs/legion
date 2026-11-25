@@ -420,7 +420,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: newBlockCounted,
 	}, {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
-		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated", "inboxwrite/thread.go#queueKeepRow"),
+		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated",
+			"inboxwrite/thread.go#queueKeepRow"),
 		Drive: func(t *testing.T) {
 			r.comment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)).ID
@@ -439,8 +440,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
-		Sites: comment("api/comment_create.go#createCommentFor", "api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated",
-			"api/comment_delivery.go#take", "api/comment_delivery.go#recordCommentDeliveryResolution"),
+		Sites: comment("api/comment_create.go#createCommentFor", "api/comment_create.go#queueCommentRow",
+			"api/comment_create.go#queueCommentCreated", "api/comment_delivery.go#take",
+			"api/comment_delivery.go#recordCommentDeliveryResolution"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},

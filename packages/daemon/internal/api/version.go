@@ -3660,7 +3660,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of the release before (256, the number main declares at 0dbe504849) reads that state
+// A plugin of the release before (256, the number main declares at 0c368b3907) reads that state
 // as before, since it parses the three names, and the boot
 // gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
@@ -3759,8 +3759,6 @@ package api
 // #5349, 257 #4580, 261 #5332, 262 #5204 and 265 #5285.)
 // (After that merge #4049 and #4065 declared 253 as well. This change takes the allocated number
 // 271 at the forward merge of main at fd2f03fb07, where main still declares 250.)
-// (The forward merge of 2026-11-25 that brings main in at 0dbe504849, through
-// legion/INFRA-3135, brings main's 256 (#5349, the entry before this one), below 271, so this
-// change keeps 271, and answers.go's SupportedContracts ends causeTimesContract, 271. Read main's
-// own number and every open pull request again at the next merge rather than from this line.)
+// (At the forward merge of main at 0c368b3907, main declares 256, the entry before this one, and
+// this change keeps 271.)
 const DaemonAPIVersion = 271

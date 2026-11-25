@@ -524,6 +524,7 @@ export function AgentThread({
   // The keys the reference doors serve that assistant-ui does not (`ReferenceTriggers`), handed
   // to them before the composer reads the key.
   const referenceKeys = useRef<ReferenceKeys | null>(null);
+
   // The composer sits at the foot of a page that fills the screen, in its flow, above the rows
   // under it, and `Jump to latest` floats just above it while the reader is back in the
   // transcript: both are in the foot's page layer (`hooks/useFootInset.ts` lists the foot's

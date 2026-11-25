@@ -80,7 +80,6 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/related":                 {Writes: readWritesNothing, WriteNote: "When the project has no search_term_totals row, the related-item check starts a refresh of the project's term statistics on the server's own context (ensureSearchTermStats, once per project and process): it inserts and updates search_term_totals, deletes and inserts search_term_stats, and deletes the project's search_term_queue rows. The statistics are a cache of what the project holds, which every related check reads and the first to find them missing rebuilds; nothing else is written."},
 	"GET /api/v1/github/app-installation/{owner}/{repo}": {Writes: readWritesNothing, WriteNote: "Writes nothing itself. When GitHub answers the installation lookup with a rate limit, the GitHub client records that limit in github_rate_limits on a context detached from the request (ratelimit.Record), as it does for every caller that reads GitHub: the row is GitHub's own state, not a fact of Dispatch's."},
 	"GET /api/v1/references":                             {Writes: readWritesNothing, WriteNote: "Writes nothing itself. With ?since=, the read waits on the event horizon, as the event log does, and the horizon's observation, which may run on this request's goroutine, writes event_horizon on a context of its own (writePersisted), at most once a second, after its waiters have their answer: the server's write for every reader alike. Without ?since= it does not read the horizon."},
-	"GET /api/v1/me/inbox":                               {Writes: readWritesNothing, WriteNote: "Writes nothing itself. The read waits on the event horizon as the event log does (sinceHorizon, Horizon.Await), and the horizon's observation, which may run on this request's goroutine, writes event_horizon on a context of its own (writePersisted), at most once a second, after its waiters have their answer: the server's write for every reader alike."},
 	"GET /api/v1/issues/{key}/results":                   {Writes: readWritesNothing, WriteNote: "A read-only caller's read reads GitHub and stores nothing. A writer's read stores what it read from GitHub, as it always has: the pull request heads of a result's commit (pull_request_heads), with the branch commits (branch_commits) and the attribution events (events) that come with them. Like every reader of GitHub, the GitHub client may record GitHub's rate limit in github_rate_limits on a detached context, and the check blocks are read through the document service, whose cold read may queue a compaction (docsCompactionNote)."},
 	"GET /api/v1/issues/{key}/coverage":                  {Writes: readWritesNothing, WriteNote: docsCompactionNote},
 	"GET /api/v1/issues/{key}/decisions":                 {Writes: readWritesNothing, WriteNote: docsCompactionNote},
@@ -147,6 +146,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/inbox":                                                  {Writes: readWritesNothing},
 	"GET /api/v1/me/answers":                                             {Writes: readWritesNothing},
 	"GET /api/v1/me/replies":                                             {Writes: readWritesNothing},
+	"GET /api/v1/me/inbox":                                               {Writes: readWritesNothing},
 	"GET /api/v1/search":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/search/results":                                         {Writes: readWritesNothing},
 	"GET /api/v1/search/coverage":                                        {Writes: readWritesNothing},
@@ -157,10 +157,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/going/capability":                                       {Writes: readWritesNothing},
 	"GET /api/v1/agents":                                                 {Writes: readWritesNothing},
 	"GET /api/v1/agents/known":                                           {Writes: readWritesNothing},
-	"GET /api/v1/agents/{session_id}/conversation":                       {Writes: readWritesNothing},
-	"GET /api/v1/agents/{session_id}/artifacts":                          {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/answers":                            {Writes: readWritesNothing},
+	"GET /api/v1/agents/{session_id}/conversation":                       {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/messages":                           {Writes: readWritesNothing},
+	"GET /api/v1/agents/{session_id}/artifacts":                          {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}":                   {Writes: readWritesNothing},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {Writes: readWritesNothing},
 	"GET /api/v1/broadcasts":                                             {Writes: readWritesNothing},
@@ -195,10 +195,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credentials/capabilities":                               {Writes: readWritesNothing},
 	// The test hooks' GET rows, which read this process's memory.
 	"GET /api/v1/artifacts/_test/rooms":                          {Writes: readWritesNothing},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Writes: readWritesNothing},
 	"GET /api/v1/messages/_test/queued":                          {Writes: readWritesNothing},
-	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Writes: readWritesNothing},
 }
 
 // readClassRefusals names every way readClasses fails to class the table, sorted, each line

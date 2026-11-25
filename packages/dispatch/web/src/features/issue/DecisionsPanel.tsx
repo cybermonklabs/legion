@@ -45,6 +45,8 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { decisionHeadingTree } from "./decision-heading";
 import {
   decisionName,
+  isPlainTitleBlock,
+  isPlainTitleMarkdown,
   isUnsureBlock,
   nameBlock,
   ownTree,
@@ -93,9 +95,10 @@ interface DecisionBlock {
   /** Whether the block is the doubt the decision's node holds rather than a block of its text
    *  (`entryBlocks`): no document text holds it, so a Change never quotes it. */
   readonly fromNode?: true;
-  /** Whether the block is the paragraph that names the decision (`decisionName`): the card draws
-   *  it as its heading and not in its body, and a Change still quotes it, as the issue page's
-   *  Change does (`anchorQuote`). */
+  /** Whether the card's plain heading shows all of this naming block (`isPlainTitleBlock`): the
+   *  card omits it from the body, while a Change still quotes it, as the issue page's Change
+   *  does (`anchorQuote`). A naming block with a link, mark, image, reference, or block
+   *  structure is not marked `naming` and stays in the body. */
   readonly naming?: true;
 }
 
@@ -103,9 +106,9 @@ interface DecisionBlock {
  *  before this one serves none during a rolling deploy, and the markdown split the browser has
  *  always made is what draws the decision then, as every other view falls back to parsing. The
  *  decision's name there is the first line of its markdown (`decisionName`), so the first block
- *  names it only where that block is the name and nothing more: a first paragraph that runs
- *  over more lines, or one that opens with a directive's fence, is drawn whole in the body. A
- *  heading is dropped by the split, as before. */
+ *  is marked `naming` only where it equals that name and holds plain text alone
+ *  (`isPlainTitleMarkdown`). A multi-line paragraph, a directive fence, or a line with a link,
+ *  mark, or reference stays in the body. A heading is dropped by the split, as before. */
 function markdownBlocks(text: string, name: string | undefined): DecisionBlock[] {
   return text
     .split(/\n\s*\n/)
@@ -116,7 +119,9 @@ function markdownBlocks(text: string, name: string | undefined): DecisionBlock[]
         ? []
         : [
             {
-              ...(index === 0 && markdown === name ? { naming: true as const } : {}),
+              ...(index === 0 && markdown === name && isPlainTitleMarkdown(markdown)
+                ? { naming: true as const }
+                : {}),
               // The block's own markdown is its text here, the Change quote included: with no
               // reading there is nothing to flatten, and parsing the markdown in the browser to
               // build a quote is the reading a stored text's tree exists to spare every view. It
@@ -139,9 +144,10 @@ function markdownBlocks(text: string, name: string | undefined): DecisionBlock[]
  *  text into: the top-level blocks of that tree are the paragraphs the markdown would have been
  *  split into, already divided, so the browser splits nothing and parses nothing. A heading is
  *  the decision's own, drawn by the card above its text, or one written inside it, which the
- *  markdown split dropped too. Where `named` is set, the block that names the decision
- *  (`nameBlock`, the rule `decisionName` names it by) is marked: a converted section's heading is
- *  such a paragraph, and the card draws it once, as its heading. */
+ *  markdown split dropped too. Where `named` is set, the naming block (`nameBlock`) is marked
+ *  `naming` only when the plain heading shows all of it (`isPlainTitleBlock`), such as a
+ *  converted section's plain-text heading paragraph. Any naming block with a link, inline code,
+ *  mark, image, reference, or block structure stays in the body. */
 function readDecisionBlocks(decision: DrawnDecision, named: boolean): readonly DecisionBlock[] {
   const tree = decision.text_tree;
   const content = tree?.content;
@@ -150,10 +156,11 @@ function readDecisionBlocks(decision: DrawnDecision, named: boolean): readonly D
   }
   const nodes = content as DisplayTree[];
   const name = named ? nameBlock(nodes) : undefined;
+  const hiddenName = name !== undefined && isPlainTitleBlock(name) ? name : undefined;
   return nodes
     .filter((node) => node.type !== "heading")
     .map((node) => ({
-      ...(node === name ? { naming: true as const } : {}),
+      ...(node === hiddenName ? { naming: true as const } : {}),
       // What this block draws is the block alone, so its text is the words that block holds and
       // never the whole field's markdown: the field is passed beside it as the text the
       // references are read from (`MarkdownBody`'s `referenceText`), since a link's target and
@@ -193,13 +200,13 @@ function entryDecision(entry: DecisionEntry): DrawnDecision {
 }
 
 /** The blocks of an entry's text, from the tree the server read that text into
- *  (`readDecisionBlocks`), the block that names it marked where its name is its own words rather
- *  than an ask's question. An ask answered by the options chosen alone is the one entry whose
- *  text no stored text holds - the labels chosen, joined - so no reading of the server's covers
- *  that text: it is drawn as its labels, each from the reading of its own label the server sends
- *  beside it (`selected_trees`), as the Answers page draws a chosen label. The doubt a decision's
- *  node holds (`unsureWords`) is drawn last, as the `Unsure:` paragraph it was moved from drew,
- *  unless the text still holds that paragraph. */
+ *  (`readDecisionBlocks`), with a plain naming block marked where the card's title is the
+ *  decision's own words rather than an ask's question. An ask answered by the options chosen alone
+ *  is the one entry whose text no stored text holds - the labels chosen, joined - so no reading of
+ *  the server's covers that text: it is drawn as its labels, each from the reading of its own label
+ *  the server sends beside it (`selected_trees`), as the Answers page draws a chosen label. The
+ *  doubt a decision's node holds (`unsureWords`) is drawn last, as the `Unsure:` paragraph it was
+ *  moved from drew, unless the text still holds that paragraph. */
 function entryBlocks(entry: DecisionEntry, decision: DrawnDecision): readonly DecisionBlock[] {
   if (entry.node.kind !== "ask" || entry.answer !== null) {
     const blocks = readDecisionBlocks(decision, entry.question === null);
@@ -413,8 +420,8 @@ function DecisionCard({
   spec,
 }: {
   actions?: ReactNode;
-  /** The blocks of this decision's text, the one that names it marked, read by the caller that
-   *  also quotes the first of them its text holds (`entryBlocks`). */
+  /** The blocks of this decision's text, with a plain naming block marked, read by the caller
+   *  that also quotes the first of them its text holds (`entryBlocks`). */
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
   /** The document the decision is written in, the one its node stands in, which its `#id`s name
@@ -455,7 +462,7 @@ function DecisionCard({
         )}
       </h3>
       {blocks.map((block, index) => {
-        // The block that names the decision is drawn as its heading, above.
+        // A plain naming block is already shown in full by the heading above.
         if (block.naming) return null;
         return block.labels !== undefined ? (
           // The labels an answer chose, as a body's paragraph draws its words, each label drawn

@@ -613,6 +613,16 @@ var indexPasses = map[string]string{
 	// keys kept. No column it sets is one the store projects (censustest.ProjectedColumns), and
 	// it reads no side of a projection to write the other.
 	"api/post_history.go#clearDeletedPostBody": "the delete request and the post it deletes, which its caller locked",
+	// A comment's delete and an issue message's edit and delete, each in its route's own write:
+	// what the body's index states - the new text's for an edit, the empty body's for a delete -
+	// under the route's own event (QueueCaused), each pending attempt the delete settled failed
+	// under its receipt (QueueAttempted), and, for the edit, the participation of each person the
+	// new text mentions in the message's thread (QueueToPerson). Each reads the request, the post
+	// its route locked and the attempt rows its own settle wrote, and no side of a projection to
+	// write the other.
+	"api/comment_delete.go#deleteComment":      "the delete request, the comment it deletes, which the route locked, and the pending attempts its settle failed",
+	"api/message_corrections.go#editMessage":   "the edit request's own body, the message it edits, which the route locked, and that message's thread root for each person the new text mentions",
+	"api/message_corrections.go#deleteMessage": "the delete request, the message it deletes, which the route locked, and the pending attempts its settle failed",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
@@ -822,6 +832,7 @@ var indexPasses = map[string]string{
 	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",
 	"api/comment_delivery.go#supersedeCommentDelivery":        "the attempt a later one superseded",
 	"api/comment_delivery.go#recordCommentDeliveryResolution": "the resolution the sender recorded on its attempt",
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "the claim the sender renews before its send",
 	"api/comment_mention_claims.go#refreshMentionClaims":      "the claims the mention sender wrote again",
 	"api/comment_mention_claims.go#releaseMentionClaims":      "the claims the mention sender gave back",
 	"api/comment_mention_claims.go#claimQueuedMention":        "the claim a keyed repeat takes",

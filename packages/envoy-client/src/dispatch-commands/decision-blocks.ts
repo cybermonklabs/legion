@@ -49,10 +49,10 @@ async function blockAsks(
  * agent's next edit is where the human's decision gets written into the text. A block whose every
  * opening line records the state the server's ask holds, or that records none, is judged without
  * asking which release serves, since both read it alike. Only a real opening line counts
- * (`askOpenerLines`): a line that quotes the opener in fenced code or in front matter is the
- * document's own text, and a quote in an inline code span never starts a line, so a quote records
- * no state and neither opens a block nor hides one. The live text is read once, and only for a
- * block that needs it.
+ * (`askOpenerLines`): a line that quotes the opener in fenced or indented code or in front matter
+ * is the document's own text, and so is a later line of an inline code span that stands four
+ * columns or more past its containers. A quote records no state and neither opens a block nor
+ * hides one. The live text is read once, and only for a block that needs it.
  *
  * A block removed from the document is not judged here; `refuseRemovingOpenDecisionBlocks` keeps
  * one whose ask is open in it. A document already approved at its latest version is left to the
@@ -83,10 +83,14 @@ export async function refuseOpenDecisionBlocks(
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
+  // The state a version's opening line records for its block, which decides a block only against
+  // a Dispatch of the release before, whose live text sends no `asks`.
+  // kept for one release: release-before-text
   const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
   // A version of the release before shows open a block whose ask is answered or closed until the
   // version its settlement writes the answer into; a waived one (resolved) gets the decision
   // written in.
+  // kept for one release: release-before-text
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
@@ -126,27 +130,28 @@ export async function refuseOpenDecisionBlocks(
     const openers = askOpeners(openerLines, block.id);
     const states = openers.map(stateOf);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
+    // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
     if (ask !== undefined) {
       const open = ask.state === "open";
+      // A Dispatch of this release sends `asks`, and the ask's own state decides. One of the
+      // release before sends none, and there a version that records the block open while its ask
+      // is not waits for the version that holds the answer.
+      // kept for one release: release-before-text
       if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
         return open ? named : undefined;
       }
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    // A copy, judged by its source, which is read off the block's own opening line alone
-    // (openerAsks, over the version's real openers): a line that quotes it (in code, a fence
-    // opened on a footnote's label line included, or in front matter) names no ask Dispatch
-    // recorded.
+    // A copy, judged by its source, which is read off the block's own opening lines alone
+    // (openerAsks over `openers`, the version's real openers of the block): a line that quotes it
+    // (in code, a fence opened on a footnote's label line included, or in front matter) names no
+    // ask Dispatch recorded.
     const text = await liveText();
+    // kept for one release: release-before-text
     if (!text.served && recordsSettled) return undefined;
-    if (!text.served && recordsOpen) {
-      return openCopy(
-        named,
-        openerAsks(openerLines).filter((copy) => copy.block_id === block.id)
-      );
-    }
+    if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =
       copies.length > 0 &&

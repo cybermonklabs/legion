@@ -788,10 +788,13 @@ func (s *server) recordCommentDeliveryResolution(
 // made after the copy rule and before the send (deliverResolvedCommentMention), the comment twin
 // of holdMessageDeliveryClaim: it renews that claim in one statement scoped to it, as the settle's
 // statements are, in a transaction of its own, as every write a keyed request makes is
-// (markRequestKeyCommitted). It answers the claim it renewed, and held = false, with claim
-// unchanged, when the claim is no longer this sender's: the attempt was answered, taken by
-// another sender, or settled by its post's delete meanwhile, and the settle that follows reads
-// which.
+// (markRequestKeyCommitted). The renewal and what the row then holds are one batch, at the
+// sentinel (graphstore.QueueAttempted), as the record of the resolution before it is
+// (recordCommentDeliveryResolution) and as the message twin's renewal is (claimAttempt), so the
+// claim the attempt's node holds is the one the send is made under. It answers the claim it
+// renewed, and held = false, with claim unchanged, when the claim is no longer this sender's: the
+// attempt was answered, taken by another sender, or settled by its post's delete meanwhile, and
+// the settle that follows reads which.
 func (s *server) holdCommentDeliveryClaim(
 	ctx context.Context, comment model.Comment, target string, claim attemptClaim,
 ) (attemptClaim, bool, error) {
@@ -801,11 +804,17 @@ func (s *server) holdCommentDeliveryClaim(
 	}
 	defer tx.Rollback(ctx)
 	renewed := claim
-	err = tx.QueryRow(ctx, `
-		update comment_deliveries set claimed_at = now()
-		where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and claimed_at = $4
-		returning claimed_at
-	`, comment.ID, target, claim.attempt, claim.claimedAt).Scan(&renewed.claimedAt)
+	err = store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("", `
+			update comment_deliveries set claimed_at = now()
+			where comment_id = $1 and target = $2 and attempt = $3 and state = 'pending' and claimed_at = $4
+			returning claimed_at
+		`, comment.ID, target, claim.attempt, claim.claimedAt).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&renewed.claimedAt)
+		})
+		graphstore.QueueAttempted(b, graphstore.AttemptWriter, graphstore.NoEvent, graphstore.CommentAttempt(comment.ID, target, claim.attempt))
+		return nil
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return claim, false, nil
 	}

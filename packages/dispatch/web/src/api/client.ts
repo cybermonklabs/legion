@@ -573,6 +573,14 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields - its title, description
+ *  or owner, and its place in the one order (`rank: {before, after}`, the priorities it lands
+ *  between, as the issue board's own drag names them). Each field left out is left alone. Every
+ *  change is a write on the priority's line, made from this request (`usePriorityWrites`). */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
 /** `POST /api/v1/issues/{key}/status-change`: an issue's status with what happens to the issues
  *  under it or above it (`include_children`, `unlink_children`, `include_parent`), so that each
  *  parent's status stays in line with its children's. With `dry_run` it writes nothing and
@@ -582,14 +590,6 @@ export function statusChangeRequest(
   input: Body<"/api/v1/issues/{key}/status-change", "post">
 ) {
   return writeRequest("post", "/api/v1/issues/{key}/status-change", { key }, input);
-}
-
-/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields - its title, description
- *  or owner, and its place in the one order (`rank: {before, after}`, the priorities it lands
- *  between, as the issue board's own drag names them). Each field left out is left alone. Every
- *  change is a write on the priority's line, made from this request (`usePriorityWrites`). */
-export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
-  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
 }
 
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session

@@ -442,13 +442,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, the keyword fill's hold two more, the CI verify loop
-// one more, R25's boot fix one more and the reference forms drain one more, and that is what the
+// one more, the reference forms drain one more and R25's boot fix one more, and that is what the
 // six cost the instance: a serving process opens at most 118 (ConnectionsPerProcess), where it
 // opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
 // slots still admit four app pods holding connections at once (472 of 497) and still refuse five
 // (590), exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. A
-// deployment on another tier reads SHOW max_connections against its own roll, as sharedPoolSize's
-// note says.
+// deployment on another tier reads SHOW max_connections against its own roll, as
+// sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop

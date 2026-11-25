@@ -26,20 +26,25 @@
 # cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # or that key followed by the commit, its own restores being lookups but those of a family it
-# saves under the commit, which download the newest entry,
+# saves under the commit, which download the newest entry, every restore of any workflow must
+# name a family some workflow saves,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads, every dorny/paths-filter
 # step of every workflow must hand the action exactly the generated file, after the step that
-# writes it, every output of the changes job must name that step and a filter the gates declare,
-# a hand-written read that matches no file is refused, and every spec file the `references)` arm
-# of .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
+# writes it, every output of the changes job must name that step and a filter the gates declare
+# (but for the list of matched filters, held to its one value), a step reading its filter out of
+# that list must read it in its one shape and is the gate on that filter, a hand-written read that
+# matches no file is refused, and every spec file the `references)` arm of
+# .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
 # dispatch_references filter matches. A script's go command is read under every step of each job
 # that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
 # under that caller alone and reads its other jobs under every caller whose filter is not
-# EXCLUDED, and the header's run recipe runs the check, or says why it stops.
+# EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
+# workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
+# read the tree through git, and the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, the gate of that job and two excluded
@@ -516,8 +521,11 @@ root=$(fixture fail-open-go)
 mkdir -p "$root/bin"
 printf '#!/bin/sh\necho "go: broken on purpose" >&2\nexit 1\n' > "$root/bin/go"
 chmod +x "$root/bin/go"
-run_generate "$root" PATH="$root/bin:$PATH"
+: > "$root.github-output"
+run_generate "$root" PATH="$root/bin:$PATH" GITHUB_OUTPUT="$root.github-output"
 check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes every_filter=true to the step's outputs, which makes the list of matched filters all" \
+  "$(is "$(cat "$root.github-output")" every_filter=true)"
 check "and says the filters could not be computed" "$(contains "$out" 'the filters could not be computed')"
 check "the file opens with the fail-open line" "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')"
 check "every filter the changes job hands on is '**'" \
@@ -555,8 +563,11 @@ shared_read "$root"
 base_commit=$(commit_all "$root" base)
 replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
 commit_all "$root" head >/dev/null
-run_generate "$root" CI_FILTERS_BASE="$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" GITHUB_OUTPUT="$root.github-output"
 check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes no every_filter output: every filter is in the file, the changed ones as every path" \
+  "$(is "$(cat "$root.github-output")" "")"
 check "names the file the filters are computed with that the change touches" \
   "$(contains "$out" '^  .github/scripts/ci_job_reads.py$')"
 check "prints the filter and the pattern only the base tree has" \
@@ -573,8 +584,10 @@ shared_read "$root"
 base_commit=$(commit_all "$root" base)
 echo 'changed' > "$root/docs/readme.md"
 commit_all "$root" head >/dev/null
-run_generate "$root" CI_FILTERS_BASE="$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" GITHUB_OUTPUT="$root.github-output"
 check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes no every_filter output" "$(is "$(cat "$root.github-output")" "")"
 check "says the filters stand as computed" \
   "$(contains "$out" 'this change touches no file the filters are computed with; the filters stand as computed')"
 check "and the paths-filter step reads the computed filters" "$(is "$(cat "$root.generated.yaml")" "$(cat "$root.generated.computed.yaml")")"
@@ -586,8 +599,10 @@ printf 'raise RuntimeError("broken on purpose")\n' >> "$root/.github/scripts/ci_
 base_commit=$(commit_all "$root" base)
 replace "$root/.github/scripts/ci_job_reads.py" 'raise RuntimeError("broken on purpose")' ''
 commit_all "$root" head >/dev/null
-run_generate "$root" CI_FILTERS_BASE="$base_commit"
+: > "$root.github-output"
+run_generate "$root" CI_FILTERS_BASE="$base_commit" GITHUB_OUTPUT="$root.github-output"
 check "the wrapper exits 0" "$(is "$status" 0)"
+check "and writes every_filter=true to the step's outputs" "$(is "$(cat "$root.github-output")" every_filter=true)"
 check "says the base tree's filters could not be computed" \
   "$(contains "$out" "the base tree's filters could not be computed")"
 check "every filter is every path" \
@@ -1939,6 +1954,398 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reads the one gate on app" \
   "$(contains "$out" '^report: called step "Test the library": 6 files (filter app)$')"
+
+# list_gate <root>: the called step reads its filter out of the changes job's one list of the
+# filters that matched, as the test job's harness steps do: ci.yaml's changes job hands on the
+# paths filter's own `changes` output as matched_filters, `all` on a dispatched run and on one whose
+# filters fell open (the generate step's every_filter output), the calling job passes it as one
+# input, and the step reads `"app"` out of it beside the `all` term and the changes result
+# (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+list_value="\${{ (github.event_name == 'workflow_dispatch' || steps.generate.outputs.every_filter == 'true') && 'all' || steps.filter.outputs.changes }}"
+list_gate() {
+  called_input_gate "$1"
+  replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
+    $'      matched-filters:\n        type: string\n        required: true\n      ci-ok-changes:'
+  replace "$1/.github/workflows/called.yaml" "        if: inputs.app == 'true'" \
+    "        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '\"app\"')"
+  replace "$1/.github/workflows/ci.yaml" "      ref_is_main: \${{ steps.ref.outputs.is_main }}" \
+    "      matched_filters: $list_value"$'\n      ref_is_main: ${{ steps.ref.outputs.is_main }}'
+  replace "$1/.github/workflows/ci.yaml" '      - run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"' \
+    $'      - id: generate\n        run: .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"'
+  replace "$1/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
+    $'      changes-result: ${{ needs.changes.result }}\n      matched-filters: ${{ needs.changes.outputs.matched_filters }}'
+}
+
+echo "case: a called step reading its filter out of the list of matched filters is the gate on that filter"
+root=$(fixture list-gate)
+list_gate "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "reads the one gate on app" \
+  "$(contains "$out" '^report: called step "Test the library": 6 files (filter app)$')"
+
+# The list hands on every filter that matched, so a step reading its filter out of it needs no
+# output of the changes job for that filter, as none of the test job's harness filters has one.
+# The same filter read through an output the changes job does not have is still refused.
+echo "case: a step reading out of the list a filter no output of the changes job hands on"
+root=$(fixture list-gate-no-output)
+list_gate "$root"
+replace "$root/.github/ci-gates/called.app.py" 'GATE = gate("app", "called",' 'GATE = gate("library_test", "called",'
+replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"library_test\"'"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "reads the one gate on library_test" \
+  "$(contains "$out" '^report: called step "Test the library": [0-9][0-9]* files (filter library_test)$')"
+
+# On a list gate whose list step's filter, list_test, has no output either, a second step of the
+# called job gated through an input on a filter no output hands on: that step reads no `contains`
+# of the list, so the list does not hand its filter on, and it is refused, while the list's own
+# step beside it is not. Each step is judged by its own condition.
+echo "case: beside a list gate, a step reading through an input a filter no output of the changes job hands on"
+root=$(fixture list-gate-input-no-output)
+list_gate "$root"
+replace "$root/.github/ci-gates/called.app.py" 'GATE = gate("app", "called",' 'GATE = gate("list_test", "called",'
+replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"list_test\"'"
+replace "$root/.github/workflows/called.yaml" "      ci-ok-changes:" \
+  $'      other:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+replace "$root/.github/workflows/called.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Test the other library\n        if: inputs.other == \'true\'\n        run: go test ./lib\n        working-directory: mod\n      - name: Report ci-ok when this job decides a merge-group run'
+replace "$root/.github/workflows/ci.yaml" "      matched-filters: \${{ needs.changes.outputs.matched_filters }}" \
+  $'      matched-filters: ${{ needs.changes.outputs.matched_filters }}\n      other: ${{ needs.changes.outputs.library_test }}'
+cat > "$root/.github/ci-gates/called.library_test.py" <<'PY'
+CALLED = ".github/workflows/called.yaml"
+GATE = gate("library_test", "called", runs=[
+    run("mod", ["./lib"], at("called", "Test the other library", CALLED) + ": go test ./lib",
+        step="Test the other library", text="go test ./lib"),
+], step="Test the other library", workflow=CALLED)
+PY
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the filter no output hands on" \
+  "$(contains "$out" 'called has no filter library_test in the changes job: no output of it hands on')"
+check "and not the filter its list step reads out of the list" "$(is "$(contains "$out" 'has no filter list_test in')" false)"
+
+# When the filters cannot be computed the wrapper writes a file whose every filter is every path,
+# named from the changes job's outputs. No filter a step reads out of the list is among them, so
+# the wrapper's every_filter output makes the list all, and the file holds no filter named changes,
+# under which the paths filter would write no list.
+echo "case: a list gate's tree whose filters fall open"
+root=$(fixture list-gate-fail-open)
+list_gate "$root"
+mkdir -p "$root/bin"
+printf '#!/bin/sh\necho "go: broken on purpose" >&2\nexit 1\n' > "$root/bin/go"
+chmod +x "$root/bin/go"
+: > "$root.github-output"
+run_generate "$root" PATH="$root/bin:$PATH" GITHUB_OUTPUT="$root.github-output"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "the file opens with the fail-open line" "$(contains "$(head -1 <<<"$generated")" '^# FAIL-OPEN: ')"
+check "it holds the filter of each job output, every path" \
+  "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
+check "and no filter named changes" "$(is "$(grep -c '^changes:$' <<<"$generated" || true)" 0)"
+check "the step's output makes the list all" "$(is "$(cat "$root.github-output")" every_filter=true)"
+
+echo "case: a list output whose fall-open term reads no generate step"
+root=$(fixture list-gate-no-generate-id)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" $'      - id: generate\n        run: .github/scripts/ci-filters-generate.sh' \
+  '      - run: .github/scripts/ci-filters-generate.sh'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output, the step id and the run it must have" \
+  "$(contains "$out" "the changes job's output matched_filters reads steps.generate.outputs.every_filter, and the job has no one step of id generate that runs")"
+
+echo "case: a filter named after another filter's count, which the paths filter writes under that name too"
+root=$(fixture filter-count-name)
+printf 'EXCLUDED = excluded("app_count", "a filter named after app'"'"'s count", ["docs/readme.md"])\n' > "$root/.github/ci-gates/app_count.py"
+replace "$root/.github/workflows/ci.yaml" "      site: \${{ steps.filter.outputs.site }}" \
+  $'      site: ${{ steps.filter.outputs.site }}\n      app_count: ${{ steps.filter.outputs.app_count }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter and the output it shares a name with" \
+  "$(contains "$out" "declares a filter named app_count, and dorny/paths-filter writes filter app's count under that name too")"
+
+echo "case: a filter named changes, with no list output"
+root=$(fixture changes-filter-no-list)
+printf 'EXCLUDED = excluded("changes", "a filter of that name", ["docs/readme.md"])\n' > "$root/.github/ci-gates/changes.py"
+replace "$root/.github/workflows/ci.yaml" "      site: \${{ steps.filter.outputs.site }}" \
+  $'      site: ${{ steps.filter.outputs.site }}\n      changes: ${{ steps.filter.outputs.changes }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the fallback file leaves the name out" \
+  "$(contains "$out" 'declares a filter named changes, and dorny/paths-filter writes its list .* and the fallback file of .github/scripts/ci-filters-generate.sh leaves the name out')"
+
+echo "case: a step reading a filter the table does not know out of the list"
+root=$(fixture list-gate-unknown)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"apx\"'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter it reads as the step's gate" \
+  "$(contains "$out" 'job called step "Test the library" is gated on filter apx, which no file of .github/ci-gates declares as a gate or as EXCLUDED')"
+check "and the gate the step no longer reads" \
+  "$(contains "$out" 'nor one reading app out of needs.changes.outputs.matched_filters')"
+
+# list_shape_refused <fixture> <old> <new>: the list gate with <old> replaced by <new> in the
+# called step's if:, and the check refusing that step by rule 23's shape sentence.
+list_shape_refused() {
+  root=$(fixture "$1")
+  list_gate "$root"
+  replace "$root/.github/workflows/called.yaml" "$2" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the one shape" \
+    "$(contains "$out" "job called step \"Test the library\" reads needs.changes.outputs.matched_filters outside its one shape")"
+}
+
+echo "case: a step reading the list without the quotes around its filter"
+list_shape_refused list-gate-unquoted "'\"app\"'" "'app'"
+
+echo "case: a step reading its filter out of the list without the all term"
+list_shape_refused list-gate-no-all "inputs.matched-filters == 'all' || " ""
+
+echo "case: a step reading its filter out of the list without the changes result term"
+list_shape_refused list-gate-no-result "inputs.changes-result != 'success' || " ""
+
+# A `!` before the `contains` runs the step when its filter did not match, and an `&& false` after
+# it never runs it; both name the filter in the right shape, which a search for that shape's
+# pieces passed.
+echo "case: a step reading its filter out of the list with a ! before the contains"
+list_shape_refused list-gate-negated "|| contains(inputs.matched-filters" "|| !contains(inputs.matched-filters"
+
+echo "case: a step reading its filter out of the list with a term after the contains"
+list_shape_refused list-gate-and-false "'\"app\"')" "'\"app\"') && false"
+
+# A step that runs when either of two filters matched reads each out of the list in a `contains`
+# of its own, joined by `||`: the shape of the test job's fetch of the computed filters, which
+# either of the two harnesses that read them needs. Each filter it names is a gate of the step.
+echo "case: a step reading two filters out of the list, either of which runs it"
+root=$(fixture list-gate-either)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "contains(inputs.matched-filters, '\"app\"')" \
+  "contains(inputs.matched-filters, '\"app\"') || contains(inputs.matched-filters, '\"apx\"')"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the second contains as a gate of the step" \
+  "$(contains "$out" 'job called step "Test the library" is gated on filter apx, which no file of .github/ci-gates declares as a gate or as EXCLUDED')"
+check "and the whole condition as the one shape" \
+  "$(is "$(contains "$out" 'outside its one shape')" false)"
+
+echo "case: a step reading two filters out of the list with a term after the last contains"
+list_shape_refused list-gate-either-and-false "'\"app\"')" \
+  "'\"app\"') || contains(inputs.matched-filters, '\"app\"') && false"
+
+echo "case: a step reading the list with contains spelt in capitals and spaced, as GitHub reads it"
+root=$(fixture list-gate-spelling)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| contains(inputs.matched-filters, '\"app\"')" \
+  "|| CONTAINS ( inputs.matched-filters , '\"app\"' )"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and reads the one gate on app" \
+  "$(contains "$out" '^report: called step "Test the library": 6 files (filter app)$')"
+
+echo "case: a caller handing the list on under another spelling of the changes job"
+root=$(fixture list-gate-indexed)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "      matched-filters: \${{ needs.changes.outputs.matched_filters }}" \
+  "      matched-filters: \${{ needs['changes'].outputs['matched_filters'] }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the with: value and the spelling" \
+  "$(contains "$out" "job called's with: matched-filters names the changes job as needs\['changes'\]")"
+
+echo "case: a step reading an input spelt in capitals"
+root=$(fixture list-gate-inputs-case)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| inputs.matched-filters == 'all'" "|| INPUTS.matched-filters == 'all'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the spelling" \
+  "$(contains "$out" "job called step \"Test the library\" reads an input as INPUTS.matched-filters")"
+
+# GitHub reads an input's name in any case, so `inputs.GATES` reads the input the caller passes as
+# gates: the check resolves it so, and a filter it reads out of the list is that step's gate. The
+# name holds no `matched`, so only that resolution finds the list in the condition.
+echo "case: a step reading the list through an input of another name, spelt in capitals"
+root=$(fixture list-gate-name-case)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" $'      matched-filters:\n' $'      gates:\n'
+replace "$root/.github/workflows/ci.yaml" "      matched-filters: \${{ needs.changes.outputs.matched_filters }}" \
+  "      gates: \${{ needs.changes.outputs.matched_filters }}"
+replace "$root/.github/workflows/called.yaml" \
+  "|| inputs.matched-filters == 'all' || contains(inputs.matched-filters, '\"app\"')" \
+  "|| inputs.GATES == 'all' || contains(inputs.GATES, '\"apx\"')"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "resolves it and names the filter it reads as the step's gate" \
+  "$(contains "$out" 'job called step "Test the library" is gated on filter apx, which no file of .github/ci-gates declares as a gate or as EXCLUDED')"
+
+echo "case: a step reading an input with a space after the dot"
+root=$(fixture list-gate-dot-space)
+list_gate "$root"
+replace "$root/.github/workflows/called.yaml" "|| inputs.matched-filters == 'all'" "|| inputs. matched-filters == 'all'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the spelling" \
+  "$(contains "$out" "job called step \"Test the library\" reads an input as inputs. matched-filters")"
+
+echo "case: a list output that is not all on a dispatched run"
+root=$(fixture list-gate-no-dispatch)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "$list_value" \
+  "\${{ steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output and the value it must have" \
+  "$(contains "$out" "the changes job's output matched_filters is \${{ steps.generate.outputs.every_filter == 'true' && 'all' || steps.filter.outputs.changes }}, and it must be exactly $list_value")"
+
+# The shape before the fall-open term: on a run whose filters fell open the file holds none of the
+# filters the steps read out of the list, so every such step would be skipped there.
+echo "case: a list output that is not all on a run whose filters fell open"
+root=$(fixture list-gate-no-fall-open)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "$list_value" \
+  "\${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output and the value it must have" \
+  "$(contains "$out" "the changes job's output matched_filters is \${{ github.event_name == 'workflow_dispatch' && 'all' || steps.filter.outputs.changes }}, and it must be exactly $list_value")"
+
+echo "case: a filter named changes, under which the paths filter writes no list"
+root=$(fixture list-gate-changes-filter)
+list_gate "$root"
+printf 'EXCLUDED = excluded("changes", "a filter of that name", ["docs/readme.md"])\n' > "$root/.github/ci-gates/changes.py"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the list would be that filter's verdict" \
+  "$(contains "$out" 'a file of .github/ci-gates declares a filter named changes, and dorny/paths-filter writes its list of the filters that matched under that name only while no filter has it')"
+
+echo "case: a job of ci.yaml gated on the list"
+root=$(fixture list-gate-job)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" \
+  "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/called.yaml" \
+  "    if: (needs.changes.outputs.matched_filters == 'all' || contains(needs.changes.outputs.matched_filters, '\"app\"')) && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/called.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says a job is selected by an output of its own" \
+  "$(contains "$out" "job called's if: reads needs.changes.outputs.matched_filters, a list that gates steps")"
+
+# The ci-ok payload (toJSON(needs.changes)) and the list name every filter, so a step that reads
+# either for a filter anywhere but rule 23's one shape is gated on a filter no rule reads. These
+# cases add a step to the list gate's called file, before its report step.
+# add_called_step <root> <step>: <step>, a whole step's YAML at the steps' indent, in called.yaml.
+add_called_step() {
+  replace "$1/.github/workflows/called.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+    "$2"$'\n'"      - name: Report ci-ok when this job decides a merge-group run"
+}
+
+echo "case: a step gated on the ci-ok payload for a filter"
+root=$(fixture carrier-payload-if)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        if: contains(inputs.ci-ok-changes, \'apx\')\n        run: echo apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and what it reads" \
+  "$(contains "$out" "job called step \"Note apx\" reads the changes job's verdicts other than as the list of matched filters in its one shape")"
+
+echo "case: a step testing only that the ci-ok payload is there passes"
+root=$(fixture carrier-payload-presence)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note the caller\n        if: always() && inputs.ci-ok-changes != \'\'\n        run: echo ci.yaml called'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a step whose run: script reads the list"
+root=$(fixture carrier-list-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: case \'${{ inputs.matched-filters }}\' in *apx*) echo apx;; esac'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.matched-filters }}, which carries every filter's verdict")"
+
+echo "case: a step whose run: script reads the ci-ok payload"
+root=$(fixture carrier-payload-run)
+list_gate "$root"
+add_called_step "$root" $'      - name: Note apx\n        run: echo \'${{ inputs.ci-ok-changes }}\' | grep -q apx'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, its run and the read" \
+  "$(contains "$out" "job called step \"Note apx\"'s run reads \${{ inputs.ci-ok-changes }}, which carries every filter's verdict")"
+
+echo "case: a step of a job of ci.yaml whose run: script reads the list"
+root=$(fixture carrier-list-ci-run)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ needs.changes.outputs.matched_filters }}'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, its step and the read" \
+  "$(contains "$out" "job lint step \"Lint everything\"'s run reads \${{ needs.changes.outputs.matched_filters }}")"
+
+# The same reads under the other spellings GitHub reads, each of which a check that knew one
+# spelling passed: rule 23's spelling half runs over every scanned expression, not only conditions.
+# spelled_read <fixture> <file> <text> <replacement> <refusal pattern>: the list gate with <text>
+# in <file> (ci.yaml or called.yaml) replaced, refused with a line matching the pattern.
+spelled_read() {
+  root=$(fixture "$1")
+  list_gate "$root"
+  if [ "$2" = called.yaml ]; then
+    add_called_step "$root" $'      - name: Note apx\n        run: echo \'apx\''
+  fi
+  replace "$root/.github/workflows/$2" "$3" "$4"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step and the read" "$(contains "$out" "$5")"
+}
+
+echo "case: a ci.yaml step's run: reading the list as outputs['matched_filters']"
+spelled_read spelt-outputs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs.changes.outputs['matched_filters'] }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\.changes\.outputs\['matched_filters'\]"
+
+echo "case: a ci.yaml step's run: reading the list through needs['changes']"
+spelled_read spelt-needs-index ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ needs['changes'].outputs.matched_filters }}'" \
+  "job lint step \"Lint everything\"'s run names the changes job as needs\['changes'\]\.outputs\.matched_filters"
+
+echo "case: a ci.yaml step's run: reading every job's list through needs.*"
+spelled_read spelt-needs-star ci.yaml "        run: echo lint" \
+  "        run: echo '\${{ join(needs.*.outputs.matched_filters, ',') }}'" \
+  "job lint step \"Lint everything\"'s run reads [$]{{ join(needs\.\*\.outputs\.matched_filters, ',') }}, which carries every filter's verdict"
+
+echo "case: a called step's run: reading the list as INPUTS."
+spelled_read spelt-inputs-case called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ INPUTS.matched-filters }}'" \
+  "job called step \"Note apx\"'s run reads an input as INPUTS\.matched-filters"
+
+echo "case: a called step's run: reading the list as inputs['...']"
+spelled_read spelt-inputs-index called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ inputs['matched-filters'] }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs\['matched-filters'\]"
+
+echo "case: a called step's run: reading every input at once"
+spelled_read spelt-inputs-whole called.yaml "        run: echo 'apx'" \
+  "        run: echo '\${{ toJSON(inputs) }}'" \
+  "job called step \"Note apx\"'s run reads an input as inputs: this check resolves an input spelt inputs\.<name> alone"
+
+echo "case: a ci.yaml step's run: reading every job's result through needs.* passes"
+root=$(fixture spelt-needs-star-result)
+list_gate "$root"
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: echo '\${{ join(needs.*.result, ',') }}'"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: two filters whose names differ only in case, beside the list"
+root=$(fixture list-gate-name-cases)
+list_gate "$root"
+printf 'EXCLUDED = excluded("APP", "a filter of that name in capitals", ["docs/readme.md"])\n' > "$root/.github/ci-gates/APP.py"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both filters" \
+  "$(contains "$out" "the files of .github/ci-gates declare filters APP, app, one name in different cases")"
 
 # Rule 6: a generated filter keeps test files out with `!` patterns, which only
 # some-with-excludes reads as an exclusion; under `some` a `!` pattern matches every file outside
@@ -3812,6 +4219,110 @@ check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
+# A restore of a family no workflow saves misses on every run and fails nothing. A misspelled
+# family name (go-envoy-tests- for go-envoy-test) is such a family: the paired-key rules above
+# read it as a family of its own, and they hold it to nothing.
+echo "case: a restore of a family no workflow of the repository saves"
+root=$(fixture cache-restore-unsaved)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+  $'      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-apps-${{ runner.os }}\n      - name: Test the app'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the job, the family and the families a save writes" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app restores cache family go-apps, which no actions/cache/save of any workflow or local action of this repository writes: .* name a family a save writes (go-app)')"
+
+# docs_restore <root>: cache_workflow's fixture with a second restore in ci.yaml, of the family
+# go-docs, which ci-caches.yaml does not save; the cases below give a save of it to another file.
+docs_restore() {
+  cache_workflow "$1"
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - id: go-docs\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-docs-${{ runner.os }}\n      - name: Test the app'
+}
+
+# docs_save <root> <key>: a workflow of its own, docs.yaml, whose build job restores go-docs as
+# the step go-cache and saves it under <key>, as docs-site.yaml saves go-docs here.
+docs_save() {
+  cat > "$1/.github/workflows/docs.yaml" <<YAML
+name: Docs
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-docs-\${{ runner.os }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $2
+YAML
+}
+
+echo "case: a restore of a family another workflow saves under its restore's computed key"
+root=$(fixture cache-restore-saved-elsewhere)
+docs_restore "$root"
+docs_save "$root" '${{ steps.go-cache.outputs.cache-primary-key }}'
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
+
+echo "case: a restore of a family another workflow saves under a key with a hashFiles()"
+root=$(fixture cache-restore-saved-hashfiles)
+docs_restore "$root"
+docs_save "$root" "go-docs-\${{ runner.os }}-\${{ hashFiles('mod/go.mod') }}"
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
+
+echo "case: a restore of a family only a save whose family cannot be read might write"
+root=$(fixture cache-restore-saved-unread)
+docs_restore "$root"
+docs_save "$root" '${{ steps.other.outputs.cache-primary-key }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says no save it can read writes the family, never that no save does" \
+  "$(contains "$out" 'job app restores cache family go-docs, which no actions/cache/save this check can read writes\.')"
+check "names the save it cannot read, and why" \
+  "$(contains "$out" 'It cannot read the family of the save of job build of .github/workflows/docs.yaml under `${{ steps.other.outputs.cache-primary-key }}`, which names no actions/cache/restore of its steps, so one of those may write it')"
+
+echo "case: a restore of a family a composite action of the repository saves"
+root=$(fixture cache-restore-saved-action)
+docs_restore "$root"
+mkdir -p "$root/.github/actions/docs-cache"
+cat > "$root/.github/actions/docs-cache/action.yml" <<'YAML'
+name: Docs cache
+description: Restores and saves go-docs.
+runs:
+  using: composite
+  steps:
+    - id: go-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-docs-${{ runner.os }}
+    - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ steps.go-cache.outputs.cache-primary-key }}
+YAML
+run_check "$root"
+check "exits 0 ($status)" "$(is "$status" 0)"
+check "names no unsaved family" "$(is "$(contains "$out" 'restores cache family go-docs')" false)"
+
 # release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
 # release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
 # fills, under <key>. Its restore misses as silently as one of ci.yaml's when its key drifts, so
@@ -5095,6 +5606,213 @@ for spelling in ./pkg pkg/ "$root/pkg"; do
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done
+
+# A run of any mode may change no file of the tree it checks but those its mode writes, and fails
+# naming each other file it changed. The go commands of go_build_tags.py run under the
+# machine's own GOPROXY and module cache, so in a workspace one can record a checksum the
+# committed go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
+# repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
+# Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
+# engine has listed the repository's files and before its first go list; writing on `go list`
+# alone, it writes only at go_build_tags.py's go list, which a table can run as it is imported.
+# The controls that a clean run and a write of a push workflow's paths alone still pass are the
+# green and push-paths-extra cases above, and the ones below that change nothing.
+real_go=$(command -v go)
+planted_sum='golang.org/x/mod v0.42.0/go.mod h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs='
+
+# run_check_with_go <script> <root> [mode]: run_check with a go first on PATH that runs the shell
+# text <script>, then the real go.
+run_check_with_go() {
+  local saved=$PATH script=$1
+  shift
+  mkdir -p "$1.bin"
+  printf '#!/bin/sh\n%s\nexec "%s" "$@"\n' "$script" "$real_go" > "$1.bin/go"
+  chmod +x "$1.bin/go"
+  PATH="$1.bin:$PATH"
+  run_check "$@"
+  PATH=$saved
+}
+
+# run_check_planted <commands> <root> [mode]: the planted go, appending the line when its
+# arguments match <commands>, a shell case pattern.
+run_check_planted() {
+  local commands=$1
+  shift
+  run_check_with_go "$(printf 'case "$*" in\n  %s) echo "%s" >> "%s/go.work.sum" ;;\nesac' \
+    "$commands" "$planted_sum" "$1")" "$@"
+}
+
+# run_check_writing_sum <root> [mode]: the planted go writing on every command.
+run_check_writing_sum() { run_check_planted '*' "$@"; }
+
+# committed_sum <root>: the fixture with a go.work.sum, which the app filter selects with the
+# workspace's other module files, every file committed.
+committed_sum() {
+  printf 'example.com/kept v1.0.0/go.mod h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' > "$1/go.work.sum"
+  git -C "$1" add -A
+  git -C "$1" -c user.name=fixture -c user.email=fixture@example.com commit -qm fixture
+}
+
+sum_refusal='^::error file=go.work.sum::go.work.sum changed while this check ran, and a check run may change no file of the tree: a go command this check runs recorded module checksums the committed file lacks'
+
+echo "case: a go command of the check records a checksum go.work.sum lacks"
+root=$(fixture sum-written)
+run_check_writing_sum "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and why it changed" "$(contains "$out" "$sum_refusal")"
+check "and says to commit it" "$(contains "$out" 'Commit the file as this run leaves it')"
+check "keeps the rest of its verdict" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+check "the planted go did write the line" "$(contains "$(<"$root/go.work.sum")" 'golang.org/x/mod v0.42.0/go.mod')"
+
+# ci_job_reads.py's darwin vet Runs come from go_build_tags.tag_sets as it is imported, before
+# main() starts, so the tree must be read before the imports: this fixture's table does the same,
+# and the planted go writes at its go list alone.
+echo "case: a go command run as ci_job_reads.py is imported records a checksum"
+root=$(fixture sum-written-at-import)
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+from pathlib import Path
+
+from go_build_tags import tag_sets
+
+DARWIN_TAG_SETS = tag_sets(Path("mod"), "darwin", "arm64")
+PY
+committed_sum "$root"
+run_check "$root"
+check "passes while that go list writes nothing" "$(is "$status" 0)"
+run_check_planted 'list*' "$root"
+check "fails once it writes" "$(is "$status" 1)"
+check "names the file" "$(contains "$out" "$sum_refusal")"
+check "the planted go did write the line" "$(contains "$(<"$root/go.work.sum")" 'golang.org/x/mod v0.42.0/go.mod')"
+
+echo "case: a committed tree whose go.work.sum a go command changes"
+root=$(fixture sum-committed)
+committed_sum "$root"
+run_check "$root"
+check "passes while nothing changes it" "$(is "$status" 0)"
+run_check_writing_sum "$root"
+check "fails once a go command does" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+# git reports no change to a file marked assume-unchanged, so the guard reads every file's bytes.
+echo "case: a go command changes a committed go.work.sum git is told to assume unchanged"
+root=$(fixture sum-assume-unchanged)
+committed_sum "$root"
+git -C "$root" update-index --assume-unchanged go.work.sum
+run_check_writing_sum "$root"
+check "git itself reports no change" "$(is "$(git -C "$root" status --porcelain)" "")"
+check "fails" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+# The second reading hashes again only a file whose lstat changed, and every write changes the
+# change time, which no call can set back: a go that overwrites one byte of go.work.sum in place
+# and then sets its modification time back keeps its inode, mode, size and that time, and is
+# still caught.
+echo "case: a go command rewrites go.work.sum in place, keeping its size and modification time"
+root=$(fixture sum-same-stat)
+committed_sum "$root"
+cp -p "$root/go.work.sum" "$root.ref"
+kept=$(stat -c '%i %f %s %y' "$root/go.work.sum")
+run_check_with_go "$(printf 'printf B | dd of="%s/go.work.sum" bs=1 seek=40 count=1 conv=notrunc 2>/dev/null\ntouch -r "%s.ref" "%s/go.work.sum"' \
+  "$root" "$root" "$root")" "$root"
+check "the go kept the inode, mode, size and modification time" \
+  "$(is "$(stat -c '%i %f %s %y' "$root/go.work.sum")" "$kept")"
+check "and changed the bytes" "$(is "$(cmp -s "$root/go.work.sum" "$root.ref" && echo same || echo changed)" changed)"
+check "fails" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+echo "case: the write mode, while a go command of the check records a checksum"
+root=$(fixture sum-written-write)
+run_check_writing_sum "$root" write
+check "fails" "$(is "$status" 1)"
+check "names the file and the file that mode may change" \
+  "$(contains "$out" '^::error file=go.work.sum::go.work.sum changed while this check ran, and a write run may change only .github/workflows/site.yaml: a go command this check runs recorded module checksums')"
+
+# The files the write mode may change are those it writes: the on.push.paths of each
+# PUSH_WORKFLOWS workflow, here the one this case pairs with the app filter, whose computed
+# patterns, a `!` pattern among them, the mode writes into it.
+echo "case: the write mode writes a computed filter into its push workflow's paths"
+root=$(fixture sum-write-push-workflow)
+unread_package "$root"
+replace "$root/.github/scripts/ci_job_reads.py" 'PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}' \
+  'PUSH_WORKFLOWS = {"app": ".github/workflows/site.yaml"}'
+run_check "$root" write
+check "passes" "$(is "$status" 0)"
+check "having written the filter's patterns into the push workflow's paths" \
+  "$(contains "$(<"$root/.github/workflows/site.yaml")" "^      - '!mod/lib/sub/\*\*/\*_test.go'$")"
+
+# The generate mode may write its output and, beside it, the list of the files the filters are
+# computed with, and nothing else. A generate run that changes another file fails and removes what
+# it wrote, as generate writes nothing on any other failure, and the changes job's wrapper then
+# writes a file that selects every job.
+echo "case: the generate mode, while a go command of the check records a checksum"
+root=$(fixture sum-written-generate)
+run_check_writing_sum "$root" generate "$root.out.yaml"
+check "fails" "$(is "$status" 1)"
+check "names the file and the two files that mode may change" \
+  "$(contains "$out" "^::error file=go.work.sum::go.work.sum changed while this check ran, and a generate run may change only ")"
+check "removes the filters it wrote" "$(is "$(test -e "$root.out.yaml" && echo there || echo gone)" gone)"
+check "and the list of inputs beside them" "$(is "$(test -e "$root.out.yaml.inputs" && echo there || echo gone)" gone)"
+
+echo "case: the generate mode writes its output inside the tree it reads"
+root=$(fixture sum-generate-inside)
+run_check "$root" generate "$root/filters.yaml"
+check "passes" "$(is "$status" 0)"
+check "having written the filters" "$(contains "$(<"$root/filters.yaml")" '^app:$')"
+
+# The first reading of the tree opens every file git lists, before the audit hook that records the
+# files the filters are computed with: the generate mode's list of those (engine_inputs), which
+# the changes job reads to tell a change to the computation from a change to what it reads, holds
+# none of the files only the guard opened.
+echo "case: the files only the guard opens are not among the computation's inputs"
+root=$(fixture sum-inputs)
+run_check "$root" generate "$root.out.yaml"
+check "passes" "$(is "$status" 0)"
+check "lists the table the filters are computed with" \
+  "$(contains "$(<"$root.out.yaml.inputs")" '^\.github/scripts/ci_job_reads\.py$')"
+check "and not the file only the guard read" "$(is "$(contains "$(<"$root.out.yaml.inputs")" '^docs/readme\.md$')" false)"
+
+echo "case: a committed tree whose go.work.sum was edited before the run"
+root=$(fixture sum-dirty)
+committed_sum "$root"
+printf 'example.com/edited v1.0.0/go.mod h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=\n' >> "$root/go.work.sum"
+run_check "$root"
+check "passes while the run leaves the edit as it found it" "$(is "$status" 0)"
+run_check_writing_sum "$root"
+check "fails once a go command changes it further" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+# The guard reads the tree through git, as the engine reads its files, and no tree it cannot read
+# passes over an empty reading. A tree git cannot list - with no .git (the ceiling keeps git from
+# finding a repository above the fixture), or with a .git git cannot read - is refused before the
+# guard's second reading, by the engine as the table is imported, naming git ls-files; one in which
+# git lists no file reaches the guard, which refuses the empty reading.
+unread_refusal='^::error file=\.::cannot read repository input: git ls-files failed in '
+
+echo "case: a tree with no git"
+root=$(fixture sum-no-git)
+rm -rf "$root/.git"
+GIT_CEILING_DIRECTORIES=$work run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says git cannot list the tree it reads" \
+  "$(contains "$out" "$unread_refusal")"
+
+echo "case: a tree whose .git git cannot read"
+root=$(fixture sum-unreadable-git)
+rm -rf "$root/.git"
+: > "$root/.git"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says git cannot list the tree it reads" \
+  "$(contains "$out" "$unread_refusal")"
+
+echo "case: a tree in which git lists no file"
+root=$(fixture sum-nothing-listed)
+mkdir -p "$root/.git/info"
+printf '*\n' > "$root/.git/info/exclude"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the reading was empty rather than passing over it" \
+  "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
