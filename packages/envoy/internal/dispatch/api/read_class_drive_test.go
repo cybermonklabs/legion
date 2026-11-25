@@ -290,6 +290,13 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 	return ""
 }
 
+// declared is the declaration of one route by "<method> <pattern>", the zero value for a name no
+// route declares, which the walk around it reads as a route the table does not mount.
+func declared(name string) routeDecl {
+	route, _ := declaredRoute(name)
+	return route
+}
+
 // TestEveryGETRowHasADrive holds the two registries of drives to the read class: every GET row of
 // the table with its test hooks in (readOnlyTable), read off the table, so a GET row added later
 // fails here until it is driven. It fails for each read row with no drive in readRowDrives, each
@@ -299,13 +306,6 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 // nor why it reads from memory, or names both, and each drive of a GET that writes that names no
 // write. Every problem is collected first and the test fails once, naming each of them, so one
 // run lists all that is missing.
-// declared is the declaration of one route by "<method> <pattern>", the zero value for a name no
-// route declares, which the walk around it reads as a route the table does not mount.
-func declared(name string) routeDecl {
-	route, _ := declaredRoute(name)
-	return route
-}
-
 func TestEveryGETRowHasADrive(t *testing.T) {
 	t.Parallel()
 	patterns := map[string]string{}
