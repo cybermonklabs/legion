@@ -147,6 +147,12 @@ type Scope struct {
 // scope its kind cannot have and a prefix that can start no id are all no match too, not errors
 // of their own.
 //
+// A failure reaching the database is answered wrapped, for errors.Is and errors.As, with a text
+// that names the kind and the length of the prefix and quotes nothing of the reference: the
+// resolver logs that error (Reader.failed), and the prefix and the owner are text a stored body
+// wrote. ErrPrefixAmbiguous quotes the prefix, being the answer to the caller who wrote it, and
+// the resolver logs no such refusal.
+//
 // prefix is an id written short as text.IsIDPrefix reads one: at least eight of the hex digits
 // and hyphens an id's lowercase text form is written with, compared without case, and never a
 // whole id, since an exact id needs no resolving and always wins. A value IsIDPrefix refuses is a
@@ -243,7 +249,7 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 	query += args.andVisible(who, kind, `item.id::text`) + ` order by item.id limit ` + prefixLimit
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the %ss %q names: %w", kind, prefix, err)
+		return nil, fmt.Errorf("read the %ss an id prefix of %d characters names: %w", kind, len(prefix), err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -252,7 +258,7 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 		var issueKey *string
 		var marks postMarks
 		if err := rows.Scan(append([]any{&id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
-			return nil, fmt.Errorf("scan the %ss %q names: %w", kind, prefix, err)
+			return nil, fmt.Errorf("scan the %ss an id prefix of %d characters names: %w", kind, len(prefix), err)
 		}
 		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
 		if err != nil {
@@ -314,7 +320,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		left join issues i on i.key = c.issue_key
 		order by c.id`, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the messages %q names: %w", prefix, err)
+		return nil, fmt.Errorf("read the messages an id prefix of %d characters names: %w", len(prefix), err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -324,7 +330,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		var marks postMarks
 		var inThread bool
 		if err := rows.Scan(append(append([]any{&id, &issueKey, &project, &body}, marks.targets()...), &inThread)...); err != nil {
-			return nil, fmt.Errorf("scan the messages %q names: %w", prefix, err)
+			return nil, fmt.Errorf("scan the messages an id prefix of %d characters names: %w", len(prefix), err)
 		}
 		candidate, err := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL, marks)
 		if err != nil {
@@ -381,7 +387,7 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 	query += args.andVisible(who, "artifact", `a.ref_key`) + ` order by a.id limit ` + prefixLimit
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the documents %q names: %w", prefix, err)
+		return nil, fmt.Errorf("read the documents an id prefix of %d characters names: %w", len(prefix), err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -389,7 +395,7 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		var document documentParent
 		var name string
 		if err := rows.Scan(append(document.targets(), &name)...); err != nil {
-			return nil, fmt.Errorf("scan the documents %q names: %w", prefix, err)
+			return nil, fmt.Errorf("scan the documents an id prefix of %d characters names: %w", len(prefix), err)
 		}
 		found = append(found, artifactCandidate(document, name, serverURL))
 	}
@@ -448,7 +454,7 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 	}
 	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
-		return nil, fmt.Errorf("read the blocks of %s %q names: %w", scope.Document, prefix, err)
+		return nil, fmt.Errorf("read the blocks an id prefix of %d characters names in one document version: %w", len(prefix), err)
 	}
 	defer rows.Close()
 	var found []Candidate
@@ -456,7 +462,7 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 		var blockID, body string
 		var document documentParent
 		if err := rows.Scan(append([]any{&blockID, &body}, document.targets()...)...); err != nil {
-			return nil, fmt.Errorf("scan the blocks of %s %q names: %w", scope.Document, prefix, err)
+			return nil, fmt.Errorf("scan the blocks an id prefix of %d characters names in one document version: %w", len(prefix), err)
 		}
 		found = append(found, blockCandidate(blockID, body, document, serverURL))
 	}
