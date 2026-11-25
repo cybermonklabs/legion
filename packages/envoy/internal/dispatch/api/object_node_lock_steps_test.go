@@ -28,11 +28,12 @@ import (
 // runs, are paths of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step
 // with the block index's.
 //
-// What each create is held to is the order this slice adds: its owner lock first, then the
-// object's node, written before the row that holds the object, the event, appended after that
-// row, and the facts the node write stated, appended after the event that causes them. The id of
-// each object is drawn inside its own transaction, so no other transaction can hold its node or
-// its row before they exist: those steps are held as the tables they are written to.
+// What each create is held to is the store's lock order for its object's node: its owner lock
+// first, then the object's node, written before the row that holds the object, the event,
+// appended after that row, and the facts the node write stated, appended after the event that
+// causes them. The id of each object is drawn inside its own transaction, so no other transaction
+// can hold its node or its row before they exist: those steps are held as the tables they are
+// written to.
 //
 // Its controls are the ask create's node write skipped (api/asks.go): held at the ask's node, the
 // path then waits at the author follow's node write rather than its own, or at none; the session

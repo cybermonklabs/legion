@@ -108,9 +108,10 @@ var storeWriteCallSites = map[string]string{
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
 	// each written in the batch that copies their rows, in its project, before any row of it.
 	"cmd/dispatch-seed/write_core.go#writeIssues":         "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeAsks":          "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
-	"cmd/dispatch-seed/write_items.go#writeItemNodes":     "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	"cmd/dispatch-seed/write_items.go#writeMessages":      "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one

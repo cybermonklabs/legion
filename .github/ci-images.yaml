@@ -106,6 +106,19 @@ images:
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e
 
+  # The busybox of the kind proofs (scripts/e2e/lib/kind-sandbox.sh's kind_busybox): their gvisor
+  # check pod, and the container shared-clone-kind.sh runs its launch driver in, on the kind
+  # network. e2e.yaml runs shared-clone-kind.sh on a dispatch.
+  - upstream: docker.io/library/busybox:1.37
+    tag: busybox-1.37-a7dbc319
+    digest: sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+
+  # The node image of kind v0.33.0, its release's default: the kind cluster
+  # shared-clone-kind.sh makes with that kind (kind-sandbox.sh's kind_sandbox_install_kind).
+  - upstream: docker.io/kindest/node:v1.37.0
+    tag: node-v1.37.0-a1ed56cf
+    digest: sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+
   # The judge container of pi-legion's skill scenarios: rig.sh's judge_image.
   - upstream: docker.io/library/ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
     tag: ubuntu-534baea6

@@ -385,39 +385,19 @@ func recordBlockIndex(ctx context.Context, tx pgx.Tx, artifactID string, index r
 }
 
 // indexedVersionOf is what version's own row says of its block index (refs.IndexedVersion): the
-// document's ref_key, from its address as this transaction leaves it (addressOfDocument), and the
-// version's first author and the document's scope, from the version and the address this
-// transaction queued and has not written where that is the version, which no read of the table
-// answers yet, and else from the stored rows, read once. A caller that wants the writer alone
-// reads versionWriterOf.
+// document's ref_key and scope, from its address as this transaction leaves it
+// (addressOfDocument), and the version's writer (versionWriterOf).
 func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version int) (refs.IndexedVersion, error) {
 	address, err := addressOfDocument(ctx, tx, artifactID)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
-			record := refs.IndexedVersion{RefKey: address.RefKey, Issue: address.IssueKey}
-			if len(pending.version.Authors) > 0 {
-				record.Writer = pending.version.Authors[0]
-			}
-			if _, created := pendingArtifact(ctx, artifactID); created {
-				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
-				return record, nil
-			}
-			stored, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
-			if err != nil {
-				return refs.IndexedVersion{}, err
-			}
-			record.Project, record.Parties = stored.Project, stored.Parties
-			return record, nil
-		}
-	}
-	record, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
+	writer, err := versionWriterOf(ctx, tx, artifactID, version)
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	record.RefKey = address.RefKey
+	record := refs.IndexedVersion{RefKey: address.RefKey, Issue: address.IssueKey, Writer: writer}
+	record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
 	return record, nil
 }
 

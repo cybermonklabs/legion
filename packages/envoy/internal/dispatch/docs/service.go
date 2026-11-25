@@ -176,7 +176,7 @@ type Service struct {
 	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
 	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
 	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
-	// before any horizon is proven (rollNow) does not set it.
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
