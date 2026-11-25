@@ -45,9 +45,11 @@ text still passes the bound, shows its owner, its type, its actor's `kind` and `
 `act` of the agent or token that acted for its person (`act: "not shown"` for an act
 `ActorActSchema` does not read) and a session's `service`, the verified service token that made
 the write (`service: "not shown"` when it is no string), no other key of the actor, and the
-reason, held to the bound
-too; its owner, type and reason alone, held to it, when even that passes it; and the reason
-alone when even those pass it (an owner read from the topic the host names). The bound is
+reason, held to the bound too. When even that passes it, the card drops its other fields (they
+repeat the issue key) and keeps the owner, the type, the actor and the reason; when those pass it
+(an owner read from the topic the host names), it keeps the type, the actor and the reason, which
+are bytes of the frame; and the reason alone is the last answer. Each is held to the bound. The
+bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
 (its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
 still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,

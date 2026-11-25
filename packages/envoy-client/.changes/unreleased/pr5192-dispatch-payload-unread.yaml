@@ -17,5 +17,7 @@ body: |-
   read) and a session's `service`, the verified service token that made the write
   (`service: "not shown"` when it is no string), no other key of the actor, and the reason, so
   neither an agent's act nor a service token's write is shown as the person's or the session's
-  own; its owner, type and reason alone when even that passes the bound; and the reason
-  alone when even those pass it. Each of these is held to the bound.
+  own. When even that passes the bound, the card keeps the owner, the type, the actor and the
+  reason alone; when those pass it (an owner read from the topic the host names), the type, the
+  actor and the reason; and the reason alone is the last answer. Each of these is held to the
+  bound.

@@ -2096,9 +2096,10 @@ describe("renderInbound non-dispatch envelopes", () => {
 
     // The card's other fields repeat the event's issue key, and its reply command quotes the key
     // for a shell (each `'` written `'\''`, whose backslash the card escapes again), so a key of
-    // quotes lays out in several times the frame's bytes, header and all. Such a card keeps the
-    // owner, the type and the reason alone, within the bound `payloadShownAsText` names.
-    test("a Dispatch card whose header the bound cannot hold keeps its owner, type and reason within the bound", () => {
+    // quotes lays out in several times the frame's bytes, header and all. Such a card drops those
+    // fields and keeps the owner, the type, the actor and the reason, within the bound
+    // `payloadShownAsText` names: the actor is bytes of the frame, as the owner is.
+    test("a Dispatch card whose header the bound cannot hold keeps its owner, type, actor and reason within the bound", () => {
       const key = "'".repeat(1_000_000);
       const raw = JSON.stringify(
         envelope({
@@ -2129,14 +2130,16 @@ describe("renderInbound non-dispatch envelopes", () => {
         dispatch: {
           owner: key,
           type: "comment.created",
+          actor: { kind: "user", id: "alice" },
           payload: `not shown: ${rendered.payloadShownAsText}`,
         },
       });
     });
 
     // The owner of a document's event is read from the topic the host names, which the frame's
-    // bytes do not bound, so a card may not hold even the owner; it is then the reason alone.
-    test("a Dispatch card that cannot hold even its owner is its reason alone, within the bound", () => {
+    // bytes do not bound, so a card may not hold even the owner; it then keeps the type, the actor
+    // and the reason, which the frame's bytes do bound.
+    test("a Dispatch card that cannot hold even its owner keeps its type, actor and reason within the bound", () => {
       const slug = "s".repeat(2 * INBOUND_CARD_MAX_BYTES);
       const rendered = renderInbound(
         JSON.stringify(
@@ -2158,7 +2161,13 @@ describe("renderInbound non-dispatch envelopes", () => {
       expect(rendered.payloadShownAsText).toBe(BOUND);
       expect(Buffer.byteLength(rendered.content)).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
       expect(decode(rendered.content)).toEqual({
-        envoy: { dispatch: { payload: `not shown: ${BOUND}` } },
+        envoy: {
+          dispatch: {
+            type: "comment.created",
+            actor: { kind: "user", id: "alice" },
+            payload: `not shown: ${BOUND}`,
+          },
+        },
       });
     });
 
