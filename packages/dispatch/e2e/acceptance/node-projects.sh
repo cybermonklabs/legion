@@ -39,7 +39,7 @@
 # to the fake Envoy's session list and puts the list back when it ends, and builds
 # `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
-# The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
+# The node writers' own grep, where a reader wants one: `graphstore\.(PlanUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
 # every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
 # node writer from the cause of another write.
@@ -225,6 +225,9 @@ send POST /api/v1/issues "$(jq -cn --arg p "$project" --argjson a "$(actor)" \
   '{project: $p, title: "Every node names its project", spec: "First paragraph.\n\nSecond paragraph.\n", actor: $a}')"
 want_status 201 "$section" "create an issue"
 key="$(jq -r .key "$work/body")"
+# The issue key and the ask's id below are read from the server's answer and go into the SQL text
+# query passes to psql, so each is held to its shape before any statement names it.
+[[ "$key" =~ ^[A-Z][A-Z0-9]{1,9}-[0-9]+$ ]] || fail "$section" "create an issue" "the answer's key is '$key', not an issue key"
 pass "$section" "created $key"
 node_names_project "$section" issue "$key"
 node_names_project "$section" artifact "$key/spec"
@@ -244,6 +247,7 @@ node_names_project "$section" artifact "$(jq -r .artifact.ref_key "$work/body")"
 send POST "/api/v1/issues/$key/asks" "$(jq -cn --argjson a "$(actor)" '{question: "Does every node name its project?", actor: $a}')"
 want_status 201 "$section" "open an ask"
 ask="$(jq -r .id "$work/body")"
+[[ "$ask" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || fail "$section" "open an ask" "the answer's id is '$ask', not a uuid"
 node_names_project "$section" ask "$ask"
 
 send POST "/api/v1/issues/$key/comments" "$(jq -cn --argjson a "$(actor)" '{body: "A remark.", actor: $a}')"

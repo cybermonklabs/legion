@@ -83,6 +83,74 @@ func TestTheObjectPassDebtCrossesProcessesAndClearsOnceThePassFinishes(t *testin
 	requireProjectComplete(t, database, nil, "after the tick the removal's event owed the pass")
 }
 
+// A pass a tick runs while another build serves and before any horizon is proven, a debt no cursor
+// row records (objectPassDebt), is not the process's pass: the process's first tick with a proven
+// horizon runs the object pass however recently that one ran. The release before uploads a
+// document, and this build's first tick, on a log that holds no event, so with no horizon proven
+// and no cursor row, writes its node. The release before then removes the document, which states
+// nothing, so the node stands live behind no row, and leaves before this build ticks again. The
+// next tick proves a horizon at the removal's event, starts the build's cursor there, reads no
+// event and finds no other build serving: only its being the process's first tick with a proven
+// horizon owes it the pass, which states the node gone. The service's clock stands still, so by it
+// no time passes between the two ticks.
+//
+// Its control is the pass before the horizon counted as the process's own (objectPassFinished
+// stored above writeObjectNodesAnotherBuildWrote's return for a debt no row records): the tick with
+// a proven horizon then runs no pass, and the removed document's node stays live for up to
+// objectPassInterval.
+func TestTheFirstTickWithAProvenHorizonOwesTheObjectPassThoughATickBeforeAnyHorizonRanIt(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	stopped := time.Now()
+	service.now = func() time.Time { return stopped }
+	previousLeaves := registerProcess(t, database, previousReleaseCommit)
+	var ref string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+		values ('CORE-1', 'CORE', 'rolled-md', 'Rolled.md', 'doc', '{"kind":"user","id":"alice"}')
+		returning ref_key
+	`).Scan(&ref); err != nil {
+		t.Fatalf("upload the document as the release before: %v", err)
+	}
+
+	early := reconcileBlockIndex(t, service, "")
+	if !early.AnotherBuild || early.ObjectNodes != 3 {
+		t.Fatalf("the tick before any horizon is proven wrote %d object node(s) and found another build %t, want the nodes of CORE-1, CORE-2 and the document and another build",
+			early.ObjectNodes, early.AnotherBuild)
+	}
+	var cursorRow bool
+	if err := database.Pool.QueryRow(ctx, `
+		select exists (select 1 from block_index_event_cursors where build_commit = '')
+	`).Scan(&cursorRow); err != nil || cursorRow {
+		t.Fatalf("after the tick before any horizon is proven this build holds a cursor row %t (%v), want none: the tick did not take the path before a horizon, and this test proves nothing",
+			cursorRow, err)
+	}
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, ref); err != nil || !held || node.State != graphstore.StateLive {
+		t.Fatalf("after the tick before any horizon is proven the node of %s is %+v (held %t, %v), want it live", ref, node, held, err)
+	}
+
+	removeAsThePreviousRelease(t, database, ref)
+	requireProjectComplete(t, database, []string{"artifact " + ref + ": orphaned"}, "after the release before removed the document")
+	previousLeaves()
+	var removal int64
+	if err := database.Pool.QueryRow(ctx, `select id from events where type = 'artifact.removed'`).Scan(&removal); err != nil {
+		t.Fatalf("read the removal's event: %v", err)
+	}
+
+	proven := awaitedBlockIndexTick(t, service)
+	if cursor := blockIndexEventCursor(t, database, ""); cursor < removal || proven.Events != 0 || proven.AnotherBuild {
+		t.Fatalf("the first tick with a proven horizon started the cursor at %d, read %d event(s) and found another build %t; want the cursor at or past the removal's event %d, no event read and no other build: something else owes the pass, and this test proves nothing",
+			cursor, proven.Events, proven.AnotherBuild, removal)
+	}
+	if proven.OrphansGone != 1 {
+		t.Errorf("the first tick with a proven horizon stated %d orphaned node(s) gone, want the removed document's", proven.OrphansGone)
+	}
+	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindArtifact, ref); err != nil || !held || node.State != graphstore.StateGone {
+		t.Errorf("after the first tick with a proven horizon the node of %s is %+v (held %t, %v), want it gone", ref, node, held, err)
+	}
+	requireProjectComplete(t, database, nil, "after the first tick with a proven horizon stated the orphan gone")
+}
+
 // writeDocumentWithItsNode writes a document of CORE-1 at slug with its node, as this build's
 // upload writes them.
 func writeDocumentWithItsNode(t *testing.T, database *store.Store, slug string) {

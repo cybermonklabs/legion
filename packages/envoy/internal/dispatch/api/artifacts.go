@@ -817,7 +817,7 @@ func (s *server) storeArtifact(
 	// The node of a document this upload creates: written before its row, in the project of the
 	// issue or the project that owns it, or between the parties of the conversation that does,
 	// and stated under the event the upload appends, or at the sentinel where its owner records
-	// none (agentArtifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// none (artifactTarget.ownsEvents). A ref_key past the store's address bound is no node
 	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
 	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)

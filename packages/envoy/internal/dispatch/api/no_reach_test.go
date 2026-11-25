@@ -739,13 +739,13 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
-		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 	}
 }
 

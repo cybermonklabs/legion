@@ -589,8 +589,9 @@ var indexPasses = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
 	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
 	// before the batch writes its rows.
-	"cmd/dispatch-seed/write_core.go#writeIssues":     "the seed's own plan",
-	"cmd/dispatch-seed/write_items.go#writeItemNodes": "the seed's own plan",
+	"cmd/dispatch-seed/write_core.go#writeIssues":    "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeAsks":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeMessages": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",

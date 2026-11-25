@@ -1205,9 +1205,8 @@ type DocumentAddress struct {
 	PendingParent string
 	// Project is the project the document belongs to, an issue's or its own, and Session the
 	// session whose conversation holds it, "" where it is a project's: the scope its block
-	// nodes carry (IndexedVersion's Project and Parties). Only an address this transaction
-	// recorded for a row it is creating carries them; a stored row's version is read with its
-	// scope (ReadIndexedVersion).
+	// nodes carry (IndexedVersion's Project and Parties), from the address this transaction
+	// recorded for a row it is creating or from the stored row (docs' addressOfDocument).
 	Project, Session string
 }
 

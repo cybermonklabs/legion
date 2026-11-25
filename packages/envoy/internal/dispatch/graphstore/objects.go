@@ -35,11 +35,14 @@ const (
 
 // PartyPerson and PartySession are the two kinds of party a node no project owns is between: a
 // person, by the login every node of theirs is keyed by (model.CanonicalLogin), and a session, by
-// its id. Each is written `<kind>:<id>`, the kind being the store's own node kind of that party, so
-// a party names the node it is.
-func PartyPerson(login string) string { return KindPerson + ":" + model.CanonicalLogin(login) }
+// its id. Each is written `<kind>:<id>` (party), the kind being the store's own node kind of that
+// party, so a party names the node it is.
+func PartyPerson(login string) string { return party(KindPerson, model.CanonicalLogin(login)) }
 
-func PartySession(id string) string { return KindSession + ":" + id }
+func PartySession(id string) string { return party(KindSession, id) }
+
+// party is the party the node kind/id is: `<kind>:<id>`.
+func party(kind, id string) string { return kind + ":" + id }
 
 // IssueNode is an issue's node as its create writes it: project-visible, live, in its project, and
 // with no cause yet, since the issue's node is written before its row and its event after both
@@ -154,6 +157,24 @@ func PartiesValue(parties []string) (string, error) {
 // names one is refused before it binds anything, and the caller's transaction ends.
 var ErrBadParty = errors.New("a party is empty or holds white space")
 
+// scopeColumns is a project and parties as graph_nodes' nullable project_key and parties columns
+// bind them: nil for no project and for no parties, else the project and the parties' value
+// (PartiesValue), whose refusal it answers.
+func scopeColumns(project *string, parties []string) (*string, *string, error) {
+	var projectColumn, partiesColumn *string
+	if *project != "" {
+		projectColumn = project
+	}
+	value, err := PartiesValue(parties)
+	if err != nil {
+		return nil, nil, err
+	}
+	if value != "" {
+		partiesColumn = &value
+	}
+	return projectColumn, partiesColumn, nil
+}
+
 // ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
 // belongs to an issue or a document: the issue's project where it names an issue, else the
 // document's project, else, for a file an agent's conversation owns, that conversation's session
@@ -188,7 +209,7 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 func ThreadParties(rootAuthor model.Actor, rootTarget *string) []string {
 	var parties []string
 	if kind, id, ok := AuthorOf(rootAuthor); ok {
-		parties = append(parties, kind+":"+id)
+		parties = append(parties, party(kind, id))
 	}
 	if rootTarget != nil && *rootTarget != "" {
 		parties = append(parties, *rootTarget)

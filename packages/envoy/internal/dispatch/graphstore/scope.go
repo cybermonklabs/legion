@@ -45,16 +45,11 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 	parties := make([]*string, len(scopes))
 	for index, scope := range scopes {
 		kinds[index], ids[index] = scope.Kind, scope.ID
-		if scope.Project != "" {
-			projects[index] = &scopes[index].Project
-		}
-		value, err := PartiesValue(scope.Parties)
+		project, partiesColumn, err := scopeColumns(&scopes[index].Project, scope.Parties)
 		if err != nil {
 			return 0, fmt.Errorf("fill the scope of node %s/%s: %w", scope.Kind, scope.ID, err)
 		}
-		if value != "" {
-			parties[index] = &value
-		}
+		projects[index], parties[index] = project, partiesColumn
 	}
 	if _, err := tx.Exec(ctx, `
 		select 1 from graph_nodes held
