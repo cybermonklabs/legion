@@ -488,9 +488,9 @@ func (r *pauseDaemonRig) root(issue string, ph phase.Phase) record.Issue {
 		HandedOver: true, Rank: "U"}
 }
 
-// podLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
+// pauseRigPodLocator is the process of token in issue's pod, as the Sandbox runtime records it: every role
 // of an issue runs in its one pod.
-func podLocator(token claim.Token, issue string) *runtime.Locator {
+func pauseRigPodLocator(token claim.Token, issue string) *runtime.Locator {
 	pod := "pod-" + strings.ToLower(issue)
 	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "sandbox-" + strings.ToLower(issue), PodUID: pod,
@@ -508,7 +508,7 @@ func (r *pauseDaemonRig) running(issue string, role claim.Role, state supervise.
 	token := r.token(issue, role)
 	return supervise.Claim{Token: token, Project: r.project, Tree: issue, Issue: issue, Role: role, Generation: 1,
 		ServingGeneration: 1, State: state, Session: "ses-" + string(token), SessionFile: "/sessions/" + string(token) + ".jsonl",
-		PluginContract: api.DaemonAPIVersion(), Locator: podLocator(token, issue),
+		PluginContract: api.DaemonAPIVersion(), Locator: pauseRigPodLocator(token, issue),
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
@@ -531,7 +531,7 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
-// inPodRound is c in an update round over its issue's pod (podLocator's), opened at opened and
+// inPodRound is c in an update round over its issue's pod (pauseRigPodLocator's), opened at opened and
 // asked of c then, for the reason a pod that runs an outdated image gives.
 func inPodRound(c supervise.Claim, opened time.Time) supervise.Claim {
 	c.UpdateRound = supervise.PodRound("pod-" + strings.ToLower(c.Issue))

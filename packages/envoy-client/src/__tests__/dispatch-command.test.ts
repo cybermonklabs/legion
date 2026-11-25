@@ -57,8 +57,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 41 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(41);
+  test("names map both ways for all 42 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(42);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);

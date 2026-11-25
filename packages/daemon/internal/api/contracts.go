@@ -26,7 +26,7 @@ import (
 // `packages/contracts/fixtures/daemon-api/released-contracts.json` (TestReleasedContractsGolden).
 // It never moves. Each number at or below it names the numbered entry version.go gives it, or no
 // entry, for good; each number above it is a new entry's, which every build gives it again.
-const LastNumberedContract = 256
+const LastNumberedContract = 275
 
 // contractOrder is the stamp: the ids of this build's entries in the order main's first-parent
 // history added them, written as contractOrderForm and then the ids, comma-separated, with no

@@ -206,8 +206,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 }
 
 // foreignBroker is POST /v1/oauth/exchange/pod-sessions answering a write at the generation it
-// sent, until it is set to answer at a fixed one, as a broker holding a row another claim or
-// another service login wrote at that generation answers.
+// sent, until it is set to answer at a fixed one, as a broker holding a row another claim of this
+// daemon or another process of the daemon's account wrote at that generation answers.
 type foreignBroker struct {
 	mu     sync.Mutex
 	answer int64

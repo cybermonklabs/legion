@@ -37,7 +37,7 @@ about the other class, the one where the derived spelling hides the defect it ex
   a comment at both ends, so a later reader does not relax the pin to unblock a merge.
 - Treat an edit to that literal as a contract change, not a test fix.
 
-The pin is for a numbered entry, whose number is released and frozen at 256 or below: a constant
+The pin is for a numbered entry, whose number is released and frozen at 275 or below: a constant
 derived from a released serial — a numbered contract, a wire schema version — equals that serial
 exactly. A constant of a contract entry added since dispatch://INFRA-1569 is the entry's id, and
 code compares through the entry's number (`entryNumber(<x>Contract)`), which is its place in

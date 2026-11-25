@@ -30,7 +30,7 @@ This is history. Until dispatch://INFRA-1569 a branch that changed the daemon AP
 contract number, and this note recorded the rule by which it did; each numbered entry of
 `packages/daemon/internal/api/version.go` that cites it took its number by that rule. No branch
 picks a number since: a contract change adds an entry with `bash scripts/daemon-contract-entry.sh
-<slug>` and edits no number (`CONTRIBUTING.md`), a build's number is 256 plus its count of
+<slug>` and edits no number (`CONTRIBUTING.md`), a build's number is 275 plus its count of
 entries, each numbered by its place in `main`'s merge order, and `legion version --contracts`
 prints a build's numbers.
 
