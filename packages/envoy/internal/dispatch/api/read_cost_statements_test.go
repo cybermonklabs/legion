@@ -5,8 +5,9 @@ package api
 // The database time of the reads c-read-cost and c-moved-read-cost measure: what Postgres spent
 // executing the statements one reading of a read sends. It is read from pg_stat_statements as the
 // sum of total_exec_time over the statements of a batch of readings, from a snapshot before the
-// batch and one after it, divided by the batch's readings. It is a reading, printed beside each
-// read's percentiles and in the tables, and nothing is bound on it.
+// batch and one after it, divided by the batch's readings. It is printed beside each read's
+// percentiles and in the tables. c-read-cost binds nothing on it; c-moved-read-cost holds each
+// read's on the new side and on the third side to twice its old side's.
 //
 // pg_stat_statements holds every statement of the server, so what is not the read's is kept out
 // of the sum, or printed beside it, as follows.
@@ -56,8 +57,10 @@ package api
 // idle interval, and only for those statements.
 //
 // pg_stat_statements needs the server to preload it (shared_preload_libraries) and a role that
-// may create the extension. Where either is missing, the run says in one line that database time
-// was not measured and why, and measures everything else, failing on none of it.
+// may create the extension. Where either is missing, c-read-cost says in one line that database
+// time was not measured and why, and measures everything else, failing on none of it
+// (newReadCostStatements); c-moved-read-cost fails before it builds anything, naming why and each
+// read whose bound it cannot read (openReadCostStatements).
 
 import (
 	"cmp"
@@ -135,21 +138,14 @@ type readCostStatementTime struct {
 	text                 string
 }
 
-// newReadCostStatements opens what database time is read with, for the run's database at
+// openReadCostStatements opens what database time is read with, for the run's database at
 // databaseURL: a database of its own beside it, dropped when the test ends, holding the
-// extension. Where pg_stat_statements cannot be read it says so in one line, naming why, and
-// answers nil, and the run goes on without database time.
-func newReadCostStatements(t *testing.T, check, databaseURL string) *readCostStatements {
+// extension. Where pg_stat_statements cannot be read it answers why, and no reader.
+func openReadCostStatements(t *testing.T, check, databaseURL string) (*readCostStatements, error) {
 	t.Helper()
-	unmeasured := func(format string, args ...any) *readCostStatements {
-		t.Helper()
-		t.Logf("%s: database time was not measured: %s; it needs pg_stat_statements in the server's shared_preload_libraries and "+
-			"a role that may create the extension, and the run measures everything else and fails on none of it", check, fmt.Sprintf(format, args...))
-		return nil
-	}
 	run, err := url.Parse(databaseURL)
 	if err != nil {
-		return unmeasured("read the run's database URL: %v", err)
+		return nil, fmt.Errorf("read the run's database URL: %w", err)
 	}
 	database := strings.TrimPrefix(run.Path, "/")
 	own := database + "_statements"
@@ -158,36 +154,49 @@ func newReadCostStatements(t *testing.T, check, databaseURL string) *readCostSta
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, admin.String())
 	if err != nil {
-		return unmeasured("connect to the test server: %v", err)
+		return nil, fmt.Errorf("connect to the test server: %w", err)
 	}
 	_, err = conn.Exec(ctx, "create database "+own)
 	_ = conn.Close(ctx)
 	if err != nil {
-		return unmeasured("create %s, the database the snapshots are read from: %v", own, err)
+		return nil, fmt.Errorf("create %s, the database the snapshots are read from: %w", own, err)
 	}
 	t.Cleanup(func() { dropReadCostDatabase(t, admin.String(), own) })
 	s := &readCostStatements{check: check}
 	if s.conn, err = pgx.Connect(ctx, statements.String()); err != nil {
-		return unmeasured("connect to %s: %v", own, err)
+		return nil, fmt.Errorf("connect to %s: %w", own, err)
 	}
 	t.Cleanup(func() { _ = s.conn.Close(context.Background()) })
 	if _, err := s.conn.Exec(ctx, `create extension if not exists pg_stat_statements`); err != nil {
-		return unmeasured("create extension pg_stat_statements in %s: %v", own, err)
+		return nil, fmt.Errorf("create extension pg_stat_statements in %s: %w", own, err)
 	}
 	var track string
 	if err := s.conn.QueryRow(ctx, `select (select oid from pg_database where datname = $1),
 		(select oid from pg_roles where rolname = current_user), coalesce(current_setting('pg_stat_statements.track', true), '')`,
 		database).Scan(&s.database, &s.role, &track); err != nil {
-		return unmeasured("read the oids of the run's database %s and of its role: %v", database, err)
+		return nil, fmt.Errorf("read the oids of the run's database %s and of its role: %w", database, err)
 	}
 	if _, err := s.snapshot(ctx); err != nil {
-		return unmeasured("%v", err)
+		return nil, err
 	}
 	if track != "top" && track != "all" {
-		return unmeasured("pg_stat_statements.track is %q, so it records no statement", track)
+		return nil, fmt.Errorf("pg_stat_statements.track is %q, so it records no statement", track)
 	}
 	t.Logf("%s: database time is read from pg_stat_statements (track=%s) for the top-level statements of the run's database %s "+
 		"(oid %d) and its role (oid %d), over a connection to %s", check, track, database, s.database, s.role, own)
+	return s, nil
+}
+
+// newReadCostStatements is openReadCostStatements for a run that binds nothing on database time:
+// where pg_stat_statements cannot be read it says so in one line, naming why, and answers nil, and
+// the run goes on without database time.
+func newReadCostStatements(t *testing.T, check, databaseURL string) *readCostStatements {
+	t.Helper()
+	s, err := openReadCostStatements(t, check, databaseURL)
+	if err != nil {
+		t.Logf("%s: database time was not measured: %v; it needs pg_stat_statements in the server's shared_preload_libraries and "+
+			"a role that may create the extension, and the run measures everything else and fails on none of it", check, err)
+	}
 	return s
 }
 
