@@ -12,6 +12,9 @@
  * `updated_since` is sent, because a comment need not move the `updated_at` of its issue. A
  * comment of that set its author deleted is left out, and stdout counts it: Dispatch serves a
  * deleted comment with no body, so the judge would label an empty comment and not the words the
+ * person wrote. A comment whose body Dispatch left out is left out too, and stdout counts it
+ * apart: a token that carries a cut reads Dispatch as of that cut, which leaves out the body of a
+ * comment edited or deleted since, and a label of a marker in its place would label no words the
  * person wrote.
  *
  * Each comment gets one model call to claude-sonnet-5-5. The call is the call of the judge that
@@ -391,8 +394,9 @@ function isoWeek(createdAt: string): string {
 }
 
 /** The stdout lines: counts only. No person is named and no comment is quoted. `deleted` is how
- * many comments of the set were left out because their author deleted them. */
-export function summary(rows: readonly LabelRow[], deleted: number): string[] {
+ * many comments of the set were left out because their author deleted them, and `leftOut` how
+ * many because Dispatch left their body out, a line printed only where there is one. */
+export function summary(rows: readonly LabelRow[], deleted: number, leftOut: number): string[] {
   const share = (count: number) =>
     rows.length === 0 ? "" : ` (${((count / rows.length) * 100).toFixed(1)}%)`;
   const yes = (key: QuestionKey, of: readonly LabelRow[] = rows) =>
@@ -406,6 +410,11 @@ export function summary(rows: readonly LabelRow[], deleted: number): string[] {
   return [
     `comments: ${rows.length}`,
     `deleted comments left out: ${deleted} (Dispatch serves a deleted comment with no body, so there is nothing of it to label)`,
+    ...(leftOut === 0
+      ? []
+      : [
+          `comments whose words Dispatch left out: ${leftOut} (Dispatch read as of a past time leaves out the body of a comment edited or deleted since, so there is nothing of it to label)`,
+        ]),
     `first created_at: ${rows[0]?.created_at ?? "none"}`,
     `last created_at: ${rows.at(-1)?.created_at ?? "none"}`,
     `writing complaints (about_doc_writing yes): ${writing} of ${rows.length}${share(writing)}`,
@@ -522,8 +531,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       .flat()
       .filter(({ comment }) => comment.author.kind === "user")
       .filter(({ comment }) => inWindow(window, comment.created_at));
-    const set = people
-      .filter(({ comment }) => comment.deleted_at == null)
+    const standing = people.filter(({ comment }) => comment.deleted_at == null);
+    const set = standing
+      .filter(({ comment }) => {
+        const body: string | undefined = comment.body;
+        return body !== undefined;
+      })
       .toSorted((a, b) => byCreatedAt(a.comment, b.comment));
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
@@ -561,7 +574,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     writeFileSync(partial, rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
     renameSync(partial, file);
-    for (const line of summary(rows, people.length - set.length)) io.out(line);
+    const leftOut = standing.length - set.length;
+    for (const line of summary(rows, people.length - standing.length, leftOut)) io.out(line);
     return 0;
   } catch (error) {
     io.err(`label-comments: ${messageFor(error)}`);

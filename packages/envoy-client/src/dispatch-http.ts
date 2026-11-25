@@ -407,12 +407,33 @@ export class DispatchUnreachableError extends Error {
  * give. `answeredAt` is told the cut as the answer names it, Dispatch's own reading of `asOf`:
  * RFC 3339 in UTC with six fractional digits. `absent` is told those fields, as the JSON Pointers
  * the header names, when it names any. A read with no `asOf` is the read of the present, as
- * before.
+ * before, except under a token that carries a cut: Dispatch answers such a token at its cut
+ * whatever the read sends, and names the cut and the fields left out as above, so a read with no
+ * `asOf` is told them too (`AnswerCut`). An answer of the present names no cut and tells nothing.
  */
 export interface AsOfRead {
   readonly asOf?: string | undefined;
   answeredAt?(cut: string): void;
   absent?(pointers: readonly string[]): void;
+}
+
+/**
+ * A read of the present that learns the cut its answer was given at: undefined for an answer of
+ * the present, else the cut the last answer named in `Dispatch-As-Of`, which an answer under a
+ * token that carries a cut names (a replayed agent's read-only broker token). A host that reads
+ * Dispatch outside the read commands, which read whoami first (`readAtCut`), learns the cut this
+ * way, so it prints a member the answer left out as left out at that cut (`leftOutWords`).
+ */
+export class AnswerCut implements AsOfRead {
+  #cut: string | undefined;
+
+  answeredAt(cut: string): void {
+    this.#cut = cut;
+  }
+
+  get cut(): string | undefined {
+    return this.#cut;
+  }
 }
 
 /**
@@ -2405,7 +2426,8 @@ export class DispatchClient {
   /**
    * `payload()`, the answer `response` carries, as the answer to a read at `read`'s cut: a
    * refusal is put in words (`#refusedAtCut`), and a 2xx answer that does not name the cut is
-   * refused (`#answeredAtCut`). A read at no cut is `payload()` as it is.
+   * refused (`#answeredAtCut`). A read at no cut is `payload()` as it is, and is told the cut a
+   * 2xx answer names, as an answer under a token that carries a cut names it (`AnswerCut`).
    */
   async #answerAtCut<T>(
     url: string,
@@ -2413,7 +2435,6 @@ export class DispatchClient {
     read: AsOfRead,
     payload: () => Promise<T>
   ): Promise<T> {
-    if (read.asOf === undefined) return payload();
     const answer = await payload().catch((error: unknown) => {
       throw this.#refusedAtCut(error, url, response, read.asOf);
     });
@@ -2444,13 +2465,14 @@ export class DispatchClient {
   /**
    * Refuses a 2xx answer to a read at a cut that does not name the cut (`AsOfNotAnswered`): a
    * server older than `as_of` answers the present. Otherwise it tells `read.answeredAt` the cut
-   * the answer names, and `read.absent` the fields the answer names absent. A read at no cut has
-   * nothing to check.
+   * the answer names, and `read.absent` the fields the answer names absent. A read at no cut
+   * refuses nothing: an answer of the present names no cut and tells it nothing, and one under a
+   * token that carries a cut tells it as a read at a cut is told.
    */
   #answeredAtCut(url: string, response: Response, read: AsOfRead): void {
-    if (read.asOf === undefined) return;
     const cut = response.headers.get(DISPATCH_AS_OF_HEADER);
     if (cut === null) {
+      if (read.asOf === undefined) return;
       throw new AsOfNotAnswered(
         `GET ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
         read.asOf

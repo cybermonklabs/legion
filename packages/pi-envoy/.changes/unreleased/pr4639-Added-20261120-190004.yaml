@@ -5,6 +5,10 @@ body: |-
   time. The first line of the output names each part and each field that the command left out at
   that time. A token that carries a cut reads at its cut. They need a Dispatch of this release: an
   older Dispatch answers the present, and the command then uses nothing of that answer and exits 1.
+
+  Under a token that carries a cut, the answers list on each model request prints an ask's
+  question that the answer left out as left out at the cut, where the read threw and the session
+  lost the whole list.
 time: 2026-11-20T19:00:04Z
 custom:
   Issue: pr4639

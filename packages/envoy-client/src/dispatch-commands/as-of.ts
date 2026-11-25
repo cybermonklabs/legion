@@ -39,6 +39,25 @@ export function leftOutAt(asOf: string): string {
   return `left out at ${asOf}`;
 }
 
+/**
+ * What a read prints in place of a member Dispatch left out of an answer at a cut
+ * (`Dispatch-As-Of-Absent`): `left out at <cut>` where the read knows the cut, from `--as-of`, a
+ * token's cut, or the `Dispatch-As-Of` its answer named (`AnswerCut`), and `left out by Dispatch`
+ * where it does not. A member every answer of the present carries is missing only from an answer
+ * at a cut, so a renderer prints these words for it rather than throw, whether or not it knows the
+ * cut. A member whose absence means something at the present (no person an ask waits on, no
+ * token) keeps that meaning on a read that knows of no cut.
+ */
+export function leftOutWords(asOf: string | undefined): string {
+  return asOf === undefined ? "left out by Dispatch" : leftOutAt(asOf);
+}
+
+/** `value`, or the words for it left out (`leftOutWords`) where the answer does not carry it: for
+ *  a member every answer of the present carries. */
+export function orLeftOut<T>(value: T | undefined, asOf: string | undefined): T | string {
+  return value === undefined ? leftOutWords(asOf) : value;
+}
+
 /** The time a read counts its ages and windows from: the present on this machine's clock
  *  (`now`, in epoch milliseconds), or the cut it read Dispatch at, as the read names it (`asOf`)
  *  and as the instant its answers named in `Dispatch-As-Of` (`at`, in epoch milliseconds). */

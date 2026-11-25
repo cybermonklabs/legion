@@ -410,9 +410,11 @@ export type DocumentTargetContext = Pick<
   "cwd" | "env" | "exec" | "serverUrls"
 >;
 
-/** One block of a document, and its markdown. */
+/** One block of a document, and its markdown. `id` is undefined where the answer left it out, as
+ *  an answer at a cut (a token that carries one) leaves out the id of an untyped block of a
+ *  version no index holds: such a block matches no id. */
 export interface DocumentBlock {
-  readonly id: string;
+  readonly id: string | undefined;
   readonly text: string;
 }
 

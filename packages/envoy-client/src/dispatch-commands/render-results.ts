@@ -8,7 +8,7 @@ import type {
   IssueCheckResults,
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
-import { leftOutAt } from "./as-of";
+import { leftOutAt, orLeftOut } from "./as-of";
 
 /** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
  *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
@@ -131,8 +131,7 @@ function commitStandsText(stands: CheckResult["commit_stands"], asOf: string | u
  *  cut (`asOf`) the fact and the check's version are left out where no index holds the version. */
 function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | undefined): string {
   const version: number | undefined = check.version;
-  const checkVersion = version === undefined && asOf !== undefined ? leftOutAt(asOf) : version;
-  const versions = `result version ${result.check_version}, check version ${checkVersion}`;
+  const versions = `result version ${result.check_version}, check version ${orLeftOut(version, asOf)}`;
   if (result.check_words_moved === undefined) {
     return asOf === undefined
       ? `Whether the check's words moved is not known (${versions})`

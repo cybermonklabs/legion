@@ -96,7 +96,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { AnswerCut, DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
 import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
@@ -376,11 +376,15 @@ async function openAsks(raw: unknown): Promise<void> {
   for (const warning of warnings) process.stdout.write(`envoy: ${warning}\n`)
   if (dispatch.enabled) {
     try {
+      // Under a token that carries a cut (a replayed agent's), Dispatch answers at that cut and
+      // leaves out the person an ask waits on where it rests on a default the records cannot
+      // give: the summary names the cut the answer named, as `dispatch open-asks` does at a cut.
+      const cut = new AnswerCut()
       const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
         deadlineMs: OPEN_ASKS_TIMEOUT_MS,
-      }).openAsks(input.session_id)
+      }).openAsks(input.session_id, undefined, cut)
       process.stdout.write(
-        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url))}\n`,
+        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url), cut.cut)}\n`,
       )
     } catch (error) {
       process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)

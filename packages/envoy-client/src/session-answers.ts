@@ -4,9 +4,9 @@ import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
-import { leftOutAt, type ReadTime } from "./dispatch-commands/as-of";
+import { leftOutWords, type ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
-import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
+import { AnswerCut, DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
@@ -106,13 +106,11 @@ function renderSessionAnswerItemAt(item: SessionAnswer, asOf: string | undefined
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -
     // and not what the person wrote in this item, which prints whole below; it is cut to the
-    // length every surface quotes a question at (QUESTION_HEAD). At a cut (`asOf`) a question the
-    // records at the cut cannot give is left out.
+    // length every surface quotes a question at (QUESTION_HEAD). An answer at a cut leaves out a
+    // question the records at the cut cannot give, and it prints as left out at the cut, or by
+    // Dispatch where the cut is not known (`leftOutWords`).
     const question: string | undefined = item.ask.question;
-    const text =
-      question === undefined && asOf !== undefined
-        ? leftOutAt(asOf)
-        : textHead(item.ask.question, QUESTION_HEAD);
+    const text = question === undefined ? leftOutWords(asOf) : textHead(question, QUESTION_HEAD);
     lines.push(`Question: ${text}`);
   }
   if (item.kind === "answer") {
@@ -246,6 +244,11 @@ export interface RenderSessionAnswersOptions {
   /** Set when `dispatch answers` cannot read the Dispatch the list came from, since it has no
    *  answers route: the left-out line then counts the items left out and names no command. */
   readonly withoutCommand?: boolean | undefined;
+  /** The cut the list was read at, where its answer named one in `Dispatch-As-Of`: Dispatch
+   *  answers a token that carries a cut at that cut, whatever the read sends. An item whose ask's
+   *  question the answer left out prints `Question: left out at <cut>`, or `Question: left out by
+   *  Dispatch` where this is unset. Nothing else of the list changes. */
+  readonly asOf?: string | undefined;
 }
 
 /**
@@ -280,7 +283,7 @@ export function renderSessionAnswers(
   const blocks: string[] = [];
   let length = header.length;
   for (const item of inWindow) {
-    const block = renderSessionAnswerItem(item);
+    const block = renderSessionAnswerItemAt(item, options.asOf);
     const after = count - blocks.length - 1;
     const needed =
       length + 2 + block.length + (after === 0 ? 0 : 2 + leftOutLine(after, namesCommand).length);
@@ -335,6 +338,9 @@ export interface SessionAnswersCache {
   readonly total: number;
   /** `SessionAnswersResponse.items` of that read, newest first. */
   readonly items: readonly SessionAnswer[];
+  /** The cut that read's answer named in `Dispatch-As-Of`, an answer under a token that carries
+   *  a cut; absent for an answer of the present, and in a file an older build wrote. */
+  readonly as_of?: string;
 }
 
 type ReadOutcome =
@@ -408,6 +414,7 @@ function readCacheFile(directory: string, url: string): SessionAnswersCache | un
         read_at: value.read_at,
         total: value.total,
         items: value.items as SessionAnswer[],
+        ...("as_of" in value && typeof value.as_of === "string" ? { as_of: value.as_of } : {}),
       };
     }
   } catch {
@@ -532,7 +539,10 @@ async function settleWithin<T>(
  * the failure line would send the agent to `dispatch answers`, which that Dispatch refuses too.
  * The first such read for a session and URL, until a read of it answers with a list again, gives
  * the host a `notice` to report. Every other failure, a gateway's 404 or a 200 that is no
- * answers list included, is a failed read as above.
+ * answers list included, is a failed read as above. An answer under a token that carries a cut
+ * names the cut (`AnswerCut`), which the list keeps in memory and in `answers.json` (`as_of`), so
+ * the fresh list and each list carried from it print an ask's question the answer left out as
+ * left out at that cut; a list from a file with no cut prints it as left out by Dispatch.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -564,6 +574,7 @@ export async function readSessionAnswers(
             total: cache.total,
             cached: { readAt: cache.read_at, reason },
             withoutCommand: noRoute,
+            asOf: cache.as_of,
           });
     if (cache === undefined || text === undefined) {
       if (noRoute) return { text: undefined, source: "unavailable", reason };
@@ -615,11 +626,19 @@ export async function readSessionAnswers(
       retryNoRoute: false,
       deadlineMs: READ_TIMEOUT_MS,
     });
+    // A replayed agent reads under a token that carries a cut, and Dispatch answers it at that
+    // cut, leaving out each question the records at the cut cannot give: the read learns the cut
+    // the answer names, and the list keeps it, so such a question prints as left out at it.
+    const cut = new AnswerCut();
     const started = client
-      .sessionAnswers(session, {
-        since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
-        maxChars: SESSION_ANSWERS_MAX_CHARS,
-      })
+      .sessionAnswers(
+        session,
+        {
+          since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
+          maxChars: SESSION_ANSWERS_MAX_CHARS,
+        },
+        cut
+      )
       .then(
         (response): ReadOutcome => {
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a
@@ -632,6 +651,7 @@ export async function readSessionAnswers(
             read_at: new Date(now()).toISOString(),
             total: response.total,
             items: response.items,
+            ...(cut.cut === undefined ? {} : { as_of: cut.cut }),
           };
           current.cache = cache;
           current.noRouteReported = false;
@@ -675,7 +695,11 @@ export async function readSessionAnswers(
   if ("failure" in outcome) return carry(current.cache, outcome.failure);
   const at = now();
   return {
-    text: renderSessionAnswers(outcome.cache.items, { now: at, total: outcome.cache.total }),
+    text: renderSessionAnswers(outcome.cache.items, {
+      now: at,
+      total: outcome.cache.total,
+      asOf: outcome.cache.as_of,
+    }),
     source: "fresh",
     readAt: outcome.cache.read_at,
     ...windowOf(outcome.cache.items, at),

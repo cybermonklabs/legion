@@ -11,7 +11,7 @@ import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-htt
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
-import { LEFT_OUT, leftOutAt, type ReadTime, readTime } from "./as-of";
+import { LEFT_OUT, leftOutAt, leftOutWords, type ReadTime, readTime } from "./as-of";
 import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
 
@@ -216,9 +216,7 @@ function inboxAskLine(row: InboxRow, asOf: string | undefined): string {
   // A read at a cut leaves out an ask's question where a restore changed its wording with no event.
   const question: string | undefined = row.question;
   const text =
-    question === undefined && asOf !== undefined
-      ? leftOutAt(asOf)
-      : textHead(row.question, INBOX_QUESTION_HEAD);
+    question === undefined ? leftOutWords(asOf) : textHead(question, INBOX_QUESTION_HEAD);
   return `- ${label} · ${priority} · ${row.kind} · ${text} · ${ref}`;
 }
 

@@ -14,6 +14,7 @@ import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contract
 import { actorText } from "../actor-text";
 import { commandLine, fieldFlag } from "../dispatch-command";
 import {
+  AnswerCut,
   type DispatchClient,
   DispatchServiceError,
   DispatchWriteLandedError,
@@ -606,8 +607,22 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** One issue of `dispatch issues` as the call's details carry it. */
-function issueListingRow(row: IssueSummary) {
+/** A member of a `dispatch issues` row's details: `{ [name]: value }`, null where Dispatch
+ *  answered none, or nothing at all where a listing at a cut left the member out, since its null
+ *  says something of the present (no route, nobody holds it, no reason) that the cut does not. */
+function listedMember<K extends string>(
+  name: K,
+  value: string | null | undefined,
+  atCut: boolean
+): Partial<Record<K, string | null>> {
+  if (value === undefined && atCut) return {};
+  return { [name]: value ?? null } as Record<K, string | null>;
+}
+
+/** One issue of `dispatch issues` as the call's details carry it. A listing Dispatch answered at a
+ *  cut (`atCut`), as it answers a token that carries one, leaves out where each route reaches
+ *  (`Dispatch-As-Of-Absent`), and the row leaves those members out too (`listedMember`). */
+function issueListingRow(row: IssueSummary, atCut: boolean) {
   return {
     key: row.key,
     title: row.title,
@@ -618,9 +633,9 @@ function issueListingRow(row: IssueSummary) {
     open_asks: row.open_asks,
     claim: row.claim ?? null,
     route: row.route ?? null,
-    route_status: row.route_status ?? null,
-    route_holder: row.route_holder ?? null,
-    route_status_reason: row.route_status_reason ?? null,
+    ...listedMember("route_status", row.route_status, atCut),
+    ...listedMember("route_holder", row.route_holder, atCut),
+    ...listedMember("route_status_reason", row.route_status_reason, atCut),
     updated_at: row.updated_at,
     progress: row.progress,
   };
@@ -692,21 +707,34 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
   // array; argumentProblems has already refused it beside --limit or --offset. Everything
   // else pages exactly as before, the tool's schema having refused a limit outside
   // 1..MAX_ISSUE_PAGE_LIMIT and a negative or fractional offset.
+  // A token that carries a cut is answered at its cut whatever this read sends, and the listing
+  // learns that cut from the answer (`AnswerCut`).
+  const cut = new AnswerCut();
   const page =
     optionalBoolean(args, "all") === true
-      ? await client.listAllIssues(filters).then((issues) => ({
+      ? await client.listAllIssues(filters, cut).then((issues) => ({
           issues,
           total: issues.length,
           limit: issues.length,
           offset: 0,
         }))
-      : await client.listIssuePage(filters, {
-          limit: optionalNumber(args, "limit") ?? DEFAULT_ISSUE_PAGE_LIMIT,
-          offset: optionalNumber(args, "offset") ?? 0,
-        });
+      : await client.listIssuePage(
+          filters,
+          {
+            limit: optionalNumber(args, "limit") ?? DEFAULT_ISSUE_PAGE_LIMIT,
+            offset: optionalNumber(args, "offset") ?? 0,
+          },
+          cut
+        );
   const { total, limit, offset } = page;
   const issues = page.issues ?? [];
-  const listing = { issues: issues.map(issueListingRow), total, offset, limit };
+  const atCut = cut.cut !== undefined;
+  const listing = {
+    issues: issues.map((row) => issueListingRow(row, atCut)),
+    total,
+    offset,
+    limit,
+  };
   if (printsJson(input.tool, args)) {
     return { text: JSON.stringify(listing), details: listing };
   }

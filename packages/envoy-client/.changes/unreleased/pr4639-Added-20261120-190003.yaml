@@ -15,7 +15,19 @@ body: |-
   past time print in words before Dispatch's own message.
 
   `dispatch issues` is not one of the seven. Under a token that carries a cut it lists the issues
-  as Dispatch answers that token, as of the cut, with no `Left out at` line.
+  as Dispatch answers that token, as of the cut, with no `Left out at` line. Its details and
+  `--json` leave out of each row the `route_status`, `route_holder` and `route_status_reason` that
+  the listing left out, where they were `null`.
+
+  A read that sends no `as_of` is told the cut that an answer under such a token names, and the
+  members it left out (`AnswerCut`, an `AsOfRead` with no `asOf`); it refuses nothing.
+  `readSessionAnswers` reads the people's answers this way, keeps the cut with the list (`as_of`
+  in `answers.json`; a file without it still reads), and prints an ask's question that the answer
+  left out as `Question: left out at <cut>`, where it threw before and lost the whole list.
+  Each renderer prints a member that an answer left out as `left out at <cut>`, or `left out by
+  Dispatch` where the cut is not known (`leftOutWords`), and never throws on it, the refusal of a
+  `reply_to_ask` prefix that lists an ask whose question the answer left out included.
+  `readDocumentBlocks` types a block's `id` as possibly absent.
 time: 2026-11-20T19:00:03Z
 custom:
   Issue: pr4639

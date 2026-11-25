@@ -18,7 +18,7 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
-import { leftOutAt } from "./as-of";
+import { leftOutAt, leftOutWords, orLeftOut } from "./as-of";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
@@ -53,11 +53,10 @@ export function askSummary(
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   // A read at a cut leaves out an ask's wording where a restore changed it with no event.
   const question: string | undefined = ask.question;
-  const questionText = question === undefined && asOf !== undefined ? leftOutAt(asOf) : question;
   const options: AskWithTrees["options"] | undefined = ask.options;
   const optionLines =
-    options === undefined && asOf !== undefined
-      ? [`Options: ${leftOutAt(asOf)}`]
+    options === undefined
+      ? [`Options: ${leftOutWords(asOf)}`]
       : [
           "Options:",
           ...((options ?? []).length === 0
@@ -68,7 +67,7 @@ export function askSummary(
               ])),
         ];
   return [
-    `Question: ${questionText}`,
+    `Question: ${orLeftOut(question, asOf)}`,
     ...anchorLines(ask),
     ...optionLines,
     `State: ${ask.state}`,
@@ -229,8 +228,8 @@ export function formatOpenAsksSummary(
   ].join("\n");
 }
 /** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
- *  the time of the last edit above it where the author replaced it. At a cut (`asOf`) a body the
- *  records at the cut cannot give is left out. */
+ *  the time of the last edit above it where the author replaced it. A body the answer left out,
+ *  which only an answer at a cut does, prints as left out (`leftOutWords`). */
 function postBodyLines(
   post: {
     readonly body: string;
@@ -243,8 +242,10 @@ function postBodyLines(
   if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
   // A read at a cut leaves out the body of a post that was edited since and cut in its event.
   const body: string | undefined = post.body;
-  const text = body === undefined && asOf !== undefined ? leftOutAt(asOf) : body;
-  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${text}`];
+  return [
+    ...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]),
+    `Body: ${orLeftOut(body, asOf)}`,
+  ];
 }
 
 /**
@@ -472,12 +473,10 @@ export async function openAnchoredThreads(
   }
   const askThreads = asks.map((ask) => {
     const question: string | undefined = ask.question;
-    const questionText =
-      question === undefined && read.asOf !== undefined ? leftOutAt(read.asOf) : question;
     return [
       `ask ${ask.id} · ${actorText(ask.author)} · ${ask.created_at}`,
       ...anchorLines(ask),
-      `Question: ${questionText}`,
+      `Question: ${orLeftOut(question, read.asOf)}`,
       ...threadReplyLines(askReplies.get(ask.id) ?? [], read.asOf),
     ].join("\n");
   });

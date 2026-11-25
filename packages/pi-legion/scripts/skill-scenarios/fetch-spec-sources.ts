@@ -17,9 +17,13 @@
  *                deleted is left out, as label-comments.ts leaves a deleted comment out: Dispatch
  *                serves it with no body, so there is nothing of it to write. An edited post's body
  *                is followed by ` · edited <time>`, as every read of the dispatch command prints it.
- *                A project document is one message: its text, at the time of its latest version.
+ *                A post whose body Dispatch left out is left out too, and counted apart: a token
+ *                that carries a cut reads Dispatch as of that cut, which leaves out the body of a
+ *                post edited or deleted since. A project document is one message: its text, at
+ *                the time of its latest version.
  *   asks.json    each ask on the issue, every state, oldest first: id, kind, question, options,
- *                multiple, state, created_at, and answer (selected, text, user, at) or null. A
+ *                multiple, state, created_at, and answer (selected, text, user, at) or null. An
+ *                ask whose wording Dispatch left out at a cut is left out, and counted apart. A
  *                project document gets [].
  *   old-spec.md  the issue's primary spec. A project document gets none.
  *
@@ -31,11 +35,13 @@
  * {issue, id, kind, body, origin_session_title, created_at}. A deleted message or comment is left
  * out, and an edited one's body is followed by ` · edited <time>`, as in messages.md. An ask's
  * body is its question, then for each option its label on one line and its description on the
- * next line when it has one.
+ * next line when it has one. A text whose words Dispatch left out at a cut is left out, and
+ * counted apart.
  *
- * Stdout gives file names and counts only, with how many deleted posts each run left out. Exit 1
- * is a failed read. Exit 2 is a refusal before any read: a bad argument, an --out inside a git or
- * jj checkout, or no Dispatch.
+ * Stdout gives file names and counts only, with how many deleted posts each run left out, and how
+ * many posts, asks or texts whose words Dispatch left out where there are any. Exit 1 is a failed
+ * read. Exit 2 is a refusal before any read: a bad argument, an --out inside a git or jj checkout,
+ * or no Dispatch.
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -121,11 +127,23 @@ function parseReference(text: string): Reference | undefined {
 /** A standing message's or comment's words as every file of this script holds them: for an
  * edited post, its body followed by the mark every read of the dispatch command prints after an
  * edited post's words (`withEditedMark`), or that mark alone where the body is empty; else the
- * body as it is. A deleted post is in no file (`standing`). */
-function postWords(post: Pick<Comment | Message, "body" | "edited_at">): string {
-  if (post.edited_at == null) return post.body;
-  const body = post.body.trimEnd();
-  return body === "" ? editedMark(post.edited_at) : withEditedMark(body, post.edited_at);
+ * body as it is. A deleted post is in no file (`standing`). Undefined where Dispatch left the body
+ * out (`Dispatch-As-Of-Absent`), as an answer under a token that carries a cut leaves out the body
+ * of a post edited or deleted since: these files hold what people and agents wrote, and a marker
+ * in the place of words would read as words someone wrote, so such a post is in no file either,
+ * and stdout counts it (`leftOutByDispatch`). */
+function postWords(post: Pick<Comment | Message, "body" | "edited_at">): string | undefined {
+  const body: string | undefined = post.body;
+  if (body === undefined) return undefined;
+  if (post.edited_at == null) return body;
+  const trimmed = body.trimEnd();
+  return trimmed === "" ? editedMark(post.edited_at) : withEditedMark(trimmed, post.edited_at);
+}
+
+/** `, <count> <what> whose words Dispatch left out`, where `count` is above 0: the posts, asks or
+ * texts an answer at a cut gave no words of (`postWords`, `askWording`). */
+function leftOutByDispatch(count: number, what: string): string {
+  return count === 0 ? "" : `, ${count} ${what} whose words Dispatch left out`;
 }
 
 /** Whether a post stands: one its author deleted is left out of every file, as label-comments.ts
@@ -136,8 +154,10 @@ function standing(post: Pick<Comment | Message, "deleted_at">): boolean {
 
 /** A comment's text as messages.md holds it: its quote as `>` lines when it is anchored (see
  * `anchored`), then its words (`postWords`), then the replacement text when the comment is a
- * suggestion. */
-function commentText(comment: Comment): string {
+ * suggestion. Undefined where Dispatch left its body out. */
+function commentText(comment: Comment): string | undefined {
+  const words = postWords(comment)?.trimEnd();
+  if (words === undefined) return undefined;
   const parts: string[] = [];
   if (anchored(comment)) {
     parts.push(
@@ -148,7 +168,6 @@ function commentText(comment: Comment): string {
         .join("\n")
     );
   }
-  const words = postWords(comment).trimEnd();
   if (words !== "") parts.push(words);
   if (comment.suggestion != null) {
     parts.push(`Suggested replacement:\n${comment.suggestion.replace_with.trimEnd()}`);
@@ -177,17 +196,35 @@ function messagesMarkdown(source: string, entries: readonly Entry[]): string {
   return `${ordered.map((entry) => `<!-- ${entry.kind} ${entry.created_at}${entry.anchored === true ? " anchored" : ""} -->\n${entry.text}`).join("\n\n")}\n`;
 }
 
-function sourceAsk(ask: Ask): SourceAsk {
+/** An ask's wording: its question, its options and whether it takes several. */
+type AskWording = Pick<Ask, "question" | "multiple"> & {
+  readonly options: NonNullable<Ask["options"]>;
+};
+
+/** `ask`'s wording, or undefined where Dispatch left any of it out, as an answer at a cut leaves
+ * out the wording of an ask a restore changed with no event (`Dispatch-As-Of-Absent`): such an
+ * ask is in no file, since its words are not known and seed.ts finds a source ask by its
+ * question, and stdout counts it. */
+function askWording(ask: Ask): AskWording | undefined {
+  const { question, options, multiple }: Partial<Pick<Ask, "question" | "options" | "multiple">> =
+    ask;
+  if (question === undefined || options === undefined || multiple === undefined) return undefined;
+  return { question, options: options ?? [], multiple };
+}
+
+function sourceAsk(ask: Ask): SourceAsk | undefined {
+  const wording = askWording(ask);
+  if (wording === undefined) return undefined;
   return {
     id: ask.id,
     kind: ask.kind,
-    question: ask.question,
-    options: (ask.options ?? []).map((option) =>
+    question: wording.question,
+    options: wording.options.map((option) =>
       option.description === undefined || option.description === ""
         ? { label: option.label }
         : { label: option.label, description: option.description }
     ),
-    multiple: ask.multiple,
+    multiple: wording.multiple,
     state: ask.state,
     created_at: ask.created_at,
     answer:
@@ -231,11 +268,11 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
     messages: messages.filter(({ author }) => author.kind === "user"),
     comments: comments.filter(({ author }) => author.kind === "user"),
   };
-  const entries: Entry[] = [
+  const standingPosts = [
     ...byPeople.messages.filter(standing).map((message) => ({
       kind: "message" as const,
       created_at: message.created_at,
-      text: postWords(message).trimEnd(),
+      text: postWords(message)?.trimEnd(),
     })),
     ...byPeople.comments.filter(standing).map((comment) => ({
       kind: "comment" as const,
@@ -244,15 +281,20 @@ async function fetchIssue(dispatch: ProductionDispatch, out: string, key: string
       anchored: anchored(comment),
     })),
   ];
-  const deleted = byPeople.messages.length + byPeople.comments.length - entries.length;
-  const sourceAsks = asks.toSorted(byCreatedAt).map(sourceAsk);
+  const entries: Entry[] = standingPosts.flatMap(({ text, ...entry }) =>
+    text === undefined ? [] : [{ ...entry, text }]
+  );
+  const deleted = byPeople.messages.length + byPeople.comments.length - standingPosts.length;
+  const sourceAsks = asks.toSorted(byCreatedAt).flatMap((ask) => sourceAsk(ask) ?? []);
   const target = writeSource(out, key.toLowerCase(), {
     "title.txt": `${issue.title}\n`,
     "messages.md": messagesMarkdown(key, entries),
     "asks.json": `${JSON.stringify(sourceAsks, null, 2)}\n`,
     "old-spec.md": spec.markdown,
   });
-  return `${target}: title.txt, messages.md (${entries.length} entries, ${deleted} deleted posts left out), asks.json (${sourceAsks.length} asks), old-spec.md`;
+  const posts = `${entries.length} entries, ${deleted} deleted posts left out${leftOutByDispatch(standingPosts.length - entries.length, "posts")}`;
+  const sourced = `${sourceAsks.length} asks${leftOutByDispatch(asks.length - sourceAsks.length, "asks")}`;
+  return `${target}: title.txt, messages.md (${posts}), asks.json (${sourced}), old-spec.md`;
 }
 
 async function fetchDocument(
@@ -278,11 +320,14 @@ async function fetchDocument(
   return `${target}: title.txt, messages.md (1 entries), asks.json (0 asks)`;
 }
 
-/** An ask as one text: its question, then each option's label and description, one per line. */
-function askBody(ask: Ask): string {
+/** An ask as one text: its question, then each option's label and description, one per line.
+ * Undefined where Dispatch left its wording out (`askWording`). */
+function askBody(ask: Ask): string | undefined {
+  const wording = askWording(ask);
+  if (wording === undefined) return undefined;
   return [
-    ask.question,
-    ...(ask.options ?? []).flatMap((option) =>
+    wording.question,
+    ...wording.options.flatMap((option) =>
       option.description === undefined || option.description === ""
         ? [option.label]
         : [option.label, option.description]
@@ -297,7 +342,7 @@ function sessionTitle(author: Actor): string | null {
 async function agentTexts(
   dispatch: ProductionDispatch,
   window: Window
-): Promise<{ texts: AgentText[]; deleted: number; issues: number }> {
+): Promise<{ texts: AgentText[]; deleted: number; leftOut: number; issues: number }> {
   const issues = await dispatch.issues();
   const perIssue = await mapLimit(issues, CONCURRENCY, async ({ key }) => {
     const [messages, comments, asks] = await Promise.all([
@@ -328,21 +373,31 @@ async function agentTexts(
         body: askBody(ask),
       })),
     ].filter(({ author, row }) => author.kind === "session" && inWindow(window, row.created_at));
-    const texts: AgentText[] = bySessions
-      .filter(({ stands }) => stands)
-      .map(({ kind, author, row, body }) => ({
-        issue: key,
-        id: row.id,
-        kind,
-        body,
-        origin_session_title: sessionTitle(author),
-        created_at: row.created_at,
-      }));
-    return { texts, deleted: bySessions.length - texts.length };
+    const standingTexts = bySessions.filter(({ stands }) => stands);
+    const texts: AgentText[] = standingTexts.flatMap(({ kind, author, row, body }) =>
+      body === undefined
+        ? []
+        : [
+            {
+              issue: key,
+              id: row.id,
+              kind,
+              body,
+              origin_session_title: sessionTitle(author),
+              created_at: row.created_at,
+            },
+          ]
+    );
+    return {
+      texts,
+      deleted: bySessions.length - standingTexts.length,
+      leftOut: standingTexts.length - texts.length,
+    };
   });
   return {
     texts: perIssue.flatMap(({ texts }) => texts).toSorted(byCreatedAt),
     deleted: perIssue.reduce((sum, { deleted }) => sum + deleted, 0),
+    leftOut: perIssue.reduce((sum, { leftOut }) => sum + leftOut, 0),
     issues: issues.length,
   };
 }
@@ -423,13 +478,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
   const out = path.resolve(args.out);
   try {
     if (args.mode === "agent-texts") {
-      const { texts, deleted, issues } = await agentTexts(dispatch, args.window);
+      const { texts, deleted, leftOut, issues } = await agentTexts(dispatch, args.window);
       mkdirSync(out, { recursive: true });
       const file = path.join(out, "agent-texts.json");
       writeFileSync(file, `${JSON.stringify(texts, null, 2)}\n`);
       const count = (kind: AgentText["kind"]) => texts.filter((text) => text.kind === kind).length;
       io.out(
-        `${file}: ${texts.length} texts by sessions (${count("message")} messages, ${count("comment")} comments, ${count("ask")} asks) read from ${issues} issues, ${deleted} deleted posts left out`
+        `${file}: ${texts.length} texts by sessions (${count("message")} messages, ${count("comment")} comments, ${count("ask")} asks) read from ${issues} issues, ${deleted} deleted posts left out${leftOutByDispatch(leftOut, "texts")}`
       );
       return 0;
     }

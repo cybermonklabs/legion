@@ -9,7 +9,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { SessionAnswer } from "@legion/contracts";
+import {
+  DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_HEADER,
+  type SessionAnswer,
+} from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -1396,5 +1400,90 @@ describe("readSessionAnswers", () => {
     expect(JSON.parse(readFileSync(file, "utf-8")).items).toEqual(recent);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(readdirSync(directory).sort()).toEqual(["answers.json", "answers.old"]);
+  });
+});
+
+// A replayed agent runs under a read-only broker token that carries a cut, and Dispatch answers
+// its host's answers read at that cut whatever the read sends: the answer names the cut in
+// `Dispatch-As-Of` and leaves out the question of an ask whose wording the records at the cut
+// cannot give (`/items/N/ask/question`). The host never sent `as_of`, so it learns the cut from the
+// answer, keeps it with the list, and prints such a question as left out, on the fresh list and on
+// every list carried from it, never throwing.
+describe("readSessionAnswers under a token that carries a cut", () => {
+  /** The cut the token carries, as Dispatch names it. */
+  const CUT = "2026-10-27T09:00:00.000000Z";
+  /** An answer whose ask's question the answer at the cut left out. */
+  const unworded = { ...answer, ask: { id: "ask-1" } } as unknown as SessionAnswer;
+  /** Dispatch's answer at the cut: one item, its question named absent. */
+  const atCut = () =>
+    new Response(JSON.stringify({ session_id: "ses", since: SINCE, total: 1, items: [unworded] }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        [DISPATCH_AS_OF_HEADER]: CUT,
+        [DISPATCH_AS_OF_ABSENT_HEADER]: "/items/0/ask/question",
+      },
+    });
+
+  test("the fresh list and the list carried from it print the question as left out at the cut", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    let fail = false;
+    const { paths, fetchImpl } = fakeDispatchFetch({
+      handler: () => (fail ? json({ code: "INTERNAL", error: "database is down" }, 500) : atCut()),
+    });
+    const options = { session, dispatch, env: envAt(root), fetchImpl, now: () => NOW };
+
+    const fresh = await readSessionAnswers(options);
+    expect(fresh.source).toBe("fresh");
+    expect(fresh.text).toContain(`Question: left out at ${CUT}`);
+    expect(fresh.text).not.toContain("undefined");
+    // The read sent no cut: the token's cut is Dispatch's to apply.
+    expect(paths).toEqual([
+      `/api/v1/agents/${session}/answers?since=${encodeURIComponent(SINCE)}&max_chars=8000`,
+    ]);
+    expect(JSON.parse(readFileSync(cacheFile(root, session), "utf-8")).as_of).toBe(CUT);
+
+    fail = true;
+    const carried = await readSessionAnswers(options);
+    expect(carried.source).toBe("cache");
+    expect(carried.text).toContain(`Question: left out at ${CUT}`);
+
+    // A process with no list in memory carries the list answers.json kept, its cut with it.
+    const restarted = newSession();
+    mkdirSync(join(root, "sessions", restarted), { recursive: true });
+    writeFileSync(cacheFile(root, restarted), readFileSync(cacheFile(root, session)));
+    const reloaded = await readSessionAnswers({ ...options, session: restarted });
+    expect(reloaded.source).toBe("cache");
+    expect(reloaded.text).toContain(`Question: left out at ${CUT}`);
+  });
+
+  test("an answers.json that names no cut still renders, its left-out question as left out by Dispatch", async () => {
+    const root = stateDir();
+    const session = newSession();
+    const dispatch = dispatchAt();
+    mkdirSync(join(root, "sessions", session), { recursive: true });
+    writeFileSync(
+      cacheFile(root, session),
+      JSON.stringify({
+        dispatch_url: dispatch.url,
+        read_at: hoursAgo(0.5),
+        total: 1,
+        items: [unworded],
+      })
+    );
+    const { fetchImpl } = fakeDispatchFetch({
+      handler: () => json({ code: "INTERNAL", error: "database is down" }, 500),
+    });
+    const read = await readSessionAnswers({
+      session,
+      dispatch,
+      env: envAt(root),
+      fetchImpl,
+      now: () => NOW,
+    });
+    expect(read.source).toBe("cache");
+    expect(read.text).toContain("Question: left out by Dispatch");
   });
 });

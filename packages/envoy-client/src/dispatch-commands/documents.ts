@@ -31,7 +31,7 @@ import {
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
-import { leftOutAt } from "./as-of";
+import { leftOutAt, leftOutWords } from "./as-of";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -181,10 +181,10 @@ async function readUploadedFile(
 const BLOCK_OPENING_CHARS = 60;
 
 /** A table row's or cell's id as `dispatch doc-read --blocks` prints it: "no id yet" for one that
- *  Dispatch gave no id, and at a cut (`asOf`) the words for one the answer left out, since no
- *  record at the cut gives the ids of a table's rows and cells. */
+ *  Dispatch gave no id, and the words for one the answer left out (`leftOutWords`), as an answer
+ *  at a cut does, since no record at the cut gives the ids of a table's rows and cells. */
 function tablePartId(id: string | undefined, asOf: string | undefined): string {
-  if (id === undefined && asOf !== undefined) return `id ${leftOutAt(asOf)}`;
+  if (id === undefined) return `id ${leftOutWords(asOf)}`;
   return id === "" ? "no id yet" : `id ${id}`;
 }
 
@@ -227,16 +227,13 @@ async function listDocumentBlocks(
     // block of a version no index holds: none prints as a value, nor as "no token".
     const { asOf } = read;
     const id: string | undefined = block.id;
-    const shownId = id === undefined && asOf !== undefined ? `(id ${leftOutAt(asOf)})` : id;
+    const shownId = id === undefined ? `(id ${leftOutWords(asOf)})` : id;
     const token = block.token ?? (asOf === undefined ? "no token" : `token ${leftOutAt(asOf)}`);
     const references: ArtifactBlock["references"] | undefined = block.references;
-    let anchored: string;
-    if (references === undefined && asOf !== undefined) {
-      anchored = `anchored comments and asks ${leftOutAt(asOf)}`;
-    } else {
-      const { comments, asks } = block.references;
-      anchored = `${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}`;
-    }
+    const anchored =
+      references === undefined
+        ? `anchored comments and asks ${leftOutWords(asOf)}`
+        : `${references.comments} comment${references.comments === 1 ? "" : "s"}, ${references.asks} ask${references.asks === 1 ? "" : "s"}`;
     lines.push(`${indent}${shownId} ${block.type} (${token}; ${anchored}): ${opening}`);
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go

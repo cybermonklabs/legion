@@ -453,6 +453,89 @@ test("a deleted post is left out of messages.md and agent-texts.json and counted
   ]);
 });
 
+// A token that carries a cut reads Dispatch as of that cut, which leaves out the body of a post
+// edited or deleted since and the wording of an ask a restore changed with no event. These files
+// hold what people and agents wrote, so such a post or ask is in none of them, as a deleted post is
+// in none, and stdout counts it apart: a marker in its place would read as words someone wrote.
+test("a post or an ask whose words Dispatch left out is in no file, and stdout counts it", async () => {
+  /** `post` as an answer at a cut gives it with its body left out. */
+  const bodyLeftOut = ({ body: _body, ...post }: { body: string }) => post;
+  const {
+    question: _q,
+    options: _o,
+    multiple: _m,
+    ...unworded
+  } = ask({
+    id: "a3",
+    author: agent(),
+    kind: "question",
+    question: "Which cache?",
+    options: [{ label: "Redis" }],
+    state: "open",
+    created_at: "2026-10-16T13:30:00Z",
+    answer: null,
+  });
+  const routes: Record<string, unknown> = {
+    ...ROUTES,
+    "/api/v1/issues": [{ key: "ACME-7", title: "Make the widget faster", status: "done" }],
+    "/api/v1/issues/ACME-7/messages": [
+      {
+        message: message("m1", alice, "Please make the widget faster.", "2026-10-16T10:00:00Z"),
+        replies: [
+          bodyLeftOut(message("m2", agent(), "On it.", "2026-10-16T12:00:00Z")),
+          bodyLeftOut(message("m3", alice, "Thanks.", "2026-10-16T14:00:00Z")),
+        ],
+      },
+    ],
+    "/api/v1/issues/ACME-7/comments": [
+      bodyLeftOut(comment("c1", bob, "Why 5 s?", "2026-10-16T11:00:00Z", "The quote.")),
+      comment("c2", agent(), "Fixed.", "2026-10-16T13:00:00Z"),
+    ],
+    "/api/v1/issues/ACME-7/asks": [unworded],
+  };
+  const out = path.join(dir("left-out-run"), "sources");
+  const sources = io(world(routes).fetch);
+  expect(await main(["--out", out, "ACME-7"], sources.io)).toBe(0);
+  expect(sources.stderr).toEqual([]);
+  expect(read(path.join(out, "acme-7", "messages.md"))).toBe(
+    "<!-- message 2026-10-16T10:00:00Z -->\nPlease make the widget faster.\n"
+  );
+  expect(JSON.parse(read(path.join(out, "acme-7", "asks.json")))).toEqual([]);
+  expect(sources.stdout).toEqual([
+    `${path.join(out, "acme-7")}: title.txt, messages.md (1 entries, 0 deleted posts left out, 2 posts whose words Dispatch left out), asks.json (0 asks, 1 asks whose words Dispatch left out), old-spec.md`,
+  ]);
+
+  const texts = io(world(routes).fetch);
+  expect(
+    await main(
+      [
+        "--agent-texts",
+        "--since",
+        "2026-10-16T00:00:00Z",
+        "--until",
+        "2026-10-17T00:00:00Z",
+        "--out",
+        out,
+      ],
+      texts.io
+    )
+  ).toBe(0);
+  expect(texts.stderr).toEqual([]);
+  expect(JSON.parse(read(path.join(out, "agent-texts.json")))).toEqual([
+    {
+      issue: "ACME-7",
+      id: "c2",
+      kind: "comment",
+      body: "Fixed.",
+      origin_session_title: null,
+      created_at: "2026-10-16T13:00:00Z",
+    },
+  ]);
+  expect(texts.stdout).toEqual([
+    `${path.join(out, "agent-texts.json")}: 1 texts by sessions (0 messages, 1 comments, 0 asks) read from 1 issues, 0 deleted posts left out, 2 texts whose words Dispatch left out`,
+  ]);
+});
+
 test("an --out inside a checkout, or a reference of another shape, exits 2 and reads nothing", async () => {
   const checkout = dir("checkout");
   mkdirSync(path.join(checkout, ".git"));

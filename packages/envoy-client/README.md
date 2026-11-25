@@ -1250,11 +1250,14 @@ Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: â€
 Under a cut, each of the seven read commands reads Dispatch as of the cut, and the cut replaces
 any `--as-of` the call gives (Reads at a past time, below). Any other read of a route that holds
 no past answer prints Dispatch's refusal (`AS_OF_TOKEN_NOT_SERVED: â€¦`) and exits 1.
-`dispatch issues` is not one of the seven: it reads no whoami first, sends no `as_of` and checks
-no `Dispatch-As-Of`. `GET /api/v1/issues` answers a token that carries a cut as of that cut, so
-under such a token `dispatch issues` lists the issues as they stood at the cut, with no
-`Left out at` line. A line of an issue whose route the listing leaves out names the route and says
-that the listing does not say whether it reaches anyone.
+`dispatch issues` is not one of the seven: it reads no whoami first and sends no `as_of`.
+`GET /api/v1/issues` answers a token that carries a cut as of that cut, so under such a token
+`dispatch issues` lists the issues as they stood at the cut, with no `Left out at` line. A line of
+an issue whose route the listing leaves out names the route and says that the listing does not say
+whether it reaches anyone. The listing learns the cut from the answer's `Dispatch-As-Of`
+(`AnswerCut`), and its row in the details and in `--json` then has no `route_status`,
+`route_holder` or `route_status_reason` the listing left out: `null` there says the present's "no
+route", "nobody holds it" or "no reason". A listing of the present keeps `null`.
 
 ### The `dispatch` command
 
@@ -1438,6 +1441,18 @@ Pointer. Every age and window counts from the cut. `answers` lists what people w
 hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
 bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.
 `read` prints no present-tense route or claim line for a field that the answer left out.
+
+A read that sends no `as_of` reads the present, but Dispatch answers a token that carries a cut at
+that cut whatever the read sends. `DispatchClient` tells such a read the cut its answer names and
+each member it left out, as it tells a read at a cut, and refuses nothing, since an answer of the
+present names no cut (`AnswerCut`, an `AsOfRead` with no `asOf`). The reads outside the seven
+commands learn the cut this way: the answers list on every model request (`readSessionAnswers`,
+which keeps the cut with the list in memory and in `answers.json` as `as_of`), the open-asks
+summary of the Claude Code and Codex hooks, and `dispatch issues`. Every renderer prints a member
+that an answer left out as `left out at <cut>` where it knows the cut and as `left out by Dispatch`
+where it does not (`leftOutWords`), and never throws on it. A member whose absence says something
+of the present, such as no person an ask waits on or no token, keeps that meaning on a read that
+knows of no cut.
 
 A Dispatch older than `as_of` ignores the parameter and answers the present. So the command uses
 nothing of an answer to a call that sent `as_of` with no `Dispatch-As-Of` header, and exits 1

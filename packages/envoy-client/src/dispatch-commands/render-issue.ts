@@ -29,7 +29,7 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
-import { LEFT_OUT, leftOutAt, type ReadCut } from "./as-of";
+import { LEFT_OUT, leftOutAt, orLeftOut, type ReadCut } from "./as-of";
 import { approvalLine, documentListLines } from "./document-targets";
 import { linkFor } from "./links";
 import { edgeLine, graphSectionLines } from "./render-graph";
@@ -502,8 +502,7 @@ export function issueSummary(
       ? ["- none"]
       : asks.map((ask) => {
           const question: string | undefined = ask.question;
-          const text = question === undefined && asOf !== undefined ? leftOutAt(asOf) : question;
-          return `- ${ask.id}: ${text}`;
+          return `- ${ask.id}: ${orLeftOut(question, asOf)}`;
         })),
     "References:",
     ...sections.references,

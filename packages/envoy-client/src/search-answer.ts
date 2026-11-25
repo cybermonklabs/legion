@@ -13,7 +13,7 @@ import {
 } from "@legion/contracts";
 import { actorText, deletedMark, withEditedMark } from "./actor-text";
 import { dispatchWordsText } from "./ask-answer";
-import { leftOutAt } from "./dispatch-commands/as-of";
+import { leftOutWords } from "./dispatch-commands/as-of";
 import { linkFor } from "./dispatch-commands/links";
 import { dispatchDocumentRef } from "./dispatch-owner";
 
@@ -28,22 +28,17 @@ export function pageSummaryText(offset: number, count: number, total: number): s
  *  the snippet would. A hit of a post its author edited carries the mark every line prints for
  *  one (`editedMark`) after its snippet. A search at a cut (`asOf`) leaves out the link of an ask
  *  hit whose block's document changed after the cut, and the snippet of an ask hit whose wording a
- *  restore changed with no event, and the line says so in their place. */
+ *  restore changed with no event, and the line says so in their place (`leftOutWords`). */
 function searchHitLine(
   result: SearchResult,
   linkBase: string | undefined,
   asOf: string | undefined
 ): string {
   const link: string | undefined = result.href;
-  const href =
-    link === undefined && asOf !== undefined
-      ? `link ${leftOutAt(asOf)}`
-      : linkFor(result.href, linkBase);
+  const href = link === undefined ? `link ${leftOutWords(asOf)}` : linkFor(link, linkBase);
   const snippet: string | undefined = result.snippet;
   const renderedSnippet =
-    snippet === undefined && asOf !== undefined
-      ? `snippet ${leftOutAt(asOf)}`
-      : snippetText(result.snippet);
+    snippet === undefined ? `snippet ${leftOutWords(asOf)}` : snippetText(snippet);
   const text =
     result.deleted_at == null
       ? withEditedMark(renderedSnippet, result.edited_at)

@@ -93,4 +93,44 @@ describe("dispatch issues under a token's cut", () => {
       sentAsOf: [],
     });
   });
+
+  // `--json` and the call's details carry each row's route members. A listing at the cut left
+  // them out, and a `null` there would say the present's "no route", "nobody holds it" or "no
+  // reason": a member left out is left out of the row, and a listing of the present keeps null.
+  test("--json leaves out of each row a route member the listing left out, and keeps null at the present", async () => {
+    const argv = ["issues", "--project", "DSP", "--json"];
+    const present = await standIn.run(argv);
+    const past = await standIn.run(argv, { whoamiCut: TOKEN_CUT });
+    const row = (stdout: string) => JSON.parse(stdout).issues[0];
+    const reach = (listed: Record<string, unknown>) =>
+      Object.fromEntries(
+        ["route", "route_status", "route_holder", "route_status_reason"].map((name) => [
+          name,
+          name in listed ? listed[name] : "(not in the row)",
+        ])
+      );
+    expect({
+      present: [present.code, reach(row(present.stdout))],
+      past: [past.code, reach(row(past.stdout))],
+    }).toEqual({
+      present: [
+        0,
+        {
+          route: "role:implementer",
+          route_status: "no_holder",
+          route_holder: null,
+          route_status_reason: null,
+        },
+      ],
+      past: [
+        0,
+        {
+          route: "role:implementer",
+          route_status: "(not in the row)",
+          route_holder: "(not in the row)",
+          route_status_reason: "(not in the row)",
+        },
+      ],
+    });
+  });
 });

@@ -20,6 +20,7 @@ import {
   renderAdvice,
   standingReviewLines,
 } from "./advice";
+import { leftOutWords } from "./as-of";
 import { askQuestionWithRef } from "./check";
 import {
   asObject,
@@ -45,15 +46,18 @@ function askUrgency(args: ToolArguments): AskUrgency | undefined {
 const askHintLimit = 8;
 
 /** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
- *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. A
+ *  question the issue's answer left out, as one under a token that carries a cut leaves out a
+ *  question the records at the cut cannot give, is named as left out (`leftOutWords`). */
 function openAskChoices(
   asks: readonly Pick<AskWithTrees, "id" | "question">[],
   owner: string
 ): string {
   if (asks.length === 0) return `${owner} holds no open ask.`;
-  const hints = asks
-    .slice(0, askHintLimit)
-    .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
+  const hints = asks.slice(0, askHintLimit).map((ask) => {
+    const question: string | undefined = ask.question;
+    return `${ask.id.slice(0, 8)}… ${question === undefined ? leftOutWords(undefined) : textHead(question)}`;
+  });
   return `The open asks of ${owner} are: ${hints.join(", ")}.`;
 }
 
