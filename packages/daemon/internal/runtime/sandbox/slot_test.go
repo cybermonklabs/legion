@@ -58,7 +58,7 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 	// recordOf is slot's record of generation 1 as a runtime under the moved daemon address wrote
 	// it when that generation started.
 	recordOf := func(slot claim.Role) string {
-		record, err := earlier.recordFor(slot, 1, earlier.enrollsIn(nil, slot))
+		record, err := earlier.recordFor(slot, 1, earlier.enrollsIn(nil, slot), earlier.dispatch.Bearer != "")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -514,7 +514,7 @@ func TestCheckPodRefusesTheSessionWriterTokensName(t *testing.T) {
 	for name, store := range map[string]ompsessions.Store{
 		"postgres": postgresStore, "cloudsql-iam": cloudSQLImpersonatingStore, "cloudsql-iam with a writer audience": cloudSQLWriterStore,
 	} {
-		if err := CheckPod(pod, append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, false); err == nil || err.Error() != want {
+		if err := CheckPod(pod, append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, store, NoExchange); err == nil || err.Error() != want {
 			t.Errorf("under %s, CheckPod = %v, want %q", name, err, want)
 		}
 	}
