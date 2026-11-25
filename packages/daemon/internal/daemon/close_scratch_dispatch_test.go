@@ -50,7 +50,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 			// status is untouched, and Dispatch has moved the issue's sequence on. The merge's
 			// close carries no reason, so its write is refused ISSUE_CHANGED and its retry decides;
 			// close_root's posts its reason and reads the issue after it, so its write lands first.
-			client := &interleaving{Client: dispatch.New(baseURL, token, ""), act: func() {
+			client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""), act: func() {
 				dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "any news?"}, nil)
 			}}
 			runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client,
@@ -88,7 +88,7 @@ func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *
 
 	reopenTheIssue(t, pool, records, issue)
 
-	client := &interleaving{Client: dispatch.New(baseURL, token, ""), act: func() {
+	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""), act: func() {
 		dispatchCall(t, baseURL, http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{"body": "reopening this"}, nil)
 	}}
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: client,
@@ -138,7 +138,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	// itself answers no error — a row whose attempt failed is recorded and backed off, which is
 	// what keeps one issue's failure from ending the pass — so what the attempt did is read from
 	// the row it left and from the client it reached.
-	failing := &failingStatus{Client: dispatch.New(baseURL, token, "")}
+	failing := &failingStatus{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "")}
 	first := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: failing,
 		handlers: []intake.Handler{engine}, now: time.Now, log: quietLogger()}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -161,7 +161,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 		t.Fatalf("let the row's backoff go: %v", err)
 	}
 
-	restarted := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
+	restarted := &outbox{dispatchProject: "LEGION", pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		handlers: []intake.Handler{engine}, now: time.Now, log: quietLogger()}
 	if err := restarted.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the close after the restart: %v", err)

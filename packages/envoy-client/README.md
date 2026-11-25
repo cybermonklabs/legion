@@ -400,7 +400,14 @@ attempt was refused: the message may or may not have arrived. The error names it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
-still sees it twice). A send
+still sees it twice). One 5xx is not such an attempt: the listener's `503` whose `error` opens
+with `MESSAGE_NOT_SENT_PREFIX` (`@legion/contracts`), which says the message bus refused the
+message before anything went out, because the deployed stream does not capture its topic for
+now, as during a hub move. It is sent again like any 5xx, under the same key, and a send or a
+publish that gets it on every attempt throws that `EnvoyApiError`, whose `notSent` is true and
+whose message is the listener's: nothing was stored, so the message may be sent again later.
+After an earlier attempt that got no answer or another 5xx, a send is unconfirmed as above, and a
+publish's error says that attempt may have stored the message, with `notSent` false. A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
 and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
@@ -1107,10 +1114,14 @@ registration at that deadline fails with `RegistrationPendingError`, which names
 Once a renewal has failed, a call made while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
-no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
-one this process makes, and the session name is the caller's own session, else
-`AGENT_SECRETS_SESSION`. Where a person ran `agent-secrets login` on the machine, the client
-trades that person, as the Go client does:
+no sign-in, the client trades the machine. The machine's identity is the subject, and the session
+name is the caller's own session, else `AGENT_SECRETS_SESSION`. In a pod, where
+`AGENT_SECRETS_MACHINE_IDENTITY` is `kubernetes` and `AGENT_SECRETS_KEY_DIR` names the role's own
+directory, the DPoP key is the role's own agent-secrets key, the `key.pem` that
+`agent-secrets keygen` wrote there, which the broker holds the pod session's trade to; when that
+file cannot be read, the call fails naming the path. Everywhere else the DPoP key is one this
+process makes. Where a person ran `agent-secrets login` on the machine, the client trades that
+person, as the Go client does:
 
 - The subject is the person's Google identity token. The client renews it at every trade, from
   the refresh token the sign-in keeps, at the sign-in issuer (`person-identity.ts`).
@@ -1182,10 +1193,11 @@ since is kept; the next presentation uses the token the client holds now, tradin
 where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
 for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
 made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
-the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
-broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
-write may have landed: then the write asks again on its pacing, and with no ask left it is
-`DispatchWriteUnsettledError`.
+the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`).
+`dispatch api`'s read is one send, which Dispatch's answer of no route does not repeat, and the
+command prints that refusal as it came. If the broker refuses the new trade, the call fails in
+the broker's words, unless an attempt of the write may have landed: then the write asks again
+on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1545,3 +1557,13 @@ answers that request and records the same verdict on every document the request 
 the version the request names. The output names the state, the version and the actor that
 Dispatch recorded, and says when the review also answered an open request. A refusal starts with
 Dispatch's code.
+
+`dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
+reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
+session's own credential as every command presents it, and prints Dispatch's JSON answer for
+`jq`. It takes no method and no body: a write goes through the command named for it. The spec
+refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
+backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
+plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
+refusal of the read is Dispatch's error with its code and, where Dispatch gives one, its hint,
+exit 1.

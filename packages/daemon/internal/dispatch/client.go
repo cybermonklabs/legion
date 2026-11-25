@@ -23,30 +23,66 @@ const requestTimeout = 10 * time.Second
 // with neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
 const unstampedRelease = "(devel)"
 
-// HTTPClient calls Dispatch's native /api/v1 routes with the daemon's bearer token.
+// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
+// transport it was made with (New).
 type HTTPClient struct {
 	baseURL    string
-	token      string
 	userAgent  string
 	timeout    time.Duration
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
-// Every request names the daemon and release, the build it runs, in its User-Agent
-// (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's calls from every
-// other client's; a caller that names no release sends `legion-daemon/(devel)`.
-func New(baseURL, token, release string) *HTTPClient {
+// New creates a client for one Dispatch server whose every request goes through transport, which
+// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
+// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
+// client sets no Authorization of its own. Every request names the daemon and release, the build it
+// runs, in its User-Agent (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's
+// calls from every other client's; a caller that names no release sends `legion-daemon/(devel)`.
+func New(baseURL string, transport http.RoundTripper, release string) *HTTPClient {
 	if release == "" {
 		release = unstampedRelease
 	}
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		token:      token,
 		userAgent:  "legion-daemon/" + release,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Transport: transport},
 	}
+}
+
+// BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
+// when nil) with `Authorization: Bearer <token>` and changes nothing else, so a request goes on the
+// wire as it did when the client set the header itself. A redirect to another host name than the
+// request was made to is sent without it, as Go's client sent no Authorization header its caller
+// set on such a redirect: the bearer reaches Dispatch's host and no other. Go's client also kept
+// it on a redirect to a subdomain of that host; this does not.
+func BearerTransport(token string, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return bearerTransport{authorization: "Bearer " + token, base: base}
+}
+
+type bearerTransport struct {
+	authorization string
+	base          http.RoundTripper
+}
+
+func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	presented := r.Clone(r.Context())
+	if strings.EqualFold(r.URL.Hostname(), firstRequest(r).URL.Hostname()) {
+		presented.Header.Set("Authorization", b.authorization)
+	}
+	return b.base.RoundTrip(presented)
+}
+
+// firstRequest is the request the caller made that r is a redirect of, or r itself: Go's client
+// sets each redirect's Response to the answer that redirected it, whose Request is the one before.
+func firstRequest(r *http.Request) *http.Request {
+	for r.Response != nil && r.Response.Request != nil {
+		r = r.Response.Request
+	}
+	return r
 }
 
 // ListIssues reads GET /api/v1/issues?project=<project>. Dispatch accepts one status filter, so
@@ -653,6 +689,16 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// Whoami reads GET /api/v1/whoami: who Dispatch takes this client's credential for. The boot reads
+// it under dispatch_token_broker, to refuse a broker token whose writes Dispatch would refuse.
+func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
+	var caller Caller
+	if err := c.request(ctx, http.MethodGet, "/api/v1/whoami", nil, &caller); err != nil {
+		return Caller{}, err
+	}
+	return caller, nil
+}
+
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -670,7 +716,6 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")

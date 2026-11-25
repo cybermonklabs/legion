@@ -539,6 +539,34 @@ export async function postDispatchReply(
 }
 
 /**
+ * The Dispatch client a person's message, command, pick or BTW is accepted and read through
+ * (`UserTurnRouterOptions.dispatch`), bounded to `ms` and naming this server in its `User-Agent`
+ * (`CLAUDE_ENVOY_USER_AGENT`), or undefined while nothing configures Dispatch. It trades under
+ * this session's id, as `postDispatchReply` does: no pod sets `AGENT_SECRETS_SESSION`, so a trade
+ * that named no session would write under none.
+ */
+export async function userTurnDispatchClient(
+  identity: SessionIdentity,
+  configFile: SessionConfigFile,
+  ms: number,
+): Promise<DispatchClient | undefined> {
+  const active = activeDispatchSettings(
+    (
+      await sessionDispatchSettings(configFile, process.env, {
+        cwd: identity.directory,
+        session: () => identity.id,
+      })
+    ).dispatch,
+  )
+  return active === null
+    ? undefined
+    : new DispatchClient(active.url, active.credential, fetch, {
+        deadlineMs: ms,
+        userAgent: CLAUDE_ENVOY_USER_AGENT,
+      })
+}
+
+/**
  * Render inbound Envoy envelopes through the shared renderer and hand each one to the session,
  * one at a time, in the order they were queued.
  *
@@ -2825,17 +2853,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
    */
   const router = (state: UserTurnState, reply: UserTurnRouterOptions["reply"]): UserTurnRouter => {
     const options: UserTurnRouterOptions = {
-      dispatch: async (ms) => {
-        const active = activeDispatchSettings(
-          (await sessionDispatchSettings(configFile, process.env, { cwd: directory })).dispatch,
-        )
-        return active === null
-          ? undefined
-          : new DispatchClient(active.url, active.credential, fetch, {
-              deadlineMs: ms,
-              userAgent: CLAUDE_ENVOY_USER_AGENT,
-            })
-      },
+      dispatch: (ms) => userTurnDispatchClient(identity, configFile, ms),
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply,

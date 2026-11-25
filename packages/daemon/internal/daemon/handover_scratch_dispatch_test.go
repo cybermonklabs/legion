@@ -46,7 +46,7 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("set the child mid-run = %s", response.Status)
 	}
-	daemonDispatch := dispatch.New(baseURL, token, "")
+	daemonDispatch := dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "")
 	before, err := daemonDispatch.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the mid-run child: %v", err)

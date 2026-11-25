@@ -44,7 +44,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	first := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token, ""),
+		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -56,7 +56,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	restarted := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
+		pool:            pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -66,7 +66,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 		t.Fatalf("outbox rows after recovery = %d, want finished row", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 
 	first := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token, ""),
+		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -113,7 +113,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	}
 	restarted := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -123,7 +123,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 		t.Fatalf("outbox rows after recovery = %d, want the row posted and finished", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -151,14 +151,14 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, over, now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the outbox: %v", err)
 	}
 
-	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := dispatch.New(baseURL, token, "")
+	client := dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "")
 	before, err := client.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the scratch issue: %v", err)
@@ -206,7 +206,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		record.OrdinaryStatusWrite("done", before.Status, reason), now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil), ""),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -253,7 +253,7 @@ func TestTheDaemonClientNamesItselfToScratchDispatch(t *testing.T) {
 	served := &syncBuffer{}
 	d := startScratchDispatchOn(t, scratchDispatchOptions{log: served})
 	issue := createScratchDispatchIssue(t, d.base)
-	if _, err := dispatch.New(d.base, d.token, "").GetIssue(context.Background(), issue); err != nil {
+	if _, err := dispatch.New(d.base, dispatch.BearerTransport(d.token, nil), "").GetIssue(context.Background(), issue); err != nil {
 		t.Fatalf("read %s through the daemon's client: %v", issue, err)
 	}
 
@@ -318,7 +318,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
-	r.runner.dispatch = dispatch.New(baseURL, token, "")
+	r.runner.dispatch = dispatch.New(baseURL, dispatch.BearerTransport(token, nil), "")
 	logs := &syncBuffer{}
 	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
@@ -475,6 +475,14 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
+	// env is settings of the caller's own, each NAME=value, set after every setting the server
+	// otherwise runs with, so a caller adds one the scratch server does not set or replaces one
+	// it does (os/exec keeps the last value of a name): DISPATCH_SERVER_URL naming an origin the
+	// server is not served at, the secrets broker its broker tokens are read back at
+	// (DISPATCH_AGENT_SECRETS_URL and its account token, DISPATCH_PROOF_ORIGINS), a listener
+	// (ENVOY_URL) or a GitHub App and the GitHub it calls. Nothing else of the caller's
+	// environment named DISPATCH_, ENVOY_ or NATS_ reaches the server.
+	env []string
 }
 
 // scratchDispatch is a real Dispatch server a test builds and runs: its binary, its own database,
@@ -491,6 +499,7 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
+	env      []string
 	port     int
 	base     string
 	command  *exec.Cmd
@@ -516,7 +525,7 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log,
+		log: options.log, env: options.env,
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -577,6 +586,7 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
+	command.Env = append(command.Env, d.env...)
 	command.ExtraFiles = []*os.File{held}
 	output := &syncBuffer{}
 	command.Stdout = output

@@ -531,6 +531,17 @@ type HandoffAuthor struct {
 // IsSession says whether the record's author is the session id.
 func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" && a.ID == id }
 
+// Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
+// not a person's browser session (its whoamiAgent): Session is the session the credential proved,
+// Project the one project it lets its holder write, and Owner the person it acts for, each nil
+// where Dispatch names none. A broker token Dispatch serves every write of the daemon's for names
+// the daemon's session (DaemonSession), its project and a person.
+type Caller struct {
+	Session *string `json:"session"`
+	Project *string `json:"project"`
+	Owner   *string `json:"owner"`
+}
+
 // Error is a non-success response from Dispatch. Code is empty only when the response did not
 // carry Dispatch's normal error body.
 type Error struct {
