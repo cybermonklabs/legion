@@ -980,7 +980,6 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		return bus.SessionConsumerStart{}, nil, relayEnded
 	}
 	defer func() { <-m.restarts }()
-	time.Sleep(12 * time.Second) // PLANTED: the restart reaches the lock after the old 10 s bound
 	unlock := m.delivery.locks.lock(sessionID)
 	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
