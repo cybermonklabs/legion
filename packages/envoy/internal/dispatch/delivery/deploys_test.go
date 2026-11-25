@@ -96,8 +96,6 @@ func TestADeployIsRecordedOnceForEachProductionRunAndMovedByItsReRun(t *testing.
 
 func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 	t.Parallel()
-	pool, ctx := deliveryTestPool(t)
-	settings := seedDeliverySettings(t, ctx, pool)
 	for _, test := range []struct {
 		name, attempt string
 		want          *int
@@ -105,6 +103,8 @@ func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 		{"absent", "", nil}, {"second attempt", `,"run_attempt":2`, new(2)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	settings := seedDeliverySettings(t, ctx, pool)
 			var item workflowRunItem
 			body := fmt.Sprintf(`{"id":700,"head_sha":%q,"head_branch":"main","created_at":"2026-11-20T00:00:00Z"%s}`, fmt.Sprintf("%040d", 700), test.attempt)
 			if err := json.Unmarshal([]byte(body), &item); err != nil {
@@ -122,9 +122,9 @@ func TestAWorkflowRunKeepsItsKnownOrUnknownAttempt(t *testing.T) {
 				t.Fatalf("stored attempt = %v, want %v", stored.RunAttempt, test.want)
 			}
 			completed := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-			if err := UpsertRunJobs(ctx, pool, "acme/widgets", 700, []DeliveryJob{{
-				JobID: 700, Name: settings.Production().JobNames[0], CompletedAt: &completed, Conclusion: DeliveryJobConclusionSuccess,
-			}}); err != nil {
+			if err := UpsertRunJobs(ctx, pool, "acme/widgets", 700, []DeliveryRunJob{{
+				Repo: "acme/widgets", RunID: 700, Name: settings.Production().JobNames[0], CompletedAt: &completed, Conclusion: new(DeliveryJobConclusionSuccess),
+			}}, true); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := RecordProductionDeploys(ctx, pool, settings, events.NewBroker()); err != nil {

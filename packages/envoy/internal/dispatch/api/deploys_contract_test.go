@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -120,4 +121,52 @@ func TestARecordedDeployWakesEachOpenIssueThatHoldsALiveResult(t *testing.T) {
 	if !slices.Equal(recipients, []string{issues[0], issues[2]}) {
 		t.Fatalf("deploy recipients = %v, want only %s and %s", recipients, issues[0], issues[2])
 	}
+}
+
+func TestADeployWriteRefusesAProjectScopedTokenBeforeItsBody(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-project-scoped-token-that-may-not-record-a-deploy"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/deploys", token, map[string]any{"program": false}))
+	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeProjectScopeDeployment {
+		t.Fatalf("project scope must precede invalid body parsing: %d %s", refused.Code, refused.Body)
+	}
+	var count int
+	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from deploys`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("the refused scope wrote %d deploys, %v", count, err)
+	}
+}
+
+func TestADeployRouteRefusesACommitGitHubSaysTheRepositoryDoesNotHold(t *testing.T) {
+	t.Parallel()
+	options := resultsGitHubOptions(t, map[string]bool{"acme/widgets": true}, map[string]bool{afterMergeC1: true}, "main",
+		func(string, string) (int, string) { return http.StatusOK, "ahead" }, nil)
+	handler, database, _ := newTestServer(t, options)
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/deploys", deployBody("worker", afterMergeC2), "alice")
+	if refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), "DEPLOY_COMMIT_UNKNOWN") {
+		t.Fatalf("an absent commit: %d %s", refused.Code, refused.Body)
+	}
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from deploys`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("the absent commit wrote %d deploys, %v", count, err)
+	}
+	postDeploy(t, handler, deployBody("worker", afterMergeC1), http.StatusCreated)
+}
+
+func TestADeployedCommitBeforeTheMergeCannotDecideALiveCheck(t *testing.T) {
+	rig := newAfterMergeRig(t)
+	restore := useTheNextReleasesManifest(t)
+	issue := rig.issue(t, "The deployed commit predates the merge", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"worker\"}\nThe worker answers.\n:::\n")
+	restore()
+	writeKnownMergeOnBase(t, rig.database, "acme/widgets", 400, headCommit, issue, "main", afterMergeM)
+	rig.github.carry("main", afterMergeM, afterMergeC0, afterMergeC1)
+	rig.github.hold(afterMergeM, afterMergeC1)
+	before := postDeploy(t, rig.handler, deployBody("worker", afterMergeC0), http.StatusCreated)
+	rig.record(t, issue, "live", "tester", "pass", afterMergeC0)
+	requireLiveDecision(t, "a current build that does not hold the merge", readLiveCheck(t, rig.handler, issue, ""), "unknown", "deploy_not_merged", "", &before)
+	after := postDeploy(t, rig.handler, deployBody("worker", afterMergeC1), http.StatusCreated)
+	rig.record(t, issue, "live", "tester", "pass", afterMergeC1)
+	requireLiveDecision(t, "a result of a build that holds the merge", readLiveCheck(t, rig.handler, issue, ""), "yes", "", afterMergeC1, &after)
 }

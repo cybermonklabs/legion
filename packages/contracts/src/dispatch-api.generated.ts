@@ -1222,6 +1222,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/deploys": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Read each program's current deploy in ?repo=owner/repo, ordered by program, with its source, writer and known or unknown workflow run attempt. */
+    get: operations["getApiV1Deploys"];
+    put?: never;
+    /** @description Record a program's deployed build {repo, program, commit, deployed_at?, url?}; 201 carries the new deploy and its credential-resolved writer, 200 the unchanged current build, 400 DEPLOY_INPUT or DEPLOY_COMMIT_UNKNOWN, 409 DEPLOY_NOT_NEWEST. A project-scoped credential cannot write a deployment-wide fact. */
+    post: operations["postApiV1Deploys"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/events/log": {
     parameters: {
       query?: never;
@@ -4127,12 +4145,28 @@ export interface components {
       /** @enum {string} */
       state: "pass" | "fail" | "no_result" | "unread";
     };
+    CheckDeploy: {
+      commit: string;
+      /** Format: date-time */
+      deployed_at: string;
+      program: string;
+    };
     CheckPassStands: {
       /** @enum {string} */
       answer: "yes" | "no" | "unknown";
       commit?: string;
+      deploy?: components["schemas"]["CheckDeploy"];
       /** @enum {string} */
-      reason?: "pass_and_fail" | "fail" | "no_result" | "not_placed" | "read_failed";
+      reason?:
+        | "pass_and_fail"
+        | "fail"
+        | "no_result"
+        | "not_placed"
+        | "read_failed"
+        | "program_not_named"
+        | "no_deploy"
+        | "deploy_not_merged"
+        | "no_result_from_deploy";
       results?: string[];
       roles?: string[];
       subjects?: components["schemas"]["PassStandsSubject"][];
@@ -4925,6 +4959,23 @@ export interface components {
       /** Format: date-time */
       to: string;
     };
+    Deploy: {
+      commit: string;
+      /** Format: date-time */
+      deployed_at: string;
+      /** Format: int64 */
+      id: number;
+      program: string;
+      /** Format: date-time */
+      recorded_at: string;
+      recorded_by: components["schemas"]["Actor"];
+      repo: string;
+      run_attempt: null | number;
+      run_id?: number;
+      /** @enum {string} */
+      source: "delivery_run" | "route";
+      url: string;
+    };
     DeployFrequency: {
       deploys_with_prs: number;
       /** Format: double */
@@ -4933,11 +4984,26 @@ export interface components {
       /** Format: double */
       with_prs_per_day: number;
     };
+    DeployInput: {
+      commit: string;
+      /** Format: date-time */
+      deployed_at?: null | string;
+      program: string;
+      repo: string;
+      url?: string;
+    };
+    DeployResponse: {
+      deploy: components["schemas"]["Deploy"];
+    };
     DeployRunSuccess: {
       cancelled: number;
       concluded: number;
       rate: null | number;
       reached_production: number;
+    };
+    DeploysResponse: {
+      deploys: components["schemas"]["Deploy"][] | null;
+      repo: string;
     };
     DismissResponse: {
       /** Format: date-time */
@@ -10236,6 +10302,84 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DeliveryTimelineWithMeasures"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1Deploys: {
+    parameters: {
+      query?: {
+        repo?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeploysResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1Deploys: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DeployInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeployResponse"];
+        };
+      };
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeployResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15552,6 +15696,7 @@ export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
 export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
 export type CheckCI = components["schemas"]["CheckCI"];
+export type CheckDeploy = components["schemas"]["CheckDeploy"];
 export type CheckPassStands = components["schemas"]["CheckPassStands"];
 export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultDryRun = components["schemas"]["CheckResultDryRun"];
@@ -15635,8 +15780,12 @@ export type DeliveryTimingDay = components["schemas"]["DeliveryTimingDay"];
 export type DeliveryUnownedIssue = components["schemas"]["DeliveryUnownedIssue"];
 export type DeliveryWaitingPR = components["schemas"]["DeliveryWaitingPR"];
 export type DeliveryWindowView = components["schemas"]["DeliveryWindowView"];
+export type Deploy = components["schemas"]["Deploy"];
 export type DeployFrequency = components["schemas"]["DeployFrequency"];
+export type DeployInput = components["schemas"]["DeployInput"];
+export type DeployResponse = components["schemas"]["DeployResponse"];
 export type DeployRunSuccess = components["schemas"]["DeployRunSuccess"];
+export type DeploysResponse = components["schemas"]["DeploysResponse"];
 export type DismissResponse = components["schemas"]["DismissResponse"];
 export type DispatchLimits = components["schemas"]["DispatchLimits"];
 export type DispatchUser = components["schemas"]["DispatchUser"];

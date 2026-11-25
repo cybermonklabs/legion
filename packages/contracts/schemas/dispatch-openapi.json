@@ -4904,6 +4904,110 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/deploys": {
+      "get": {
+        "description": "Read each program's current deploy in ?repo=owner/repo, ordered by program, with its source, writer and known or unknown workflow run attempt.",
+        "operationId": "getApiV1Deploys",
+        "parameters": [
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploysResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Record a program's deployed build {repo, program, commit, deployed_at?, url?}; 201 carries the new deploy and its credential-resolved writer, 200 the unchanged current build, 400 DEPLOY_INPUT or DEPLOY_COMMIT_UNKNOWN, 409 DEPLOY_NOT_NEWEST. A project-scoped credential cannot write a deployment-wide fact.",
+        "operationId": "postApiV1Deploys",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeployResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/events/log": {
       "get": {
         "description": "Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id \u003e after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
@@ -16743,6 +16847,26 @@
         ],
         "type": "object"
       },
+      "CheckDeploy": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "program",
+          "commit",
+          "deployed_at"
+        ],
+        "type": "object"
+      },
       "CheckPassStands": {
         "properties": {
           "answer": {
@@ -16756,13 +16880,20 @@
           "commit": {
             "type": "string"
           },
+          "deploy": {
+            "$ref": "#/components/schemas/CheckDeploy"
+          },
           "reason": {
             "enum": [
               "pass_and_fail",
               "fail",
               "no_result",
               "not_placed",
-              "read_failed"
+              "read_failed",
+              "program_not_named",
+              "no_deploy",
+              "deploy_not_merged",
+              "no_result_from_deploy"
             ],
             "type": "string"
           },
@@ -20520,6 +20651,66 @@
         ],
         "type": "object"
       },
+      "Deploy": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "program": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "recorded_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "run_attempt": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "run_id": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "delivery_run",
+              "route"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repo",
+          "program",
+          "commit",
+          "deployed_at",
+          "source",
+          "run_attempt",
+          "url",
+          "recorded_at",
+          "recorded_by"
+        ],
+        "type": "object"
+      },
       "DeployFrequency": {
         "properties": {
           "deploys_with_prs": {
@@ -20542,6 +20733,46 @@
           "deploys_with_prs",
           "per_day",
           "with_prs_per_day"
+        ],
+        "type": "object"
+      },
+      "DeployInput": {
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "program": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "program",
+          "commit"
+        ],
+        "type": "object"
+      },
+      "DeployResponse": {
+        "properties": {
+          "deploy": {
+            "$ref": "#/components/schemas/Deploy"
+          }
+        },
+        "required": [
+          "deploy"
         ],
         "type": "object"
       },
@@ -20568,6 +20799,27 @@
           "reached_production",
           "cancelled",
           "rate"
+        ],
+        "type": "object"
+      },
+      "DeploysResponse": {
+        "properties": {
+          "deploys": {
+            "items": {
+              "$ref": "#/components/schemas/Deploy"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo",
+          "deploys"
         ],
         "type": "object"
       },
