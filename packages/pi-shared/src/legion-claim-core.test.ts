@@ -482,6 +482,50 @@ test("two first-turn signals claim once", async () => {
   expect(steps.filter((step) => step.startsWith("claimRole"))).toEqual([`claimRole ${claimToken}`]);
 });
 
+// Contract 257: the registration names the session this one replaces, the claim's session the
+// daemon forgot, and the role claim carries it, so the listener hands that session's unread
+// messages here. A claim the listener answered 503 is made again naming it again.
+test("the role claim names the session the registration says this one replaces, on every try", async () => {
+  let answered503 = 0;
+  const claims: [string, string | undefined][] = [];
+  const { host, firstTurn } = claimHost({
+    register: () => Response.json({ ...registered, replaces: "ses_replaced" }),
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role, replaces) => {
+        claims.push([role, replaces]);
+        if (answered503++ === 0) throw claimAnswered503();
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(claims).toEqual([
+    [claimToken, "ses_replaced"],
+    [claimToken, "ses_replaced"],
+  ]);
+});
+
+test("control: a registration that replaces no session claims naming none", async () => {
+  const claims: [string, string | undefined][] = [];
+  const { replaces: _none, ...golden } = registered;
+  const { host, firstTurn } = claimHost({
+    register: () => Response.json(golden),
+    overrides: {
+      claimRole: async (role, replaces) => {
+        claims.push([role, replaces]);
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(claims).toEqual([[claimToken, undefined]]);
+});
+
 /** The log the bound's reader warns to, with the warnings it was given. */
 function boundLog(): { readonly warn: (message: string) => void; readonly warnings: string[] } {
   const warnings: string[] = [];

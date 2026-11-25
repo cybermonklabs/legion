@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  When the daemon's registration names the session a claim's or the controller's session replaces
+  (`replaces`, daemon API contract 257), the role claim names that session as
+  `previous_session_id`. The Envoy listener then hands the unread direct and role messages of the
+  replaced session to the new session. The claim stays a hard claim. Plugin interface version 6:
+  the Envoy role claim the interface carries takes the replaced session; install this release with
+  the `@sjawhar/pi-envoy` released beside it.
+time: 2026-11-25T02:45:35Z
+custom:
+    Issue: replaced-session-handover

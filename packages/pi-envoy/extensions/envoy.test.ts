@@ -7569,6 +7569,51 @@ console.log(JSON.stringify(args));
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
   });
 
+  // Contract 257: a Legion claim names the session it replaces, as the daemon's registration
+  // names it, and the bridge sends that session as the claim's `previous_session_id` on a claim
+  // that stays hard (a Legion claim is last-claim-wins), so the listener hands that session's
+  // unread messages to this one. A claim naming none, or an empty one, sends no such key.
+  test("a Legion role claim naming the session it replaces sends it as previous_session_id on a hard claim", async () => {
+    const role = "legion-omp-repo-1-implementer";
+    const roleClaims: Record<string, unknown>[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/v1/roles/set") {
+        roleClaims.push(JSON.parse(init?.body?.toString() ?? "{}") as Record<string, unknown>);
+        return response({
+          session_id: "ses_replacing",
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    // A copy of the extension of this test's own, as every row here imports: its module state
+    // starts empty, which a static import shared by the file could not give.
+    const { default: envoyExtension } = await import("./envoy.ts?role-claim-replaces");
+    const fixture = createPi();
+    await envoyExtension(fixture.pi);
+    const context = sessionContext("ses_replacing");
+    await fixture.handlers.get("session_start")?.({}, context);
+
+    await claimEnvoyRole("ses_replacing", role, context, "ses_replaced");
+    await claimEnvoyRole("ses_replacing", role, context);
+    await claimEnvoyRole("ses_replacing", role, context, "");
+
+    const instance = expect.any(String);
+    expect(roleClaims).toEqual([
+      {
+        session_id: "ses_replacing",
+        role,
+        previous_session_id: "ses_replaced",
+        client_instance_id: instance,
+      },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+      { session_id: "ses_replacing", role, client_instance_id: instance },
+    ]);
+  });
+
   // INFRA-771: a session takes its messages from its own consumer, whose filter is the topics it
   // registered, so the controller's notice lane and its Slack mention topics have to be in the
   // registration while it holds the role — on the base they came in on a core subscription this

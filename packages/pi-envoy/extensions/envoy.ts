@@ -4457,8 +4457,11 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     );
 
   // The bridge's state is read through `legionRoleClaimBridge()` at each use; only the instance
-  // list is this instance's own entry on the object it published into.
-  const claim: LegionRoleClaim = async (targetSessionID, role, callerContext) => {
+  // list is this instance's own entry on the object it published into. `replaces`, the session
+  // the Legion registration says this one replaces, goes out as the claim's `previousSessionID`,
+  // which the listener reads as the session whose unread direct and role messages it hands to
+  // this one. The claim stays a hard one either way: a Legion claim is last-claim-wins.
+  const claim: LegionRoleClaim = async (targetSessionID, role, callerContext, replaces) => {
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(`Envoy has no active session for Legion role claim: ${targetSessionID}`);
@@ -4482,7 +4485,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     const claimed = await registrationState.roleMoves.run(
       async (handle) => {
         handle.actFor(targetSessionID);
-        await handle.claimRole(role);
+        await handle.claimRole(role, replaces ? { previousSessionID: replaces } : undefined);
         return true;
       },
       (refusal) => {

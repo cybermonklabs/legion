@@ -646,10 +646,12 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
  * server's slot, and nothing at all before the boot has put one there — `env` is the
  * environment the bound is read from, and the boot is awaited before this answers.
  * `beforeRegistration` runs the moment the claim starts, before its boot has registered: the
- * bridge's seeding `/rename` turn arrives there. */
+ * bridge's seeding `/rename` turn arrives there. `registration` is the daemon's answer to
+ * `claims/register`, the golden one unless a case gives its own. */
 async function registeredPane(options: {
   readonly env: Record<string, string>
   readonly beforeRegistration?: (submitPrompt: () => void) => void
+  readonly registration?: Record<string, unknown>
 }): Promise<{
   readonly submitPrompt: () => void
   readonly claim: LegionClaim
@@ -664,7 +666,7 @@ async function registeredPane(options: {
   await writeFile(join(configDir, "projects", "p", `${SESSION}.jsonl`), "{}\n")
   const { posted, fetch } = daemonAnswering((path) =>
     path.endsWith("/claims/register")
-      ? Response.json(registeredClaim)
+      ? Response.json(options.registration ?? registeredClaim)
       : new Response(null, { status: 204 }),
   )
   const setRoles: SetRoleInput[] = []
@@ -738,6 +740,30 @@ test("the name is taken at the turn the server signals, not at the boot, and two
   expect(pane.remembered).toEqual([token])
   expect(pane.stops()).toBe(0)
   expect(pane.lines).toEqual([])
+})
+
+// Contract 257: a registration that names the session this one replaces (the claim's session
+// the daemon forgot) has the claim name it as its predecessor, which the listener reads as the
+// session whose unread messages it hands to this one. The case above is the control: the golden
+// registration replaces no session, and its claim names none.
+test("a registration that replaces a session has the claim name that session as its predecessor", async () => {
+  const pane = await registeredPane({
+    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "600000" },
+    registration: { ...registeredClaim, replaces: "ses_replaced" },
+  })
+  pane.submitPrompt()
+  await pane.claim.claimed
+
+  expect(pane.setRoles).toEqual([
+    {
+      sessionID: SESSION,
+      role: String(registeredClaim["claimToken"]),
+      soft: true,
+      clientInstanceID: INSTANCE,
+      previousSessionID: "ses_replaced",
+    },
+  ])
+  expect(pane.stops()).toBe(0)
 })
 
 test("a prompt submitted before the boot registered its step takes no name, the next one does", async () => {

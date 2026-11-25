@@ -215,7 +215,10 @@ export interface TaskHandle {
    * live registry entry, when its live entry carries this client instance's own instance id, or
    * when either side carries no instance id. A predecessor still live under another client
    * instance keeps the role. A soft claim is also granted when the role is unheld, and when its
-   * holder is no longer live. Answers whether the claim landed.
+   * holder is no longer live. On a hard claim as on a soft one, `previousSessionID` goes to the
+   * listener and names the session this claim replaces, whose unread direct and role messages a
+   * listener that supports it hands to this session once the claim lands and that session is not
+   * live. Answers whether the claim landed.
    *
    * A claim the listener granted after this task's deadline fired is left as a pending hand-back,
    * and one granted after the session moved is adopted under the id the listener names.

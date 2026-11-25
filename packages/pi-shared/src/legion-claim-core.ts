@@ -23,12 +23,15 @@ export interface LegionClaimHost {
    * this session holds its Envoy name, and what serves it reads the capability then. */
   readonly setCapability: (capability: ClaimCapability) => void;
   /** Claims `role`, the claim token, on Envoy for this session: the topic the daemon sends the
-   * claim's task and every notice on. It is the boot's last step and runs after `claims/ready`
+   * claim's task and every notice on. `replaces` is the registration's `replaces`, the session
+   * this one replaces, undefined where it names none: the claim sends it as
+   * `previous_session_id`, so the listener hands that session's unread direct and role messages
+   * to this one once the claim lands. It is the boot's last step and runs after `claims/ready`
    * has answered, at the session's first turn (`onFirstTurn`) or at the bound, whichever comes
    * first — at once where the turn started while ready was still being retried. Throws when the
    * role cannot be held, which is logged and stops the session; a claim the listener answered
    * 503 is claimed again instead (`claimRoleAtFirstTurn`). */
-  readonly claimRole: (role: string) => Promise<void>;
+  readonly claimRole: (role: string, replaces?: string) => Promise<void>;
   /** Hands the host `started`, the signal to call once the session's first turn has started —
    * whatever started it: the daemon's task, a card, a reminder. It is called as soon as
    * `claims/register` has answered, before `claims/ready`, so a turn that starts while that
@@ -89,7 +92,8 @@ export interface LegionClaimBoot {
  * `claims/ready`, retried on a 5xx or transport failure (`callReadyWithRetry`); the regain
  * listener, which re-runs that same ready each time the heartbeat regains the role; and then,
  * after this function has settled, the Envoy role claimed at the first turn the signal reported
- * or at the bound, whichever comes first.
+ * or at the bound, whichever comes first, naming the session the registration says this one
+ * replaces (`replaces`), whose unread messages the listener then hands to this one.
  *
  * The name is taken last because the Envoy listener keeps a message published to a role no
  * session holds and hands the whole kept lane over the moment the role is claimed: claimed before
@@ -166,7 +170,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     stopAfterRegistration(host, claim.claimToken, error);
     return { claimed: Promise.resolve() };
   }
-  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, firstTurn) };
+  return { claimed: claimRoleAtFirstTurn(host, claim.claimToken, claim.replaces, firstTurn) };
 }
 
 /** The one path every failure after a registration takes, wherever it happens: the boot's own
@@ -208,10 +212,11 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
 /**
  * The boot's last step, run after the boot itself has settled: `role` claimed on Envoy at the
  * first turn `firstTurn` reports or at the bound, whichever comes first, and once however many
- * of the two arrive. The timer is armed and the step handed over in that order and both before
- * this returns, so a turn that started while the boot was still readying claims inside that
- * hand-over and loses nothing, and the timer is unreferenced where the runtime offers it: the
- * bound is a backstop and keeps no process alive for its own sake.
+ * of the two arrive, naming `replaces`, the session the registration says this one replaces
+ * (`LegionClaimHost.claimRole`). The timer is armed and the step handed over in that order and
+ * both before this returns, so a turn that started while the boot was still readying claims
+ * inside that hand-over and loses nothing, and the timer is unreferenced where the runtime
+ * offers it: the bound is a backstop and keeps no process alive for its own sake.
  *
  * A refusal is logged and stops the session, the one failure path every other failure after a
  * registration takes. A claim the listener answered 503 (`listenerAskedToClaimAgain`) is no
@@ -226,6 +231,7 @@ function listenForFirstTurn(host: LegionClaimHost): (claim: () => void) => void 
 function claimRoleAtFirstTurn(
   host: LegionClaimHost,
   role: string,
+  replaces: string | undefined,
   firstTurn: (claim: () => void) => void
 ): Promise<void> {
   const done = Promise.withResolvers<void>();
@@ -236,7 +242,7 @@ function claimRoleAtFirstTurn(
     clearTimeout(bound);
     void (async () => {
       try {
-        await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
+        await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), role, {
           log: host.log,
           firstDelayMs: host.roleClaimRetryFirstDelayMs,
           signal: host.signal,

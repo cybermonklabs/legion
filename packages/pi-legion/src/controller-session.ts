@@ -404,8 +404,12 @@ export function createControllerSession(deps: {
       waitShown = true;
     };
     try {
+      // `replaces`, the session the registration says this one replaces (the controller session
+      // the daemon forgot), is the claim's `previous_session_id`: the listener hands that
+      // session's unread direct and role messages to this one once the claim lands.
       await claimRoleAgainOnBusy(
-        () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+        () =>
+          claimEnvoyRole(sessionID, registration.claimToken, envoyContext, registration.replaces),
         registration.claimToken,
         supervised && startedBy === "daemon"
           ? {

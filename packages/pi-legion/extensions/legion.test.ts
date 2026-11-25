@@ -1545,6 +1545,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(calls).toEqual([]);
   });
 
+  // Contract 257: a registration that names the session this one replaces (the claim's session
+  // the daemon forgot) has the role claim name it as `previous_session_id`, a hard claim as every
+  // Legion claim is, so the listener hands that session's unread messages to this one.
+  test("a claim whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> = {};
+    const pane = await claimPane({
+      role: "tester",
+      sessionId: "ses_worker_after",
+      register: () => Response.json(answer),
+    });
+    answer = { ...pane.registration, replaces: "ses_worker_before" };
+    await pane.start();
+    await firstTurn(pane);
+
+    const roleClaims = pane.requests.filter((request) => request.path === "/v1/roles/set");
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_worker_after",
+        role: pane.claimToken,
+        previous_session_id: "ses_worker_before",
+        client_instance_id: registeredClientInstance(pane.requests, "ses_worker_after"),
+      },
+    ]);
+    expect(pane.exits).toEqual([]);
+  });
+
   // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
   // describes, and reads that contract from a request header. This pane states the contract of
   // the module it loaded (`daemonContract` of its own manifest) on every request it makes, a GET
@@ -4503,6 +4529,39 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
+    expect(controller.exits).toEqual([]);
+  });
+
+  // Contract 257: a controller registration that names the session this one replaces (the
+  // controller session the daemon forgot) has the role claim name it as `previous_session_id`,
+  // so the listener hands that session's unread messages to this one.
+  test("/legion-controller-start whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> | undefined;
+    const controller = await launchedController({
+      sessionId: "ses_controller_after",
+      register: () => (answer === undefined ? undefined : Response.json(answer)),
+    });
+    answer = { ...controller.registration, replaces: "ses_controller_before" };
+    const context = controller.context("ses_controller_after");
+    await controller.handlers.get("session_start")?.({}, context);
+    expect(await runStartCommand(controller, context)).toEqual([]);
+
+    const roleClaims = controller.requests.filter(
+      (request) =>
+        request.path === "/v1/roles/set" &&
+        typeof request.body === "object" &&
+        request.body !== null &&
+        "role" in request.body &&
+        request.body.role === controller.token
+    );
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_controller_after",
+        role: controller.token,
+        previous_session_id: "ses_controller_before",
+        client_instance_id: registeredClientInstance(controller.requests, "ses_controller_after"),
+      },
+    ]);
     expect(controller.exits).toEqual([]);
   });
 

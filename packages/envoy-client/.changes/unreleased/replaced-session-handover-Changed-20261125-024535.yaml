@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `setRole` sends `previous_session_id` whenever `previousSessionID` is a non-empty string, on a
+  hard claim as well as a soft one; before, a hard claim dropped it. On a soft claim it still names
+  the predecessor the role may be taken from. On any claim it names the session the claim replaces:
+  a listener that supports it hands that session's unread direct and role messages to the claimant
+  once the claim lands and that session is not live. A listener older than that ignores it on a
+  hard claim.
+time: 2026-11-25T02:45:35Z
+custom:
+    Issue: replaced-session-handover

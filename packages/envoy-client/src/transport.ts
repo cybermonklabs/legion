@@ -679,12 +679,18 @@ export type SetRoleInput = {
    */
   readonly soft?: boolean;
   /**
-   * The session id this claimant continues (a fork or branch mints a new id
-   * in the same process). A soft claim takes the role from that predecessor
-   * only when the predecessor has no live registry entry, when its live entry
-   * carries this client instance's own `clientInstanceID`, or when either
-   * side carries no instance id; a predecessor still live under another
-   * client instance keeps the role. Sent only with `soft`.
+   * On a soft claim, the session id this claimant continues (a fork or branch
+   * mints a new id in the same process): the claim takes the role from that
+   * predecessor only when the predecessor has no live registry entry, when its
+   * live entry carries this client instance's own `clientInstanceID`, or when
+   * either side carries no instance id; a predecessor still live under another
+   * client instance keeps the role.
+   *
+   * On any claim, soft or hard, the session this claim replaces: once the
+   * claim lands and the named session is not live, a listener that supports it
+   * hands that session's unread direct and role messages to this session. A
+   * listener older than that ignores it on a hard claim. Sent whenever it is a
+   * non-empty string.
    */
   readonly previousSessionID?: string;
   /**
@@ -996,7 +1002,9 @@ export type EnvoyClient = {
    * (`previousSessionID`) takes the role from it only when that predecessor has no live registry
    * entry, when its live entry carries this client instance's own instance id, or when either
    * side carries no instance id; any other live holder keeps the role and is reported as
-   * `{ claimed: false, holder }`.
+   * `{ claimed: false, holder }`. On any claim, `previousSessionID` also names the session the
+   * claim replaces, whose unread direct and role messages a listener that supports it hands to
+   * this session once the claim lands and that session is not live.
    */
   readonly setRole: (input: SetRoleInput) => Promise<SetRoleResult>;
   readonly getRole: (role: string) => Promise<RoleInfo>;
@@ -1466,13 +1474,17 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     setRole: async (input) => {
       // `soft`, `previous_session_id` and `client_instance_id` are omitted from
       // the wire unless set, so an older listener sees an unchanged hard-claim
-      // request. The claim's own `client_instance_id` is the process it is made
-      // for: the listener records it on the claim, and weighs a claim under the
-      // holder's own session id against the standing claim's. A soft claim
-      // against a live predecessor is still decided by the instance id each
-      // side's registry entry carries (`SubscribeInput.clientInstanceID`).
+      // request from a caller that sets none of them. `previous_session_id` is
+      // sent on a hard claim as well as a soft one: it names the session this
+      // claim replaces, whose unread messages the listener hands over, and a
+      // listener older than that ignores it on a hard claim. The claim's own
+      // `client_instance_id` is the process it is made for: the listener
+      // records it on the claim, and weighs a claim under the holder's own
+      // session id against the standing claim's. A soft claim against a live
+      // predecessor is still decided by the instance id each side's registry
+      // entry carries (`SubscribeInput.clientInstanceID`).
       const soft = input.soft === true;
-      const previous = soft ? (input.previousSessionID ?? "") : "";
+      const previous = input.previousSessionID ?? "";
       const body: {
         session_id: string;
         role: string;

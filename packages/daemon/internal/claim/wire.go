@@ -20,11 +20,12 @@ type RegisterRequest struct {
 }
 
 // RegisterResponse is what the agent learns about itself: the claim it holds, where it holds it,
-// the secret its later calls authenticate with, and the task agents its role's prompts dispatch,
-// which its capability report measures (LEGION-663). The secret is minted per registration and the
-// capability hash is persisted before the response is written, so a daemon that restarts one
-// instruction later still recognises this agent. A session that registers with the controller
-// capability holds no claim and gets api.ControllerRegisterResponse instead.
+// the secret its later calls authenticate with, the task agents its role's prompts dispatch,
+// which its capability report measures (LEGION-663), and the session it replaces, if any. The
+// secret is minted per registration and the capability hash is persisted before the response is
+// written, so a daemon that restarts one instruction later still recognises this agent. A session
+// that registers with the controller capability holds no claim and gets
+// api.ControllerRegisterResponse instead.
 type RegisterResponse struct {
 	ClaimToken Token  `json:"claimToken"`
 	Tree       string `json:"tree"`
@@ -35,6 +36,12 @@ type RegisterResponse struct {
 	// PromptAgents is the sorted names of every task agent the role's prompts dispatch; never
 	// null on the wire, so a role whose prompts name none answers an empty list.
 	PromptAgents []string `json:"promptAgents"`
+	// Replaces is the session this registration's session replaces: the session the claim
+	// abandoned when it last forgot one, where that is not the session registering now and no
+	// operator's release has freed it. The session names it as `previous_session_id` in its Envoy
+	// role claim, so the Envoy listener hands it the unread messages of the session it replaces.
+	// Absent when the claim replaces none.
+	Replaces string `json:"replaces,omitempty"`
 }
 
 // ReadyRequest says the agent has finished booting and can be prompted. It is a separate call

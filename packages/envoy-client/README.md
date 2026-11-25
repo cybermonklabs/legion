@@ -483,6 +483,10 @@ the session record: granted when that claim names this very process, granted whe
 it inside the listener's live window, and otherwise `{claimed: false, holder}` naming that same
 session — which `getRole`'s `client_instance_id` tells apart from a different session holding
 the role. Any other live holder keeps the role and is answered as `{claimed: false, holder}`.
+On any claim, soft or outright, `previousSessionID` also names the session this claim replaces,
+sent as `previous_session_id`: once the claim lands, a listener that supports it hands that
+session's unread direct messages and role messages to this session, for as long as that session is
+not live, and a listener from before it ignores the field on an outright claim.
 `unregisterSession({sessionID, clientInstanceID?})` deletes the session's registry entry: with an
 instance id the listener deletes it only when the entry carries the same id or none, so a
 departing client instance never deletes the registration a successor instance made under the

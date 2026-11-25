@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  A Legion role claim through the plugin interface can name the session it replaces, and the claim
+  sends that session to the Envoy listener as `previous_session_id`. The claim stays a hard claim.
+  The listener then hands the unread direct and role messages of the replaced session to the new
+  session. Plugin interface version 6, which pi-envoy reads; install it with the
+  `@sjawhar/pi-legion` released beside it.
+time: 2026-11-25T02:45:35Z
+custom:
+    Issue: replaced-session-handover
