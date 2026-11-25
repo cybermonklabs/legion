@@ -1,9 +1,10 @@
 // Package cipherclient is this repository's one Go client of the secrets broker's RFC 8693 token
 // exchange: a machine or a person trades the platform identity it already holds for one of the
 // broker's access tokens, which Dispatch and the Envoy listener read back at the broker's
-// introspection route. `agent-secrets`, `agent-secrets-helper` and `legion controller start` use
-// it; the TypeScript client of packages/cipher-client is its other half, and the two are held to
-// one wire contract by the corpus in testdata/wire.json, which both suites replay.
+// introspection route. `agent-secrets`, `agent-secrets-helper`, `legion controller start` and the
+// Legion daemon's own Dispatch client (NewTokenTransport) use it; the TypeScript client of
+// packages/cipher-client is its other half, and the two are held to one wire contract by the
+// corpus in testdata/wire.json, which both suites replay.
 //
 // What the exchange is: the caller presents the subject token its platform already gives it (a
 // Source), proves a key of its own with a DPoP proof (RFC 9449), and is answered an access token
@@ -12,8 +13,10 @@
 // rather than once. A person's sign-in trades their own Google identity token with the machine's
 // as the actor token (RFC 8693 Section 2.1), which is the one request that carries two tokens.
 //
-// Each process makes its own key and sends only its public half: the proof embeds the public JWK,
-// and no code here marshals a private member onto the wire.
+// A caller sends only the public half of the key it proves: the proof embeds the public JWK, and
+// no code here marshals a private member onto the wire. That key is one its process makes, a
+// person's sign-in box key, or, for a role in a pod, the role's own agent-secrets key
+// (MachineKey), the key the broker holds a pod session's trade to.
 //
 // When it trades again: at the renewal moment worked out once as a token lands (renewalAt states
 // the rule) and stored on the token. Token answers the token until then, Run sleeps until then,
@@ -40,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -62,6 +66,11 @@ const (
 	// a renewal lands with the held token still good and nothing of the caller's restarts. The
 	// broker mints a machine's token for an hour or less.
 	DefaultRenewBefore = 5 * time.Minute
+	// liveMargin is how long the held token must still be good for live to answer it, so a
+	// request that presents it reaches its server and is read there before it lapses. It is a
+	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not
+	// answer leaves requests presenting the token in hand for nearly all of that window.
+	liveMargin = 10 * time.Second
 	// defaultRetryWait is the wait after a trade the broker did not answer or answered 5xx,
 	// doubling to maxRetryWait. The grant has no rotation window to miss, so an outage longer
 	// than one token's life is the same event as a short one: the loop keeps trading until the
@@ -241,9 +250,9 @@ type Config struct {
 	// counts as no broker URL at all. It is a cipheraddr.Address so that no log line or error of
 	// this client can print the credential such an address may carry.
 	BrokerURL cipheraddr.Address
-	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
-	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
-	// made at start.
+	// Key is the DPoP key this client proves, whose public half alone reaches the broker. A
+	// person's sign-in proves the box key `agent-secrets login` made, and a role in a pod its own
+	// agent-secrets key (MachineKey); every other caller proves a key it made at start.
 	Key *ecdsa.PrivateKey
 	// Subject is the identity being traded.
 	Subject Source
@@ -317,8 +326,13 @@ type Client struct {
 	// now", which two of are one.
 	wake chan struct{}
 
-	mu   sync.Mutex
-	held *Token
+	// mu serialises the trades, and every write of held with them: one trade runs at a time, and
+	// no token is replaced by what an older trade answered.
+	mu sync.Mutex
+	// held is the token this client holds: nil before its first trade, after Drop, and after a
+	// failed trade with nothing live left. Only a holder of mu writes it, and live reads it
+	// without mu, so a request that finds a token still good here never queues behind a trade.
+	held atomic.Pointer[Token]
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -396,20 +410,50 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.held.renewsAt) {
-		return c.held, nil
+	held := c.held.Load()
+	if held != nil && c.now().Before(held.renewsAt) {
+		return held, nil
 	}
 	token, err := c.tradeHeld(ctx)
 	if err == nil {
 		return token, nil
 	}
-	if c.held != nil && c.now().Before(c.held.Expiry) {
+	if held := c.held.Load(); held != nil && c.now().Before(held.Expiry) {
 		what, attrs := retriedTrade(err)
 		c.logf(ctx, what+"; the token in hand is still live", attrs...)
-		return c.held, nil
+		return held, nil
 	}
-	c.held = nil
+	c.held.Store(nil)
 	return nil, err
+}
+
+// live is the held token while it is good for at least liveMargin more, and nil otherwise. It
+// takes no lock, so it never waits on a trade in flight: a caller holding a token inside its
+// renewal window presents it while a renewal loop (Run) trades for the next one, or waits out a
+// broker that does not answer or hangs, rather than queue behind that trade (NewTokenTransport).
+func (c *Client) live() *Token {
+	if held := c.held.Load(); held != nil && c.now().Add(liveMargin).Before(held.Expiry) {
+		return held
+	}
+	return nil
+}
+
+// Drop forgets token when it is still the one this client holds, so the next Token trades afresh
+// rather than answering it again: for a caller a server has told that the token it presented is
+// no longer live, such as one the broker ended at a revoke before it lapsed (NewTokenTransport).
+// It clears the held token as the TypeScript client's drop() does
+// (packages/cipher-client/src/token-client.ts), but only while that is the token named: a trade
+// that landed since the caller was answered holds a fresh token, and dropping it would cost the
+// next caller a trade for nothing.
+func (c *Client) Drop(token *Token) {
+	if token == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if held := c.held.Load(); held != nil && held.AccessToken == token.AccessToken {
+		c.held.Store(nil)
+	}
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
@@ -576,9 +620,9 @@ func (c *Client) tradeHeld(ctx context.Context) (*Token, error) {
 	token, err := c.trade(ctx)
 	switch {
 	case err == nil:
-		c.held = token
+		c.held.Store(token)
 	case finalRefusal(err):
-		c.held = nil
+		c.held.Store(nil)
 	}
 	return token, err
 }

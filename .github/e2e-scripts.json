@@ -63,6 +63,16 @@
       "jj": false
     },
     {
+      "script": "dispatch-broker.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": ["postgresql-client"],
+      "bun": true,
+      "evidence_variable": "",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun, psql and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/dispatch-broker.sh; LEGION_TEST_PG_DSN must name a loopback host, which CI's service satisfies, and the script starts no container. Its default run, K2 and K4, takes a few minutes; LEGION_E2E_TOKEN_RENEWAL=1 runs K3 in about fifteen",
+      "jj": false
+    },
+    {
       "script": "handoff-records.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -236,7 +246,7 @@
     },
     {
       "script": "dispatch-two-builds.sh",
-      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go` and `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
     {
       "script": "dispatch-search-two-builds.sh",
@@ -296,12 +306,12 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus loopback PostgreSQL (LEGION_TEST_PG_DSN), bash, go, git, jj 0.38 or later, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
-      "timeout_minutes": 25
+      "needs": "the pinned Oh My Pi executable (LEGION_OMP_PATH), which the hosted runner does not provide, plus bash, go to build its NATS server, bun with this repository's node_modules and twenty-one minutes plus setup for its four sessions",
+      "timeout_minutes": 30
     },
     {
       "script": "role-prompt-rule.sh",
