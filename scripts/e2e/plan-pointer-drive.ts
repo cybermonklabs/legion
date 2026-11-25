@@ -512,8 +512,8 @@ The bucket serves the same objects from the new account.
   );
 }
 
-function compose(runDir: string, daemonModule: string, issue: string): void {
-  const pane = workerPane(
+async function compose(runDir: string, daemonModule: string, issue: string): Promise<void> {
+  const pane = await workerPane(
     { port: 1, profile: process.env.OMP_PROFILE ?? "default", rig: path.join(runDir, "pane") },
     process.env,
     { issue, project: projectKey.toLowerCase(), role: "implementer" },
@@ -843,7 +843,7 @@ switch (step) {
   }
   case "compose":
     if (rest.length !== 3) fail("usage: compose <run directory> <daemon module> <issue>");
-    compose(rest[0], rest[1], rest[2]);
+    await compose(rest[0], rest[1], rest[2]);
     break;
   case "advance":
     if (rest.length !== 3) {

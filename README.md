@@ -196,8 +196,8 @@ entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
 and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+skills, and `CONTRIBUTING.md` the pull request process. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 
