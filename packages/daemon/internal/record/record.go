@@ -3233,16 +3233,17 @@ func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
 // idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
 // PhaseOwed), and the ones a backstop's writer reads of the one claim it would arm a backstop for
 // (internal/daemon's getsBackstop). It reads them through tx, the caller's own transaction, in two
-// statements whatever the number of claims: the issue's phases rows and its pull request, the
-// reads the completion route's position takes (api's handoffPosition). The store's idle view
-// calls it through the reader the daemon hands it (store.IdleRecords), since that package cannot
-// import this one.
+// statements whatever the number of claims: the issue's phases rows and its pull request's row
+// alone (Store.PullRequestRow), since it writes nothing back and reads none of what that pull
+// request remembers of its settled heads, as the completion route's position reads them (api's
+// handoffPosition). The store's idle view calls it through the reader the daemon hands it
+// (store.IdleRecords), since that package cannot import this one.
 func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
 	rows, err := store.Phases(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
-	pr, err := store.PullRequest(ctx, tx, issue)
+	pr, err := store.PullRequestRow(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
