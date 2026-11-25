@@ -1,6 +1,6 @@
 # What gVisor changes in your pod
 
-Read it before you walk a path one component at a time, trust a tool's binary or set a stack limit in your pod, and before you report a duration measured there.
+Read it before you walk a path one component at a time, trust a tool's binary, set a stack limit or read signal masks from `/proc/<pid>/status` in your pod, and before you report a duration measured there.
 
 Issue pods run under gVisor unless the deployment's `runtime.kubernetes.sandbox` puts the issue in a GKE Sandbox microVM (`docs/kubernetes.md`, "Issue pods in microVMs"). These items are about a gVisor pod.
 
@@ -18,3 +18,4 @@ Issue pods run under gVisor unless the deployment's `runtime.kubernetes.sandbox`
   An undefined `openat2` symbol proves the binary calls it. Its absence proves nothing: a call through `syscall(SYS_openat2, …)` leaves only `syscall` in the table. A total of zero is a static binary or a failed `nm`, not a clean result. To show a binary safe, trace it.
 - Set the stack with `ulimit -S -s <n>` first, the hard limit only where it reads `unlimited`, then read both back and refuse a mismatch: `unlimited` gives 8 MiB under gVisor, which caps the stack at 128 MiB.
 - Compare durations within one pod only, and label every figure taken in a gVisor pod a gVisor figure.
+- A gVisor older than commit `0ac45dc25466` (2026-09-24) shows no `Sig*` field (`SigQ`, `SigPnd`, `SigBlk`, `SigIgn`, `SigCgt`) in `/proc/<pid>/status`, so code that reads one gets none; check with `grep -E '^Sig' /proc/self/status`.
