@@ -1075,8 +1075,21 @@ The broker evaluates every name
   roll took the target out of its profile is refused the same way and grants nothing, and a
   release of a grant whose target its live profile does not hold answers `400 TARGET_REFUSED`
   too (`403 TARGET_REFUSED` at the airlock's proxy) and mints nothing. A body that carries
-  `github_app`, the narrowing the broker took before profiles, is refused
-  `400 GITHUB_APP_FIELD_REMOVED` on `POST /v1/requests` and
+  `github_app`, the narrowing an `agent-secrets` of a release before `--target` sends for a stored
+  `github-app` secret, is answered until every client has moved, for the services and people
+  `BROKER_GITHUB_APP_FIELD_REQUESTERS` names and for a person asking for their own App: the broker
+  serves the request as the profile of that secret the profiles file grants the caller at once
+  whose scope holds the narrowing (the one with the most `write` permissions, the stored name and
+  then the file's order breaking a tie), with the narrowing's account and repositories as its
+  target, and releases it under the stored secret's name in the `installations` form, outside the
+  airlock, echoing `github_app`; a read-only body gets each of that broker's read set — `actions`,
+  `checks`, `contents`, `metadata`, `pull_requests` and `statuses` — at read where the profile
+  holds it, and none it does not. `BROKER_GITHUB_APP_FIELD_SECRETS` names the stored secrets this
+  may hand over at all, and a body for any other is refused.
+  Such a grant releases only through that field, with the same `read_only`, and no `--target`
+  grant is released through it. With `BROKER_GITHUB_APP_FIELD=off`, for a requester the list does
+  not name, and for a body it cannot serve, the field is refused `400 GITHUB_APP_FIELD_REMOVED` on
+  `POST /v1/requests` and
   `POST /v1/grants/{id}/values`, never `INVALID_REQUEST`, so a client of an earlier release does
   not send its request again without it. Where a person must approve a request that names a GitHub
   profile, the broker first mints the token the release would mint, for the target's account or

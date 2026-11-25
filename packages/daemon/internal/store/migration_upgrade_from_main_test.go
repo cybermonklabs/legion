@@ -50,8 +50,9 @@ import (
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
 // dispatch://INFRA-175's design news (20261119203047) stands above those four and is named here
 // the same way. The answer loop's messages for a released agent (20261124114223) stands above
-// every version of this list and is the last word of outbox_kind_check: the upgrade applies it
-// last of the kind lists, after 20261029120800 has deleted main's merge-lane rows, and it names
+// every version of this list but #5372's release teardown (20261124143026), which rewrites no
+// kind list, and is the last word of outbox_kind_check: the upgrade applies it last of the kind
+// lists, after 20261029120800 has deleted main's merge-lane rows, and it names
 // every other kind main's daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue
 // kinds, role_holders_publish, step_record, plan_record, conflict_confirm, merge_forward,
 // design_changes and agent_message besides, which main's daemon never writes. It also adds
@@ -77,7 +78,7 @@ import (
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, intake failures (20261120144241), the copy's applied
 // sequence (20261121170714), the release that keeps no saved workspace (20261123050533) and
-// every version from the experiment plan through released-agent messages in the list below.
+// every version from the experiment plan through #5372's release teardown in the list below.
 // It adds pull_requests.statuses at its default, the empty list, and touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
@@ -123,7 +124,7 @@ import (
 // list with two additions and keeps phase_ended. It deletes queued phase_ended rows, including
 // the one seeded below. It adds pull_requests.conflict_read and pull_requests.merge_forward.
 // The design news follows it and adds design_changes. Released-agent messages (20261124114223),
-// applied last, restate the resulting outbox_kind_check and add agent_message.
+// the last kind list applied, restate the resulting outbox_kind_check and add agent_message.
 // The set-back sequence (20261120012547) follows the design news. It runs no statement.
 // The launch resume mark (20261120042902) follows the set-back sequence. It adds
 // claims.agent_resume_generation at its default, 0, on every row it finds.
@@ -149,7 +150,11 @@ import (
 // Answer call tools (20261124072849) add answer_tool_calls.tool, default gh.
 // #5349's cause times (20261124073512) follow the call tools and precede released-agent messages.
 // They add the two cause times and their digests to claims, null on every row they find.
-// None of these five migrations rewrites outbox_kind_check.
+// #5372's release teardown (20261124143026) follows released-agent messages and is applied last.
+// It adds issue_releases.teardown, default `reached`, and pod_releases.issue_release_id, null on
+// every row it finds, under a unique index of the rows that name a mark
+// (migration_20261124143026_test.go).
+// None of these six migrations rewrites outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -163,7 +168,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
 	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124021727,
-	20261124060500, 20261124072849, 20261124073512, 20261124114223,
+	20261124060500, 20261124072849, 20261124073512, 20261124114223, 20261124143026,
 }
 
 // mainsNewestMigration is the last recorded version in the historical base, the claim's
@@ -370,35 +375,34 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	}
 }
 
-// todaysMainsNewestMigration is the claim cause-time migration on main at 1af8002b. Main
-// already includes issue priority, claim sessions and the experiment assignment plan.
-const todaysMainsNewestMigration = 20261124073512
+// todaysMainsNewestMigration is #5372's release teardown, the newest migration on main at
+// c227d046. Main already includes issue priority, claim sessions, the experiment assignment plan
+// and the claim cause times.
+const todaysMainsNewestMigration = 20261124143026
 
-func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsOnBothSidesOfItsNewest(t *testing.T) {
+// A database today's main migrated records every embedded migration but the six answer-loop
+// ones: the three tables, thread replies, call tools and released-agent messages. All six stand
+// below main's newest, so the upgrade applies each once though the database already records a
+// higher version, and the store's highest version stays main's newest.
+func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsBelowItsNewest(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	// The three table migrations, thread replies and call tools are below main's newest.
-	// Released-agent messages are above it.
 	missing := map[int]bool{
 		20261106214000: true, 20261106214001: true, 20261106214002: true,
-		20261124021727: true, 20261124072849: true, 20261124114223: false,
+		20261124021727: true, 20261124072849: true, 20261124114223: true,
 	}
 	var base []migrations.Migration
 	for _, migration := range all {
-		if below, found := missing[migration.Version]; found {
-			if below != (migration.Version < todaysMainsNewestMigration) {
-				t.Fatalf("migration %s is on the wrong side of main's %d", migration.Name, todaysMainsNewestMigration)
-			}
-			continue
-		}
 		if migration.Version > todaysMainsNewestMigration {
-			t.Fatalf("classify %s before building the current-main fixture", migration.Name)
+			t.Fatalf("%s stands above main's %d: classify it before building the current-main fixture", migration.Name, todaysMainsNewestMigration)
 		}
-		base = append(base, migration)
+		if !missing[migration.Version] {
+			base = append(base, migration)
+		}
 	}
 	if _, err := store.migrate(ctx, base); err != nil {
 		t.Fatalf("migrate as current main did: %v", err)
@@ -415,7 +419,7 @@ func TestADatabaseCurrentMainMigratedAppliesAnswerMigrationsOnBothSidesOfItsNewe
 			t.Errorf("migration %d recorded %d times after the upgrade (%v), want once", version, count, err)
 		}
 	}
-	if got, err := store.SchemaVersion(ctx); err != nil || got != 20261124114223 {
-		t.Errorf("upgraded schema version = %d (%v), want 20261124114223", got, err)
+	if got, err := store.SchemaVersion(ctx); err != nil || got != todaysMainsNewestMigration {
+		t.Errorf("upgraded schema version = %d (%v), want main's newest, %d, unchanged", got, err, todaysMainsNewestMigration)
 	}
 }
