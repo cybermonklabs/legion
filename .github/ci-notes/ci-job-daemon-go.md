@@ -7,10 +7,10 @@ or the record its job or step rests on. A value's own arithmetic stays beside th
 ## Why the race step is a job of its own
 
 The workflow held two jobs, which ran at the same time: daemon-go-race ran the race step, and
-daemon-go ran the plain step, the race-impossible step, the forced-order step and the Stage 1
-proof. The plain step's package list is every package of the module less the race step's five
-(and the text checks), so the two steps share no package and nothing orders them. Each now runs
-in legs ([below](#why-the-daemons-tests-run-in-legs)).
+daemon-go ran the plain step, the stamped shape gate, the race-impossible step, the forced-order
+step and the Stage 1 proof. The plain step's package list is every package of the module less the
+race step's five (and the text checks), so the two steps share no package and nothing orders
+them. Each now runs in legs ([below](#why-the-daemons-tests-run-in-legs)).
 
 In one job their times added up. Over the 158 green daemon-go jobs of ci.yaml runs on 2026-11-22
 from 13:46Z to 18:10Z (jobs API; the sample is the job list read at 18:57Z), the race step took
