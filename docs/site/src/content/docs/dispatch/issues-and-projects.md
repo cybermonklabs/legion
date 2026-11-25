@@ -344,7 +344,9 @@ agents using it stop working at once.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
 - **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
-  its role, type, agent, model, attempt, start, end and result. A step that ran twice, after a
+  its role, type, agent, model, attempt, start, end and result.
+  Where the records of the issue's newest run name an experiment, the tab shows
+  `Experiment <experiment>: variant <variant>` once above its tables. A step that ran twice, after a
   review sent its task back, has a row for each run, and the second reads attempt 2; a run that
   failed or stopped and sent its task back says which step it returned to. A run that has not
   ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes
