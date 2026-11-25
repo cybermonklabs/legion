@@ -7183,7 +7183,8 @@ test("clear brush window pressed with the Window control scrolled out of sight s
           .toBe(true);
         // The reader's own scroll, of that box: the select's foot 2 px above the box's visible
         // top, the button on the line under it wholly in sight; or the select's top 24 px under
-        // that top.
+        // that top. Read with the window's own scroll, so that a hand-off that scrolls either one
+        // is caught at every width, as the row read the page before main's #4631.
         const before = await windowSelect.evaluate((node, out) => {
           const scroller =
             document.querySelector("[data-case-scroller]") ??
@@ -7193,7 +7194,11 @@ test("clear brush window pressed with the Window control scrolled out of sight s
             scroller === document.scrollingElement ? 0 : scroller.getBoundingClientRect().top;
           const box = node.getBoundingClientRect();
           scroller.scrollTop += out ? box.bottom - sightTop + 2 : box.top - sightTop - 24;
-          return Math.round(scroller.scrollTop);
+          return {
+            box: Math.round(scroller.scrollTop),
+            document: scroller === document.scrollingElement,
+            window: Math.round(window.scrollY),
+          };
         }, placed === "out of sight");
         /** The top of what the reader sees of the page: the marked scroll box's, or the window's. */
         const sightTop = await page.evaluate(() => {
@@ -7217,7 +7222,7 @@ test("clear brush window pressed with the Window control scrolled out of sight s
             : select.top >= sightTop && select.bottom <= size.height;
         if (!selectAsPlaced || button.top < sightTop || button.bottom > size.height) {
           wrong.push(
-            `${at}: the page could not be scrolled to the case (scrollY ${before}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
+            `${at}: the page could not be scrolled to the case (scroll box ${before.box}, scrollY ${before.window}, select ${select.top}..${select.bottom} px, button ${button.top}..${button.bottom} px)`
           );
           continue;
         }
@@ -7256,18 +7261,25 @@ test("clear brush window pressed with the Window control scrolled out of sight s
               box.left < window.innerWidth,
             ownStop:
               active instanceof HTMLElement && active.matches('main, [data-testid="main-content"]'),
-            scrollY: Math.round(scroller.scrollTop),
+            scrolled: { box: Math.round(scroller.scrollTop), window: Math.round(window.scrollY) },
             top: Math.round(box?.top ?? 0),
           };
         }, sightTop);
         // Read after the same hand-offs as the reads above, so where the focus is is settled.
         const onSelect = await windowSelect.evaluate((node) => node === document.activeElement);
-        const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scrollY ${before} -> ${landed.scrollY}`;
-        if (landed.scrollY !== before) {
-          wrong.push(`${at}: the page scrolled ${landed.scrollY - before} px, to ${where}`);
+        const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scroll box ${before.box} -> ${landed.scrolled.box}, scrollY ${before.window} -> ${landed.scrolled.window}`;
+        if (!before.document && landed.scrolled.box !== before.box) {
+          wrong.push(
+            `${at}: the page's scroll box scrolled ${landed.scrolled.box - before.box} px, to ${where}`
+          );
+        }
+        if (landed.scrolled.window !== before.window) {
+          wrong.push(
+            `${at}: the window scrolled ${landed.scrolled.window - before.window} px, to ${where}`
+          );
         }
         if (landed.body) {
-          wrong.push(`${at}: the focus is on the body, scrollY ${before} -> ${landed.scrollY}`);
+          wrong.push(`${at}: the focus is on the body, ${where}`);
         } else if (placed === "in sight" && !onSelect) {
           wrong.push(`${at}: the focus is on ${where}, not on the Window control`);
         } else if (!landed.ownStop && !landed.meets) {
