@@ -2861,19 +2861,18 @@ test("k-keep: the priorities page keeps its search, column filter and chip, grou
     "no group per owner"
   ).toHaveCount(2);
 
-  // The columns menu.
+  // The columns menu: its Triage, Todo box takes that count's column out of the table.
+  const triageTodo = table
+    .getByRole("table", { exact: true, name: "Priorities table" })
+    .getByRole("columnheader", { name: /^Triage, Todo/ });
+  await expect(triageTodo, "the table draws no Triage, Todo column to hide").toBeVisible();
   await control(bar, CONTROL.columnsMenu).click();
   await page
     .getByRole("dialog", { name: "Columns" })
-    .getByRole("checkbox", { exact: true, name: "Waiting" })
+    .getByRole("checkbox", { exact: true, name: "Triage, Todo" })
     .uncheck();
   await page.keyboard.press("Escape");
-  await expect(
-    table
-      .getByRole("columnheader")
-      .filter({ has: page.getByRole("button", { exact: true, name: /^Waiting/ }) }),
-    "the columns menu left Waiting shown"
-  ).toHaveCount(0);
+  await expect(triageTodo, "the columns menu left Triage, Todo shown").toHaveCount(0);
 
   // New priority: the bar's action opens its form under the bar, which writes the priority.
   await bar.getByRole("button", { exact: true, name: "New priority" }).click();
