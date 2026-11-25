@@ -86,7 +86,10 @@ type fixture struct {
 	logs   *bytes.Buffer
 }
 
-func newFixture(t *testing.T, tail string) *fixture {
+func newFixture(t *testing.T, tail string) *fixture { return newPlacedFixture(t, tail, Place{}) }
+
+// newPlacedFixture is newFixture's tool opened for an answer the loop posts at place.
+func newPlacedFixture(t *testing.T, tail string, place Place) *fixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &fixture{t: t, record: filepath.Join(root, "record"), calls: &fakeRecorder{rows: map[int]store.AnswerToolCall{}}, logs: &bytes.Buffer{}}
@@ -113,7 +116,7 @@ func newFixture(t *testing.T, tail string) *fixture {
 		Dispatch: dispatch, BunDir: filepath.Join(root, "bun"), URL: "https://dispatch.internal.example", TokenFile: tokenFile,
 		StateDir: filepath.Join(root, "state"), Bounds: bounds, Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
 	}
-	answer, err := Open(f.host, session, question)
+	answer, err := Open(f.host, session, question, place)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +441,8 @@ func TestCloseRemovesTheAnswersDirectory(t *testing.T) {
 
 // Writes are the dispatch calls a question's record holds that ran, or may have, a write: every
 // command but the dispatch command's reads, one the daemon stopped during and one the tool does
-// not know among them, and no call it refused before dispatch started, no read and no gh call.
+// not know among them, and no call it refused before dispatch started, no read, no write's help
+// or dry run, which post nothing, and no gh call.
 func TestWritesAreTheDispatchCallsThatRanAWrite(t *testing.T) {
 	ok, failed := 0, 1
 	posted, refused := "posted", "refused: `dispatch claim` is none of the commands this tool runs"
@@ -450,6 +454,8 @@ func TestWritesAreTheDispatchCallsThatRanAWrite(t *testing.T) {
 		{Seq: 5, Tool: store.ToolDispatch, Args: []string{"message", "--issue", "LEGION-9", "--body", "x"}},
 		{Seq: 6, Tool: store.ToolDispatch, Args: []string{"resolve-comment", "--comment", "c-1"}, Result: &posted, Exit: &failed},
 		{Seq: 7, Tool: store.ToolDispatch, Args: []string{"issue-archive", "LEGION-9"}, Result: &posted, Exit: &ok},
+		{Seq: 8, Tool: store.ToolDispatch, Args: []string{"comment", "--issue", "LEGION-9", "--help"}, Result: &posted, Exit: &ok},
+		{Seq: 9, Tool: store.ToolDispatch, Args: []string{"message", "--issue", "LEGION-9", "--body", "x", "--dry-run"}, Result: &posted, Exit: &ok},
 	}
 	want := []Write{{Seq: 3, Command: "comment", Exit: &ok}, {Seq: 5, Command: "message"}, {Seq: 6, Command: "resolve-comment", Exit: &failed}, {Seq: 7, Command: "issue-archive", Exit: &ok}}
 	if got := Writes(calls); !reflect.DeepEqual(got, want) {
@@ -458,14 +464,21 @@ func TestWritesAreTheDispatchCallsThatRanAWrite(t *testing.T) {
 }
 
 // A call the model asks for writes, by its arguments as the tool is handed them, exactly when its
-// command is one of WriteCommands, the four the tool runs that write. Every read is none, and so
-// is a command the tool does not run and arguments that are no JSON array of strings, which the
-// tool refuses before dispatch starts. The project's pause refuses the calls that write and runs
-// the rest (internal/answer's toolSet).
+// command is one of WriteCommands, the four the tool runs that write, and it asks for neither
+// help nor a dry run, wherever its `--help` or `--dry-run` stands. Every read is none, and so is a
+// write's help or dry run, which posts nothing, a command the tool does not run and arguments
+// that are no JSON array of strings, which the tool refuses before dispatch starts. The project's
+// pause refuses the calls that write and runs the rest (internal/answer's toolSet).
 func TestCallWritesIsACallOfOneOfTheFourWrites(t *testing.T) {
 	for _, command := range WriteCommands {
 		if args := `["` + command + `","--issue","LEGION-9","--body","x"]`; !CallWrites(args) {
 			t.Errorf("CallWrites(%s) = false, want true", args)
+		}
+		for _, args := range []string{`["` + command + `","--issue","LEGION-9","--help"]`, `["` + command + `","--help","--issue","LEGION-9"]`,
+			`["` + command + `","--issue","LEGION-9","--body","x","--dry-run"]`} {
+			if CallWrites(args) {
+				t.Errorf("CallWrites(%s) = true, want false: it posts nothing", args)
+			}
 		}
 	}
 	for _, command := range ReadCommands {
@@ -476,6 +489,220 @@ func TestCallWritesIsACallOfOneOfTheFourWrites(t *testing.T) {
 	for _, args := range []string{`["claim","--issue","LEGION-9"]`, `"comment --issue LEGION-9"`, `[]`} {
 		if CallWrites(args) {
 			t.Errorf("CallWrites(%s) = true, want false", args)
+		}
+	}
+}
+
+// Each call's `answers: dispatch` line says whether it wrote (write), so its reader need not judge
+// the arguments: true for a call dispatch ran that writes as CallWrites and Writes read one, a
+// comment and a resolution; false for a read, a write's help and its dry run, which post
+// nothing, a command the tool does not run and a write aimed where the loop posts the answer,
+// both refused before dispatch started.
+func TestEachCallsLineSaysWhetherItWrote(t *testing.T) {
+	f := newPlacedFixture(t, "", Place{Ask: theAsk})
+	for i, c := range []struct {
+		argv       []string
+		ran, write bool
+	}{
+		{[]string{"read", "LEGION-9"}, true, false},
+		{[]string{"comment", "--issue", "LEGION-9", "--body", "Plum."}, true, true},
+		{[]string{"resolve-comment", "--comment", "c-1"}, true, true},
+		{[]string{"comment", "--issue", "LEGION-9", "--help"}, true, false},
+		{[]string{"message", "--issue", "LEGION-9", "--body", "Plum.", "--dry-run"}, true, false},
+		{[]string{"claim", "--issue", "LEGION-9"}, false, false},
+		{[]string{"comment", "--issue", "LEGION-9", "--reply-to-ask", theAsk, "--body", "Plum."}, false, false},
+	} {
+		seq := i + 1
+		got := f.run(seq, "", c.argv...)
+		lines := f.logLines("answers: dispatch")
+		if got.Ran != c.ran || len(lines) != seq {
+			t.Errorf("dispatch %q = %+v with %d lines; want ran %t and one line more", c.argv, got, len(lines), c.ran)
+			continue
+		}
+		if write, ok := lines[seq-1]["write"].(bool); !ok || write != c.write || lines[seq-1]["ran"] != c.ran {
+			t.Errorf("dispatch %q logged %v; want ran %t, write %t", c.argv, lines[seq-1], c.ran, c.write)
+		}
+	}
+}
+
+// The ids of the places TestAWriteWhereTheLoopPostsTheAnswerIsRefused aims at, and of the places
+// elsewhere a write of the same command may go.
+const (
+	theAsk         = "e10f5bb8-0000-4000-8000-000000000001"
+	theAskReply    = "c0000000-0000-4000-8000-0000000000a1"
+	theRoot        = "c0000000-0000-4000-8000-000000000001"
+	theReply       = "c0000000-0000-4000-8000-000000000002"
+	theMention     = "c0000000-0000-4000-8000-000000000003"
+	theMessage     = "d0000000-0000-4000-8000-000000000001"
+	theAsker       = "ses_asker"
+	anotherAsk     = "e10f5bb9-0000-4000-8000-000000000002"
+	anotherComment = "c0000000-0000-4000-8000-000000000009"
+	anotherMessage = "d0000000-0000-4000-8000-000000000009"
+)
+
+// A write aimed where the loop posts the answer itself is a second reply there, and is refused
+// before dispatch starts, with a reason that says the daemon posts the reply there and that the
+// answer goes in the reply: for each kind of question, in each form the CLI reads the option that
+// aims it (`--x v`, `--x=v`, and `--x-file -` with the value on stdin) and each spelling of the id
+// it reads (a part or block reference, an ask's id prefix, a uuid's other spellings). The refusal
+// is recorded and logged as every refusal is, so it is no write (Writes) and its line reads ran
+// false. The same command aimed anywhere else runs, as do a resolution, a help call and a dry run
+// of the aimed write, which post nothing. A tool opened with no place refuses none of them.
+func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
+	type aimed struct {
+		stdin string
+		argv  []string
+	}
+	at := func(argv ...string) aimed { return aimed{argv: argv} }
+	onStdin := func(stdin string, argv ...string) aimed { return aimed{stdin: stdin, argv: argv} }
+	for _, c := range []struct {
+		kind      string
+		place     Place
+		refused   []aimed
+		elsewhere []aimed
+	}{
+		{
+			// A person's reply on the agent's ask: the loop posts on the ask's thread (postOnAsk),
+			// where a reply to the person's own comment lands too, since Dispatch climbs it to the ask.
+			kind: "an ask reply", place: Place{Ask: theAsk, Comments: []string{theAskReply}},
+			refused: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--turn", "agent", "--body", "The flaky test is plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask="+theAsk, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "e10f5bb8", "--turn", "human", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "E10F5BB8000040008000000000000001", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "dispatch://ALP-8/ask/"+theAsk+"#b-b2", "--body", "Plum."),
+				onStdin(theAsk, "comment", "--issue", "ALP-8", "--reply-to-ask-file", "-", "--body", "Plum."),
+				onStdin(theAsk, "comment", "--issue", "ALP-8", "--reply-to-ask-file=-", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", theAskReply, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to={"+theAskReply+"}", "--body", "Plum."),
+			},
+			elsewhere: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", anotherAsk, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "e10f5bb9", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", anotherComment, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--body", "Plum."),
+				at("resolve-comment", "--comment", theAskReply),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum.", "--help"),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum.", "--dry-run"),
+			},
+		},
+		{
+			// A person's answer to the ask: the loop posts on its thread too.
+			kind: "an answer to the ask", place: Place{Ask: theAsk},
+			refused: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask=e10f5bb8-0000", "--body", "Plum."),
+			},
+			elsewhere: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", anotherAsk, "--body", "Plum."),
+			},
+		},
+		{
+			// A reply in a comment thread: the loop replies in that thread (postInThread), and a reply
+			// naming any comment of it lands there, Dispatch climbing it to the thread's root.
+			kind: "a thread reply", place: Place{Comments: []string{theReply, theRoot}},
+			refused: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to", theRoot, "--body-file", "-"),
+				at("comment", "--issue", "ALP-8", "--reply-to="+theReply, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", "dispatch://ALP-8/comment/"+theRoot+"#b-b1", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", "urn:uuid:"+theReply, "--body", "Plum."),
+				onStdin(theRoot, "comment", "--issue", "ALP-8", "--reply-to-file", "-", "--body", "Plum."),
+			},
+			elsewhere: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to", anotherComment, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum."),
+				at("resolve-comment", "--comment", theRoot),
+				at("message", "--issue", "ALP-8", "--body", "Plum."),
+			},
+		},
+		{
+			// A comment mentioning the agent in a thread: Dispatch's reply route puts the loop's
+			// reply to the mention in the mention's thread.
+			kind: "a mention", place: Place{Comments: []string{theMention, theRoot}},
+			refused: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to", theMention, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to="+theRoot, "--body", "Plum."),
+			},
+			elsewhere: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to", anotherComment, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--body", "Plum."),
+			},
+		},
+		{
+			// A comment mentioning the agent under an ask: Dispatch puts the reply on that ask.
+			kind: "a mention under an ask", place: Place{Ask: theAsk, Comments: []string{theMention}},
+			refused: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", theMention, "--body", "Plum."),
+			},
+			elsewhere: []aimed{
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", anotherAsk, "--body", "Plum."),
+			},
+		},
+		{
+			// A Dispatch message: the loop replies to it (its delivery's reply route), as a message
+			// replying to it does, on its issue or in a direct conversation.
+			kind: "a message", place: Place{Message: theMessage},
+			refused: []aimed{
+				at("message", "--issue", "ALP-8", "--in-reply-to", theMessage, "--body", "Plum."),
+				at("message", "--in-reply-to="+theMessage, "--body", "Plum."),
+				at("message", "--in-reply-to", "dispatch://ALP-8/message/"+theMessage, "--body", "Plum."),
+				at("message", "--in-reply-to", "dispatch://ALP-8/message/"+theMessage+"#b-b1", "--body", "Plum."),
+				onStdin(theMessage, "message", "--in-reply-to-file", "-", "--body", "Plum."),
+				at("send-to-agent", "--session", session, "--in-reply-to", theMessage, "--body", "Plum.", "--delivery", "btw"),
+			},
+			elsewhere: []aimed{
+				at("message", "--issue", "ALP-8", "--body", "Plum."),
+				at("message", "--issue", "ALP-8", "--in-reply-to", anotherMessage, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to", theMessage, "--body", "Plum."),
+				at("message", "--issue", "ALP-8", "--in-reply-to", theMessage, "--body", "Plum.", "--dry-run"),
+			},
+		},
+		{
+			// Another agent's Envoy message: the loop sends its reply back to that session.
+			kind: "an Envoy message", place: Place{Session: theAsker},
+			refused: []aimed{
+				at("send-to-agent", "--session", theAsker, "--body", "Plum.", "--delivery", "btw"),
+				at("send-to-agent", "--session="+theAsker, "--body", "Plum.", "--delivery", "aside"),
+				onStdin(theAsker, "send-to-agent", "--session-file", "-", "--body", "Plum.", "--delivery", "btw"),
+			},
+			elsewhere: []aimed{
+				at("send-to-agent", "--session", "ses_reviewer", "--body", "Plum.", "--delivery", "btw"),
+				at("message", "--issue", "ALP-8", "--body", "Plum."),
+				at("send-to-agent", "--session", theAsker, "--body", "Plum.", "--delivery", "btw", "--help"),
+			},
+		},
+	} {
+		f := newPlacedFixture(t, "", c.place)
+		seq := 0
+		for _, call := range c.refused {
+			seq++
+			got := f.run(seq, call.stdin, call.argv...)
+			if got.Ran || got.Exit != -1 || f.ran() || !strings.HasPrefix(got.Output, "refused: ") ||
+				!strings.Contains(got.Output, "the daemon posts your reply") || !strings.Contains(got.Output, "in your reply") {
+				t.Errorf("%s: dispatch %q (stdin %q) = %+v, ran %t; want it refused before it ran, saying the daemon posts the reply there", c.kind, call.argv, call.stdin, got, f.ran())
+				continue
+			}
+			row, ok := f.calls.row(seq)
+			if !ok || !row.RefusedBeforeRun() || len(Writes([]store.AnswerToolCall{row})) != 0 {
+				t.Errorf("%s: dispatch %q is recorded as %+v (%t); want its refusal, no exit, no write", c.kind, call.argv, row, ok)
+			}
+			if lines := f.logLines("answers: dispatch"); len(lines) != seq || lines[seq-1]["ran"] != false || lines[seq-1]["refused"] != got.Output {
+				t.Errorf("%s: dispatch %q logged %v; want a line reading ran false with its refusal", c.kind, call.argv, lines)
+			}
+		}
+		for _, call := range c.elsewhere {
+			seq++
+			if got := f.run(seq, call.stdin, call.argv...); !got.Ran || !f.ran() {
+				t.Errorf("%s: dispatch %q = %+v; want it run, aimed elsewhere or posting nothing", c.kind, call.argv, got)
+			}
+		}
+		unplaced := newFixture(t, "")
+		for i, call := range c.refused {
+			if got := unplaced.run(i+1, call.stdin, call.argv...); !got.Ran || !unplaced.ran() {
+				t.Errorf("%s: dispatch %q with no place = %+v; want it run", c.kind, call.argv, got)
+			}
 		}
 	}
 }

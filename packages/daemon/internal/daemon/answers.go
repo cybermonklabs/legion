@@ -348,11 +348,12 @@ func answersDispatchTools(cfg config.Config, found dispatchFound, st *store.Stor
 	}}
 }
 
-// dispatchTools opens the dispatch tool of one answer (dispatchtool.Open) under the daemon's host.
+// dispatchTools opens the dispatch tool of one answer (dispatchtool.Open) under the daemon's host,
+// for the place the loop posts its reply.
 type dispatchTools struct{ host dispatchtool.Host }
 
-func (d dispatchTools) Open(session, question string) (answerloop.DispatchTool, error) {
-	return dispatchtool.Open(d.host, session, question)
+func (d dispatchTools) Open(session, question string, place dispatchtool.Place) (answerloop.DispatchTool, error) {
+	return dispatchtool.Open(d.host, session, question, place)
 }
 
 // answersWebSearchTools is the answer loop's web_search tool where answers offers it

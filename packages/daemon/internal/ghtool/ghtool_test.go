@@ -1549,6 +1549,40 @@ func TestTheCallPastTheBoundIsRefused(t *testing.T) {
 	}
 }
 
+// Each call's `answers: gh` line says whether it wrote (write), so its reader need not judge the
+// arguments: true for a call gh ran that writes as Writes and CallWrites read one (writeCommand),
+// false for a read, a write command's help, which posts nothing, and a write refused before gh
+// started, here the call past the gh_calls bound.
+func TestEachCallsLineSaysWhetherItWrote(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
+	capped := config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 100, GHCalls: 3}
+	for i, c := range []struct {
+		argv       []string
+		ran, write bool
+	}{
+		{[]string{"pr", "view", "5", "-R", "acme/widgets"}, true, false},
+		{[]string{"pr", "merge", "5", "-R", "acme/widgets", "--squash"}, true, true},
+		{[]string{"pr", "merge", "5", "-R", "acme/widgets", "--help"}, true, false},
+		{[]string{"pr", "merge", "5", "-R", "acme/widgets", "--squash"}, false, false},
+	} {
+		seq := i + 1
+		got := Run(context.Background(), Call{Answer: f.answer, Seq: seq, N: seq, Args: args(c.argv...), Bounds: capped})
+		if got.Ran != c.ran {
+			t.Errorf("gh %q (call %d of 3) = %+v; want ran %t", c.argv, seq, got, c.ran)
+			continue
+		}
+		var line map[string]any
+		for _, l := range f.logLines("answers: gh") {
+			if l["seq"] == float64(seq) {
+				line = l
+			}
+		}
+		if write, ok := line["write"].(bool); !ok || write != c.write || line["ran"] != c.ran {
+			t.Errorf("gh %q (call %d of 3) logged %v; want ran %t, write %t", c.argv, seq, line, c.ran, c.write)
+		}
+	}
+}
+
 // GH_PATH names a wrapper running this binary's `legion gh`, so the helper gh names for its git
 // (`<GH_PATH> auth git-credential`) is `legion gh auth git-credential`, told the real gh and the
 // answer's bundle as a pane's environment tells them.

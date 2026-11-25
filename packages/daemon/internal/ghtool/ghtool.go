@@ -426,10 +426,14 @@ func (a *Answer) record(seq int, argv []string, owner string, started time.Time)
 
 // log is the call's one line: the question and seq, the App (its role and configured id) and the
 // owner whose gh directory it ran with ("" for a call refused before routing), its arguments as
-// run, and its exit (-1 when gh never ran).
+// run, its exit (-1 when gh never ran), whether it ran, and whether it wrote (write): true only
+// for a call gh ran that writes as Writes and CallWrites read one (writeCommand), so a reader of
+// the line need not judge the arguments itself; and for a refused call its refusal.
 func (a *Answer) log(seq int, argv []string, owner string, result Result) {
+	_, _, writing := writeCommand(argv)
 	attrs := []any{"question", a.question, "seq", seq, "issue", a.agent.Issue, "role", a.agent.Role,
-		"app", string(a.agent.App()), "appID", a.agent.AppID, "owner", owner, "args", argv, "exit", result.Exit, "ran", result.Ran}
+		"app", string(a.agent.App()), "appID", a.agent.AppID, "owner", owner, "args", argv, "exit", result.Exit, "ran", result.Ran,
+		"write", result.Ran && writing}
 	if !result.Ran {
 		attrs = append(attrs, "refused", result.Output)
 	}

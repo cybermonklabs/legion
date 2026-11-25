@@ -6,11 +6,12 @@
 // model makes.
 //
 // A call runs only when its command is one of the twenty the tool runs (ReadCommands and
-// WriteCommands, checked before any process starts), it names no file of the daemon's host, and
-// its answer has made fewer than answers.bounds.gh_calls dispatch calls, counted apart from its gh
-// calls. What it posts carries the loop's mark (Mark), and it runs under an environment of nothing
-// of the daemon's own, a time bound and an output bound, recorded before it runs and finished
-// after (answer_tool_calls, its tool dispatch).
+// WriteCommands, checked before any process starts), it names no file of the daemon's host, it
+// aims no write where the loop posts the answer itself (Place), and its answer has made fewer than
+// answers.bounds.gh_calls dispatch calls, counted apart from its gh calls. What it posts carries
+// the loop's mark (Mark), and it runs under an environment of nothing of the daemon's own, a time
+// bound and an output bound, recorded before it runs and finished after (answer_tool_calls, its
+// tool dispatch).
 package dispatchtool
 
 import (
@@ -51,11 +52,13 @@ type Host struct {
 }
 
 // Answer is one answer's dispatch environment, Open's: the session every call declares, the
-// question, and the empty HOME and the state directory a call runs with. Close removes it.
+// question, where the loop posts its reply (Place), and the empty HOME and the state directory a
+// call runs with. Close removes it.
 type Answer struct {
 	host     Host
 	session  string
 	question string
+	place    Place
 	// dir is <state_dir>/answers/<question>/dispatch, everything below it the answer's own.
 	dir, home, state string
 }
@@ -63,8 +66,10 @@ type Answer struct {
 // Open builds question's dispatch environment for the agent whose session is session, once,
 // before its first call: a fresh 0700 directory <state_dir>/answers/<question>/dispatch (whatever
 // an earlier run of the same question left there removed first) holding the empty HOME and the
-// Dispatch state directory every call runs with.
-func Open(host Host, session, question string) (*Answer, error) {
+// Dispatch state directory every call runs with. place is where the loop posts the question's
+// reply, at which Run refuses every write the model aims (aimRefusal); the zero Place, for a
+// caller that has none, makes Run refuse nothing for it.
+func Open(host Host, session, question string, place Place) (*Answer, error) {
 	switch {
 	case !filepath.IsAbs(host.Dispatch):
 		return nil, fmt.Errorf("the dispatch tool's dispatch %q is not an absolute path", host.Dispatch)
@@ -82,7 +87,7 @@ func Open(host Host, session, question string) (*Answer, error) {
 		return nil, fmt.Errorf("the dispatch tool: %q is no question id a directory can be named for", question)
 	}
 	dir := filepath.Join(host.StateDir, "answers", name, "dispatch")
-	a := &Answer{host: host, session: session, question: question, dir: dir, home: filepath.Join(dir, "home"), state: filepath.Join(dir, "state")}
+	a := &Answer{host: host, session: session, question: question, place: place, dir: dir, home: filepath.Join(dir, "home"), state: filepath.Join(dir, "state")}
 	if err := os.RemoveAll(a.dir); err != nil {
 		return nil, fmt.Errorf("the dispatch tool for %s: clear %s: %w", question, a.dir, err)
 	}
@@ -128,12 +133,13 @@ type Result = ghtool.Result
 
 // Run runs call. It is refused, with dispatch never started, when its arguments are no JSON array
 // of strings, its number among the answer's dispatch calls is past the gh_calls bound, its command
-// is none of the twenty the tool runs, or it names a file of the daemon's host (refusal). Every
-// other call runs with the loop's mark added to the body it posts (withMark), the answer's
-// environment (env), its HOME the working directory, the gh_seconds bound and the gh_output_chars
-// bound. Every call is recorded with what the model reads of it: an allowed one before dispatch
-// starts and finished after it ends, a refused one with its refusal; one whose start cannot be
-// recorded does not run. Each logs one `answers: dispatch` line.
+// is none of the twenty the tool runs, it names a file of the daemon's host (refusal), or it is a
+// write aimed where the loop posts the answer's reply itself, the answer's Place (aimRefusal), a
+// second reply there. Every other call runs with the loop's mark added to the body it posts
+// (withMark), the answer's environment (env), its HOME the working directory, the gh_seconds bound
+// and the gh_output_chars bound. Every call is recorded with what the model reads of it: an
+// allowed one before dispatch starts and finished after it ends, a refused one with its refusal;
+// one whose start cannot be recorded does not run. Each logs one `answers: dispatch` line.
 func (a *Answer) Run(ctx context.Context, call Call) Result {
 	started := a.host.Now()
 	argv, err := ghtool.DecodeArgs(call.Args, "dispatch")
@@ -150,6 +156,9 @@ func (a *Answer) Run(ctx context.Context, call Call) Result {
 		return a.refuse(ctx, call.Seq, argv, started, fmt.Sprintf("this answer has made its %d dispatch calls (answers.bounds.gh_calls, counted apart from its gh calls); answer with what the calls so far found", bounds.GHCalls))
 	}
 	if why := refusal(argv); why != "" {
+		return a.refuse(ctx, call.Seq, argv, started, why)
+	}
+	if why := aimRefusal(argv, call.Stdin, a.place); why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
 	run, stdin := withMark(argv, call.Stdin, Mark(a.question, call.Seq))
@@ -221,15 +230,18 @@ func (a *Answer) record(seq int, argv []string, started time.Time) store.AnswerT
 }
 
 // log is the call's one line: the question and seq, the session it ran as, its command and its
-// arguments as run, and its exit (-1 when dispatch never ran), and for a refused call its refusal.
-// The token is in no argument and no line: the CLI reads it from the file DISPATCH_TOKEN_FILE
-// names.
+// arguments as run, its exit (-1 when dispatch never ran), whether it ran, and whether it wrote
+// (write): true only for a call dispatch ran that writes (writes: one of WriteCommands, asking
+// for neither help nor a dry run), so a reader of the line need not judge the arguments itself;
+// and for a refused call its refusal. The token is in no argument and no line: the CLI reads it
+// from the file DISPATCH_TOKEN_FILE names.
 func (a *Answer) log(seq int, argv []string, result Result) {
 	command := ""
 	if len(argv) > 0 {
 		command = argv[0]
 	}
-	attrs := []any{"question", a.question, "seq", seq, "session", a.session, "command", command, "args", argv, "exit", result.Exit, "ran", result.Ran}
+	attrs := []any{"question", a.question, "seq", seq, "session", a.session, "command", command, "args", argv, "exit", result.Exit,
+		"ran", result.Ran, "write", result.Ran && writes(argv)}
 	if !result.Ran {
 		attrs = append(attrs, "refused", result.Output)
 	}

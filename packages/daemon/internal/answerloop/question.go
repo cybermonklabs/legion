@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -134,10 +135,10 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		}
 	}()
 	// The answer's dispatch tool, where the daemon found the dispatch command, runs as the agent's
-	// own session.
+	// own session, and refuses a write aimed where post posts this answer (toolPlace).
 	var dispatchTool answer.Dispatch
 	if l.cfg.DispatchTools != nil {
-		opened, err := l.cfg.DispatchTools.Open(conv.Session, q.ID)
+		opened, err := l.cfg.DispatchTools.Open(conv.Session, q.ID, l.toolPlace(ctx, q, origin))
 		if err != nil {
 			return fmt.Errorf("open the dispatch tool: %w", err)
 		}
@@ -566,6 +567,71 @@ func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) 
 		return fmt.Errorf("pass the question on: %w", err)
 	}
 	return l.move(ctx, &q, store.QuestionPassedOn, store.QuestionAppended)
+}
+
+// toolPlace is where post posts the reply to q, whose hand-off is o, as the answer's dispatch tool
+// is handed it (dispatchtool.Place), so the tool refuses a write the model aims there, a second
+// reply: a message (ReplyToMessage); an Envoy message's sender (Envoy.Send); and for a reply on
+// an ask (postOnAsk), a reply in a comment thread (postInThread) and a mention (ReplyToComment,
+// which Dispatch puts in the mention's thread, or on the ask that thread hangs under), the ask
+// and every comment of the thread, a reply naming any of which Dispatch puts in that thread
+// (dispatchtool.Place): the comments the hand-off names (the question's own, the thread's root),
+// and every comment the thread holds when the answer starts, read once (threadComments). A read
+// that fails costs the answer nothing: the tool is handed the hand-off's comments alone, and the
+// loop logs one warning naming the question and the error. A comment that arrives in the thread
+// while the answer runs is in no list, the one reply there the tool does not refuse.
+func (l *Loop) toolPlace(ctx context.Context, q store.AnswerQuestion, o Origin) dispatchtool.Place {
+	switch o.Kind {
+	case KindMessage:
+		return dispatchtool.Place{Message: o.MessageID}
+	case KindEnvoy:
+		return dispatchtool.Place{Session: o.Sender}
+	case KindMention, KindAskReply, KindThreadReply:
+	default:
+		return dispatchtool.Place{}
+	}
+	held, err := l.threadComments(ctx, o)
+	if err != nil {
+		l.cfg.Log.Warn("answers: the thread the answer is posted in was not read; the dispatch tool refuses replies to the comments the question names alone",
+			"question", q.ID, "error", err)
+	}
+	place := dispatchtool.Place{Ask: o.AskID}
+	for _, id := range append([]string{o.CommentID, o.Thread}, held...) {
+		if id != "" && !slices.Contains(place.Comments, id) {
+			place.Comments = append(place.Comments, id)
+		}
+	}
+	return place
+}
+
+// threadComments are the ids of every comment of the thread post posts the reply to o in, as
+// Dispatch holds it now: the replies on o's ask (Dispatch.Ask, which lists every comment under
+// it), else the root and every reply of o's comment thread (Dispatch.Thread of its root, or of
+// o's own comment where that is the root, a mention nobody replied to yet).
+func (l *Loop) threadComments(ctx context.Context, o Origin) ([]string, error) {
+	var comments []dispatch.Comment
+	if o.AskID != "" {
+		ask, err := l.cfg.Dispatch.Ask(ctx, o.AskID)
+		if err != nil {
+			return nil, fmt.Errorf("read the thread of ask %s: %w", o.AskID, err)
+		}
+		comments = ask.Replies
+	} else {
+		root := o.Thread
+		if root == "" {
+			root = o.CommentID
+		}
+		thread, err := l.cfg.Dispatch.Thread(ctx, root)
+		if err != nil {
+			return nil, fmt.Errorf("read the comment thread of %s: %w", root, err)
+		}
+		comments = append([]dispatch.Comment{thread.Root}, thread.Replies...)
+	}
+	ids := make([]string, 0, len(comments))
+	for _, c := range comments {
+		ids = append(ids, c.ID)
+	}
+	return ids, nil
 }
 
 // woken gives q's message to its agent, whose claim the daemon released, through Wakes in place

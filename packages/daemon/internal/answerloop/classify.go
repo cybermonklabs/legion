@@ -60,13 +60,16 @@ type Origin struct {
 	Where         string
 	Ref           string
 	MayAskNothing bool
-	// MessageID and Attempt are a message's delivery; CommentID, Target and Attempt a mention's.
+	// MessageID and Attempt are a message's delivery; CommentID, Target and Attempt a mention's,
+	// and Thread or AskID the thread the mention is in, where Dispatch puts the reply to it: the
+	// root of its comment thread, or the ask that thread hangs under (none for a root comment).
 	MessageID string
 	CommentID string
 	Target    string
 	Attempt   int
-	// Issue and AskID are an ask reply's thread; Issue, CommentID and Thread a thread reply's: the
-	// issue, the reply, and the root of its thread.
+	// Issue and AskID are an ask reply's thread, and CommentID the reply on it (none for a
+	// person's answer to the ask); Issue, CommentID and Thread a thread reply's: the issue, the
+	// reply, and the root of its thread.
 	Issue  string
 	AskID  string
 	Thread string
@@ -416,12 +419,18 @@ func ReadOrigin(h intake.Handoff) (Origin, error) {
 		}
 	case event.Type == "comment.created" && event.Delivery != nil:
 		o.Kind, o.CommentID, o.Target, o.Attempt = KindMention, p.ID, event.Delivery.Target, event.Delivery.Attempt
+		if p.ReplyTo != nil {
+			o.Thread = *p.ReplyTo
+		}
+		if p.AskID != nil {
+			o.AskID = *p.AskID
+		}
 		o.Where, o.Ref = "a Dispatch comment mentioning the agent on "+issue, "dispatch://"+issue+"/comment/"+p.ID
 	case event.Type == "comment.created" && p.AskID != nil:
 		if issue == "" {
 			return Origin{}, fmt.Errorf("the reply %s is on a document's ask, which has no issue thread to answer on", p.ID)
 		}
-		o.Kind, o.AskID = KindAskReply, *p.AskID
+		o.Kind, o.CommentID, o.AskID = KindAskReply, p.ID, *p.AskID
 		o.Where, o.Ref = "a reply on the agent's ask "+*p.AskID+" on "+issue, "dispatch://"+issue+"/comment/"+p.ID
 		// A person's reply that hands the ask back to the agent is a decision, which may ask nothing.
 		o.MayAskNothing = event.HandsTurnBack()

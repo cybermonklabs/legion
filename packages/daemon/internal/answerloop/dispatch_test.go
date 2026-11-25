@@ -1,8 +1,12 @@
 package answerloop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -11,22 +15,29 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/answer"
 	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // fakeDispatchTools opens the rig's dispatch tool, recording the session and question each answer
-// opens it for and how many it closed; its calls answer with output naming them.
+// opens it for, the place it hands it, and how many it closed; its calls answer with output
+// naming them.
 type fakeDispatchTools struct {
 	mu     sync.Mutex
 	opened []string
+	places map[string]dispatchtool.Place
 	closed int
 	calls  []dispatchtool.Call
 }
 
-func (f *fakeDispatchTools) Open(session, question string) (DispatchTool, error) {
+func (f *fakeDispatchTools) Open(session, question string, place dispatchtool.Place) (DispatchTool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opened = append(f.opened, session+" "+question)
+	if f.places == nil {
+		f.places = map[string]dispatchtool.Place{}
+	}
+	f.places[question] = place
 	return fakeDispatchTool{f}, nil
 }
 
@@ -89,6 +100,83 @@ func TestAnAnswerThatCallsDispatchPostsItsReply(t *testing.T) {
 	plain.drain()
 	if q := plain.only(); q.State != store.QuestionPosted {
 		t.Fatalf("question = %s; want posted with gh alone", q.State)
+	}
+}
+
+// The dispatch tool an answer opens is handed where the loop posts that answer's reply
+// (dispatchtool.Place), so the tool refuses a write the model aims there: for a reply in a comment
+// thread, a person's reply on the agent's ask, their answer to the ask and a mention, the ask and
+// the comments the hand-off names, and every comment the thread held when the answer started,
+// read once, the agent's own earlier comment among them; for a message, the message; and for an
+// Envoy message, the session that sent it. A thread read that fails costs the answer nothing: the
+// tool is handed the hand-off's comments, and one warning names the question and the error.
+func TestTheDispatchToolIsHandedWhereTheAnswerIsPosted(t *testing.T) {
+	const unreadRoot = "c0000000-0000-4000-8000-000000000006"
+	r := newRig(t)
+	r.conversation("ses_tester", testerToken, 0)
+	tools := &fakeDispatchTools{}
+	r.cfg.DispatchTools = tools
+	var logs bytes.Buffer
+	r.cfg.Log = slog.New(slog.NewJSONHandler(&logs, nil))
+	r.restart()
+	agent, someone := map[string]any{"kind": "session", "id": "ses_tester"}, map[string]any{"kind": "user", "id": person.ID}
+	r.thread["replies"] = []any{map[string]any{"id": "c-own", "author": agent, "body": "Tested B too."}, map[string]any{"id": "c-3", "author": someone, "body": "Why B?"}}
+	r.ask["replies"] = []any{map[string]any{"id": "c-ask-own", "author": agent, "body": "A failed first."}, map[string]any{"id": "c-2", "author": someone, "body": "Why A?"}}
+	r.unreadable = map[string]bool{"/api/v1/comments/" + unreadRoot: true}
+	mention := func(id, root string) intake.Handoff {
+		return dispatchHandoff("ses_tester", frame("comment.created", person, new("LEGION-9"),
+			map[string]any{"id": id, "issue_key": "LEGION-9", "body": "@tester why?", "reply_to": root},
+			map[string]any{"attempt": 2, "mode": "btw", "comment_id": id, "target": "role:" + string(testerToken)}))
+	}
+	askReply := dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
+		map[string]any{"id": "c-2", "issue_key": "LEGION-9", "body": "Why A?", "ask_id": askID}))
+	askAnswer := dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why A?")))
+	for _, h := range []intake.Handoff{threadReplyHandoff("ses_tester", "c-3", "Why B?"), askReply, askAnswer, mention("c-1", threadRoot),
+		mention("c-6", unreadRoot), messageHandoff("ses_tester", "m-1", 1, "Why?"),
+		envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-9", "agent.ses_tester.k9", "Which?")} {
+		r.receive(h)
+	}
+	r.drain()
+	want := map[string]dispatchtool.Place{
+		"dispatch:c-3":        {Comments: []string{"c-3", threadRoot, "c-own"}},
+		"dispatch:c-2":        {Ask: askID, Comments: []string{"c-2", "c-ask-own"}},
+		"dispatch:34":         {Ask: askID, Comments: []string{"c-ask-own", "c-2"}},
+		"dispatch:c-1":        {Comments: []string{"c-1", threadRoot, "c-own", "c-3"}},
+		"dispatch:c-6":        {Comments: []string{"c-6", unreadRoot}},
+		"dispatch:m-1":        {Message: "m-1"},
+		"agent.ses_tester.k9": {Session: "ses_asker"},
+	}
+	tools.mu.Lock()
+	defer tools.mu.Unlock()
+	questions := r.questions()
+	if len(questions) != len(want) {
+		t.Fatalf("%d questions; want %d, one of each kind", len(questions), len(want))
+	}
+	unread := ""
+	for _, q := range questions {
+		if q.State != store.QuestionPosted {
+			t.Errorf("question %s is %s; want posted", q.Identity, q.State)
+		}
+		if got, ok := tools.places[q.ID]; !ok || !reflect.DeepEqual(got, want[q.Identity]) {
+			t.Errorf("the dispatch tool for %s (%s) was handed %+v (opened %t); want %+v", q.Identity, q.Kind, got, ok, want[q.Identity])
+		}
+		if q.Identity == "dispatch:c-6" {
+			unread = q.ID
+		}
+	}
+	var warned []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("log line %s: %v", line, err)
+		}
+		if msg, _ := record["msg"].(string); strings.HasPrefix(msg, "answers: the thread the answer is posted in was not read") {
+			warned = append(warned, record)
+		}
+	}
+	if len(warned) != 1 || warned[0]["level"] != "WARN" || warned[0]["question"] != unread ||
+		!strings.Contains(fmt.Sprint(warned[0]["error"]), unreadRoot) {
+		t.Errorf("the failed thread read logged %v; want one warning naming question %s and the error reading %s", warned, unread, unreadRoot)
 	}
 }
 

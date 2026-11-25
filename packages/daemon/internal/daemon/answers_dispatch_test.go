@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
@@ -194,7 +195,7 @@ func TestTheBootLineNamesTheLoopsToolsAndADaemonWithNoDispatchOffersNone(t *test
 			if tools == nil {
 				t.Fatal("a daemon that found dispatch hands the loop no dispatch tool")
 			}
-			opened, err := tools.Open("ses_tester", "dispatch:m-1")
+			opened, err := tools.Open("ses_tester", "dispatch:m-1", dispatchtool.Place{})
 			if err != nil {
 				t.Fatalf("open the answer's dispatch tool: %v", err)
 			}

@@ -54,6 +54,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/dispatchtool"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -156,9 +157,11 @@ type DispatchTool interface {
 }
 
 // DispatchTools opens the dispatch tool an answer runs with, as the agent's session, for
-// question.
+// question, handed place, where the loop posts that question's reply (the loop's toolPlace), at
+// which the tool refuses every write the model aims, a second reply there
+// (dispatchtool.Place).
 type DispatchTools interface {
-	Open(session, question string) (DispatchTool, error)
+	Open(session, question string, place dispatchtool.Place) (DispatchTool, error)
 }
 
 // WebSearchTools opens the web_search tool an answer runs with, for question

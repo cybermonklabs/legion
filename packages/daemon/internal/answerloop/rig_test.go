@@ -258,11 +258,12 @@ type rig struct {
 	mu       sync.Mutex
 	answer   func(req answer.Request) (answer.Reply, error)
 	requests []answer.Request
-	// ask is what GET /api/v1/asks/{id} answers, thread what GET /api/v1/comments/{id} does; held
-	// makes a role publish 404 unclaimed.
-	ask    map[string]any
-	thread map[string]any
-	held   bool
+	// ask is what GET /api/v1/asks/{id} answers, thread what GET /api/v1/comments/{id} does, and
+	// unreadable the paths whose GET answers 503 instead; held makes a role publish 404 unclaimed.
+	ask        map[string]any
+	thread     map[string]any
+	unreadable map[string]bool
+	held       bool
 	// tick moves the clock a millisecond each time it is read, so questions are received in order.
 	tick atomic.Int64
 }
@@ -298,6 +299,11 @@ func newRig(t *testing.T) *rig {
 		var body []byte
 		r.mu.Lock()
 		switch {
+		case req.Method == http.MethodGet && r.unreadable[req.Path]:
+			r.mu.Unlock()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"unavailable"}`))
+			return
 		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/asks/"):
 			read = r.ask
 		case req.Method == http.MethodGet && strings.HasPrefix(req.Path, "/api/v1/comments/"):
