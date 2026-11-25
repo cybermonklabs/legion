@@ -68,9 +68,8 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 - Write no trailer yourself.
   The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names;
-  the git wrapper adds the first two to a `git commit`.
-  The wrapper adds none under an isolated git configuration: `GIT_CONFIG_NOSYSTEM` true or `GIT_CONFIG_GLOBAL=/dev/null`.
-  A merge, revert, cherry-pick or rebase that git makes gets none.
+  the git wrapper adds the first two to a `git commit`, none under an isolated git configuration.
+  A git merge, revert, cherry-pick or rebase gets none.
   Cure an unpushed commit that lacks a line by describing it again in the pane's shell;
   where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
 
