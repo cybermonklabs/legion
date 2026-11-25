@@ -104,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
