@@ -15,7 +15,8 @@
     "dispatch:local": "cd packages/dispatch && bun run dispatch:local",
     "docs:dev": "cd docs/site && bun run dev",
     "docs:build": "cd docs/site && bun run build",
-    "docs:media": "bun docs/site/media/shots.ts"
+    "docs:media": "bun docs/site/media/shots.ts",
+    "test:e2e-lib": "bun test --timeout 200000 scripts/e2e/lib"
   },
   "workspaces": [
     "packages/cipher-client",
