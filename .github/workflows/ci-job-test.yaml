@@ -1,6 +1,6 @@
 name: CI job test
 
-# The steps of ci.yaml's `test` and `tooling-checks` jobs, in a file of their own.
+# The steps of `.github/workflows/ci.yaml#test` and `.github/workflows/ci.yaml#tooling-checks` jobs, in a file of their own.
 # ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
 # file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
 # whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
@@ -17,10 +17,9 @@ name: CI job test
 # its build-input list, the changelog fold, the guides' layout, and the lint and typecheck of the
 # script directories that are no workspace. Those are build, lint and typecheck checks, which run
 # on a pull request whatever their time. test runs the tests: the `*.test.sh` harness of each
-# script under .github/scripts
-# (and of scripts/priorities-seed-check.sh), the Bun suites of scripts/ and the live proofs'
-# libraries. Its `test` output is held back on a pull request without the label full-ci or
-# lane:test, so it runs in the merge queue
+# script under .github/scripts (and of scripts/daemon-contract-order.sh), the Bun suites of
+# scripts/ and the live proofs' libraries. Its `test` output is held back on a pull request without
+# the label full-ci or lane:test, so it runs in the merge queue
 # (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 #
 # The daemon's Go tests, which the test job used to carry, are
@@ -49,7 +48,7 @@ name: CI job test
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -61,20 +60,20 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       changes-result:
         description: >-
-          ci.yaml's `needs.changes.result`: every gated step below runs when `changes` did not
+          `.github/workflows/ci.yaml#needs.changes.result`: every gated step below runs when `changes` did not
           succeed, as they did before the job's `if:` gated them one by one, and as lint's two
           notices steps do.
         type: string
         required: true
       matched-filters:
         description: >-
-          ci.yaml's `needs.changes.outputs.matched_filters`: the paths filter's list of the filters
+          `.github/workflows/ci.yaml#needs.changes.outputs.matched_filters`: the paths filter's list of the filters
           that matched, as JSON (`["test","release_push_test"]`), or `all` on a dispatched run and
           on one whose filters fell open.
           Each gated step below runs when its own filter is in it.
@@ -172,11 +171,6 @@ jobs:
 
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
-
-      # The seed that writes the first priorities from the table kept by hand, driven against a
-      # fake Dispatch of the test's own: it reaches no network and no deployment.
-      - name: Test the priorities seed
-        run: bun test scripts/priorities-seed.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_bun_version_test"')
@@ -375,9 +369,13 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"disk_watch_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/disk_watch.test.sh .github/scripts/disk_watch.test.sh
 
-      - name: Test the priorities seed check (a stand-in Dispatch)
-        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"priorities_seed_check_test"')
-        run: .github/scripts/harness-pool.sh start scripts/priorities-seed-check.test.sh bash scripts/priorities-seed-check.test.sh
+      - name: Test the daemon contract order script (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"daemon_contract_order_test"')
+        run: .github/scripts/harness-pool.sh start scripts/daemon-contract-order.test.sh bash scripts/daemon-contract-order.test.sh
+
+      - name: Test the worker image's contract order step (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"image_order_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/worker-image-contract-order.test.sh bash .github/scripts/worker-image-contract-order.test.sh
 
       # main's #4929 added it as a step of its own after the pool was written; it reads nothing
       # outside its own mktemp directory and the go stand-ins it puts on PATH there, so it is
@@ -559,7 +557,7 @@ jobs:
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
-      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
+      # test's Markdown parser needs (`scripts/semantic-line-breaks.guides.test.ts#mdast-util-from-markdown`). The
       # step has a filter of its own, guide_layout, naming the six guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
