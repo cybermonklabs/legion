@@ -1999,8 +1999,9 @@ describe("renderInbound non-dispatch envelopes", () => {
     });
 
     // A Dispatch event JSON.stringify cannot write (a payload 100,000 deep) is shown by its owner,
-    // its type and its actor's `kind` and `id`: the actor's other keys pass the schema, and an
-    // array chain 9,999 deep among them lays out in about 100 MB, so the card writes none of them.
+    // its type and its actor's `kind` and `id` (and `act`, which this actor has none of): the
+    // actor's other keys pass the schema, and an array chain 9,999 deep among them lays out in
+    // about 100 MB, so the card writes none of them.
     test("a Dispatch event with an actor 9,999 deep beside a payload 100,000 deep is shown within the bound", () => {
       const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
       const deeper = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
@@ -2024,6 +2025,57 @@ describe("renderInbound non-dispatch envelopes", () => {
         owner: "PRIV-1",
         type: "comment.created",
         actor: { kind: "user", id: "alice" },
+        payload: `not shown: ${rendered.payloadShownAsText}`,
+      });
+    });
+
+    // An actor's `act` is the agent or the personal token that acted for its person
+    // (`ActorActSchema`), and a reader takes a user with no `act` for the person acting alone
+    // (`actorActText`). So a card that cannot write its event as text keeps the act beside the
+    // actor's `kind` and `id`, and says one it cannot read is not shown; an agent acting as itself
+    // is an actor of kind `session`.
+    test.each([
+      [
+        "a person's act an agent made shows that agent",
+        {
+          kind: "user",
+          id: "alice",
+          act: { session: "ses_x", session_proven: true, scopes: ["person"] },
+        },
+        {
+          kind: "user",
+          id: "alice",
+          act: { session: "ses_x", session_proven: true, scopes: ["person"] },
+        },
+      ],
+      [
+        "an act its reader cannot read says it is not shown",
+        { kind: "user", id: "alice", act: { session: "ses_x", origin: "broker" } },
+        { kind: "user", id: "alice", act: "not shown" },
+      ],
+      [
+        "an agent's own act shows the agent",
+        { kind: "session", id: "ses_y" },
+        { kind: "session", id: "ses_y" },
+      ],
+    ])("a Dispatch event the card cannot write as text: %s", (_name, eventActor, shownActor) => {
+      const deeper = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            event_id: "dispatch-deep-act",
+            source: "dispatch",
+            payload: `{"issue_key":"PRIV-1","type":"comment.created","actor":${JSON.stringify(eventActor)},"payload":{"deep":${deeper}}}`,
+          })
+        ),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: { dispatch: Record<string, unknown> } };
+      expect(card.envoy.dispatch).toEqual({
+        owner: "PRIV-1",
+        type: "comment.created",
+        actor: shownActor,
         payload: `not shown: ${rendered.payloadShownAsText}`,
       });
     });

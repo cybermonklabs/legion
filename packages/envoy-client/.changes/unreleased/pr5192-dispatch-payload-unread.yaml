@@ -11,5 +11,7 @@ body: |-
   written as JSON text - the owner, type, actor, relation and payload or compact record it lays
   out from the event `renderInbound` read, with a body read whole in place of the part the frame
   carried - and no longer as the frame's payload, so a key the reader drops
-  beside the event reaches no card; an event too deep to write as text shows its owner, its type
-  and its actor's `kind` and `id` (no other key of the actor), within the same bound.
+  beside the event reaches no card; an event too deep to write as text shows its owner, its type,
+  its actor's `kind` and `id` and the `act` of the agent or token that acted for its person
+  (`act: "not shown"` for an act `ActorActSchema` does not read; no other key of the actor),
+  within the same bound, so an agent's act is never shown as its person's own.

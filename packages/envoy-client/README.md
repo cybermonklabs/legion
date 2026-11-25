@@ -41,9 +41,10 @@ bound, as an array chain 1,400 levels deep does from a 3 KB frame. A Dispatch ev
 and payload or compact record the card lays out from the event `readDispatchPayload` read, with a
 body read whole in place of the part the frame carried - never as the frame's payload, so a key
 the reader drops reaches no card; an event too deep to write as JSON, or whose
-text still passes the bound, shows its owner, its type, its actor's `kind` and `id` (no other key
-of the actor) and the reason, held to the bound too, and its owner, type and reason alone when
-even that passes it. The bound is
+text still passes the bound, shows its owner, its type, its actor's `kind` and `id` and the
+`act` of the agent or token that acted for its person (`act: "not shown"` for an act
+`ActorActSchema` does not read; no other key of the actor) and the reason, held to the bound
+too, and its owner, type and reason alone when even that passes it. The bound is
 `INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
 (its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
 still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,

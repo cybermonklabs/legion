@@ -663,9 +663,9 @@ describe("replies", () => {
 
   // A Dispatch event's actor carries whatever keys its sender put beside `kind` and `id`
   // (DispatchEventSchema passes them through). A card that cannot lay the event out shows it by
-  // its owner, its type and the actor's `kind` and `id`, so an actor holding an object chain
-  // 100,000 deep, past the encoder's recursion and JSON.stringify's, neither throws out of the
-  // render nor sends the frame back to the stream.
+  // its owner, its type and the actor's `kind` and `id` (and `act`, which this actor has none of),
+  // so an actor holding an object chain 100,000 deep, past the encoder's recursion and
+  // JSON.stringify's, neither throws out of the render nor sends the frame back to the stream.
   test("a Dispatch frame whose actor is an object chain 100,000 deep is taken, its card holding the owner and the type", async () => {
     const { delivery, logs, replies, state, settled } = setup();
     const shown: string[] = [];
