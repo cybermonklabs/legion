@@ -101,4 +101,40 @@ func TestAControllerTurnOpenPastItsBoundIsEnded(t *testing.T) {
 		h.wantNoStartSince(resumes, spawns)
 		h.wantEnds(0)
 	})
+
+	t.Run("a refused take-back ends nothing and counts nothing, and the next post counts the turn once", func(t *testing.T) {
+		h := controllerUp(t)
+		start := h.inATurn()
+		h.advance(turnBound + time.Minute)
+		resumes, spawns := h.startsSoFar()
+		h.store.fail("PutDelivery", errBoom)
+		_ = h.handle(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
+		h.wantState(StateWorking)
+		h.wantNoStartSince(resumes, spawns)
+		h.wantEnds(0)
+
+		// The store answers again, and the keeper's next look posts the same turn.
+		h.store.fail("PutDelivery", nil)
+		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
+		h.wantResumedSince(resumes, spawns, session)
+		h.wantEnds(1)
+	})
+
+	t.Run("an operator's compaction past the bound is left alone and counts nothing", func(t *testing.T) {
+		h := controllerUp(t)
+		start := h.claim().LastTurnStart
+		release, compacted := h.compactHeld()
+		h.wantState(StateWorking)
+		h.advance(turnBound + time.Minute)
+		resumes, spawns := h.startsSoFar()
+		h.must(TurnPastBound{Claim: h.token, Bound: turnBound, TurnStart: start})
+
+		h.wantState(StateWorking)
+		h.wantNoStartSince(resumes, spawns)
+		h.wantEnds(0)
+		release()
+		if err := <-compacted; err != nil {
+			t.Fatalf("the compaction answered %v, want it run to its end", err)
+		}
+	})
 }

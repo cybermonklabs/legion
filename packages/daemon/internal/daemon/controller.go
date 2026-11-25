@@ -79,10 +79,17 @@ type controllerKeeper struct {
 	// turnBound is `controller_turn_bound_minutes` and maxAge `controller_session_max_age_hours`,
 	// each 0 for its rule off (config.Config.ControllerTurnBound, ControllerSessionMaxAge).
 	turnBound, maxAge time.Duration
+	// unaged is the last session whose id the age rule could read no age off, so its line is
+	// written once for that session (replaceOld).
+	unaged string
 }
 
-func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst time.Duration, log *slog.Logger) *controllerKeeper {
-	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst}
+// newControllerKeeper is the keeper of project's controller, with the wait before its first retry
+// and its two rules' bounds (turnBound, maxAge, each 0 for the rule off), so no keeper is built
+// with a rule silently off.
+func newControllerKeeper(ctx context.Context, sup *supervisor, project string, retryFirst, turnBound, maxAge time.Duration, log *slog.Logger) *controllerKeeper {
+	return &controllerKeeper{supervisor: sup, project: project, ctx: ctx, log: log, now: time.Now, retryFirst: retryFirst,
+		turnBound: turnBound, maxAge: maxAge}
 }
 
 func (k *controllerKeeper) token() claim.Token { return claim.ControllerToken(k.project) }

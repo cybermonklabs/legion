@@ -68,7 +68,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 			t.Fatalf("create the failed controller: %v", err)
 		}
 		var logs syncBuffer
-		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 		clock := time.Now()
 		k.now = func() time.Time { return clock }
 		for i := range 4 {
@@ -150,7 +150,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 			t.Fatalf("create the failed controller: %v", err)
 		}
 		var logs syncBuffer
-		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, slog.New(slog.NewJSONHandler(&logs, nil)))
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
 		clock := time.Now()
 		k.now = func() time.Time { return clock }
 		step := func() {
@@ -249,7 +249,7 @@ func TestTheControllerKeeperAsksForANewSessionOnlyForASessionHeldElsewhere(t *te
 			Generation: 1, State: supervise.StateFailed, Session: recorded, SessionFile: file}, ""); err != nil {
 			t.Fatalf("create the failed controller: %v", err)
 		}
-		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, quietLogger())
+		k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 0, 0, quietLogger())
 		clock := time.Now()
 		k.now = func() time.Time { return clock }
 		if err := k.keep(); err != nil {

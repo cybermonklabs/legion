@@ -43,8 +43,7 @@ func keptController(t *testing.T, c supervise.Claim) (*controllerKeeper, *superv
 	if _, _, err := sup.Create(context.Background(), c, ""); err != nil {
 		t.Fatalf("create the controller's claim: %v", err)
 	}
-	k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, log)
-	k.turnBound, k.maxAge = 90*time.Minute, 72*time.Hour
+	k := newControllerKeeper(context.Background(), sup, "legion", time.Minute, 90*time.Minute, 72*time.Hour, log)
 	return k, sup, rt, logs
 }
 
@@ -242,6 +241,17 @@ func TestAnIdleControllerSessionOlderThanItsMaxAgeIsReplaced(t *testing.T) {
 		k.maxAge = 0
 		keepOnce(t, k)
 		wantUntouched(t, sup, rt, supervise.StateIdle, old)
+	})
+
+	t.Run("an idle session whose id is no UUIDv7 is kept, and one Warn line says the rule cannot read its age", func(t *testing.T) {
+		k, sup, rt, logs := keptController(t, idle("ses_controller"))
+		keepOnce(t, k)
+		keepOnce(t, k)
+		wantUntouched(t, sup, rt, supervise.StateIdle, "ses_controller")
+		lines := linesOf(t, logs, "controller: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and the session is not replaced for it")
+		if len(lines) != 1 || lines[0]["level"] != "WARN" {
+			t.Fatalf("the lines for an id the rule reads no age off are %+v, want one at Warn over two looks", lines)
+		}
 	})
 }
 

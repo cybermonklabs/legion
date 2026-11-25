@@ -2797,9 +2797,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
 	var keeper *controllerKeeper
 	if cfg.ControllerLaunch == config.ControllerLaunchDaemon {
-		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry, s.log)
-		// The keeper's two rules over a running controller (dispatch://INFRA-2045 R2 and R3).
-		keeper.turnBound, keeper.maxAge = cfg.ControllerTurnBound, cfg.ControllerSessionMaxAge
+		keeper = newControllerKeeper(s.supervisor.ctx, s.supervisor, p.project, p.controllerRetry,
+			cfg.ControllerTurnBound, cfg.ControllerSessionMaxAge, s.log)
 	}
 	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
 	// this runs the runtime is built and the launcher acceptor installed, and what is left of the

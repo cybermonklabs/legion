@@ -67,15 +67,24 @@ type SessionRun struct {
 	TurnFinished bool `json:"turnFinished,omitempty"`
 }
 
-// sessionEnded counts one charged end of a launch of the recorded session (SessionRun), how being
-// the words for what ended it. A claim that records no session — a fresh spawn whose agent has not
-// registered yet — has no session the end is of, and counts nothing. The end that brings the
-// project controller's session to controllerSessionEnds while that session has never finished a
-// turn writes one Error line: such a session is not replaced, and only the keeper's retries bring
-// it back.
+// sessionEnded counts one charged end of a launch of the project controller's recorded session
+// (SessionRun), how being the words for what ended it, and writes the Error line of a session that
+// never finished a turn where this end brings it to controllerSessionEnds (countEnd,
+// reportNotReplaced).
 func (m *Machine) sessionEnded(how string) {
-	if m.claim.Session == "" {
-		return
+	if m.countEnd(how) {
+		m.reportNotReplaced()
+	}
+}
+
+// countEnd is sessionEnded's count alone, and whether this end brought a session that never
+// finished a turn to controllerSessionEnds, for a caller that writes the Error line only once it
+// knows the end stands (endTurnPastBound). Only the controller's run is counted, since only the
+// controller's launch reads it (replaceEndedSession). A claim that records no session — a fresh
+// spawn whose agent has not registered yet — has no session the end is of, and counts nothing.
+func (m *Machine) countEnd(how string) (reached bool) {
+	if m.claim.Role != claim.RoleController || m.claim.Session == "" {
+		return false
 	}
 	run := &m.claim.SessionRun
 	run.Ends++
@@ -83,9 +92,14 @@ func (m *Machine) sessionEnded(how string) {
 	if over := len(run.Endings) - controllerSessionEnds; over > 0 {
 		run.Endings = slices.Clone(run.Endings[over:])
 	}
-	if m.claim.Role == claim.RoleController && run.Ends == controllerSessionEnds && !run.TurnFinished {
-		m.log.Error(sessionNotReplacedLine, "session", m.claim.Session, "endings", run.Endings)
-	}
+	return run.Ends == controllerSessionEnds && !run.TurnFinished
+}
+
+// reportNotReplaced is the one Error line of a controller session that ended
+// controllerSessionEnds launches in a row and never finished a turn: it is not replaced, and only
+// the keeper's retries bring it back.
+func (m *Machine) reportNotReplaced() {
+	m.log.Error(sessionNotReplacedLine, "session", m.claim.Session, "endings", m.claim.SessionRun.Endings)
 }
 
 // diedEnding is how a death the machine charged ended the session's launch (died), for the run's
@@ -122,7 +136,8 @@ func (m *Machine) replaceEndedSession(ctx context.Context) {
 			"session", old, "endings", run.Endings, "error", err)
 		return
 	}
-	why := fmt.Sprintf("its last %d launches ended before it finished a turn: %s", run.Ends, strings.Join(run.Endings, "; then "))
+	why := fmt.Sprintf("%d of its launches in a row ended before it finished a turn; the last %d: %s",
+		run.Ends, len(run.Endings), strings.Join(run.Endings, "; then "))
 	m.log.Warn(sessionReplacedLine, "session", old, "requirement", "R1", "reason", why, "endings", run.Endings)
 	m.forgetSession(why)
 }
@@ -146,7 +161,10 @@ func turnPastBound(m *Machine, ctx context.Context, ev Event) error {
 // backstop's does not, so a controller ended past its bound does not spend its launch budget.
 func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error {
 	start, now := m.claim.LastTurnStart, m.deps.Clock.Now()
-	if !m.turnOpen() || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
+	// A claim stored working for a compaction with no turn started under it (compactStart) is in
+	// no turn: its compaction is not cut off, and counts nothing.
+	inTurn := m.turnOpen() && !(m.compacting != nil && !m.compacting.inTurn)
+	if !inTurn || !start.Equal(ev.TurnStart) || !start.Add(ev.Bound).Before(now) {
 		m.log.Info("supervise: the controller turn the keeper read open past its bound has ended, or another began; it is left alone",
 			"turnStartedAt", start, "read", ev.TurnStart, "bound", ev.Bound)
 		return nil
@@ -163,12 +181,19 @@ func (m *Machine) endTurnPastBound(ctx context.Context, ev TurnPastBound) error 
 	// that launch fresh. A replacement that ended nothing — a take-back the store refused, a launch
 	// the lifecycle refused (EndNotMade) — leaves the same turn open with the process it found, and
 	// the keeper's next look posts it again, so its count is taken back: one turn is one end.
-	counted := m.claim.SessionRun
+	counted, ended := m.claim.SessionRun, m.claim.LastTurnEnd
 	counted.Endings = slices.Clone(counted.Endings)
-	m.sessionEnded(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
+	reached := m.countEnd(fmt.Sprintf("its turn stayed open longer than %s, from %s", ev.Bound, start.UTC().Format(time.RFC3339)))
+	// The end closes the turn, as a death's does (chargeDeath): the relaunched controller then
+	// reads as in no turn, so the keeper's next look reads it again (its age among them).
+	m.claim.LastTurnEnd = now
 	end, err := m.replaceProcess(ctx, "the daemon ended a controller turn that stayed open past its bound", ordinaryEnd, endTurnPastBound(ev.Bound))
-	if end == EndNotMade {
-		m.claim.SessionRun = counted
+	switch {
+	case end == EndNotMade:
+		m.claim.SessionRun, m.claim.LastTurnEnd = counted, ended
+	case reached:
+		// Written once the end stands, so a take-back writes no second line for one end.
+		m.reportNotReplaced()
 	}
 	m.log.Info("supervise: the end of the controller turn open past its bound", "end", end)
 	return err

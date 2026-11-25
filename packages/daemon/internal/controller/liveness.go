@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // probeTimeout bounds one role lookup, so a hung listener answers Unknown rather than holding the
@@ -125,7 +126,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		var refusal listenerwire.RoleRefusal
 		if err := json.Unmarshal(body, &refusal); err != nil || refusal.Error == "" {
 			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup is not its role refusal; the controller is left as it is",
-				"url", p.lookup, "session", session, "body", excerpt(body))
+				"url", p.lookup, "session", session, "body", redact.Runes(string(body), excerptRunes))
 			return Unknown
 		}
 		if refusal.HolderState == notify.StateUnresponsive {
@@ -158,14 +159,6 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	return Live
 }
 
-// excerptBytes bounds the part of an answer's body a line quotes (excerpt).
-const excerptBytes = 200
-
-// excerpt is the start of body for a line that says what an answer the probe could not use held:
-// at most excerptBytes of it, marked where it was cut.
-func excerpt(body []byte) string {
-	if len(body) <= excerptBytes {
-		return string(body)
-	}
-	return string(body[:excerptBytes]) + "…"
-}
+// excerptRunes bounds the part of a 404's body the probe's line quotes, cut and redacted as
+// redact.Runes does it.
+const excerptRunes = 200

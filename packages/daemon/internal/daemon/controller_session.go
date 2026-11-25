@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -24,7 +24,10 @@ const controllerSessionReplacedLine = "controller: the daemon's controller sessi
 func (k *controllerKeeper) mind(ctx context.Context, m *supervise.Machine) error {
 	c := m.Claim()
 	now := k.now()
-	turnOpen := c.State == supervise.StateWorking || c.LastTurnStart.After(c.LastTurnEnd)
+	// A turn is open while the claim is working and its start is not before the last turn's end: a
+	// claim stored working for a compaction with no turn under it keeps the start of a turn that
+	// finished, and the machine, which knows the compaction, decides the case of equal times.
+	turnOpen := c.State == supervise.StateWorking && !c.LastTurnStart.Before(c.LastTurnEnd)
 	switch {
 	case turnOpen:
 		if k.turnBound <= 0 || c.LastTurnStart.IsZero() || !c.LastTurnStart.Add(k.turnBound).Before(now) {
@@ -57,7 +60,17 @@ func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine,
 		return nil
 	}
 	started, ok := sessionStarted(c.Session)
-	if !ok || !started.Add(k.maxAge).Before(now) {
+	if !ok {
+		// The rule reads no age off an id of another form, so it cannot act on this session; one
+		// line says so, once for each such session, while the rule is on.
+		if k.unaged != c.Session {
+			k.unaged = c.Session
+			k.log.Warn("controller: the controller's session id is no UUIDv7, so controller_session_max_age_hours cannot read its age and the session is not replaced for it",
+				"claim", c.Token, "session", c.Session)
+		}
+		return nil
+	}
+	if !started.Add(k.maxAge).Before(now) {
 		return nil
 	}
 	why := fmt.Sprintf("the session is older than controller_session_max_age_hours (%s): it started at %s, %s before the keeper's look",
@@ -84,16 +97,10 @@ func (k *controllerKeeper) replaceOld(ctx context.Context, m *supervise.Machine,
 // are the milliseconds since the Unix epoch at which the session began. An id of any other form —
 // another version, or no UUID at all — says nothing of its age, and answers false.
 func sessionStarted(id string) (time.Time, bool) {
-	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[18] != '-' || id[23] != '-' || id[14] != '7' {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.Version() != 7 {
 		return time.Time{}, false
 	}
-	raw, err := hex.DecodeString(strings.ReplaceAll(id, "-", ""))
-	if err != nil {
-		return time.Time{}, false
-	}
-	var ms int64
-	for _, b := range raw[:6] {
-		ms = ms<<8 | int64(b)
-	}
-	return time.UnixMilli(ms), true
+	sec, nsec := parsed.Time().UnixTime()
+	return time.Unix(sec, nsec), true
 }

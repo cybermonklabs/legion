@@ -2739,8 +2739,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// The controller's fresh session says ready: one line names it beside the session it
 	// replaced, once for each replacement, at the first ready of the session that replaced it
 	// (AbandonedSession.ReadyNamed, dispatch://INFRA-2045 R4). The mark is written with this
-	// ready's own write (finishReady).
-	if a := &m.claim.Abandoned; m.claim.Role == claim.RoleController && a.Session != "" && !a.ReadyNamed {
+	// ready's own write (finishReady). A replacement already told — one a release before this one
+	// recorded, which wrote no mark — is no fresh session's, and names none.
+	if a := &m.claim.Abandoned; m.claim.Role == claim.RoleController && a.Tells() && !a.ReadyNamed {
 		a.ReadyNamed = true
 		m.log.Info(freshSessionReadyLine, "oldSession", a.Session, "newSession", m.claim.Session, "reason", a.Why)
 	}

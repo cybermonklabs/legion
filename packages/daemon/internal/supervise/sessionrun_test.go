@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -304,5 +305,21 @@ func TestAControllerSessionReplacementIsLoggedAndTold(t *testing.T) {
 	h.registerFresh()
 	if ready := h.records.of(freshSessionReadyLine); len(ready) != 1 {
 		t.Fatalf("the fresh session's ready lines after its relaunch are %d, want the one", len(ready))
+	}
+}
+
+// A controller record an earlier release wrote can hold an abandoned session that was already told
+// (an operator's forget-session, say) and no ReadyNamed mark, which no migration writes. Its next
+// ready is no fresh session's ready, and writes no line that names a replacement
+// (dispatch://INFRA-2045 R4). The control: with the line written for any abandoned session that
+// carries no mark, this record writes it.
+func TestAToldReplacementAnEarlierReleaseRecordedNamesNoFreshSession(t *testing.T) {
+	c := controllerClaim()
+	c.Abandoned = AbandonedSession{Session: "ses_forgotten_by_hand", Why: "an operator cleared it with `legion claims forget-session`, so this claim starts fresh",
+		At: epoch.Add(-time.Hour), Told: true}
+	h := newHarnessOf(t, c)
+	h.reach(StateReady)
+	if ready := h.records.of(freshSessionReadyLine); len(ready) != 0 {
+		t.Fatalf("the ready of a controller whose replacement was told before this release wrote %+v, want no line", ready)
 	}
 }
