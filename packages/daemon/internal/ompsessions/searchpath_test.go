@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
 // PoolImage is ghcr.io/cybermonklabs/legion/ci, the copy of PgBouncer 1.25.2 (.github/ci-images.yaml),
@@ -193,25 +192,32 @@ func leaveSetting(ctx context.Context, dsn string) string {
 	return ""
 }
 
-// poolStarts bounds how many times startPool starts a pool whose port another process took
-// between the free-port probe and PgBouncer's bind.
-const poolStarts = 5
+// poolPort names the unix socket a pool listens on, in a directory of the test's own: PgBouncer
+// calls it .s.PGSQL.<listen_port>, as Postgres does, and binds no TCP port for it.
+const poolPort = "6432"
 
 // startPool starts PgBouncer 1.25.2 (PoolImage) with docker in front of the server direct names,
 // set up as settings says, and answers the URL that reaches direct's database through it, once a
 // connection through it has opened. The container is removed when the test ends, and its removal
-// is registered before docker runs, so a container docker made but could not start goes too. The
-// port is one free when the test asked; a pool that then fails to bind it, another process having
-// taken it first, is removed and started again on another port, up to poolStarts times.
+// is registered before docker runs, so a container docker made but could not start goes too.
+//
+// The pool listens on a unix socket alone, in a directory of the test's own (testtmp.Dir) that
+// docker mounts into the container, and on no TCP port. A port is the machine's: one the test
+// probed and released for PgBouncer to bind by number was taken by another process in between on
+// a shared box (dispatch://INFRA-3904), and a port Docker picks comes from its own record, which
+// picked one already held (testport.LoopbackPorts). The socket's directory is the test's alone,
+// mode 0700, so no other user's process can bind there before PgBouncer does, and PgBouncer runs
+// as the test's own user so that it can. The mount needs docker's daemon on this machine, as the
+// host network below already does.
 //
 // One wildcard [databases] entry serves every database on the server under its own name, and the
 // pool's auth_file holds the one login direct names, so a login that is no superuser, such as a
 // Legion pod's test login, signs in as well as CI's postgres. The container runs on the host's
 // network, so it reaches the server as the test does, with localhost read as 127.0.0.1 (PgBouncer
 // tries every address a name resolves to, and a server published on IPv4 alone refuses the
-// connections it sends to ::1), and it listens on 127.0.0.1. Its configuration reaches it through
-// its environment, never its command line, so no process list holds the password. It runs with 1
-// CPU and 256 MiB, as docs/testing.md asks of every container a test starts.
+// connections it sends to ::1). Its configuration reaches it through its environment, never its
+// command line, so no process list holds the password. It runs with 1 CPU and 256 MiB, as
+// docs/testing.md asks of every container a test starts.
 func startPool(t *testing.T, docker, direct string, settings pool) string {
 	t.Helper()
 	server, err := pgconn.ParseConfig(direct)
@@ -226,93 +232,71 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 		host = "127.0.0.1"
 	}
 	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
-	for start := 1; ; start++ {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("find a free port for the pool: %v", err)
+	socketDir := testtmp.Dir(t, ".s.PGSQL."+poolPort)
+	config := strings.Join([]string{
+		"[databases]",
+		fmt.Sprintf("* = host=%s port=%d", host, server.Port),
+		"",
+		"[pgbouncer]",
+		"listen_port = " + poolPort,
+		"unix_socket_dir = /pool",
+		"auth_type = scram-sha-256",
+		"auth_file = /tmp/userlist.txt",
+		"pool_mode = " + settings.mode,
+		fmt.Sprintf("server_lifetime = %d", settings.lifetime),
+		"max_client_conn = 500",
+		fmt.Sprintf("default_pool_size = %d", settings.size),
+		"max_prepared_statements = 1000",
+		"",
+	}, "\n")
+	name, err := testdb.RandomName("legion-ompsessions-pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		out, err := exec.Command(docker, "rm", "-f", "-v", name).CombinedOutput()
+		if err != nil && !strings.Contains(string(out), "No such container") {
+			t.Errorf("remove the pool's container %s: %v: %s", name, err, out)
 		}
-		port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-		if err := listener.Close(); err != nil {
-			t.Fatalf("free the pool's port: %v", err)
-		}
-		config := strings.Join([]string{
-			"[databases]",
-			fmt.Sprintf("* = host=%s port=%d", host, server.Port),
-			"",
-			"[pgbouncer]",
-			"listen_addr = 127.0.0.1",
-			"listen_port = " + port,
-			"unix_socket_dir =",
-			"auth_type = scram-sha-256",
-			"auth_file = /tmp/userlist.txt",
-			"pool_mode = " + settings.mode,
-			fmt.Sprintf("server_lifetime = %d", settings.lifetime),
-			"max_client_conn = 500",
-			fmt.Sprintf("default_pool_size = %d", settings.size),
-			"max_prepared_statements = 1000",
-			"",
-		}, "\n")
-		name, err := testdb.RandomName("legion-ompsessions-pool")
-		if err != nil {
-			t.Fatal(err)
-		}
-		remove := func() error {
-			out, err := exec.Command(docker, "rm", "-f", "-v", name).CombinedOutput()
-			if err != nil && !strings.Contains(string(out), "No such container") {
-				return fmt.Errorf("remove the pool's container %s: %v: %s", name, err, out)
-			}
-			return nil
-		}
-		t.Cleanup(func() {
-			if err := remove(); err != nil {
-				t.Error(err)
-			}
-		})
-		run := exec.Command(docker, "run", "-d", "--name", name, "--network", "host", "--cpus", "1", "--memory", "256m",
-			"-e", "POOL_CONFIG", "-e", "POOL_USERS", "--entrypoint", "sh", PoolImage, "-c",
-			`printf "%s\n" "$POOL_USERS" > /tmp/userlist.txt && printf "%s" "$POOL_CONFIG" > /tmp/pgbouncer.ini && exec pgbouncer /tmp/pgbouncer.ini`)
-		run.Env = append(os.Environ(), "POOL_CONFIG="+config, "POOL_USERS="+quote(server.User)+" "+quote(server.Password))
-		if out, err := run.CombinedOutput(); err != nil {
-			t.Fatalf("start the pool: docker run: %v: %s", err, out)
-		}
-		address := (&url.URL{
-			Scheme: "postgres", User: url.UserPassword(server.User, server.Password),
-			Host: net.JoinHostPort("127.0.0.1", port), Path: "/" + server.Database, RawQuery: "sslmode=disable",
-		}).String()
-		logs := func() string {
-			out, _ := exec.Command(docker, "logs", name).CombinedOutput()
-			return string(out)
-		}
-		deadline := time.Now().Add(poolReadiness)
-		for {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			conn, err := pgx.Connect(ctx, address)
-			if err == nil {
-				_ = conn.Close(ctx)
-				cancel()
-				return address
-			}
+	})
+	run := exec.Command(docker, "run", "-d", "--name", name, "--network", "host", "--cpus", "1", "--memory", "256m",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "--mount", "type=bind,src="+socketDir+",dst=/pool",
+		"-e", "POOL_CONFIG", "-e", "POOL_USERS", "--entrypoint", "sh", PoolImage, "-c",
+		`printf "%s\n" "$POOL_USERS" > /tmp/userlist.txt && printf "%s" "$POOL_CONFIG" > /tmp/pgbouncer.ini && exec pgbouncer /tmp/pgbouncer.ini`)
+	run.Env = append(os.Environ(), "POOL_CONFIG="+config, "POOL_USERS="+quote(server.User)+" "+quote(server.Password))
+	if out, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("start the pool: docker run: %v: %s", err, out)
+	}
+	address := (&url.URL{
+		Scheme: "postgres", User: url.UserPassword(server.User, server.Password), Path: "/" + server.Database,
+		RawQuery: url.Values{
+			"host":    {socketDir},
+			"port":    {poolPort},
+			"sslmode": {"disable"},
+		}.Encode(),
+	}).String()
+	logs := func() string {
+		out, _ := exec.Command(docker, "logs", name).CombinedOutput()
+		return string(out)
+	}
+	deadline := time.Now().Add(poolReadiness)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn, err := pgx.Connect(ctx, address)
+		if err == nil {
+			_ = conn.Close(ctx)
 			cancel()
-			running, _ := exec.Command(docker, "container", "inspect", "-f", "{{.State.Running}}", name).Output()
-			if strings.TrimSpace(string(running)) != "true" {
-				log := logs()
-				// The image's C library is musl, whose words for EADDRINUSE are "Address in use"
-				// (PgBouncer logs "bind(): Address in use"); glibc's are "Address already in use".
-				taken := strings.Contains(log, "Address in use") || strings.Contains(log, "Address already in use")
-				if taken && start < poolStarts {
-					t.Logf("the pool's port %s was taken before PgBouncer bound it: starting it again on another", port)
-					if err := remove(); err != nil {
-						t.Fatal(err)
-					}
-					break
-				}
-				t.Fatalf("the pool's container %s exited before it answered a connection (%v); its log:\n%s", name, err, log)
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the pool in container %s answered no connection within %s (%v); its log:\n%s", name, poolReadiness, err, logs())
-			}
-			time.Sleep(500 * time.Millisecond)
+			return address
 		}
+		cancel()
+		running, _ := exec.Command(docker, "container", "inspect", "-f", "{{.State.Running}}", name).Output()
+		if strings.TrimSpace(string(running)) != "true" {
+			t.Fatalf("the pool's container %s exited before it answered a connection (%v); its log:\n%s", name, err, logs())
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the pool in container %s answered no connection within %s (%v); its log:\n%s", name, poolReadiness, err, logs())
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
