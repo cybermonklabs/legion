@@ -250,9 +250,7 @@ func leaderReadBucket(t *testing.T, cluster *testnats.Cluster, kv bus.KeyValue) 
 	}
 	undirected := info.Config
 	undirected.AllowDirect = false
-	if _, err := js.UpdateStream(&undirected); err != nil {
-		t.Fatalf("take direct gets off the bucket's stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, undirected)
 	cluster.MoveStreamLeader(t, stream, 0)
 	legacy, err := js.KeyValue(kv.Bucket())
 	if err != nil {

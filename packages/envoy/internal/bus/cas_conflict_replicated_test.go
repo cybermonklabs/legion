@@ -118,9 +118,7 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 	}
 	undirected := info.Config
 	undirected.AllowDirect = false
-	if _, err := js.UpdateStream(&undirected); err != nil {
-		t.Fatalf("take direct gets off the bucket's stream: %v", err)
-	}
+	testnats.UpdateStream(t, js, undirected)
 	cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
 	shortJS, err := conn.JetStream(nats.MaxWait(2 * time.Second))
 	if err != nil {
