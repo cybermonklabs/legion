@@ -27,8 +27,11 @@ import { onScreen } from "./issue-page-i";
  *   `[data-spec-legend-mark]`, its column heads `[data-spec-head]`, its tree `[data-spec-tree]`,
  *   one `[data-spec-group]` per parent and one `[data-spec-run]` per run of statements, its
  *   decision cells `[data-spec-cell]` (`data-said`, `data-spec-statements`), its statements
- *   `[data-spec-statement]` (`data-spec-mark`), and under each statement the line
- *   `[data-spec-because]` naming its decision.
+ *   `[data-spec-statement]` (`data-spec-mark`), each with the count of the checks that serve it,
+ *   the link `[data-spec-checks]`, where a check serves it, and under each statement the line
+ *   `[data-spec-because]` naming its decision: the question it answers `[data-spec-question]`,
+ *   as the cell draws it too, the quote's link `[data-spec-because-link]`, and
+ *   `[data-spec-changed-since]` where the statement changed after its tie.
  */
 
 // ---------------------------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import {
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
   FILTER_SIGNAL_WORDS,
+  GAP_LINES,
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
@@ -21,6 +22,7 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import {
+  answerAsk,
   createAsk,
   createMessage,
   editArtifact,
@@ -39,11 +41,14 @@ import {
   seedWholeIssue,
   UNBROKEN_PATH,
 } from "./issue-layout-seed";
+import { asPlanner } from "./issue-layout-seed-support";
 import {
   CITATION_BLOCK_ID,
   OPEN_QUESTION_BLOCK_ID,
   requirementBlockId,
+  requirementText,
   SUMMARY_SENTENCES,
+  specBlockRef,
 } from "./issue-layout-seed-text";
 import {
   contentsPane,
@@ -72,10 +77,11 @@ import {
   tree,
 } from "./issue-page-g";
 import {
+  caretInNode,
+  caretInRowBlock,
   expectFallbackLine,
   FALLBACK_LINES,
   focusedNodeId,
-  focusInside,
   GONE_COMMENT,
   gapKinds,
   idsOf,
@@ -103,6 +109,7 @@ import {
 import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
 import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
+import { verificationCheck } from "./issue-page-v";
 import { expect, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertPageFits } from "./unclipped";
@@ -744,18 +751,39 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
   });
 });
 
+/** The first sentence of the question row (5) asks of its own, which runs past the 100
+ *  characters a one-line place cuts a node's first line at (R1), so a cell or a line that cut it
+ *  as one would end it in an ellipsis. */
+const LONG_QUESTION_FIRST =
+  "Which of the old page's addresses - its tabs, its anchors and each query string a reader saved in a bookmark - must the new page still answer?";
+/** What the question says after its first sentence, which neither the cell nor the line draws. */
+const LONG_QUESTION_REST = "A link that stops answering loses its reader.";
+/** The person's answer to that question, one sentence, so the quote is the whole of it. */
+const LONG_ANSWER = "Each of them, the anchors as well.";
+/** The heading of the person's section the row adds to the decisions document. */
+const LONG_DECISION = "Answer every address a reader saved";
+/** The words the row gives statement 7 once its decision ties it. */
+const REWRITTEN_SEVENTH = "Requirement 7 of the redesign stands on a row of its own, as it did.";
+
 // c-home. The Spec view's body: the decision beside the statements it shaped, in the words it
 // came from, and one line on each statement's own row (R5), drawn with the focus elsewhere and
-// the pointer off the page; the tester's F7 is read here too - the line is a link to the
-// decision, and `w` moves the focus to it - and F20: no text of the view is a raw address or a
-// fence. Partial on today's data: a statement carries no `from` yet, so no statement hangs under
-// an answered ask and the body draws one group with no heading; a criterion, an agent decision's
-// level of uncertainty and its reason, and the versions of a view's query wait on reads of their
-// own, so this row reads the live Spec view.
-// SLOW(>=2s): the whole seeded issue, its decisions and answer read back, and the pointer and
-// the focus moved across the view, each waited on until it redraws.
+// the pointer off the page. The line of a decision that answers a question gives, after
+// "because:", that question's first sentence, then the quote. The tester's F7 is read here too -
+// the line is a link to the decision, and `w` moves the focus to it - and F20: no text of the
+// view is a raw address or a fence. Then the row asks a question of its own whose first sentence
+// runs past 100 characters, answers it, and writes a version of the decisions document whose
+// person's section cites that answer and ties statement 7: the cell beside it and its line each
+// draw that first sentence to its end, with no ellipsis. Once the row rewrites statement 7 after
+// that tie, its line says "Changed since", and no other statement's does. Partial on today's
+// data: a statement carries no `from` yet, so no statement hangs under an answered ask and the
+// body draws one group with no heading; a criterion, an agent decision's level of uncertainty and
+// its reason, and the versions of a view's query wait on reads of their own, so this row reads
+// the live Spec view.
+// SLOW(>=2s): the whole seeded issue, its decisions and answer read back, the pointer and the
+// focus moved across the view, and two more loads after a question, a decision and a statement
+// written, each waited on until it redraws.
 test("a spec node shows the decisions that shaped it at every version", async ({ browser }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(210_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statement = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
@@ -828,13 +856,21 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     expect(agents[0]?.text).toContain(SPEC_WORDS.said_agent);
 
     // One line on each statement's own row, with the same words, who decided and when; a
-    // statement a second decision shaped names it after the first.
+    // statement a second decision shaped names it after the first. The person's decision answers
+    // a question, so its line gives that question's first sentence after "because:", then the
+    // quote: the seeded question is one sentence, so its first sentence is the whole of it.
+    const question = answered.ask.question;
+    expect(question, "the seeded question is not one sentence").toMatch(/^[^.!?]+[.!?]$/u);
     const lines = await becauseLines(page);
     for (const index of [3, 4, 5]) {
       expect(
         lines[statement(index)],
         `statement ${index} carries no line for its decision`
-      ).toContain(`${SPEC_WORDS.because} “${quote}”`);
+      ).toContain(`${SPEC_WORDS.because} ${question} “${quote}”`);
+      expect(
+        lines[statement(index)]?.startsWith(`${SPEC_WORDS.because} ${question} `),
+        `statement ${index}'s line does not start with the question its decision answers: "${lines[statement(index)]}"`
+      ).toBe(true);
       expect(lines[statement(index)]).toContain("alice");
     }
     for (const index of [4, 5]) {
@@ -936,23 +972,145 @@ test("a spec node shows the decisions that shaped it at every version", async ({
       body.locator("[data-row-report]"),
       "w on statement 4 does not reach the decision beside it"
     ).toHaveCount(0);
+
+    // A question of the row's own, whose first sentence runs past the 100 characters a one-line
+    // place cuts at, answered by the reader, and a new version of the decisions document whose
+    // person's section cites that answer and ties statement 7, which no decision shaped before:
+    // the cell beside statement 7 and its line each draw that first sentence to its end.
+    const asked = await createAsk(
+      seeded.key,
+      { question: `${LONG_QUESTION_FIRST} ${LONG_QUESTION_REST}`, urgency: "high" },
+      asPlanner
+    );
+    await answerAsk(asked.id, { expected_edited_at: null, selected: [], text: LONG_ANSWER });
+    await editArtifact(seeded.decisionsArtifactId, {
+      ops: [
+        {
+          after: "end",
+          markdown:
+            `## ${LONG_DECISION}\n\nDecided in dispatch://${seeded.key}/ask/${asked.id}. ` +
+            `Shapes ${specBlockRef(seeded.key, requirementBlockId(7))}.`,
+          op: "insert",
+        },
+      ],
+    });
+    /** The tie of the row's own decision to statement 7, as today's decisions read holds it. */
+    const seventhTie = async () => {
+      const decisions = (await getIssueDecisions(seeded.key)).decisions ?? [];
+      const made = decisions.find((one) => one.heading === LONG_DECISION);
+      return made?.links?.find((link) => link.to.block_id === requirementBlockId(7));
+    };
+    await expect
+      .poll(async () => (await seventhTie()) !== undefined, {
+        message: "the decisions read holds no tie of the row's own decision to statement 7",
+      })
+      .toBe(true);
+    await openPreset(page, seeded.key, "spec");
+    const seventh = nodeRow(page, statement(7)).first();
+    const seventhCell = issuePage(page).locator(
+      `[data-spec-cell][data-spec-statements~="${statement(7)}"]`
+    );
+    await expect(
+      seventhCell,
+      "the row's own decision is not drawn as the reader's beside statement 7"
+    ).toHaveAttribute("data-said", "you");
+    await expect(
+      seventhCell.locator("[data-spec-question]"),
+      "the cell beside statement 7 does not draw its question's first sentence whole"
+    ).toHaveText(LONG_QUESTION_FIRST);
+    await expect(
+      seventh.locator("[data-spec-because] [data-spec-question]"),
+      "statement 7's line does not draw its question's first sentence whole"
+    ).toHaveText(LONG_QUESTION_FIRST);
+    const seventhLine = (await becauseLines(page))[statement(7)] ?? "";
+    expect(
+      seventhLine.startsWith(`${SPEC_WORDS.because} ${LONG_QUESTION_FIRST} “${LONG_ANSWER}”`),
+      `statement 7's line does not start with its question's first sentence, then the answer: "${seventhLine}"`
+    ).toBe(true);
+    const questionsDrawn = [
+      seventhLine,
+      ...(await seventhCell.locator("[data-spec-question]").allTextContents()),
+    ];
+    expect(
+      questionsDrawn.filter((text) => text.includes("…")),
+      "the question's first sentence is cut with an ellipsis beside statement 7"
+    ).toEqual([]);
+    /** The statements whose line says "Changed since", in the order they are drawn. */
+    const changedSince = () =>
+      issuePage(page)
+        .locator("[data-spec-statement] [data-spec-because] [data-spec-changed-since]")
+        .evaluateAll((marks) =>
+          marks.map(
+            (mark) => mark.closest("[data-spec-statement]")?.getAttribute("data-node-id") ?? ""
+          )
+        );
+    // The cell above drew the decisions read's answer, which holds every tie and when each
+    // statement last changed, so one reading now is what that answer says.
+    expect(
+      await changedSince(),
+      "a statement says Changed since though none changed after its tie"
+    ).toEqual([]);
+
+    // Statement 7 rewritten after its tie: its line says "Changed since", and no other line does.
+    await editArtifact(seeded.specArtifactId, {
+      ops: [{ find: requirementText(7), op: "replace", with: REWRITTEN_SEVENTH }],
+    });
+    await expect
+      .poll(
+        async () => {
+          const link = await seventhTie();
+          const changed = link?.to.changed_at ?? null;
+          return (
+            link !== undefined &&
+            changed !== null &&
+            Date.parse(changed) > Date.parse(link.created_at)
+          );
+        },
+        { message: "the decisions read does not hold statement 7 as changed after its tie" }
+      )
+      .toBe(true);
+    await openPreset(page, seeded.key, "spec");
+    await expect(
+      rowWords(seventh),
+      "statement 7 is not drawn in the words the row rewrote it in"
+    ).toContainText(REWRITTEN_SEVENTH);
+    await expect
+      .poll(changedSince, {
+        message: "the statement rewritten after its tie, and it alone, does not say Changed since",
+      })
+      .toEqual([statement(7)]);
+    await expect(
+      seventh.locator("[data-spec-changed-since]"),
+      "statement 7's line does not say Changed since in the page's words"
+    ).toHaveText(SPEC_WORDS.changed_since);
   });
 });
 
-// c-presets' and c-chain's Spec halves (R4, R6, R10, R17). Under Spec the rows are the spec's
+/** The words a press on a statement's words types there, which a reload reads back. */
+const PRESSED_WORD = "Pressword";
+/** The block id of the check the row writes with an empty `serves`. */
+const LOOSE_CHECK_ID = "c-serves-nothing";
+
+// c-presets' and c-chain's Spec halves (R4, R6, R9, R10, R17). Under Spec the rows are the spec's
 // statements alone, in the order the coverage read gives them, and each hangs under the issue, so
 // no row draws a parent line and no group a heading; the view's count is their number. A
-// decision's chip, followed from the outline, opens the view on the statement it names, and Enter
-// on a statement opens the issue's address at its block, with the focus on its row of the
-// outline. "No check" is a statement's mark and the legend's word, and never a gap beside the
-// mark too. A child's Spec view draws its own statements and none of its parent's: the tree reads
-// the issue's own coverage alone (reading (e) of the part's plan).
-// SLOW(>=2s): two seeded issues, the whole one and a parent with its child, and four loads of the
-// page and two followed links, each waited on until the page redraws.
+// decision's chip, followed from the outline, opens the view on the statement it names. "No
+// check" is a statement's mark and the legend's word, and never a gap beside the mark too. Enter
+// on a statement, and a press on its words, put the caret in its words, in the editor staged in
+// its row, and what is typed there reads back after a reload. A statement a check serves carries
+// the number of its checks, as the coverage read counts them, at the right of its first line, a
+// link that a press, or `f` and Enter, follows to the Verification view with the focus on that
+// statement's row; a statement no check serves carries none. A check the row writes with no
+// statement it serves stands under the issue in the Verification view with the gap that says
+// so, and no seeded check carries a gap. A child's Spec view draws its own statements and none of
+// its parent's: the tree reads the issue's own coverage alone (reading (e) of the plan).
+// SLOW(>=2s): two seeded issues, the whole one and a parent with its child, eight loads of the
+// page or more, two followed links, two statements edited and a check written, each waited on
+// until the page redraws.
 test("the Spec view draws statements alone, each parent once, and no check once", async ({
   browser,
 }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(240_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const statement = (index: number) => blockNodeId(specSlug, requirementBlockId(index));
@@ -992,7 +1150,9 @@ test("the Spec view draws statements alone, each parent once, and no check once"
       "the Spec view heads a group of statements that hang under the issue"
     ).toBe(0);
 
-    // With no view on, `f` steps to the decision's first chip and Enter follows it.
+    // With no view on, `f` steps to the decision's first chip and Enter follows it. The page's
+    // reads are watched from that load on, so the keys below wait until they have settled.
+    const followed = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await focusRow(page, decision);
@@ -1032,26 +1192,207 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     // The view's own words, as row (7) reads them (reading (g)): an author's words are theirs.
     expect((await ownWords(body)).join(" "), "the Spec view reads proven").not.toMatch(/proven/i);
 
-    // Enter on a statement opens it where it is edited: the issue's own address at its block,
-    // with the focus on its row of the outline. A statement draws no body, so it is focused
-    // directly rather than by the outline's `focusRow`, which waits for one.
+    // Enter on a statement puts the caret in its words, in the spec's editor staged in its row in
+    // place of them, and Escape gives the row back. The landing the followed address makes once
+    // the page's reads settle would take the focus from a row a script focused before them.
+    await expectLoadSettled(followed);
     const third = nodeRow(page, statement(3)).first();
     await third.focus();
     await expect(third).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(
-      page,
-      "Enter on a statement does not open the issue's address at its block"
-    ).toHaveURL(new RegExp(`/issues/${seeded.key}#b-${requirementBlockId(3)}$`));
     await expect
-      .poll(() => focusedNodeId(page), {
-        message: "Enter on a statement does not put the focus on its row of the outline",
+      .poll(() => caretInRowBlock(page, requirementBlockId(3)), {
+        message: "Enter on a statement does not put the caret in its words",
       })
-      .toBe(statement(3));
-    expect(await body.count(), "Enter on a statement leaves the Spec view drawn").toBe(0);
-    expect(await focusInside(tree(page)), "the focus on the statement is not in the outline").toBe(
-      true
+      .toBe(true);
+    expect(
+      await focusedNodeId(page),
+      "Enter on a statement puts the caret in another row than its own"
+    ).toBe(statement(3));
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(() => caretInNode(page), {
+        message: "Escape does not take the caret out of the statement's words",
+      })
+      .toBe(false);
+    await expect(third, "Escape does not give the statement's row the focus back").toBeFocused();
+
+    // A press on a statement's words puts the caret in them too, and what is typed there is
+    // stored: the statement's words drawn after a reload hold it. The press lands on the first
+    // word, clear of a link or a chip, which a press follows instead.
+    const eighth = nodeRow(page, statement(8)).first();
+    await rowWords(eighth).click({ position: { x: 2, y: 12 } });
+    await expect
+      .poll(() => caretInRowBlock(page, requirementBlockId(8)), {
+        message: "a press on a statement's words does not put the caret in them",
+      })
+      .toBe(true);
+    expect(
+      await focusedNodeId(page),
+      "a press on a statement's words puts the caret in another row than its own"
+    ).toBe(statement(8));
+    await page.keyboard.type(`${PRESSED_WORD} `);
+    await page.keyboard.press("Escape");
+    const reloaded = watchApiRequests(page);
+    /** The words the page draws for statement 8 after a reload, once it draws that statement. */
+    const wordsAfterReload = async (): Promise<string> => {
+      await page.reload();
+      await expect(
+        nodeRow(page, statement(8)),
+        "the Spec view draws no statement 8 after a reload"
+      ).toHaveCount(1);
+      return (await rowWords(nodeRow(page, statement(8)).first()).innerText()).replace(/\s+/g, " ");
+    };
+    await expect
+      .poll(wordsAfterReload, {
+        message: "the words typed in a statement do not read back after a reload",
+        timeout: 30_000,
+      })
+      .toContain(PRESSED_WORD);
+    await expectLoadSettled(reloaded);
+
+    // Each statement a check serves carries the number of its checks, as the coverage read
+    // counts them, at the right end of its first line; a statement no check serves carries none.
+    await expect
+      .poll(
+        () =>
+          body
+            .locator("[data-spec-statement]")
+            .evaluateAll((rows) =>
+              Object.fromEntries(
+                rows.map((row) => [
+                  row.getAttribute("data-node-id") ?? "",
+                  (row.querySelector("[data-spec-checks]")?.textContent ?? "")
+                    .replace(/\s+/g, " ")
+                    .trim(),
+                ])
+              )
+            ),
+        {
+          message:
+            "the statements do not each carry the number of the checks that serve them, or none",
+        }
+      )
+      .toEqual(
+        Object.fromEntries(
+          coverage.map((one) => [
+            blockNodeId(specSlug, one.block_id),
+            one.checks === 0
+              ? ""
+              : `${one.checks} ${one.checks === 1 ? VERIFICATION_WORDS.check_one : VERIFICATION_WORDS.check_many}`,
+          ])
+        )
+      );
+    const misplaced = await body.locator("[data-spec-statement]").evaluateAll((rows) =>
+      rows.flatMap((row) => {
+        const count = row.querySelector("[data-spec-checks]")?.getBoundingClientRect();
+        const words = row.querySelector("[data-node-words]")?.getBoundingClientRect();
+        if (count === undefined || words === undefined) return [];
+        const placed = Math.abs(count.top - words.top) <= 1 && count.left >= words.right - 1;
+        return placed
+          ? []
+          : [
+              `${row.getAttribute("data-node-id")}: its count stands at ${count.left},${count.top}, its words from ${words.left},${words.top} to ${words.right}`,
+            ];
+      })
     );
+    expect(
+      misplaced,
+      "a statement's count of checks does not stand at the right of its first line"
+    ).toEqual([]);
+
+    // A press on the count, and `f` and Enter on it, open the Verification view with the focus
+    // on the statement's row.
+    const counted = coverage.filter((one) => one.checks > 0);
+    expect(
+      counted.length,
+      "the seed holds fewer than two statements a check serves"
+    ).toBeGreaterThan(1);
+    const followsCount = async (blockId: string, how: string): Promise<void> => {
+      await expect(
+        page,
+        `${how} on a statement's count of checks does not open the Verification view at its block`
+      ).toHaveURL(new RegExp(`${presetPath(seeded.key, "verification")}#b-${blockId}$`));
+      await expect(
+        presetToggle(page, "verification"),
+        `${how} on a statement's count of checks does not turn Verification on`
+      ).toHaveAttribute("aria-pressed", "true");
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `${how} on a statement's count of checks does not put the focus on its row of the Verification view`,
+        })
+        .toBe(blockNodeId(specSlug, blockId));
+    };
+    const pressed = counted[0]?.block_id ?? "";
+    await nodeRow(page, blockNodeId(specSlug, pressed))
+      .first()
+      .locator("[data-spec-checks]")
+      .click();
+    await followsCount(pressed, "a press");
+
+    const keyed = counted[1]?.block_id ?? "";
+    const backToSpec = watchApiRequests(page);
+    await openPreset(page, seeded.key, "spec");
+    const keyedRow = nodeRow(page, blockNodeId(specSlug, keyed)).first();
+    const keyedCount = keyedRow.locator("[data-spec-checks]");
+    await expect(keyedCount, "the Spec view drawn again draws no count of checks").toHaveCount(1);
+    await expectLoadSettled(backToSpec);
+    await keyedRow.focus();
+    await expect(keyedRow).toBeFocused();
+    // `f` steps through the row's links and controls in turn, so it is pressed until it reaches
+    // the count, at most once for each of them.
+    const stops = await keyedRow.locator("a[href], button").count();
+    for (let step = 0; step < stops; step += 1) {
+      await page.keyboard.press("f");
+      if (await keyedCount.evaluate((count) => count === document.activeElement)) break;
+    }
+    await expect(keyedCount, "f does not reach a statement's count of checks").toBeFocused();
+    await page.keyboard.press("Enter");
+    await followsCount(keyed, "f and Enter");
+
+    // Every seeded check serves a statement, so the row writes one whose `serves` is empty, in a
+    // new version of the Verification document. With Verification on it stands under the issue
+    // with the gap that says it serves nothing, and no seeded check carries a gap.
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    await editArtifact(seeded.verificationArtifactId, {
+      ops: [
+        {
+          after: "end",
+          markdown: `:::check{#${LOOSE_CHECK_ID} surface="cli" run="bun run e2e"}\nThis check names nothing it proves.\n:::`,
+          op: "insert",
+        },
+      ],
+    });
+    await openPreset(page, seeded.key, "verification");
+    const loose = verificationCheck(page, blockNodeId(verificationSlug, LOOSE_CHECK_ID));
+    await expect(
+      loose,
+      "the check that serves no statement does not stand under the issue in the Verification view"
+    ).toHaveAttribute("data-verification-loose", "");
+    await expect
+      .poll(
+        () =>
+          loose
+            .locator("[data-gap-kind]")
+            .evaluateAll((gaps) => gaps.map((gap) => gap.getAttribute("data-gap-kind"))),
+        { message: "the check that serves no statement carries no gap that says so" }
+      )
+      .toEqual(["serves_nothing"]);
+    await expect(
+      loose.locator("[data-gap-kind]"),
+      "the gap of the check that serves no statement does not say so in the page's words"
+    ).toHaveText(GAP_LINES.serves_nothing);
+    for (const check of seeded.checks.all) {
+      const drawn = verificationCheck(page, blockNodeId(verificationSlug, check));
+      await expect(
+        drawn.first(),
+        `the seeded check ${check} is not drawn in the Verification view`
+      ).toBeAttached();
+      expect(
+        await drawn.locator("[data-gap-kind]").count(),
+        `the seeded check ${check} carries a gap`
+      ).toBe(0);
+    }
   });
 
   await phase(browser, seedChildWithSpec, async (page, seeded) => {
@@ -1083,14 +1424,15 @@ const LONG_BLOCK_ID = "r-long";
 // R4, R5 and R6 against the approved picture `page-v3-spec-1440.png`. At 1440 px, from
 // the top: the legend's four marks, each a shape and its word; the column heads; the three
 // sentences; the first group. The page's own words never say "Requirement" and are each a word
-// of `page-words.ts` (R7, reading (g) of the part's plan). A cell is 280 px wide and 20 px left of
-// its statements. `t s` from the outline leaves the focus on a statement of the view, on screen.
-// A statement of 200 words is cut at six lines with "more · N words" and drawn whole with the
-// focus; a statement's chips stand after its last word, and a link in its words is the words'
-// colour, read on the long statement, whose words open on a child's reference: an issue's
-// reference is a link in a row's words, where a block's or a document's is a chip in place
-// (`RowText.tsx`). Where the sticky heads stand after a scroll, against the header's
-// `--issue-identity-height`, is the next row's (reading (l)). At 390 px, as
+// of `page-words.ts` (R7, reading (g) of the plan). A cell is 280 px wide and 20 px left of its
+// statements. A statement of 200 words is drawn whole, every word of it, with no "more" control,
+// while the focus is elsewhere; a statement's chips stand after its last word, and a link in its
+// words is the words' colour, read on the long statement, whose words open on a child's
+// reference: an issue's reference is a link in a row's words, where a block's or a document's is
+// a chip in place (`RowText.tsx`). `t s` from the outline leaves the focus on a statement of the
+// view, on screen, and once the page's reads have settled each move up the statements leaves the
+// one it reaches below the view's sticky heads. Where the sticky heads stand after a scroll,
+// against the header's `--issue-identity-height`, is the next row's (reading (l)). At 390 px, as
 // `page-v3-spec-390.png` draws it, a run is one column, each cell above its first statement, and
 // the page fits its viewport.
 // SLOW(>=2s): the whole seeded issue and a statement of 200 words written into its spec, two loads
@@ -1266,37 +1608,37 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       ).toBe(link.words);
     }
 
-    // The statement of 200 words is cut at six lines with "more · N words", and whole with the
-    // focus. The page measures a row's cut once the row stands within a screen of the viewport,
-    // in the frame after it comes there, so the row is brought there before its cut is read.
+    // The statement of 200 words is drawn whole, every word of it, with no "more" control, while
+    // the focus is on no part of it: its words' box clips none of them and runs past six lines.
     const long = nodeRow(page, longId).first();
-    await long.scrollIntoViewIfNeeded();
-    await expect(rowMore(long), `the long statement draws no more at ${at}`).toHaveCount(1);
-    const cut = (await rowWords(long).boundingBox())?.height ?? Number.POSITIVE_INFINITY;
     expect(
-      cut,
-      `the long statement is ${cut} px tall at ${at}, more than six lines`
-    ).toBeLessThanOrEqual(6 * 24);
-    const more = ((await rowMore(long).textContent()) ?? "").trim();
-    const held = new RegExp(
-      `^${CONTROL_LABELS.read_more} · ([\\d,]+) ${CONTROL_LABELS.read_more_words}$`,
-      "u"
-    ).exec(more);
-    expect(held, `the long statement draws "${more}", not more · N words`).not.toBeNull();
+      await long.evaluate((row) => row.contains(document.activeElement)),
+      `the long statement holds the focus at ${at}, so its words are not read with the focus elsewhere`
+    ).toBe(false);
+    await expect(rowMore(long), `the long statement draws a more control at ${at}`).toHaveCount(0);
+    const whole = await rowWords(long).evaluate((words) => ({
+      clipped: words.scrollHeight - words.clientHeight,
+      height: words.getBoundingClientRect().height,
+      words: (words as HTMLElement).innerText.split(/\s+/u),
+    }));
     expect(
-      Number((held?.[1] ?? "0").replaceAll(",", "")),
-      "the long statement's cut holds back 20 words or fewer"
-    ).toBeGreaterThan(20);
-    await long.focus();
-    await expect(long).toBeFocused();
-    await expect(rowMore(long), "the focused long statement draws more").toHaveCount(0);
-    await expect
-      .poll(async () => (await rowWords(long).boundingBox())?.height ?? 0, {
-        message: "the focused long statement is drawn no taller than its cut",
-      })
-      .toBeGreaterThan(cut);
+      longWords("long", 200)
+        .split(/\s+/u)
+        .filter((word) => word !== "" && !whole.words.includes(word)),
+      `the long statement at ${at} draws none of these of its 200 words`
+    ).toEqual([]);
+    expect(
+      whole.clipped,
+      `the long statement's words at ${at} hide ${whole.clipped} px of themselves`
+    ).toBeLessThanOrEqual(1);
+    expect(
+      whole.height,
+      `the long statement is ${whole.height} px tall at ${at}, cut at six lines`
+    ).toBeGreaterThan(6 * 24);
 
-    // From the outline, `t s` leaves the focus on a statement of the view's tree, on screen.
+    // From the outline, `t s` leaves the focus on a statement of the view's tree, on screen. The
+    // page's reads are watched from this load on, for the moves up the statements below.
+    const reads = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await focusThePage(page);
@@ -1327,13 +1669,16 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
     // view's column heads stay at the top as one (R4). Each move up the statements scrolls the
     // one it reaches into view, which must leave it below the heads, not behind them. Found by
     // the tester on a running build at 8caa4357, where each statement the arrows moved up to
-    // stood with its top at the screen's edge and its first line under the 31 px of heads.
+    // stood with its top at the screen's edge and its first line under the 31 px of heads. The
+    // moves start once the page's reads have settled: a read that answered as the first ArrowUp
+    // went down left the focus on the first statement, not on the one above the last.
+    await expectLoadSettled(reads);
     const upward = await statements.evaluateAll((rows) =>
       rows.map((one) => one.getAttribute("data-node-id") ?? "")
     );
-    await nodeRow(page, upward.at(-1) ?? "")
-      .first()
-      .focus();
+    const last = nodeRow(page, upward.at(-1) ?? "").first();
+    await last.focus();
+    await expect(last, `the last statement does not take the focus at ${at}`).toBeFocused();
     for (let step = upward.length - 2; step >= 0; step -= 1) {
       const id = upward[step] ?? "";
       await page.keyboard.press("ArrowUp");
@@ -1394,8 +1739,9 @@ test("the Spec view's column heads stay under the header's band after a scroll",
 // the tester on 2026-11-09 at 39649c0f269d, where the Spec preset's requirement list draws that
 // run in a span that neither wraps it nor gives it its own line, and the whole page scrolls
 // sideways: 884 px of page in a 390 px viewport, and 3,644 px in a 1,440 px one for a 300
-// character run.
-// SLOW(>=2s): three loads of the Spec view, one at each width, each measured once its statement
+// character run. The Spec view is read at the four widths R4 names, from 320 px to 1920 px: 320,
+// 390, 1440 and 1920 px.
+// SLOW(>=2s): four loads of the Spec view, one at each width, each measured once its statement
 // is drawn.
 test("a requirement whose words hold an unbroken run keeps the page inside its viewport @phone", async ({
   browser,
@@ -1405,7 +1751,7 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
     const unbroken = issuePage(page).locator(
       `[data-spec-statement][data-node-id="${blockNodeId(specSlug, seeded.requirements[0] ?? "")}"]`
     );
-    for (const width of [320, 390, 1440]) {
+    for (const width of [320, 390, 1440, 1920]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await gotoIssue(page, presetPath(seeded.key, "spec"));
       await expect
