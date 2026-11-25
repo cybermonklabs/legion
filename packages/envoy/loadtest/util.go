@@ -41,8 +41,14 @@ func sleepUntil(ctx context.Context, t time.Time) bool {
 	}
 }
 
-// fetchTo saves the body of a GET of url to path; a failure is logged, not returned.
-func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
+// fetchTo saves the body of a GET of route joined onto base, an endpoint's URL (routeURL), to
+// path; a failure is logged, not returned.
+func fetchTo(base, route, path string, timeout time.Duration, lg *log.Logger) {
+	url, err := routeURL(base, route)
+	if err != nil {
+		lg.Printf("fetch: %v", err)
+		return
+	}
 	resp, err := (&http.Client{Timeout: timeout}).Get(url)
 	if err != nil {
 		lg.Printf("fetch %s: %v", redactURL(url), redact.Cause(err, url))

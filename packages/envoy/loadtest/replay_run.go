@@ -354,7 +354,7 @@ func (st *step) runReplay(ctx context.Context, a *api) (load *requestLoad, done 
 		}
 		rr.cpu.start = rr.readCPU()
 		rr.meta.HeapStartAt = time.Now()
-		fetchTo(rr.pprof+"/debug/pprof/heap", rr.out+"/heap-start.pprof", 60*time.Second, rr.lg)
+		fetchTo(rr.pprof, "/debug/pprof/heap", rr.out+"/heap-start.pprof", 60*time.Second, rr.lg)
 
 		actionsDone := make(chan struct{})
 		endDone := make(chan struct{})
@@ -365,7 +365,7 @@ func (st *step) runReplay(ctx context.Context, a *api) (load *requestLoad, done 
 				return
 			}
 			rr.meta.HeapEndAt = time.Now()
-			fetchTo(rr.pprof+"/debug/pprof/heap", rr.out+"/heap-end.pprof", 60*time.Second, rr.lg)
+			fetchTo(rr.pprof, "/debug/pprof/heap", rr.out+"/heap-end.pprof", 60*time.Second, rr.lg)
 			rr.cpu.end = rr.readCPU()
 			rr.inflightAtEnd = int(rr.inflight.Load())
 			close(rr.endRead)
