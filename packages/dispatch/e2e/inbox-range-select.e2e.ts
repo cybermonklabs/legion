@@ -932,15 +932,11 @@ test("a range action whose rows stood above the view hands the focus to the firs
       { after: drawn[4] ?? "", first: range[0] ?? "" }
     );
     expect(space, `the four marks take ${space} px of the list`).toBeGreaterThan(0);
-    await mark(page, landing).evaluate(
-      (node, place) => {
-        const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
-        if (list === null) throw new Error("the tenth row is not in the Inbox list");
-        const seenTop = Math.max(list.getBoundingClientRect().top, 0);
-        list.scrollTop += node.getBoundingClientRect().top - place.up - (seenTop - place.cut);
-      },
-      { cut: CUT_PX, up: space }
-    );
+    const placing = await markSight(page, landing, space);
+    const scroll = placing.top - (placing.seenTop - CUT_PX);
+    await box.evaluate((list, by) => {
+      list.scrollTop += by;
+    }, scroll);
     await frameAndTask(page);
     const above = await box.evaluate((list) => {
       const top = list.getBoundingClientRect().top;
@@ -1039,12 +1035,11 @@ test("a range action that lands on a checkbox partly in sight with nothing taken
     // row after the landing, the first of the three, stands wholly below the view, so it cannot
     // take the focus. Once the three have gone, the landing row itself still reaches below the
     // view, so the list's scroll range still holds the scroll.
-    await mark(page, landing).evaluate((node, cut) => {
-      const list = node.closest<HTMLElement>('[data-testid="inbox-list"]');
-      if (list === null) throw new Error("the landing row is not in the Inbox list");
-      const seenBottom = Math.min(list.getBoundingClientRect().bottom, window.innerHeight);
-      list.scrollTop += node.getBoundingClientRect().bottom - (seenBottom + cut);
-    }, CUT_PX);
+    const placing = await markSight(page, landing);
+    const scroll = placing.bottom - (placing.seenBottom + CUT_PX);
+    await inboxList(page).evaluate((list, by) => {
+      list.scrollTop += by;
+    }, scroll);
     await frameAndTask(page);
     const cut = await markSight(page, landing);
     expect(

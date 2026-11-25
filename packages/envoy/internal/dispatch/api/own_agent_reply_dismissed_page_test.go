@@ -79,21 +79,13 @@ func TestAnOwnReplyUnderAnUnansweredAgentMessageKeepsTheDismissedPageWhole(t *te
 	dismissed := url.Values{"state": {myRepliesStateDismissed}}
 	inbox := func(query url.Values) func(cursor string) ([]string, string) {
 		return func(cursor string) ([]string, string) {
-			paged := maps.Clone(query)
-			if cursor != "" {
-				paged.Set("cursor", cursor)
-			}
-			answer := readMeInboxAs(t, handler, dismissedScaleLogin, paged)
+			answer := readMeInboxAs(t, handler, dismissedScaleLogin, withCursor(query, cursor))
 			return meInboxNodes(answer), answer.NextCursor
 		}
 	}
 	replies := func(query url.Values) func(cursor string) ([]string, string) {
 		return func(cursor string) ([]string, string) {
-			paged := maps.Clone(query)
-			if cursor != "" {
-				paged.Set("cursor", cursor)
-			}
-			answer := getMyReplies(t, handler, dismissedScaleLogin, "?"+paged.Encode())
+			answer := getMyReplies(t, handler, dismissedScaleLogin, "?"+withCursor(query, cursor).Encode())
 			nodes := make([]string, 0, len(answer.Rows))
 			for _, row := range answer.Rows {
 				kind := row.Kind
@@ -122,6 +114,16 @@ func TestAnOwnReplyUnderAnUnansweredAgentMessageKeepsTheDismissedPageWhole(t *te
 	walkWholeDismissedView(t, "GET /api/v1/me/replies?state=dismissed", replies(dismissed), wantReplies)
 	walkWholeDismissedView(t, "GET /api/v1/me/replies?state=dismissed&kind=agent",
 		replies(url.Values{"state": {myRepliesStateDismissed}, "kind": {myReplyKindAgent}}), wantAgents)
+}
+
+// withCursor is a copy of query naming cursor, the page a Dismissed read resumes from, or naming
+// none for the first page's "".
+func withCursor(query url.Values, cursor string) url.Values {
+	paged := maps.Clone(query)
+	if cursor != "" {
+		paged.Set("cursor", cursor)
+	}
+	return paged
 }
 
 // walkWholeDismissedView reads one Dismissed read from its first page to the page that names no

@@ -64,8 +64,7 @@ func TestAnOwnAnswerOrReplyDismissesOnlyWhereAllFourConditionsHold(t *testing.T)
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if got := ownDismissal(row.write, row.person, row.root); got != row.want {
-				t.Errorf("ownDismissal = %v, want %v (nothing %v, the writer's row %v, the Agent root %v)",
-					got, row.want, dismissesNothing, dismissesRow, dismissesAgentRoot)
+				t.Errorf("ownDismissal = %v, want %v", got, row.want)
 			}
 		})
 	}

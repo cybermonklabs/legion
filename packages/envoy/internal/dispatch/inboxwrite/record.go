@@ -397,9 +397,10 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //     marked read by id at the write's moment - its user_agent_reply_read row and its reply_read
 //     tuple, stated by the statement that inserts the row (agentRepliesRead, graphstore.MarkArm) -
 //     so the thread A no longer sees in their Inbox holds nothing unread. The writer took the root
-//     `for update` before its own row's insert and read under that lock that a session answered
-//     the root (api's createStoredMessage, D6): a root no session answered is no Agent row, and a
-//     reply under it takes none of this step (Recording.Unanswered).
+//     `for update` before its own row's insert, and read that a session answered the root before it
+//     took any lock or, where that read found none, under the lock (api's createStoredMessage,
+//     D6): a root no session answered is no Agent row, and a reply under it takes none of this
+//     step (Recording.Unanswered).
 //
 // A session's reply to a message ends, between steps 1 and 2, its thread root's Agent
 // dismissals, under the root `for no key update` (Recording.QueueRootLock), which the API's
@@ -469,12 +470,13 @@ func (r Recording) Root() (string, string) {
 // Inbox (step 6), and whether it does, as the plan reads it. The writer takes that root `for
 // update` before its own row's insert, as the dismiss route takes an Agent root before the
 // person's rows (D6): taken after the insert, whose foreign key holds its parent `for key share`,
-// the lock would be an upgrade that can deadlock against the dismiss route. Once the lock is
-// granted it reads whether a session answered the root, and drops the dismissal where none did
-// (Unanswered). Step 6's upsert of the writer's user_agent_thread_dismissed row
-// (queueAgentDismissal) then moves the root's own agent_dismissed_at where the writer sent the
-// root, as the dismiss route's mark does, through the trigger of migration 20261125053125, under
-// this lock: every writer of that column takes the root first.
+// the lock would be an upgrade that can deadlock against the dismiss route. It reads whether a
+// session answered the root before it takes the lock, and, where none had, reads it again once
+// the lock is granted and drops the dismissal where still none has (Unanswered). Step 6's upsert
+// of the writer's user_agent_thread_dismissed row (queueAgentDismissal) then moves the root's own
+// agent_dismissed_at where the writer sent the root, as the dismiss route's mark does, through the
+// trigger of migration 20261125053125, under this lock: every writer of that column takes the root
+// first.
 func (r Recording) AgentDismissal() (string, bool) {
 	if r.dismisses != dismissesAgentRoot {
 		return "", false
@@ -488,11 +490,14 @@ func (r Recording) AgentDismissal() (string, bool) {
 // user_agent_thread_dismissed row and no reply marked read. The Inbox's reads draw an Agent row
 // from the session replies of its root's thread, through an inner lateral (api's myAgentRowFacts),
 // so a root no session answered is no Agent row, and a mark of it would be the mark of no row,
-// which a Dismissed page cut to its marks counts and then drops. No session's reply commits
-// between that read and this write's commit: one of this release takes the root `for no key
-// update` before its insert (QueueRootLock), one of an older build takes it `for key share` in
-// the trigger user_agent_thread_dismissed_clear (migrations 20261105093507 and 20261125053125),
-// and either level waits for `for update`.
+// which a Dismissed page cut to its marks counts and then drops. The writer reads the root first
+// with no lock, and takes the lock and reads again only where that read found no session's
+// answer: no statement deletes a message, so a root answered then is answered under the lock, and
+// its dismissal stands. No session's reply commits between the read under the lock and this
+// write's commit: one of this release takes the root `for no key update` before its insert
+// (QueueRootLock), one of an older build takes it `for key share` in the trigger
+// user_agent_thread_dismissed_clear (migrations 20261105093507 and 20261125053125), and either
+// level waits for `for update`.
 func (r Recording) Unanswered() Recording {
 	if r.dismisses == dismissesAgentRoot {
 		r.dismisses = dismissesNothing
@@ -516,6 +521,19 @@ const (
 	dismissesAgentRoot
 )
 
+// String is d's constant's name, for a failure to quote.
+func (d dismissal) String() string {
+	switch d {
+	case dismissesNothing:
+		return "dismissesNothing"
+	case dismissesRow:
+		return "dismissesRow"
+	case dismissesAgentRoot:
+		return "dismissesAgentRoot"
+	}
+	return fmt.Sprintf("dismissal(%d)", int(d))
+}
+
 // ownDismissal is D5's rule (the own-answer rule, R1): what w, written in the thread rooted at
 // root, takes out of its writer's Inbox. It dismisses when its handler marked it its writer's own
 // (Write.OwnWrite), its writer is a person (person, the login PlanRecord read, "" for anybody
@@ -524,9 +542,10 @@ const (
 // thread's reply, dismisses that thread at its root (dismissesAgentRoot), since its thread keeps no
 // user_threads row, and any other write its thread on its writer's own row (dismissesRow). The
 // Agent root's dismissal stands only where a session answered the root, which the writer reads
-// under the root's lock (Recording.Unanswered). An Unstored write dismisses nothing: its record is
-// the trigger body's projection, which states no tuple and never dismissed
-// (Recording.queueUnstored), so its writer takes no Agent root for it either.
+// before it takes the root's lock, and again under it where that read found none
+// (Recording.Unanswered). An Unstored write dismisses nothing: its record is the trigger body's
+// projection, which states no tuple and never dismissed (Recording.queueUnstored), so its writer
+// takes no Agent root for it either.
 func ownDismissal(w Write, person string, root thread) dismissal {
 	switch {
 	case !w.OwnWrite || w.unstored || person == "" || w.Who.Act != nil || (w.ask == nil && w.NodeID == root.id):

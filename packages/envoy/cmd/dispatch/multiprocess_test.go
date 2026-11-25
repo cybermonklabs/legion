@@ -4077,7 +4077,7 @@ const (
 // by a table lock this test takes, or by the GitHub listing the fake holds - which is the only way
 // two processes' passes are made to overlap on purpose rather than by luck.
 //
-// Five of the fourteen leases are observable here inside a window a test can wait out, and they
+// Five of the fifteen leases are observable here inside a window a test can wait out, and they
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
 // search-term-stats are timer loops whose first pass is immediate, and what this row holds them
 // to is per period: at least one pass across the two processes, and no period served twice.
@@ -4089,7 +4089,7 @@ const (
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
-// count is held to one. The other nine are not observable, and this row says so rather than
+// count is held to one. The other ten are not observable, and this row says so rather than
 // pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
 // of refs_forms_owed and one count, so whether the two processes' passes meet is luck;
 // issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the

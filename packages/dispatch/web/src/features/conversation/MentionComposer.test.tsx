@@ -9,7 +9,7 @@ import {
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, an edit into the control a send holds read-only, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { createRef, type ReactNode, useState } from "react";
+import { type ComponentProps, createRef, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -142,8 +142,7 @@ interface ComposerOptions {
   seedMentions?: readonly { target: string; title: string }[];
   onCancelReply?: () => void;
   onKindChange?: (kind: "ask" | "comment" | "suggestion") => string | undefined;
-  // biome-ignore lint/suspicious/noConfusingVoidType: the composer's own `onSent` type, which a handler that returns `void` fits.
-  onSent?: () => PromiseLike<unknown> | void;
+  onSent?: ComponentProps<typeof MentionComposer>["onSent"];
   owner?: ComposerOwner;
   replyTo?: (Omit<ReplyTarget, "parentKind"> & { parentKind?: ReplyTarget["parentKind"] }) | null;
   inMain?: boolean;

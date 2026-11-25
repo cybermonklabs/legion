@@ -469,14 +469,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // writer (createStoredMessage, api/messages.go) takes the thread's root `for update` before the
 // reply's own insert: that insert's foreign key holds its parent `for key share`, so a `for update`
 // taken after it would be the upgrade migration 20261105093507's header records as a deadlock.
-// Once that lock is granted it reads, in a statement of its own, whether a session answered the
-// root (lockOwnAgentRoot): a root no session answered is no Agent row, and a reply under it takes
-// step 2 alone and writes no mark (inboxwrite.Recording.Unanswered). Only then, in the record's
-// step 6 (inboxwrite.Record), does a reply under an answered root write the person's own
-// user_agent_thread_dismissed row, and then, as this transaction's dismissal does, the thread's
-// unread replies read by id, new user_agent_reply_read rows in ascending reply_id order. So a
-// dismiss of the same root and the reply meet at the root, whichever reaches it first, and neither
-// holds a row the other waits for (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther).
+// Before it takes any lock it reads whether a session answered the root (ownAgentRootAnswered).
+// No statement deletes a message, so a root answered then is answered under the lock, which goes
+// first in the reply's write batch. A root that read finds unanswered it takes at once, and reads
+// again once that lock is granted, in a statement of its own (lockOwnAgentRoot): a root still
+// unanswered is no Agent row, and a reply under it takes step 2 alone and writes no mark
+// (inboxwrite.Recording.Unanswered). Only then, in the record's step 6 (inboxwrite.Record), does a
+// reply under an answered root write the person's own user_agent_thread_dismissed row, and then,
+// as this transaction's dismissal does, the thread's unread replies read by id, new
+// user_agent_reply_read rows in ascending reply_id order. So a dismiss of the same root and the
+// reply meet at the root, whichever reaches it first, and neither holds a row the other waits for
+// (TestAPersonsOwnAgentReplyAndADismissOfItsRootNeitherWaitsOnTheOther).
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock

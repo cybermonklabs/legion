@@ -21,7 +21,7 @@ const ITEM = `flex min-h-11 w-full items-center gap-2 rounded px-2 text-left tex
 
 /** An item that opens a panel of its own draws in every other item's look (`ITEM`): an action's
  *  panel (**Save view**) and the display menu. */
-const ITEM_LOOK: PanelTriggerAppearance = { className: ITEM, kind: "class" };
+const ITEM_APPEARANCE: PanelTriggerAppearance = { className: ITEM, kind: "class" };
 
 /** The items the arrow keys walk. */
 const ITEMS = '[role="menuitem"], [role="menuitemcheckbox"]';
@@ -60,7 +60,7 @@ function Item({ action, close }: { action: BarActionProps; close: () => void }):
     return (
       <PanelAction
         action={action}
-        appearance={ITEM_LOOK}
+        appearance={ITEM_APPEARANCE}
         panel={panel}
         role="menuitem"
         shown={
@@ -149,7 +149,7 @@ export function MoreMenu({ actions, display, size = "comfortable" }: MoreMenuPro
       {(close) => (
         <div aria-label="More" className="flex w-full flex-col" onKeyDown={walk} role="menu">
           {display === undefined ? null : (
-            <DisplayMenu {...display} appearance={ITEM_LOOK} role="menuitem" size={size} />
+            <DisplayMenu {...display} appearance={ITEM_APPEARANCE} role="menuitem" size={size} />
           )}
           {actions.map((action) => (
             <Item action={action} close={close} key={action.label} />

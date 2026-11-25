@@ -708,17 +708,20 @@ func threadWritesIn(relative string, files *token.FileSet, file *ast.File) map[s
 		x, ok := selector.X.(*ast.Ident)
 		return selector.Sel.Name, ok && x.Name == name
 	}
-	// built is whether expression builds a write itself: a constructor's call or a Write literal.
-	built := func(expression ast.Expr) bool {
+	// builder is the name of what builds expression as a write itself - the constructor it calls,
+	// or Write for a Write literal - and "" for neither.
+	builder := func(expression ast.Expr) string {
 		switch written := expression.(type) {
 		case *ast.CallExpr:
-			called, ok := named(written.Fun)
-			return ok && slices.Contains(threadWriteConstructors, called)
+			if called, ok := named(written.Fun); ok && slices.Contains(threadWriteConstructors, called) {
+				return called
+			}
 		case *ast.CompositeLit:
-			literal, ok := named(written.Type)
-			return ok && literal == "Write"
+			if literal, ok := named(written.Type); ok && literal == "Write" {
+				return literal
+			}
 		}
-		return false
+		return ""
 	}
 	for _, declared := range file.Decls {
 		function := "(package level)"
@@ -737,14 +740,12 @@ func threadWritesIn(relative string, files *token.FileSet, file *ast.File) map[s
 			constructor, own := "", false
 			switch written := node.(type) {
 			case *ast.CallExpr:
-				if called, ok := named(written.Fun); ok && slices.Contains(threadWriteConstructors, called) {
-					constructor = called
-				} else if ownOfHelpersWrite(written, built) {
+				if constructor = builder(written); constructor == "" && ownOfHelpersWrite(written, builder) {
 					constructor, own = "Own", true
 				}
 			case *ast.CompositeLit:
-				if literal, ok := named(written.Type); ok && literal == "Write" {
-					constructor, own = "Write", setsOwnWrite(written)
+				if constructor = builder(written); constructor != "" {
+					own = setsOwnWrite(written)
 				}
 			}
 			if constructor != "" {
@@ -789,13 +790,14 @@ func calledOwn(path []ast.Node) bool {
 // ownOfHelpersWrite is whether call is Own called on a write that no constructor or literal of its
 // own chain of method calls builds - one a helper built and answered, such as
 // `stored.inbox(message, actor).Own()`, which the walk names a site of its own. Own on a chain that
-// starts at a constructor or a literal, built tells, is that write's own site's (calledOwn).
-func ownOfHelpersWrite(call *ast.CallExpr, built func(ast.Expr) bool) bool {
+// starts at a constructor or a literal, which builder names, is that write's own site's
+// (calledOwn).
+func ownOfHelpersWrite(call *ast.CallExpr, builder func(ast.Expr) string) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok || selector.Sel.Name != "Own" || len(call.Args) != 0 {
 		return false
 	}
-	for receiver := selector.X; !built(receiver); {
+	for receiver := selector.X; builder(receiver) == ""; {
 		chained, ok := receiver.(*ast.CallExpr)
 		if !ok {
 			return true
