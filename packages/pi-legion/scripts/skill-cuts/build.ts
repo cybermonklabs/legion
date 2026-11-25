@@ -430,20 +430,22 @@
  * directories the first message names and under the working directory, each part capped); when
  * every task of its answer is dropped as `written-missing-path`, it is asked once more with those
  * paths named absent (`<absent>`), and the summary records the retry (`retry`); a
- * `--written-answer` is not asked again. A context session whose working directory is in no
- * checkout the build knows (`writtenCheckout`: its header names none, or its profile no session
- * repository) is passed over as `no-checkout`, since its cases' runs could answer no read-only
- * call; one whose recorded system prompt, role's prompt or first user message names by an
- * absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
+ * `--written-answer` is not asked again. A context session whose first user message holds no
+ * text, whose kind of work the written tasks take, is passed over as `no-user-text`; one whose
+ * working directory is in no checkout the build knows (`writtenCheckout`: its header names none,
+ * or its profile no session repository) as `no-checkout`, since its cases' runs could answer no
+ * read-only call; one whose recorded system prompt, role's prompt or first user message names by
+ * an absolute path outside its checkout's root a file it reads itself (a `read` call, or `cat`,
  * `head`, `tail` or `sed -n` in a `bash` call), a skill's file aside, as `outside-material`; one
  * whose listing measure (the one its cases would carry: `sessionMeasure`) the screen's rule drops
  * (score.ts's `listingStanding`: its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT
- * of its recorded names, none when the measure says not measurable) as `listing-misses`, all three
+ * of its recorded names, none when the measure says not measurable) as `listing-misses`, all four
  * before the reader is asked; one whose work the reader finds is on the skill's own text as
- * `skill-as-material`; and one for which the reader's every reply, on each try, stopped at the
- * model's refusal (the model refuses that session's material; any other failure of the reader
- * fails the build) as `reader-refused` (`chooseContext`). A `--context-session` of any of them is
- * refused (exit 1).
+ * `skill-as-material`; one for which the reader's every reply, on each try, stopped at the
+ * model's refusal (the model refuses that session's material) as `reader-refused`; and one whose
+ * reader answer was refused on each try in any other way (ReaderFailed, its detail naming each
+ * refusal) as `reader-failed` (`chooseContext`). Any other failure of the reader fails the build.
+ * A `--context-session` of any of them is refused (exit 1).
  * The context session is `--context-session`'s, or one `--sessions` and `--seed` choose; a build
  * given both is refused (exit 2), since it would read neither `--sessions` nor `--seed`. Its first
  * read of the skill is the one a session case's step comes after (`firstSkillRead`): a `skill://`
@@ -885,7 +887,8 @@ export const DROP_REASONS = {
     "a Legion session's role is in none of the forms the builder reads (module comment, The role)",
   "bad-session-init":
     "a subagent's session_init line holds no system prompt, no tool names or no agent name",
-  "reader-failed": "the case reader's every reply was refused",
+  "reader-failed":
+    "the case reader's every reply was refused; in build-cases --written, the written-case reader's answer for the context session was refused on each try, and not every reply stopped at the model's refusal (which is reader-refused), so the session is passed over",
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
   "skill-as-material":
@@ -896,6 +899,8 @@ export const DROP_REASONS = {
     "in build-cases --written, the build knows no checkout of the context session's working directory: its header names none, its profile names no session repository, or the directory is not at the profile's path in the checkout; a written case's run answers its read-only calls from that checkout alone, so the session is passed over",
   "reader-refused":
     "in build-cases --written, the written-case reader's every reply for the context session, on each try, stopped at the model's refusal: the model refuses that session's material, so the session is passed over",
+  "no-user-text":
+    "in build-cases --written, the context session's first user message holds no text, and the written tasks take their kind of work from that text, so the session is passed over before any reader call",
   "listing-misses":
     "in build-cases --written, the listing measure the context session's cases would carry (score.ts's listingStanding, the screen's own rule) finds that its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of the names of the recorded listing it is set against, so the screen would drop every case built on the session; the session is passed over before any reader call",
   "no-common-line":
@@ -7718,6 +7723,9 @@ interface WrittenContext {
   readonly hash: string;
   readonly filePath: string;
   readonly t: Transcript;
+  /** Its first user message's text, trimmed: the kind of work the written tasks take (a session
+   *  whose first user message holds none gives no written cases, `no-user-text`). */
+  readonly firstMessage: string;
   /** The session's first successful read of the skill a case is built from (`firstSkillRead`): a
    *  `skill://` read, or a whole read by path of the cut's copy; its result's index and its
    *  call's. */
@@ -7760,7 +7768,9 @@ interface WrittenContext {
  * prompt build before its start (PARENT_LOAD_RULE), a top-level session's at its first build, the
  * session's start (TOP_BUILD_RULE, `stepBuild`); it must install the cut repository's copy of the
  * skill, and its working directory must be in a checkout the build knows (`writtenCheckout`, else
- * `no-checkout`): a written case's run answers its read-only calls from that checkout alone.
+ * `no-checkout`): a written case's run answers its read-only calls from that checkout alone. Its
+ * first user message must hold text (else `no-user-text`), since the written tasks take their kind
+ * of work from it.
  */
 async function writtenContext(
   run: CaseRun,
@@ -7784,6 +7794,14 @@ async function writtenContext(
   }
   const header = sessionHeader(t);
   if ("drop" in header) return header;
+  const firstUser = t.items.findIndex((item) => item.slim.role === "user");
+  const firstMessage = firstUser < 0 ? "" : messageText(t.message(firstUser)).trim();
+  if (firstMessage === "") {
+    return drop(
+      "no-user-text",
+      `the context session ${store.name}:${hash} holds no user message with text, whose kind of work the written tasks take`
+    );
+  }
   const all = t.items.map((item) => item.slim);
   const reads = skillReads(all, run.skill);
   const placeRead = (copyPath: string) => run.placer.place(store.name, copyPath, run.skill);
@@ -7864,6 +7882,7 @@ async function writtenContext(
     hash,
     filePath,
     t,
+    firstMessage,
     first,
     installedDir,
     model,
@@ -7899,16 +7918,13 @@ const NAMED_PATH = /(?:^|[\s"'`(<[{=])(\/(?!\/)[^\s"'`)<>\]}]*)/g;
  *  the case's skill or of a skill whose SKILL.md a read shows) is none. */
 function outsideMaterial(made: WrittenContext): string | undefined {
   const checkout = made.checkout;
-  const firstUser = made.t.items.findIndex((item) => item.slim.role === "user");
   const role = made.profiled.profile.appendSystemPrompt;
   const texts: (readonly [string, string])[] = [
     ...(made.init?.systemPrompt ?? []).map(
       (block) => ["its recorded system prompt", block] as const
     ),
     ...(role === undefined ? [] : [["its role's prompt", role] as const]),
-    ...(firstUser < 0
-      ? []
-      : [["its first user message", messageText(made.t.message(firstUser))] as const]),
+    ["its first user message", made.firstMessage] as const,
   ];
   const named = new Map<string, string>();
   for (const [where, text] of texts) {
@@ -8008,9 +8024,15 @@ interface ChosenContext {
 }
 
 /** The written-case reader's answer for a context session (`buildWrittenCases`' `askReader`), or,
- *  where its every reply stopped at the model's refusal, its refusals (`refused`: ReaderFailed's
- *  message). */
-type WrittenAsked = WrittenCaseAnswer | { readonly refused: string };
+ *  where its answer was refused on each try (ReaderFailed), why the session is passed over:
+ *  `reader-refused` where every reply stopped at the model's refusal, else `reader-failed`, with
+ *  ReaderFailed's message, which names each refusal (`refusals`). */
+type WrittenAsked =
+  | WrittenCaseAnswer
+  | {
+      readonly failed: Extract<DropReason, "reader-refused" | "reader-failed">;
+      readonly refusals: string;
+    };
 
 /** How readers.ts's `ask` ends why it refused a reply that stopped at the model's refusal (its
  *  `stop_reason` `refusal`). */
@@ -8020,24 +8042,25 @@ const STOPPED_AT_REFUSAL = "(the reply stopped at refusal)";
  * The context session of a written build, the written-case reader's tasks for it (`ask`), its
  * listing measure, how it was chosen, and the sessions passed over before it: the one `given`
  * names (`--context-session`), refused (thrown, naming why) where it gives no written cases
- * (`writtenContext`: one in no checkout the build knows among them, `no-checkout`), reads material
- * outside its checkout (`outsideMaterial`), has a listing measure the screen's rule drops
- * (`sessionMeasure`, score.ts's `listingStanding`: its rebuilt listing misses more than
- * MAX_LISTING_MISSING_PERCENT of its recorded names), or `ask` says its work is on the skill's own
- * text or its every reply stopped at the model's refusal; else the first session of
- * `order` (the build's seeded order of `--sessions`) that gives written cases on a model the
- * gateway serves and whose answer is tasks, one that gives none passed over under its drop reason
- * (`no-checkout` among them), one that reads material outside its checkout passed over, before it
- * is asked, as `outside-material`, one whose listing measure the rule drops passed over, before it
- * is asked, as `listing-misses` with the rule's text (a measure that is not measurable is no
- * reason), one whose answer is `material` as `skill-as-material` with the
- * reader's why, and one whose every reply stopped at refusal as `reader-refused` with the reader's
- * refusals; else, when none does, the first that gives them on
- * any model and whose answer is tasks, each such session asked in its turn (the first one's
- * context kept, each later one's pulled again). `paths` gives the path of a candidate whose line
- * names none. Each candidate is pulled into a spool of its own under `spools`, removed once it is
- * passed over. Throws, naming why, when no session gives one; rejects as `ask` does (BudgetSpent,
- * and any other failure of the reader).
+ * (`writtenContext`: one in no checkout the build knows among them, `no-checkout`, and one whose
+ * first user message holds no text, `no-user-text`), reads material outside its checkout
+ * (`outsideMaterial`), has a listing measure the screen's rule drops (`sessionMeasure`, score.ts's
+ * `listingStanding`: its rebuilt listing misses more than MAX_LISTING_MISSING_PERCENT of its
+ * recorded names), or `ask` says its work is on the skill's own text or its answer was refused on
+ * each try; else the first session of `order` (the build's seeded order of `--sessions`) that
+ * gives written cases on a model the gateway serves and whose answer is tasks, one that gives none
+ * passed over under its drop reason (`no-checkout` and `no-user-text` among them), one that reads
+ * material outside its checkout passed over, before it is asked, as `outside-material`, one whose
+ * listing measure the rule drops passed over, before it is asked, as `listing-misses` with the
+ * rule's text (a measure that is not measurable is no reason), one whose answer is `material` as
+ * `skill-as-material` with the reader's why, and one whose answer was refused on each try as
+ * `reader-refused` (every reply stopped at the model's refusal) or else `reader-failed`, with the
+ * reader's refusals; else, when none does, the first that gives them on any model and whose
+ * answer is tasks, each such session asked in its turn (the first one's context kept, each later
+ * one's pulled again) and passed over for the same reasons. `paths` gives the path of a candidate
+ * whose line names none. Each candidate is pulled into a spool of its own under `spools`, removed
+ * once it is passed over. Throws, naming why, when no session gives one; rejects as `ask` does
+ * (BudgetSpent, and any failure of the reader other than an answer refused on each try).
  */
 async function chooseContext(
   run: CaseRun,
@@ -8050,7 +8073,6 @@ async function chooseContext(
 ): Promise<ChosenContext> {
   const material: DropReason = "skill-as-material";
   const outside: DropReason = "outside-material";
-  const refused: DropReason = "reader-refused";
   // Check the material and listing before asking the reader for tasks. Return the first reason
   // the session is passed over, or the tasks with the listing measure their cases will carry.
   const vet = async (
@@ -8070,7 +8092,7 @@ async function chooseContext(
     const standing = listingStanding([measure]);
     if (standing.state === "dropped") return { why: standing.reason };
     const answer = await ask(made);
-    if ("refused" in answer) return { why: `${refused}: ${answer.refused}` };
+    if ("failed" in answer) return { why: `${answer.failed}: ${answer.refusals}` };
     if ("material" in answer) return { why: `${material}: ${answer.material.why}` };
     return { tasks: answer.tasks, measure };
   };
@@ -8121,7 +8143,7 @@ async function chooseContext(
         return {
           chosen: made,
           ...vetted,
-          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout, whose rebuilt listing misses no more of its recorded names than the screen allows, whose work is not on the skill's own text and whose material the written-case reader's model does not refuse: ${place}`,
+          how: `the first of the skill's reading sessions in the seeded order (--sessions, --seed) on a model the gateway serves whose rebuilt profile installs the skill, that reads no material outside its checkout, whose rebuilt listing misses no more of its recorded names than the screen allows, whose work is not on the skill's own text and for which the written-case reader's answer was not refused on each try: ${place}`,
           passed,
         };
       }
@@ -8175,7 +8197,7 @@ async function chooseContext(
       return {
         chosen: made,
         ...vetted,
-        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout, has a rebuilt listing that misses no more of its recorded names than the screen allows, works on what is not the skill's own text and has material the written-case reader's model does not refuse, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
+        how: `no reading session on a served model has a rebuilt profile that installs the skill, reads no material outside its checkout, has a rebuilt listing that misses no more of its recorded names than the screen allows, works on what is not the skill's own text and has a written-case reader's answer not refused on each try, so the first of the seeded order (--sessions, --seed) that has, on a model the gateway does not serve: ${each.place}`,
         passed: passed.slice(0, each.at),
       };
     }
@@ -8588,19 +8610,12 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         return { paths: listed, whole, held };
       });
     /** The written-case reader's answer for `context` (or `--written-answer`'s), the paths of
-     *  `absent` named as absent from its checkout on a second ask; or its refusals where its every
-     *  reply stopped at the model's refusal (the model refuses the session's material). */
+     *  `absent` named as absent from its checkout on a second ask; or, where its answer was
+     *  refused on each try (ReaderFailed), why the session is passed over and its refusals. */
     const askReader = async (
       context: WrittenContext,
       absent: readonly string[]
     ): Promise<WrittenAsked> => {
-      const firstUser = context.t.items.findIndex((item) => item.slim.role === "user");
-      const firstMessage = firstUser < 0 ? "" : messageText(context.t.message(firstUser)).trim();
-      if (firstMessage === "") {
-        throw new Error(
-          `the context session ${context.store.name}:${context.hash} holds no user message with text, whose kind of work the written tasks take`
-        );
-      }
       if (givenAnswer !== undefined) return givenAnswer.answer;
       const { repo, root, cwd } = context.checkout;
       const { paths: listed, whole } = await listingOf(context.checkout);
@@ -8612,7 +8627,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
               repo,
               root,
               cwd,
-              ...partialListing(listed, whole, insideRoot(root, cwd) ?? "", firstMessage),
+              ...partialListing(listed, whole, insideRoot(root, cwd) ?? "", context.firstMessage),
               whole: false,
             };
       try {
@@ -8628,7 +8643,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
             })),
             checkout,
             ...(absent.length === 0 ? {} : { absent }),
-            firstMessage: cut(firstMessage, MESSAGE_CHARS),
+            firstMessage: cut(context.firstMessage, MESSAGE_CHARS),
             count,
           },
           run.gateway
@@ -8636,11 +8651,11 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
         return WrittenCaseAnswer.parse(result.answer);
       } catch (error) {
         if (error instanceof BudgetSpent) throw error;
-        if (
-          error instanceof ReaderFailed &&
-          error.refusals.every((each) => each.endsWith(STOPPED_AT_REFUSAL))
-        ) {
-          return { refused: error.message };
+        if (error instanceof ReaderFailed) {
+          const failed = error.refusals.every((each) => each.endsWith(STOPPED_AT_REFUSAL))
+            ? "reader-refused"
+            : "reader-failed";
+          return { failed, refusals: error.message };
         }
         throw new Error(`the written-case reader: ${messageFor(error)}`);
       }
@@ -9008,9 +9023,9 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
       );
       try {
         const again = await askReader(chosen, absent);
-        // The session is chosen already, so a refusal of this second ask fails the build, as any
-        // other failure of the reader does.
-        if ("refused" in again) throw new Error(`the written-case reader: ${again.refused}`);
+        // The session is chosen already, so an answer of this second ask refused on each try fails
+        // the build, as any other failure of the reader does.
+        if ("failed" in again) throw new Error(`the written-case reader: ${again.refusals}`);
         retry = { absent, tasksWritten: again.tasks.length };
         written += again.tasks.length;
         await decideAll(2, again.tasks, tasks.length);

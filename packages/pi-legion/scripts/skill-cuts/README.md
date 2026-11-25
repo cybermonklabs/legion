@@ -2264,6 +2264,9 @@ spawned under that build; a subagent's at its root's last prompt build before it
 summary's `contextSession` names
 it, how it was chosen, and each session passed over before it with why (a drop reason and its
 detail, `model-not-served` for a session on a model the gateway does not serve,
+`no-user-text: <detail>` for a session whose first user message holds no text, whose kind of work
+the written tasks take (the detail: `the context session <store>:<hash> holds no user message with
+text, whose kind of work the written tasks take`),
 `no-checkout: <detail>` for a session whose working directory is in no checkout the build knows
 (its header names no working directory, or its profile no session repository, the detail giving
 the profile's evidence of why; or the directory is not at the profile's path in the checkout),
@@ -2281,13 +2284,18 @@ text, the count and the names; a measure that says not measurable, as one does f
 records no prompt and has no subagent with a listing under its build, is no reason, since the
 screen keeps such a case), whose every case the screen would drop before any model call,
 `skill-as-material: <why>` for a session
-whose work, by the written-case reader's answer, is on the skill's own text, or
+whose work, by the written-case reader's answer, is on the skill's own text,
 `reader-refused: <refusals>` for a session for which the written-case reader's every reply, on
 each of its 3 tries, stopped at the model's refusal (`stop_reason` `refusal`: the model refuses
-that session's material; the detail is the reader's refusal of each reply; a reader that fails in
-any other way, one of its replies not stopped at refusal among them, still fails the build, exit
-1, as does a refusal of its second ask, below): such a session is
-passed over, a `no-checkout`, an `outside-material` or a `listing-misses` one before the reader is
+that session's material), or `reader-failed: <refusals>` for a session for which the reader's
+answer was refused on each of its 3 tries in any other way (its schema refuses it, as it refuses
+a task whose line is not the line of the skill's file it names, or a reply holds no JSON, some of
+the replies perhaps stopped at refusal); the detail of either is the reader's refusal of each
+reply, which names each refused field, not the answer's text, and the tries' spend is in the
+summary's `readerSpend` as every reader call's is; a reader whose call fails still fails the
+build, exit 1, as does an answer of its second ask refused on each try, below): such a session is
+passed over, a `no-user-text`, a `no-checkout`, an `outside-material` or a `listing-misses` one
+before the reader is
 asked (the listing measure is read from the store with subagents.sql for a top-level session, as a
 written case's is), as the
 session form drops a `skill-as-material` one, and the next candidate taken; a `--context-session`

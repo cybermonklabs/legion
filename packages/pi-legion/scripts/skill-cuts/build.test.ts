@@ -1252,6 +1252,17 @@ const REFUSED_REQUEST = "Write the alpha report of the made-up lock picking kit.
  *  UNWRITTEN, no JSON. */
 const PARTLY_REFUSED_REQUEST = "Write the alpha report of the made-up lock notes.";
 const UNWRITTEN = "I would rather not write these tasks.";
+/** The first message of a context session whose every answer of the stand-in written-case reader
+ *  the reader's schema refuses: its one task, MISLINED_TASK, names a line of SKILL.md by a text
+ *  that is not that line's. */
+const MISLINED_REQUEST = "Write the alpha report of the fixture project's mislaid notes.";
+const MISLINED_TASK = {
+  ...WRITTEN_TASK,
+  line: { file: "SKILL.md", number: 9, text: "No line of alpha says this." },
+};
+/** The first message of a context session for which the stand-in answers each request of the
+ *  written-case reader with a 400, which no try mends: the reader's call fails. */
+const ERRED_REQUEST = "Write the alpha report of the fixture project past the gateway.";
 
 /** The stand-in reader's answer to `body`. */
 function readerAnswer(body: {
@@ -1266,6 +1277,9 @@ function readerAnswer(body: {
   if (system.startsWith(NAVIGATION_PROMPT)) return JSON.stringify(navigationAnswer(user));
   if (system.startsWith(WRITTEN_PROMPT)) {
     if (user.includes(`<first-message>\n${PARTLY_REFUSED_REQUEST}\n`)) return UNWRITTEN;
+    if (user.includes(`<first-message>\n${MISLINED_REQUEST}\n`)) {
+      return JSON.stringify({ tasks: [MISLINED_TASK] });
+    }
     // A session whose work is on alpha's own text: no task, as the prompt asks.
     if (user.includes("<first-message>\nRewrite the alpha skill")) {
       return JSON.stringify({
@@ -1342,6 +1356,14 @@ function readerAnswer(body: {
   return "{}";
 }
 
+/** Whether `body` is a request of the stand-in written-case reader for a context session whose
+ *  first message is `request`. */
+function writtenRequestFor(body: Parameters<typeof readerAnswer>[0], request: string): boolean {
+  if (!(body.system[0]?.text ?? "").startsWith(WRITTEN_PROMPT)) return false;
+  const user = body.messages[0]?.content.map((part) => part.text).join("\n") ?? "";
+  return user.includes(`<first-message>\n${request}\n`);
+}
+
 /** The stand-in written-case reader's replies so far for the context session whose first message
  *  is PARTLY_REFUSED_REQUEST. */
 let partlyRefusedReplies = 0;
@@ -1350,10 +1372,8 @@ let partlyRefusedReplies = 0;
  *  the written-case reader for a context session whose first message is REFUSED_REQUEST, and the
  *  first of each READER_TRIES for one whose first message is PARTLY_REFUSED_REQUEST. */
 function refusedReply(body: Parameters<typeof readerAnswer>[0]): boolean {
-  if (!(body.system[0]?.text ?? "").startsWith(WRITTEN_PROMPT)) return false;
-  const user = body.messages[0]?.content.map((part) => part.text).join("\n") ?? "";
-  if (user.includes(`<first-message>\n${REFUSED_REQUEST}\n`)) return true;
-  if (!user.includes(`<first-message>\n${PARTLY_REFUSED_REQUEST}\n`)) return false;
+  if (writtenRequestFor(body, REFUSED_REQUEST)) return true;
+  if (!writtenRequestFor(body, PARTLY_REFUSED_REQUEST)) return false;
   partlyRefusedReplies += 1;
   return partlyRefusedReplies % READER_TRIES === 1;
 }
@@ -1942,6 +1962,15 @@ beforeAll(() => {
     route: (request: RecordedRequest) => {
       if (request.method !== "POST" || request.path !== "/v1/messages") return undefined;
       const body = JSON.parse(request.body);
+      if (writtenRequestFor(body, ERRED_REQUEST)) {
+        return Response.json(
+          {
+            type: "error",
+            error: { type: "invalid_request_error", message: "the stand-in takes no such request" },
+          },
+          { status: 400 }
+        );
+      }
       const refused = refusedReply(body);
       const reply = messageSse({
         id: `msg_standin_${request.n}`,
@@ -4638,6 +4667,7 @@ interface WrittenSummary {
     existing?: string[];
   }[];
   stopped: string | null;
+  readerSpend: { models: Record<string, { calls: number }>; usd: number };
   peakRssBytes?: number;
 }
 
@@ -5277,12 +5307,20 @@ test("build-cases --written passes over a context session the written-case reade
   expect(refused.join("")).toContain(`--context-session ${context}: skill-as-material: `);
 }, 120_000);
 
+/** Why a written build passes a context session over as `reason` when the written-case reader's
+ *  answer was refused on each try, for `refusals`, one a try (ReaderFailed's message). */
+const writtenReaderWhy = (
+  reason: "reader-refused" | "reader-failed",
+  refusals: readonly string[]
+): string =>
+  `${reason}: the written-case reader's answer was refused on each of ${refusals.length} tries: ${refusals.join(" | ")}`;
+
 // Catches: a written build ended (exit 1) by the model's refusal of one context session's material
 // (the defect: a skill's written build exited 1, the written-case reader's every reply, on each of
 // 3 tries, stopped at refusal), which is that session's, not the build's, while the next session of
-// the seeded order gives tasks; and a reader failure of another kind, a reply that ends its turn
-// with no JSON among its tries, taken for that refusal.
-test("build-cases --written passes over a context session whose every written-case reader reply stopped at refusal as reader-refused, takes the next one, and refuses a --context-session of it; a reader whose replies did not all stop at refusal still fails the build", async () => {
+// the seeded order gives tasks; and a session only some of whose reader replies stopped at refusal
+// (the others end their turn with no JSON) passed over as reader-refused, not as reader-failed.
+test("build-cases --written passes over a context session whose every written-case reader reply stopped at refusal as reader-refused, takes the next one, and refuses a --context-session of it; one whose replies did not all stop at refusal is passed over as reader-failed", async () => {
   const refusedFile = "/sessions/written-refused.jsonl";
   const partlyFile = "/sessions/written-partly-refused.jsonl";
   const store = changedStore("written-refused", (files) => {
@@ -5296,8 +5334,7 @@ test("build-cases --written passes over a context session whose every written-ca
   });
   const goodFile = sessionPath("good");
   const refusal = 'the answer is not one JSON value: "" (the reply stopped at refusal)';
-  const tries = `the written-case reader's answer was refused on each of ${READER_TRIES} tries`;
-  const why = `reader-refused: ${tries}: ${Array(READER_TRIES).fill(refusal).join(" | ")}`;
+  const why = writtenReaderWhy("reader-refused", Array(READER_TRIES).fill(refusal));
   const printed: string[] = [];
   expect(
     await main(writtenInOrder(store, "written-refused", [refusedFile, goodFile]), io(printed))
@@ -5322,17 +5359,187 @@ test("build-cases --written passes over a context session whose every written-ca
   named[named.indexOf("--config") + 1] = store;
   expect(await main(named, io(refused))).toBe(EXIT.failed);
   expect(refused.join("")).toContain(`--context-session store_a:${fileHash(refusedFile)}: ${why}`);
-  // The first reply stopped at refusal, the others ended their turn with no JSON: the build fails
-  // as on any other failure of the reader, and takes no next session.
+  // The first reply stopped at refusal, the others ended their turn with no JSON: the session is
+  // passed over as reader-failed, each refusal named, and the next one taken.
+  const partly: string[] = [];
+  expect(
+    await main(writtenInOrder(store, "written-partly-refused", [partlyFile, goodFile]), io(partly))
+  ).toBe(EXIT.ok);
+  const unwritten = `the answer is not one JSON value: ${JSON.stringify(UNWRITTEN)}`;
+  const partlyWhy = writtenReaderWhy("reader-failed", [
+    refusal,
+    ...Array(READER_TRIES - 1).fill(unwritten),
+  ]);
+  const partlyOut = path.join(scratch, "written-partly-refused", "cases.jsonl");
+  const partlySummary = summaryOf<WrittenSummary>(partlyOut);
+  expect(partlySummary.contextSession.hash).toBe(fileHash(goodFile));
+  expect(partlySummary.contextSession.passed).toEqual([
+    { store: "store_a", hash: fileHash(partlyFile), why: partlyWhy },
+  ]);
+  expect(loadCases(partlyOut, old).length).toBeGreaterThan(0);
+}, 120_000);
+
+// Catches: a written build ended (exit 1) by the written-case reader's answers for one context
+// session, each refused by the reader's schema (the defect: a skill's written build exited 1, the
+// reader's answer refused on each of 3 tries for a task whose line is not the line it names, no
+// case written and the sessions after it never tried), which is that session's, not the build's,
+// while the next session of the seeded order gives tasks, in the pass over sessions on a served
+// model and in the one over those on a model the gateway does not serve, the refused tries' spend
+// counted with the build's; and a reader call that fails, which still fails the build.
+test("build-cases --written passes over a context session whose written-case reader answers are refused on every try as reader-failed, naming each refusal, in either pass, takes the next one, and refuses a --context-session of it; a reader call that fails still fails the build", async () => {
+  const mislinedFile = "/sessions/written-mislined.jsonl";
+  const unservedFile = "/sessions/written-mislined-unserved.jsonl";
+  const erredFile = "/sessions/written-erred.jsonl";
+  const store = changedStore("written-mislined", (files) => {
+    const held = files.store_a ?? {};
+    held[mislinedFile] = sessionText("written-mislined", (lines) =>
+      setText(lines, 0, () => MISLINED_REQUEST)
+    );
+    held[unservedFile] = sessionText("written-mislined-unserved", (lines) => {
+      SESSIONS["not-served"]?.change?.(lines);
+      setText(lines, 0, () => MISLINED_REQUEST);
+    });
+    held[erredFile] = sessionText("written-erred", (lines) =>
+      setText(lines, 0, () => ERRED_REQUEST)
+    );
+  });
+  const goodFile = sessionPath("good");
+  const refusal = "the answer is refused: tasks.0.line.text: is not line 9 of SKILL.md";
+  const why = writtenReaderWhy("reader-failed", Array(READER_TRIES).fill(refusal));
+  const printed: string[] = [];
+  const from = recorder.requests.length;
+  expect(
+    await main(writtenInOrder(store, "written-mislined", [mislinedFile, goodFile]), io(printed))
+  ).toBe(EXIT.ok);
+  const out = path.join(scratch, "written-mislined", "cases.jsonl");
+  const summary = summaryOf<WrittenSummary>(out);
+  expect(summary.contextSession.hash).toBe(fileHash(goodFile));
+  expect(summary.contextSession.passed).toEqual([
+    { store: "store_a", hash: fileHash(mislinedFile), why },
+  ]);
+  expect(printed.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${fileHash(mislinedFile)}: passed over (${why})\n`
+  );
+  expect(loadCases(out, old).length).toBeGreaterThan(0);
+  // Each try for the passed-over session was a reader call, and the summary's spend counts it, as
+  // it counts every reader call of the build.
+  const sent = recorder.requests.slice(from);
+  expect(
+    usersOf(sent, WRITTEN_PROMPT).filter((user) => user.includes(MISLINED_REQUEST))
+  ).toHaveLength(READER_TRIES);
+  const calls = Object.values(summary.readerSpend.models).map((each) => each.calls);
+  expect(calls.reduce((sum, each) => sum + each, 0)).toBe(sent.length);
+  // A --context-session of it is refused (exit 1), naming why.
+  const refused: string[] = [];
+  const named = writtenArgs(
+    path.join(scratch, "written-mislined-named", "cases.jsonl"),
+    "--context-session",
+    `store_a:${fileHash(mislinedFile)}`
+  );
+  named[named.indexOf("--config") + 1] = store;
+  expect(await main(named, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("")).toContain(`--context-session store_a:${fileHash(mislinedFile)}: ${why}`);
+  expect(existsSync(named[named.indexOf("--out") + 1] ?? "")).toBe(false);
+  // Both sessions are on a model no route serves: the build passes the first over in its second
+  // pass, and takes the next one.
+  const unserved: string[] = [];
+  expect(
+    await main(
+      writtenInOrder(
+        store,
+        "written-mislined-unserved",
+        [unservedFile, sessionPath("not-served")],
+        "--reading-models",
+        servedReadingModels("written-mislined")
+      ),
+      io(unserved)
+    )
+  ).toBe(EXIT.ok);
+  const unservedOut = path.join(scratch, "written-mislined-unserved", "cases.jsonl");
+  const second = summaryOf<WrittenSummary>(unservedOut);
+  expect(second.contextSession.hash).toBe(fileHash(sessionPath("not-served")));
+  expect(second.contextSession.how).toContain("no reading session on a served model");
+  expect(second.contextSession.passed).toEqual([
+    { store: "store_a", hash: fileHash(unservedFile), why },
+  ]);
+  expect(unserved.join("")).toContain(
+    `build-cases: context session place 1 of 2, store_a ${fileHash(unservedFile)}: passed over (${why})\n`
+  );
+  expect(loadCases(unservedOut, old).length).toBeGreaterThan(0);
+  // A reader call the gateway fails (a 400, on each request) fails the build, as before, and takes
+  // no next session.
   const failed: string[] = [];
   expect(
-    await main(writtenInOrder(store, "written-partly-refused", [partlyFile, goodFile]), io(failed))
+    await main(writtenInOrder(store, "written-erred", [erredFile, goodFile]), io(failed))
   ).toBe(EXIT.failed);
-  const unwritten = `the answer is not one JSON value: ${JSON.stringify(UNWRITTEN)}`;
   expect(failed.join("")).toContain(
-    `the written-case reader: ${tries}: ${[refusal, ...Array(READER_TRIES - 1).fill(unwritten)].join(" | ")}`
+    "the written-case reader: the model answered 400 invalid_request_error: the stand-in takes no such request"
   );
-  expect(existsSync(path.join(scratch, "written-partly-refused", "cases.jsonl"))).toBe(false);
+  expect(existsSync(path.join(scratch, "written-erred", "cases.jsonl"))).toBe(false);
+}, 120_000);
+
+// Catches: a written build ended (exit 1) by a context session whose first user message holds no
+// text, whose kind of work the written tasks take (the defect: a skill's written build exited 1 on
+// such a session after passing over four earlier ones), which is that session's, not the build's,
+// while the next session of the seeded order gives tasks, on a served model or on one not served.
+test("build-cases --written passes over, before asking the written-case reader, a context session whose first user message holds no text as no-user-text, on a served model or not, takes the next one, and refuses a --context-session of it", async () => {
+  const servedFile = "/sessions/written-no-text.jsonl";
+  const unservedFile = "/sessions/written-no-text-unserved.jsonl";
+  const store = changedStore("written-no-text", (files) => {
+    const held = files.store_a ?? {};
+    held[servedFile] = sessionText("written-no-text", (lines) => setText(lines, 0, () => ""));
+    held[unservedFile] = sessionText("written-no-text-unserved", (lines) => {
+      SESSIONS["not-served"]?.change?.(lines);
+      setText(lines, 0, () => "");
+    });
+  });
+  const whyOf = (file: string) =>
+    `no-user-text: the context session store_a:${fileHash(file)} holds no user message with text, whose kind of work the written tasks take`;
+  // On a model no route serves, the session is passed over in the first pass, and the next one,
+  // on such a model too, is taken in the second.
+  const runs = [
+    { name: "written-no-text", file: servedFile, next: sessionPath("good"), extra: [] },
+    {
+      name: "written-no-text-unserved",
+      file: unservedFile,
+      next: sessionPath("not-served"),
+      extra: ["--reading-models", servedReadingModels("written-no-text")],
+    },
+  ];
+  for (const { name, file, next, extra } of runs) {
+    const printed: string[] = [];
+    const from = recorder.requests.length;
+    expect(await main(writtenInOrder(store, name, [file, next], ...extra), io(printed))).toBe(
+      EXIT.ok
+    );
+    const out = path.join(scratch, name, "cases.jsonl");
+    const summary = summaryOf<WrittenSummary>(out);
+    expect(summary.contextSession.hash).toBe(fileHash(next));
+    expect(summary.contextSession.passed).toEqual([
+      { store: "store_a", hash: fileHash(file), why: whyOf(file) },
+    ]);
+    expect(printed.join("")).toContain(
+      `build-cases: context session place 1 of 2, store_a ${fileHash(file)}: passed over (${whyOf(file)})\n`
+    );
+    // The written-case reader was asked of the chosen session alone.
+    expect(usersOf(recorder.requests.slice(from), WRITTEN_PROMPT)).toHaveLength(1);
+    expect(loadCases(out, old).length).toBeGreaterThan(0);
+  }
+  // A --context-session of it is refused (exit 1), naming why, before any reader call.
+  const refused: string[] = [];
+  const named = writtenArgs(
+    path.join(scratch, "written-no-text-named", "cases.jsonl"),
+    "--context-session",
+    `store_a:${fileHash(servedFile)}`
+  );
+  named[named.indexOf("--config") + 1] = store;
+  const before = recorder.requests.length;
+  expect(await main(named, io(refused))).toBe(EXIT.failed);
+  expect(refused.join("")).toContain(
+    `--context-session store_a:${fileHash(servedFile)}: ${whyOf(servedFile)}`
+  );
+  expect(recorder.requests.length).toBe(before);
+  expect(existsSync(named[named.indexOf("--out") + 1] ?? "")).toBe(false);
 }, 120_000);
 
 /** A change of F1 for a session in a checkout of acme/proj whose first message is `request` and
@@ -5500,6 +5707,27 @@ function writtenInOrder(
   return args;
 }
 
+/** A `--reading-models` file `<name>-models.json` whose one model, anthropic/claude-sonnet-5-5, the
+ *  gateway serves: the model of a written build whose context session is on one it does not. */
+function servedReadingModels(name: string): string {
+  const models = path.join(setupDir, `${name}-models.json`);
+  writeFileSync(
+    models,
+    JSON.stringify({
+      sessions: 1,
+      byModel: [
+        { model: "anthropic/claude-sonnet-5-5", served: true, sessions: 1, anthropic: true },
+      ],
+      noModel: 0,
+      notQueried: 0,
+      notAnthropic: 0,
+      served: 1,
+      withModel: 1,
+    })
+  );
+  return models;
+}
+
 /** The first message of the two context sessions below, which no reader's request holds when the
  *  build passed them over before asking. */
 const MISSES_REQUEST = "Write the alpha notes of the listing-misses session.";
@@ -5581,21 +5809,6 @@ test("build-cases --written passes over, before asking the written-case reader, 
 
 test("build-cases --written passes over as listing-misses, in its second pass, a context session on a model the gateway does not serve whose rebuilt listing misses more than 10% of its recorded names, before asking the written-case reader, and takes the next one", async () => {
   const store = listingMissesStore();
-  const models = path.join(setupDir, "written-listing-misses-models.json");
-  writeFileSync(
-    models,
-    JSON.stringify({
-      sessions: 1,
-      byModel: [
-        { model: "anthropic/claude-sonnet-5-5", served: true, sessions: 1, anthropic: true },
-      ],
-      noModel: 0,
-      notQueried: 0,
-      notAnthropic: 0,
-      served: 1,
-      withModel: 1,
-    })
-  );
   const printed: string[] = [];
   const from = recorder.requests.length;
   // Both sessions are on a model no route serves, so the build asks neither in its first pass.
@@ -5606,7 +5819,7 @@ test("build-cases --written passes over as listing-misses, in its second pass, a
         "written-listing-misses-unserved",
         [MISSES_UNSERVED, sessionPath("not-served")],
         "--reading-models",
-        models
+        servedReadingModels("written-listing-misses")
       ),
       io(printed)
     )
