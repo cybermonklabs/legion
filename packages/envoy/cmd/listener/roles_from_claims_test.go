@@ -196,12 +196,14 @@ func TestAClaimsViewThatCannotAnswerIsTheBusNotAnsweringOnTheSessionRoutes(t *te
 	// gives every other wait: the minute cap would be barely three times it, near enough that a
 	// loaded runner could decide the row, and the binary's deadline would let a watcher that stops
 	// noticing at all hold the whole package for half an hour, which is what listenerWaitBound
-	// exists to stop.
+	// exists to stop. testwait.Bounded clamps it to what a shorter -timeout leaves, so the row
+	// still reports this wait by name rather than being cut off inside it by the binary.
 	const claimsViewNoticesBucketGone = 4 * time.Minute
-	testwait.WithinPolling(t, claimsViewNoticesBucketGone, testwait.Poll, "the role claim view to stop answering", func() bool {
-		_, err := registry.RolesHeldBy(sender)
-		return err != nil
-	})
+	testwait.WithinPolling(t, testwait.Bounded(t, claimsViewNoticesBucketGone, time.Second), testwait.Poll,
+		"the role claim view to stop answering", func() bool {
+			_, err := registry.RolesHeldBy(sender)
+			return err != nil
+		})
 
 	for _, route := range []struct {
 		path    string

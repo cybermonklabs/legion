@@ -932,13 +932,19 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 
 // awaitLockUsers waits for exactly n callers to hold or wait for sessionID's consumer lock: a test
 // that holds it learns that the call it started waits for it (2), and that the call is done with
-// it (0). The wait ends on the count, with the test binary's deadline as its only bound
-// (testwait.Until): a lock a caller reaches a moment later under load is the same lock, so no span
-// of this helper's own decides the row. Its failure prints the count it last read.
+// it (0). The wait ends on the count, bounded by listenerWaitBound like the package's other waits:
+// a lock a caller reaches a moment later under load is the same lock, so no span of this helper's
+// own decides the row, and over three instrumented whole-package runs no wait of this kind reached
+// a second. Its failure prints the count it last read.
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%d callers to hold or wait for the consumer lock of %s", n, sessionID),
-		func() (int, bool) { users := lockUsers(locks, sessionID); return users, users == n })
+	var users int
+	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
+		users = lockUsers(locks, sessionID)
+		return users == n
+	}) {
+		t.Fatalf("%d callers hold or wait for the consumer lock of %s, want %d", users, sessionID, n)
+	}
 }
 
 // followWhileLocked stores topic as sessionID's interest and sets its consumer's filter to it, as a
