@@ -1442,12 +1442,12 @@ internal/daemon on the real Oh My Pi, off the go-daemon cache family
 
 Its step joins `-tags e2e` with `-run`, so it runs those two tests and none of internal/daemon's
 untagged tests. Its untagged companion is `daemon-go-race`. That job's step "Test the concurrent
-packages under the race detector" is the one run of the package untagged. ci_job_reads.py's
-`TAG_RUNS` holds `daemon_go_tests` to every file this job's step reads. That entry selects no
-job: ci.yaml's own label terms turn each output on. So a pull request that needs this job's
-result at its head carries `lane:step_models_chain` and `lane:daemon_go_tests` together, or
-`full-ci`. `lane:step_models_chain` alone runs the tagged job while its companion stays off. Such
-a run is not the paired result
+packages under the race detector" is the one run of the package untagged.
+`.github/scripts/ci_job_reads.py#TAG_RUNS` holds `daemon_go_tests` to every file this job's step
+reads. That entry selects no job: ci.yaml's own label terms turn each output on. So a pull
+request that needs this job's result at its head carries `lane:step_models_chain` and
+`lane:daemon_go_tests` together, or `full-ci`. `lane:step_models_chain` alone runs the tagged
+job while its companion stays off. Such a run is not the paired result
 (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
 
 ## Why the private-name port harness has an output of its own
