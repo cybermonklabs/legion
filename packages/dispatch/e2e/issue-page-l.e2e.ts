@@ -667,7 +667,7 @@ test("a send with the keyboard leaves the focus on the reader's row of the outli
 test.skip("what the reader sends from the box past the first 50 rows is drawn, in view and focused @owed", {
   annotation: {
     description:
-      "Owed on part T (INFRA-4062, decision 127): the outline draws a node's first 50 children and a control for the rest only once T pages it, so this reading is skipped until then.",
+      "Owed on part T (decision 127): the outline draws a node's first 50 children and a control for the rest only once T pages it, so this reading is skipped until then.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -749,7 +749,7 @@ test.skip("what the reader sends from the box as a reply to a turn of the daemon
 test.skip("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it @owed", {
   annotation: {
     description:
-      "Owed on parts M and T (INFRA-4062, decision 127): the panel's history and its Reply come with part M, and the outline that then draws the agent's comment with T, so this reading is skipped until both are under this part's head.",
+      "Owed on parts M and T (decision 127): the panel's history and its Reply come with part M, and the outline that then draws the agent's comment with T, so this reading is skipped until both are under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -793,7 +793,7 @@ const GRAPH = "Graph";
 test.skip("what the reader sends from the box as a reply written in Graph is drawn in Graph, in view and focused @owed", {
   annotation: {
     description:
-      "Owed on part T (INFRA-4062, decision 127): Graph and its Reply come with part T, so this reading is skipped until T is under this part's head.",
+      "Owed on part T (decision 127): Graph and its Reply come with part T, so this reading is skipped until T is under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -1267,17 +1267,17 @@ test("the box that shrinks at the outline's end stands 8 px above the foot again
  *  row. */
 const THREADS = "Threads";
 
-// c-box, owed on INFRA-5704 (Threads, decision 127): Threads carries a box of its own for a
-// thread opened there, so the box at the foot is never drawn in Threads, and the panel's Reply on
-// a turn of its history and its Edit on the reader's own comment set no target there; Conversation
-// opened after them draws the box at rest, with no target line. Until Threads is under this
-// part's head the page draws no Threads view, so the reading is skipped with an annotation naming
-// INFRA-5704 and tagged `@owed`, which the check's run leaves out (decision 135). The round that
-// brings Threads under the head takes the skip and the tag off.
+// c-box, owed on the part that builds Threads (decision 127): Threads carries a box of its own
+// for a thread opened there, so the box at the foot is never drawn in Threads, and the panel's
+// Reply on a turn of its history and its Edit on the reader's own comment set no target there;
+// Conversation opened after them draws the box at rest, with no target line. Until Threads is
+// under this part's head the page draws no Threads view, so the reading is skipped with an
+// annotation naming that part and tagged `@owed`, which the check's run leaves out (decision
+// 135). The round that brings Threads under the head takes the skip and the tag off.
 test.skip("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone @owed", {
   annotation: {
     description:
-      "Owed on INFRA-5704 (Threads): the page draws no Threads view until INFRA-5704 builds it, so this reading is skipped until Threads is under this part's head (decision 127).",
+      "Owed on the part that builds Threads (decision 127): the page draws no Threads view until that part builds it, so this reading is skipped until Threads is under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -1522,7 +1522,7 @@ test("the end of the outline on screen for a second marks the issue read", async
 test.skip("the end of the outline on screen for a second marks the issue read, and not where a control that shows more rows ends it @owed", {
   annotation: {
     description:
-      "Owed on part T (INFRA-4062, decision 127): the outline ends in a control that shows more rows only once T pages it, so this reading is skipped until T is under this part's head.",
+      "Owed on part T (decision 127): the outline ends in a control that shows more rows only once T pages it, so this reading is skipped until T is under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -1801,7 +1801,7 @@ test("r on a statement writes a comment on its text", async ({ browser }) => {
 test.skip("r on a statement writes a comment on its text, and its target line names the first author its node lists @owed", {
   annotation: {
     description:
-      "Owed on part T (INFRA-4062, decision 127): a statement's node carries its author only once T's tree read gives it the first person its node lists, so this reading is skipped until T is under this part's head.",
+      "Owed on part T (decision 127): a statement's node carries its author only once T's tree read gives it the first person its node lists, so this reading is skipped until T is under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
@@ -2130,7 +2130,7 @@ test("the outline marks the current point of the conversation on one row, and th
 test.skip("the current point stays on the newest act past a result recorded after it, and rings the control for the rest that it stands behind @owed", {
   annotation: {
     description:
-      "Owed on part T (INFRA-4062, decision 127): the outline T moves onto its tree read draws a control for the rest of a node's children past its first 50, and the half of the current point that reads a result after the newest act waits on T's outline as well, so this reading is skipped until T is under this part's head.",
+      "Owed on part T (decision 127): the outline T moves onto its tree read draws a control for the rest of a node's children past its first 50, and the half of the current point that reads a result after the newest act waits on T's outline as well, so this reading is skipped until T is under this part's head.",
     type: "owed",
   },
 }, async ({ browser }) => {
