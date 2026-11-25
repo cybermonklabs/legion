@@ -881,12 +881,13 @@ two steps: the image's pull, which has no budget and counts at the 120 s the vis
 counts its pull of the same digest at (the time a browser step spent before its stack's
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
-2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
+2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min, and the outside driver's step adds its
+20 min (its own section below): 36 min 15 s -> 37 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. The Google sign-in step adds its own two minutes
-(.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement): 16 min
-15 s + 2 min = 18 min 15 s -> 19 min. With budgets on the steps, the
+(.github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs gives its measurement):
+36 min 15 s + 2 min = 38 min 15 s -> 39 min. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
@@ -1003,6 +1004,44 @@ e2e/run-server.sh refuses. With the first two specs it took 31 s in the full lan
 `2bb34aea68` (job 136963670387), 19:53:21 to 19:53:52; the leaver hold's row took 1.6 s
 beside outside sign-in's 2.4 s in one local run. 31 s x 1.15 = 36 s -> the two-minute
 floor, the sign-in step's; its harness is that step's, one server and no proxy.
+
+## What the outside driver's step runs and its budget
+
+packages/dispatch/e2e/__tests__/outside-edge.test.ts: the outside driver
+(e2e/acceptance/outside-edge.ts) run once per case against one stack of the harness under
+DISPATCH_E2E_SIGNIN=google, whose server answers at a second origin with passkey sign-in on,
+and an edge stand-in on envoy-client's relay socket stand-in
+(e2e/__tests__/outside-edge-stand-in.ts). Its stack rows need the dashboard the dashboard step
+built and a Postgres, which the harness starts from the image this job pulled; with neither
+DISPATCH_E2E_PG_IMAGE nor DISPATCH_E2E_PG_BIN they skip, which is why the step exports one. Its
+control rows run the driver against an outside origin stand-in
+(e2e/__tests__/outside-edge-origin-stand-in.ts) and need Chromium, and skip where it is not
+installed. It runs in this job because this job already holds a built dashboard, Chromium and
+that image.
+
+Its budget is its rows' own limits, not its readings. The readings come from one developer box:
+at a load average of 650 to 850 on 2026-11-20 the stack child, one stack and six driver runs,
+took 89 s and 247 s; at about 1160 on 2026-11-21, with one more `t5` run and the control rows,
+the stack child took 227 s, the slowest control run 21.58 s, and `bun run test:harness
+e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts` 302 s. 302 s x
+1.15 = 347 s would give 6 min, but packages/dispatch/e2e/__tests__/bounded-subprocess.ts bounds
+the stack child at three times its largest reading, 750 s, and the rows wait 780 s for it, so a
+6-minute step would kill a stuck stack before the bound names it. The file's other rows run one
+after another beside that row. The full lane at e775e0d892 measured them: run 45008694182, job
+137165937837, step 186 s (`Ran 38 tests across 1 file. [186.00s]`), of which the stack child took
+36.8 s and the other rows 149.2 s. The rows added since then (an input row, the `t5` row whose
+answer holds its body back, the device login's deadline row, a refused registration naming a
+no-answer code, an approved code the driver cannot record, a browser that ends mid-wait, a second
+`approve` case) took about 65 s more, measured alone on a developer box at a load average of
+about 1100 on 2026-11-22 (72.92 s for those rows and the two they sit beside). The rows added
+after them took about 116 s more on the same box at a load average of about 1500: a `t5` 2xx
+whose body never comes 26.9 s, a registration's status whose body never comes 17.0 s, a browser
+that ends at the code box or the credential 10.6 s, and a page that holds its main thread
+61.2 s (a stalled read beside the sign-in's waits runs at once with them, and adds none): about
+330 s in all. The longest control row's own limit is 260 s (a short wait, two page waits at
+once, a short wait and 30 s), less than the stack's 780 s. 780 s and 330 s -> 19 min, and one
+more for the step's own start: 20 min.
+It costs nothing on a green run, which ends in the minutes its readings take.
 
 ## Why the two-process job's upload runs on failure alone
 

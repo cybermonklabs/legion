@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  Added `failureCode(error)` to `@legion/contracts/log-text`: the runtime's code of a request or a
+  socket that got no whole answer, as one word a text may carry (`ECONNREFUSED`, `ENOTFOUND`,
+  `ECONNRESET`, …, and `ETIMEDOUT` for a deadline that ended it), never its message. It is the
+  runtime's word for how the request ended, which a far end that began an answer and closed gives
+  too, so a caller that tells a far end that answered nothing from one that answered reads it
+  through an allowlist of its own. The Envoy client's call and relay socket and the broker client's
+  request and trade keep it as their error's `code`, since none of them keeps a cause.
+time: 2026-11-22T09:10:42.361523190Z
+custom:
+    Issue: pr4673

@@ -334,17 +334,21 @@ const ROWS: [string, Row][] = [
       answer: () => "silent",
       budget: 0,
       attemptMs: SILENT_ATTEMPT_MS,
-      drive: async ({ client, waits }) => {
-        // A deadline before any trade has ended is told the trade still out has not been
-        // answered, by the identity it trades: the caller's deadline is no answer about it.
+      drive: async ({ client, waits, trades }) => {
+        // A deadline before any trade has ended, once the trade's request reached the broker, is
+        // told the trade still out has not been answered, by the identity it trades: the caller's
+        // deadline is no answer about it.
         const early = new AbortController();
         const before = client.token(early.signal);
+        await until(() => trades() === 1, "the trade's request at the broker");
         early.abort(new Error("the caller's own deadline"));
         const unanswered = await outcome(before);
         expect(unanswered).toBeInstanceOf(TradeUnansweredError);
         expect((unanswered as Error).message).toBe(
           "the secrets broker has not yet answered the trade of a pod's projected service-account token, and the trade goes on in the background"
         );
+        // Its code says the broker gave no answer, as a request past its deadline's does.
+        expect(unanswered).toMatchObject({ code: "ETIMEDOUT" });
         // A fail-fast caller with no deadline of its own is told when the trade's time runs out:
         // a trade that never returns ends, and so does the wait on it.
         const fast = client.token().catch((error: unknown) => error);
@@ -355,10 +359,12 @@ const ROWS: [string, Row][] = [
         const told = await settledWith(fast, "the fail-fast caller told");
         expect(told).toBeInstanceOf(TradeRetryingError);
         expect((told as Error).message).toContain("did not answer");
+        expect(told).toMatchObject({ code: "ETIMEDOUT" });
         late.abort();
         const named = await settledWith(waiting, "the waiting caller told at its deadline");
         expect(named).toBeInstanceOf(TradeRetryingError);
         expect((named as Error).message).toContain("did not answer");
+        expect(named).toMatchObject({ code: "ETIMEDOUT" });
         client.close();
       },
     },
@@ -534,3 +540,47 @@ test.each(ROWS)(
   },
   20_000
 );
+
+// A deadline that ends before the trade's request went out: the identity's source still waits, as
+// a device login's does on a lock another process of this machine holds, so no broker was asked,
+// and the message says the trade was not sent. Its code is the deadline's, as every wait's that
+// ended with no answer.
+test("a deadline before the trade's request went out is told the trade was not sent yet", async () => {
+  jest.useFakeTimers();
+  let reads = 0;
+  let sent = 0;
+  const waiting: TokenSource = {
+    read: () => {
+      reads += 1;
+      return new Promise<SubjectToken>(() => undefined);
+    },
+    describe: () => "a device login whose lock another process holds",
+  };
+  const client = new BrokerTokenClient({
+    brokerUrl: "http://broker.test",
+    key: await newDpopKey(),
+    subject: waiting,
+    session: SESSION,
+    log: () => undefined,
+    fetch: (async () => {
+      sent += 1;
+      return new Response("no request was meant to come", { status: 503 });
+    }) as unknown as typeof fetch,
+  });
+  try {
+    const early = new AbortController();
+    const before = client.token(early.signal);
+    await until(() => reads === 1, "the source's read");
+    early.abort(new Error("the caller's own deadline"));
+    const unsent = await outcome(before);
+    expect(unsent).toBeInstanceOf(TradeUnansweredError);
+    expect((unsent as Error).message).toBe(
+      "the trade of a device login whose lock another process holds has not yet been sent to the secrets broker: its identity's source still waits (for a lock another process of this machine holds, or for its own read), and the trade goes on in the background"
+    );
+    expect(unsent).toMatchObject({ code: "ETIMEDOUT" });
+    expect(sent).toBe(0);
+  } finally {
+    client.close();
+    jest.useRealTimers();
+  }
+}, 20_000);

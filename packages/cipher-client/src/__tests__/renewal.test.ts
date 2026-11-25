@@ -156,6 +156,8 @@ test("a broker that does not answer leaves the token in hand working until it la
     const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect((refusal as Error).message).toContain("503");
+    // The broker answered, so the failure carries no code of a request with no answer.
+    expect(refusal).toMatchObject({ code: undefined });
     expect(isFinalRefusal(refusal)).toBe(false);
   } finally {
     client.close();
@@ -219,8 +221,9 @@ test("a token pasted as the broker's URL is refused, and named in no part", asyn
 });
 
 // A trade that got no answer is named by the failure's class: the runtime's message repeats the
-// host it was handed, and the broker is named by `urlForText` already.
-test("a trade that got no answer names the failure by its class", async () => {
+// host it was handed, and the broker is named by `urlForText` already. It keeps no cause, so the
+// failure's code is what a caller reads to tell a broker that answered nothing from one that did.
+test("a trade that got no answer names the failure by its class, and carries its code", async () => {
   const client = await clientAt("http://127.0.0.1:1", { now: Date.now() }, countingSource());
   const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
   client.close();
@@ -229,6 +232,7 @@ test("a trade that got no answer names the failure by its class", async () => {
     "trade a scripted identity at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED, and the trade is being retried in the background"
   );
   expect(refusal.cause).toBeUndefined();
+  expect(refusal.code).toBe("ECONNREFUSED");
 });
 
 test("a refusal of the identity stops at once, whatever is in hand", async () => {

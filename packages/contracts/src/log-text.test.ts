@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   errorClass,
+  failureCode,
   isCleanUrl,
   isHttpUrl,
   requestForText,
@@ -122,5 +123,65 @@ describe("errorClass", () => {
     const odd = Object.assign(new Error(canary), { name: `Error ${canary}`, code: `${canary} x` });
     expect(errorClass(odd)).toBe("Error (message withheld)");
     expect(errorClass(canary)).toBe("a thrown string (message withheld)");
+  });
+});
+
+// The runtime's code a client keeps on its own error, which keeps no cause, of a request that got
+// no whole answer: one upper-case word, never a message, which repeats the host or the URL it was
+// handed.
+describe("failureCode", () => {
+  test("a failure is named by the runtime's code, and a deadline as ETIMEDOUT", () => {
+    const unresolved = Object.assign(new Error("getaddrinfo ENOTFOUND edge.invalid"), {
+      code: "ENOTFOUND",
+      syscall: "getaddrinfo",
+    });
+    expect(failureCode(unresolved)).toBe("ENOTFOUND");
+    expect(failureCode(new DOMException("The operation timed out.", "TimeoutError"))).toBe(
+      "ETIMEDOUT"
+    );
+  });
+
+  test("an error with no code of the runtime's shape, or no error, has none", () => {
+    expect(failureCode(new TypeError("fetch failed"))).toBeUndefined();
+    // A code a peer wrote, lower case or holding a space, is no runtime's.
+    expect(failureCode(Object.assign(new Error("x"), { code: "invalid_grant" }))).toBeUndefined();
+    expect(failureCode(Object.assign(new Error("x"), { code: "E CONN" }))).toBeUndefined();
+    expect(failureCode("ECONNREFUSED")).toBeUndefined();
+  });
+
+  // The runtime's word for how a request ended, whatever the far end did: a server that begins an
+  // answer and closes gives one too, so a caller that tells an answer from none reads the code
+  // through an allowlist of its own, as the doc says (measured on Bun 1.4.4: half a status line
+  // gives ECONNRESET; bytes that are no HTTP give `Malformed_HTTP_Response`, no code of the
+  // runtime's shape, so none).
+  test("a far end that began an answer and closed gives the runtime's code too", async () => {
+    const answering = (bytes: string) =>
+      Bun.listen({
+        hostname: "127.0.0.1",
+        port: 0,
+        socket: {
+          open: (socket) => {
+            socket.end(bytes);
+          },
+          data: () => undefined,
+        },
+      });
+    const half = answering("HTTP/1.1 2");
+    const garbage = answering("not http at all\r\n\r\n");
+    try {
+      const [halfFailed, garbageFailed] = await Promise.all(
+        [half, garbage].map((server) =>
+          fetch(`http://127.0.0.1:${server.port}/`).then(
+            () => "answered",
+            (error: unknown) => error
+          )
+        )
+      );
+      expect(failureCode(halfFailed), String(halfFailed)).toBe("ECONNRESET");
+      expect(failureCode(garbageFailed), String(garbageFailed)).toBeUndefined();
+    } finally {
+      half.stop(true);
+      garbage.stop(true);
+    }
   });
 });

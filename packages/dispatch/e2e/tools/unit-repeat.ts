@@ -12,9 +12,11 @@
  *  them. A rerun of a file keeps the modules its first run loaded, so only the first run of each
  *  file is cold: run that lane with `--reruns 1`. The harness lane is
  *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
- *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
- *  prints the seed before the run starts, so a run killed midway still names its seed. During the
- *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
+ *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter, and
+ *  sets DISPATCH_UNIT_REPEAT=1 for Bun's run (`repeatMarker`), as each command it prints to run a
+ *  file again does too (`laneCommand`). It prints the seed before the run starts, so a run killed
+ *  midway still names its seed. During the run it prints only Bun's summary lines. Bun's whole
+ *  output goes to `<out>/bun.log`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -115,6 +117,31 @@ const lanes: Readonly<Record<Lane, LaneScript>> = {
   "web-cold": { script: "test:web:cold", target: "web/src" },
   harness: { script: "test:harness", target: "e2e/__tests__" },
 };
+
+/** What the tool sets for the Bun run of every lane, so a row can tell it runs many times over.
+ *  Rows that wait out a span of real time skip under it: e2e/__tests__/outside-edge-hold.test.ts's
+ *  60 s hold, 15 s release, 10 s flush, 30 s reopen and its rows on short tokens and a short
+ *  lapse, each a process of its own on the real clock, and e2e/__tests__/outside-edge.test.ts's
+ *  rows that wait out one of the outside driver's own bounds (a page's 30 s, a revoke's list read,
+ *  a device login's deadline). Twenty reruns of them would add about half an hour of waiting to a
+ *  harness leg, which the leg's deadline in dispatch-unit-repeat.yaml, set from legs measured
+ *  without them, does not count, and the waits find no fault a single run does not; each runs once
+ *  a run where the rest of its file runs. The run that reads a file's rows' names after a stop
+ *  (`rowNamesOf`) sets it too, so it skips the rows the leg's run skipped, and so does each
+ *  command the report prints to run a file again (`laneCommand`): a person who runs one runs the
+ *  rows the leg ran, so the row the report counts as row N of the seed's order is row N there. */
+const repeatMarker = { DISPATCH_UNIT_REPEAT: "1" } as const;
+
+/** The command, run from packages/dispatch, that runs `path` through the lane's `script` under
+ *  `seed`, with `--rerun-each=<k>` where `rerunEach` is given, and with `repeatMarker` set as the
+ *  tool sets it for Bun's run. Each command the tool prints is one of these. */
+function laneCommand(script: string, path: string, seed: number, rerunEach?: number): string {
+  const marker = Object.entries(repeatMarker)
+    .map(([name, value]) => `${name}=${value}`)
+    .join(" ");
+  const rerun = rerunEach === undefined ? "" : ` --rerun-each=${rerunEach}`;
+  return `${marker} bun run ${script} ${path} --seed=${seed}${rerun}`;
+}
 
 const laneNames = Object.keys(lanes);
 
@@ -608,7 +635,8 @@ export interface FailingRow {
   readonly firstFailedRun: number;
   /** The first failure's message, cut to MESSAGE_LIMIT characters. */
   readonly message: string;
-  /** The command, run from packages/dispatch, that runs the row's file again in the same order. */
+  /** The command (`laneCommand`), run from packages/dispatch, that runs the row's file again in
+   *  the same order. */
   readonly reproduce: string;
 }
 
@@ -651,8 +679,8 @@ export interface RunningFile {
   /** Seconds from the file's last event in the progress file to the stop, or to Bun's end where
    *  no stop came first. */
   readonly quietSeconds: number;
-  /** The command, run from packages/dispatch, that runs the file again in the same order up to
-   *  that run. */
+  /** The command (`laneCommand`), run from packages/dispatch, that runs the file again in the
+   *  same order up to that run. */
   readonly reproduce: string;
 }
 
@@ -699,7 +727,8 @@ export interface Report {
   readonly lane: Lane;
   readonly seed: number;
   readonly reruns: number;
-  /** The lane's command, without the reporter flags. */
+  /** The lane's command as the tool ran it (`laneCommand`), without the reporter flags and the
+   *  progress preload. */
   readonly command: string;
   /** Bun's exit code, or the signal that ended it. */
   readonly bunExit: string;
@@ -971,7 +1000,7 @@ function filesAt(
       quietSeconds: Math.round((at - state.lastAt) / 100) / 10,
       // As a failing row's command: the file alone with the seed and `--rerun-each=n` runs as it
       // did up to run n.
-      reproduce: `bun run ${lane.script} ${state.file} --seed=${lane.seed}${number > 1 ? ` --rerun-each=${number}` : ""}`,
+      reproduce: laneCommand(lane.script, state.file, lane.seed, number > 1 ? number : undefined),
     });
   }
   return running.sort((one, other) => other.quietSeconds - one.quietSeconds);
@@ -1095,7 +1124,6 @@ export function summarise(run: LaneRun): Report {
     // Bun runs a file's rows in an order that depends only on the seed and the file, and it
     // keeps that order on every rerun (measured on Bun 1.4.4). So the file alone with the seed
     // and `--rerun-each=n` runs as it did up to run n, the run this row first failed on.
-    const rerun = first > 1 ? ` --rerun-each=${first}` : "";
     failingRows.push({
       file,
       name: [...describe, name].join(" > "),
@@ -1103,7 +1131,7 @@ export function summarise(run: LaneRun): Report {
       runs: runs.length,
       firstFailedRun: first,
       message: message.length <= MESSAGE_LIMIT ? message : `${message.slice(0, MESSAGE_LIMIT)}…`,
-      reproduce: `bun run ${script} ${file} --seed=${run.seed}${rerun}`,
+      reproduce: laneCommand(script, file, run.seed, first > 1 ? first : undefined),
     });
   }
 
@@ -1207,7 +1235,7 @@ export function summarise(run: LaneRun): Report {
     lane: run.lane,
     seed: run.seed,
     reruns: run.reruns,
-    command: `bun run ${script} ${run.target} --seed=${run.seed} --rerun-each=${run.reruns}`,
+    command: laneCommand(script, run.target, run.seed, run.reruns),
     bunExit,
     wallSeconds: Math.round(run.wallMs / 100) / 10,
     oneRun: {
@@ -1567,7 +1595,9 @@ function killGroup(leader: number): void {
  *  included, can take as long as it likes, or hang. The run runs the file's own code and hooks,
  *  so it runs in a process group of its own, which the tool kills whole once it has read the
  *  names it needs, when `boundMs` passes if it has not, and again once the run has ended, so that
- *  no process of it outlives the report. */
+ *  no process of it outlives the report. It sets `repeatMarker` as the leg's run does: a row the
+ *  leg's run skipped under it never began there, so this run must skip it too, or its names would
+ *  not be the names of the rows the leg began. */
 async function rowNamesOf(
   script: string,
   file: string,
@@ -1588,7 +1618,7 @@ async function rowNamesOf(
     {
       cwd: packageDirectory,
       detached: true,
-      env: { ...environment, DISPATCH_UNIT_REPEAT_NAMES_ONLY: "1" },
+      env: { ...environment, ...repeatMarker, DISPATCH_UNIT_REPEAT_NAMES_ONLY: "1" },
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -1722,7 +1752,9 @@ export async function runLane(
     return refuse(`--out ${options.out} cannot be the output directory: ${errorText(error)}`);
   }
   console.log(`seed=${seed} lane=${lane} reruns=${reruns}`);
-  console.log(`running bun run ${script} ${target} in ${packageDirectory}; its output: ${logPath}`);
+  console.log(
+    `running ${laneCommand(script, target, seed, reruns)} in ${packageDirectory}; its output: ${logPath}`
+  );
 
   const started = performance.now();
   // `detached` makes Bun's `bun run` the leader of a process group of its own, which Bun's test
@@ -1744,7 +1776,7 @@ export async function runLane(
     {
       cwd: packageDirectory,
       detached: true,
-      env: { ...process.env, DISPATCH_UNIT_REPEAT_PROGRESS: progressPath },
+      env: { ...process.env, DISPATCH_UNIT_REPEAT_PROGRESS: progressPath, ...repeatMarker },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

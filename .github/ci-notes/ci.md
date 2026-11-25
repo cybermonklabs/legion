@@ -562,6 +562,28 @@ jobs are on this same filter and run in no container, so an image change runs
 them too, which costs a five-minute Chromium job and keeps one list rather than
 two.
 
+## dispatch_browser: The outside driver's two envoy-client test modules
+
+The outside driver's two envoy-client test modules: the two-process job's step "Drive the
+outside driver through a stand-in edge" runs packages/dispatch/e2e/__tests__/outside-edge.test.ts,
+whose edge stand-in (e2e/__tests__/outside-edge-stand-in.ts) imports
+@legion/envoy-client/test/relay-socket-stand-in, the listener's relay socket and token exchange,
+and @legion/envoy-client/test/subscribe-answer, the answer a listener gives a registration. They
+are test modules of that package, outside the envoy-client sources this filter takes, so a change
+to either changes what that step's rows read. They are named one by one rather than as
+packages/envoy-client/test/**, since the step reads those two and no other file of that
+directory.
+
+## dispatch_browser: The shared test fixtures the outside driver's stand-ins load
+
+The shared test fixtures the outside driver's stand-ins load: the same step's
+packages/dispatch/e2e/__tests__/outside-edge.test.ts imports e2e/__tests__/outside-edge-credentials.ts
+and @legion/envoy-client/test/relay-socket-stand-in, and each of them imports
+@legion/cipher-client/test/sign-ins, which imports @legion/test-fixtures/fixture-secret, the
+secrets those stand-ins mint. The cipher-client entry above takes sign-ins.ts, but not the module it
+imports, so a change to packages/test-fixtures/src changes what that step's rows read: this filter
+takes that directory, as dispatch_ui's does for the same package's tests.
+
 ## dispatch_browser: The one markdown fixture table: the browser row each
 
 The one markdown fixture table: the browser row each of the seven parity families

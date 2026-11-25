@@ -1706,6 +1706,11 @@ dispatch_browser:
   - 'packages/envoy-client/src/**'
   - 'packages/envoy-client/bin/dispatch.ts'
   - 'packages/cipher-client/**'
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-outside-drivers-two-envoy-client-test-modules
+  - 'packages/envoy-client/test/relay-socket-stand-in.ts'
+  - 'packages/envoy-client/test/subscribe-answer.ts'
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-shared-test-fixtures-the-outside-drivers-stand-ins-load
+  - 'packages/test-fixtures/src/**'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-one-markdown-fixture-table-the-browser-row-each
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
   # why: .github/ci-notes/ci.md#dispatch_browser-what-stood-here-was-the-file-stores-own-image-declaration

@@ -17,6 +17,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import {
+  BrokerRefusedError,
+  TradeRetryingError,
+  TradeUnansweredError,
+} from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   frame,
@@ -27,7 +32,14 @@ import {
 } from "../../test/relay-socket-fixtures";
 import { standInDeliverSubject } from "../../test/relay-socket-stand-in";
 import { createConsumerDelivery, inboundUnavailable } from "../consumer-delivery";
-import { ListenerRelay, type RelayEnd, relayReopenDelay, relayRun } from "../listener-relay";
+import {
+  connectListenerRelay,
+  ListenerRelay,
+  type RelayEnd,
+  RelayNotOpenedError,
+  relayReopenDelay,
+  relayRun,
+} from "../listener-relay";
 
 const { started, standIn, opened } = relaySocketFixtures("listener-relay");
 
@@ -785,6 +797,150 @@ describe("a relay socket", () => {
       "the listener's relay socket for ses_a closed (1006); it opens again in 0 ms",
     ]);
   }, 60_000);
+
+  // A caller whose bound ends before a socket opened is told why the last open failed, and the
+  // code the runtime gave its socket, which is what tells a listener that answered nothing from
+  // one that answered: the relay keeps no cause, since the runtime's error repeats the socket's
+  // URL. Each listener here is this row's own: a port nothing takes (the loopback's port 1), one
+  // that takes the connection and never answers the upgrade, and one that answers it 403.
+  test("a socket that did not open in its bound carries the runtime's code, ETIMEDOUT for an upgrade never answered, and none where the listener answered", async () => {
+    const token = fixtureSecret("relay");
+    const openAt = (url: string, boundMs: number) =>
+      connectListenerRelay(
+        {
+          url,
+          session: "ses_a",
+          credential: {
+            scheme: "DPoP",
+            headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" }),
+            secret: () => token,
+          },
+          outage: { refused: () => undefined },
+          log: () => undefined,
+        },
+        AbortSignal.timeout(boundMs)
+      ).then(
+        async (relay) => {
+          await relay.close();
+          return "it opened";
+        },
+        (error: unknown) => error
+      );
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data: () => undefined },
+    });
+    started.push(() => silent.stop(true));
+    const refusing = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("not this token", { status: 403 }),
+    });
+    started.push(() => refusing.stop(true));
+    const [refused, unanswered, answered] = await Promise.all([
+      openAt("http://127.0.0.1:1", 1_500),
+      openAt(`http://127.0.0.1:${silent.port}`, 22_000),
+      openAt(`http://127.0.0.1:${refusing.port}`, 1_500),
+    ]);
+    expect(refused).toBeInstanceOf(RelayNotOpenedError);
+    expect(refused).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the socket closed before it opened (1006: Failed to connect)",
+      code: "ECONNREFUSED",
+    });
+    expect(refused).not.toHaveProperty("cause");
+    expect(unanswered).toBeInstanceOf(RelayNotOpenedError);
+    expect(unanswered).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the upgrade was not answered within 20 s",
+      code: "ETIMEDOUT",
+    });
+    // Control: the listener answered, so the open failed on its answer and carries no code.
+    expect(answered).toBeInstanceOf(RelayNotOpenedError);
+    expect(answered).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: the listener refused the upgrade with HTTP 403",
+      code: undefined,
+    });
+  }, 30_000);
+
+  // The same reading where the open failed before it made a socket, at its trade: a trade the
+  // broker did not answer carries the trade's own code (the broker client's `code`: ETIMEDOUT for
+  // one still unanswered, the runtime's for one refused its connection), and a trade the broker
+  // refused carries none. And where no open has failed yet and one is still waiting when the
+  // bound ends, for its trade or for its upgrade's answer, the open got no answer in that time:
+  // ETIMEDOUT, and the message says it was still waiting.
+  test("a trade the broker did not answer, or an open still waiting at the bound, carries a code; a trade the broker refused carries none", async () => {
+    const token = fixtureSecret("relay");
+    const openWith = (url: string, headers: () => Promise<Record<string, string>>) =>
+      connectListenerRelay(
+        {
+          url,
+          session: "ses_a",
+          credential: { scheme: "DPoP", headers, secret: () => token },
+          outage: { refused: () => undefined },
+          log: () => undefined,
+        },
+        AbortSignal.timeout(1_500)
+      ).then(
+        async (relay) => {
+          await relay.close();
+          return "it opened";
+        },
+        (error: unknown) => error
+      );
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data: () => undefined },
+    });
+    started.push(() => silent.stop(true));
+    const traded = async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" });
+    const [unanswered, unconnected, refused, tradeWaits, upgradeWaits] = await Promise.all([
+      openWith("http://127.0.0.1:1", async () => {
+        throw new TradeUnansweredError("a scripted identity");
+      }),
+      openWith("http://127.0.0.1:1", async () => {
+        throw new TradeRetryingError(
+          "trade a scripted identity at http://127.0.0.1:9/v1/oauth/token: ECONNREFUSED",
+          "ECONNREFUSED"
+        );
+      }),
+      openWith("http://127.0.0.1:1", async () => {
+        throw new BrokerRefusedError(
+          400,
+          "invalid_grant",
+          "the broker refuses this identity a token",
+          "a scripted identity"
+        );
+      }),
+      // A trade that is not answered before the bound, nor at all.
+      openWith("http://127.0.0.1:1", () => new Promise<Record<string, string>>(() => undefined)),
+      // A trade answered at once, and an upgrade the listener takes the connection of and never
+      // answers, which the relay drops only at its own 20 s.
+      openWith(`http://127.0.0.1:${silent.port}`, traded),
+    ]);
+    expect(unanswered).toBeInstanceOf(RelayNotOpenedError);
+    expect(unanswered).toMatchObject({
+      message:
+        "the listener's relay socket for ses_a did not open: its token could not be had (the secrets broker has not yet answered the trade of a scripted identity, and the trade goes on in the background)",
+      code: "ETIMEDOUT",
+    });
+    expect(unconnected).toMatchObject({ code: "ECONNREFUSED" });
+    // Control: the broker answered the trade, so the open failed on its answer and has no code.
+    expect(refused).toBeInstanceOf(RelayNotOpenedError);
+    expect((refused as Error).message).toStartWith(
+      "the listener's relay socket for ses_a did not open: its token could not be had ("
+    );
+    expect(refused).toMatchObject({ code: undefined });
+    const waiting =
+      "the listener's relay socket for ses_a did not open: its open was still waiting for its token or its upgrade's answer when the bound ended";
+    expect(tradeWaits).toBeInstanceOf(RelayNotOpenedError);
+    expect(tradeWaits).toMatchObject({ message: waiting, code: "ETIMEDOUT" });
+    expect(upgradeWaits).toBeInstanceOf(RelayNotOpenedError);
+    expect(upgradeWaits).toMatchObject({ message: waiting, code: "ETIMEDOUT" });
+  }, 10_000);
 
   test("a frame that is no JSON, and a msg whose headers are no map of lists, are dropped and logged once; later frames go on", async () => {
     const server = standIn();

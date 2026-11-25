@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A relay socket that did not open within its caller's bound now throws `RelayNotOpenedError`
+  (`@legion/envoy-client/listener-relay`), whose `code` is the runtime's code of the last open's
+  failure where the far end gave no whole answer (`failureCode` of `@legion/contracts/log-text`):
+  `ECONNREFUSED` for a listener whose port nothing took, `ENOTFOUND` for a name that did not
+  resolve, `ETIMEDOUT` for an upgrade not answered within 20 s, the trade's own code for a trade of
+  the session's token the broker did not answer, and `ETIMEDOUT` where no open had failed yet and
+  one still waited for its token or its upgrade's answer. It has none where the listener or the
+  broker answered with a status (a refused upgrade, a refused trade); a far end that sent bytes the
+  runtime refused carries the runtime's code for them (`HPE_INVALID_CONSTANT`, `ECONNRESET`), so a
+  caller reads `code` through an allowlist of its own. A call of `createEnvoyClient` that got no
+  answer carries its failure's `code` the same way; one whose status came without its body says
+  so, naming that status, and carries no `code`, since the listener answered it. Neither keeps a
+  cause, since the runtime's error repeats the URL, so before this a caller could not tell a
+  listener that answered nothing from one that refused.
+time: 2026-11-22T06:30:20.014428172Z
+custom:
+    Issue: pr4673

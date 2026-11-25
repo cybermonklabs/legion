@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, compactVerify, EmbeddedJWK, type JWK } from "jose";
+import { ClientError } from "openid-client";
 import {
   STAND_IN_CREDENTIAL,
   STAND_IN_UNKNOWN_CODE,
@@ -41,7 +42,7 @@ import {
   IDENTITY_VAR,
   PROJECTS_VAR,
 } from "../environment";
-import { TRADE_ATTEMPT_MS } from "../token-client";
+import { brokerRefusal, TRADE_ATTEMPT_MS } from "../token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
@@ -788,6 +789,68 @@ test("a refresh refused other than invalid_grant is that refusal, and one unansw
   );
   expect(unanswered).toBeInstanceOf(BrokerTradeFailedError);
   expect(unanswered?.message).toContain("refresh this machine's device login at");
+});
+
+// A request to the broker that got no answer keeps no cause, so its code is what tells a broker
+// that answered nothing from one that answered: the runtime's for a connection nothing took or a
+// name that did not resolve, and ETIMEDOUT for one its deadline ended, which openid-client names
+// OAUTH_TIMEOUT (read through `brokerRefusal`, since the real deadline is 15 s). One the broker
+// answered, a 503 or an answer openid-client refused, carries none.
+test("a device login's request the broker gave no answer carries the failure's code, and one it answered carries none", async () => {
+  const unavailable = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("unavailable", { status: 503 }),
+  });
+  try {
+    const startAt = (brokerUrl: string) =>
+      startDeviceLogin({ brokerUrl, person: PERSON, host: HOST }).then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+    const [refused, unresolved, answered] = await Promise.all([
+      startAt("http://127.0.0.1:1"),
+      startAt("https://edge.invalid"),
+      startAt(`http://127.0.0.1:${unavailable.port}`),
+    ]);
+    expect(refused).toBeInstanceOf(BrokerTradeFailedError);
+    expect(refused).toMatchObject({ code: "ECONNREFUSED" });
+    expect(refused?.message).toEndWith(": ECONNREFUSED");
+    expect(refused).not.toHaveProperty("cause");
+    expect(unresolved).toBeInstanceOf(BrokerTradeFailedError);
+    // A resolver with no answer for the name at all, as a box with no DNS has, says EAI_AGAIN.
+    expect((unresolved as BrokerTradeFailedError).code).toMatch(/^(ENOTFOUND|EAI_AGAIN)$/);
+    expect(answered).toBeInstanceOf(BrokerTradeFailedError);
+    expect(answered?.message).toContain("HTTP 503");
+    expect(answered).toMatchObject({ code: undefined });
+  } finally {
+    unavailable.stop(true);
+  }
+  const endpoint = "http://127.0.0.1:1/v1/oauth/device_authorization";
+  // openid-client's ClientError reads `code` from its options at run time, but its declaration gives
+  // it Error's constructor, whose options hold a cause alone, so each code is set on the error after.
+  const timedOut = brokerRefusal(
+    "ask for a code for",
+    "this machine's device login",
+    endpoint,
+    Object.assign(
+      new ClientError("operation timed out", {
+        cause: new DOMException("The operation timed out.", "TimeoutError"),
+      }),
+      { code: "OAUTH_TIMEOUT" }
+    )
+  );
+  expect(timedOut).toBeInstanceOf(BrokerTradeFailedError);
+  expect(timedOut.message).toEndWith(": OAUTH_TIMEOUT");
+  expect(timedOut).toMatchObject({ code: "ETIMEDOUT" });
+  // Control: an answer openid-client read and refused is an answer, whatever its code.
+  const unparsed = brokerRefusal(
+    "ask for a code for",
+    "this machine's device login",
+    endpoint,
+    Object.assign(new ClientError("parsing error occured"), { code: "OAUTH_PARSE_ERROR" })
+  );
+  expect(unparsed).toMatchObject({ code: undefined });
 });
 
 test("a trade refused after its holder lost the lock is one a later trade cures, refreshed or not", async () => {

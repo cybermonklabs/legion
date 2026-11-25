@@ -10,7 +10,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
-import { errorClass, requestForText } from "@legion/contracts/log-text";
+import { errorClass, failureCode, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
@@ -1062,11 +1062,28 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     }
   };
 
-  /** A call that got no answer, as our own error: the runtime's own error repeats the host it
-   *  dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is named
-   *  by its class and kept as no cause. */
-  const noAnswer = (method: string | undefined, url: string, error: unknown): Error =>
-    new Error(`${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`);
+  /** A call that got no whole answer, as our own error: the runtime's own error repeats the host
+   *  it dialed, which an unclean base names (`https://user:p@ssword` dials `ssword`), so it is
+   *  named by its class and kept as no cause. Where no answer came at all, its `code` is the
+   *  failure's (`failureCode`: ECONNREFUSED, ENOTFOUND, ECONNRESET, ETIMEDOUT for the attempt's
+   *  deadline, …), where it has one, so a caller tells a listener that gave no answer from one
+   *  that answered. Where the answer's status came and its body did not (`status`), the error says
+   *  so and keeps no code: the far end answered, with that status, and began an answer it did not
+   *  finish, which is no listener that answered nothing. */
+  const noAnswer = (
+    method: string | undefined,
+    url: string,
+    error: unknown,
+    status?: number
+  ): Error => {
+    const failed = new Error(
+      status === undefined
+        ? `${method ?? "GET"} ${shown(url)} got no answer: ${errorClass(error)}`
+        : `${method ?? "GET"} ${shown(url)} answered ${status}, and its body did not arrive: ${errorClass(error)}`
+    );
+    const code = status === undefined ? failureCode(error) : undefined;
+    return code === undefined ? failed : Object.assign(failed, { code });
+  };
 
   const attemptOnce = async (
     url: string,
@@ -1139,14 +1156,15 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       };
     }
     // The body is read under the same deadline. A refusal whose body does not arrive is still the
-    // listener's refusal; any other answer whose body does not arrive is no answer.
+    // listener's refusal; any other answer whose body does not arrive is no whole answer, named
+    // with the status that did.
     try {
       return { response, body: await response.text() };
     } catch (error) {
       if (response.status >= 400 && response.status < 500) {
         return { response, body: `(its body did not arrive: ${errorClass(error)})` };
       }
-      return { unanswered: noAnswer(init.method, url, error) };
+      return { unanswered: noAnswer(init.method, url, error, response.status) };
     }
   };
 

@@ -20,12 +20,15 @@
 import { expect, type Locator } from "@playwright/test";
 
 /** The name of the first of `states` whose locator is visible, read until one is or the project's
- *  expect timeout ends. No page is passed: each locator already reads its own. `what` names what
- *  is read, for the failure, which names every state: `the rail: none of open sheet, closed
- *  sheet, column showed`. */
+ *  expect timeout ends, or `timeoutMs` where it is given: the outside driver
+ *  (`e2e/acceptance/outside-edge.ts`) runs with no project, against a page across the public
+ *  internet, and bounds each page step itself. No page is passed: each locator already reads its
+ *  own. `what` names what is read, for the failure, which names every state: `the rail: none of
+ *  open sheet, closed sheet, column showed`. */
 export async function settledState<Name extends string>(
   what: string,
-  states: readonly (readonly [Name, Locator])[]
+  states: readonly (readonly [Name, Locator])[],
+  timeoutMs?: number
 ): Promise<Name> {
   const failure = `${what}: none of ${states.map(([name]) => name).join(", ")} showed`;
   let shown: Name | undefined;
@@ -41,7 +44,11 @@ export async function settledState<Name extends string>(
         return false;
       },
       // Playwright's own web-first retry schedule, so a page that draws early is read early.
-      { intervals: [20, 50, 100, 100, 500], message: failure }
+      {
+        intervals: [20, 50, 100, 100, 500],
+        message: failure,
+        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+      }
     )
     .toBe(true);
   // A poll whose row has already ended passes without reading, and leaves no state behind.

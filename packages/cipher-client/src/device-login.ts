@@ -419,6 +419,24 @@ export interface KeptDeviceLogin extends DeviceLogin {
 }
 
 /**
+ * The refusal of {@link finishDeviceLogin} for a login the person approved and this machine could
+ * not keep at its file: an error of this machine's own, after the broker answered the approval,
+ * so a caller tells it from a refusal of the broker's or the person's by its class. Its message
+ * names the credential, which the broker holds live, and where to revoke it; its `cause` is the
+ * save's failure, in this package's own words (`saveDeviceLogin`, {@link KeptCopyError}).
+ */
+export class DeviceLoginNotKeptError extends Error {
+  constructor(
+    message: string,
+    readonly credentialId: string,
+    options: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = "DeviceLoginNotKeptError";
+  }
+}
+
+/**
  * Polls the device code `started` answered until the person decides, and keeps the login an
  * approval issues at `path` ({@link saveDeviceLogin}, under {@link withDeviceLoginLock}), answering
  * it with the credential it replaced ({@link KeptDeviceLogin}), which is read under the same lock
@@ -433,9 +451,10 @@ export interface KeptDeviceLogin extends DeviceLogin {
  * once, naming the status, rather than polling until the code lapses and saying it expired. Each
  * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
  * cannot be kept is refused naming its credential, which the broker holds live, and where to
- * revoke it, and a copy of it written whole is kept beside the file ({@link KeptCopyError}), which
- * the refusal names whatever fails after it, letting go of the lock included. One kept whose lock
- * is then not let go is answered as kept: the machine uses that login, so it is not one to revoke.
+ * revoke it ({@link DeviceLoginNotKeptError}), and a copy of it written whole is kept beside the
+ * file ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the
+ * lock included. One kept whose lock is then not let go is answered as kept: the machine uses that
+ * login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -509,10 +528,11 @@ export async function finishDeviceLogin(
         return { ...login, replaced, lockLeft };
       }
       const revoke = `Machine logins on ${started.verificationUri}`;
-      throw new Error(
+      throw new DeviceLoginNotKeptError(
         error instanceof KeptCopyError
           ? `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it in its place: ${messageOf(error)}, which then needs no revoke. Where the copy is not used, delete it, since it holds the login's key and refresh token, and revoke the credential in ${revoke}: it stays live until it lapses or is revoked`
           : `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: revoke it in ${revoke}, and log in again with: ${DEVICE_LOGIN_COMMAND}`,
+        login.credentialId,
         { cause: error }
       );
     }

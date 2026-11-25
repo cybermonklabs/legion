@@ -71,12 +71,14 @@ name: Dispatch unit suite repeated
 #
 # How a row is reproduced. The report gives each failing row its file, the leg's seed and the
 # command that runs it again from packages/dispatch, as docs/testing.md ("A Dispatch unit test
-# runs in random order") says: `bun run test:web <file> --seed=<n>`,
-# `bun run test:web:cold <file> --seed=<n>` or `bun run test:harness <file> --seed=<n>`. For a row
-# that passed its first run, the command adds `--rerun-each=<k>`, where k is the run it first
-# failed on. That repeats the order the row failed in. A web-cold leg runs once, so its command
-# never adds it. A row that failed from the leg's load can pass there, and the same section of
-# docs/testing.md says what it needs.
+# runs in random order") says: `DISPATCH_UNIT_REPEAT=1 bun run test:web <file> --seed=<n>`,
+# `DISPATCH_UNIT_REPEAT=1 bun run test:web:cold <file> --seed=<n>` or
+# `DISPATCH_UNIT_REPEAT=1 bun run test:harness <file> --seed=<n>`. The tool sets that marker for
+# the leg's run, and the rows that wait out real time skip under it, so the command sets it too.
+# For a row that passed its first run, the command adds `--rerun-each=<k>`, where k is the run it
+# first failed on. That repeats the order the row failed in. A web-cold leg runs once, so its
+# command never adds it. A row that failed from the leg's load can pass there, and the same
+# section of docs/testing.md says what it needs.
 #
 # What it costs. One scheduled run a week of nine legs, one run of nine legs on each push to a pull
 # request that changes this file, the tool, its progress preload or the web-cold lane's preload,
