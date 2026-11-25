@@ -14,6 +14,7 @@ import (
 // the binary started with ENVOY_OIDC_ACCOUNTS="system:serviceaccount:dispatch:dispatch,
 // system:serviceaccount:envoy:envoy-broker" refused dispatch:dispatch's token 401 not_listed.)
 func TestAnAccountListSeparatedByCommasHoldsNoEntryWithAComma(t *testing.T) {
+	t.Parallel()
 	const issuer = "https://oidc.eks.example/id/CLUSTER"
 	for _, value := range []string{
 		listenerListedSubject + ", " + listenerUnlistedSubject,

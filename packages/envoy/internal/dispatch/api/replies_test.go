@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func getMyReplies(t *testing.T, handler http.Handler, login, query string) model.MyRepliesResponse {
@@ -410,8 +412,9 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 // raceRounds is how many times each race below runs its two writes at once.
 const raceRounds = 50
 
-// race starts both writes together and waits for both, failing the test when either does not
-// finish within the window a deadlock would outlast.
+// race starts both writes together and waits for both. Its one bound is the test binary's
+// deadline (testwait.Receive): a deadlock never ends and fails the test by name, and two writes
+// a loaded machine runs slowly pass.
 func race(t *testing.T, round int, first, second func() *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	t.Helper()
 	start := make(chan struct{})
@@ -423,11 +426,7 @@ func race(t *testing.T, round int, first, second func() *httptest.ResponseRecord
 	close(start)
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("round %d: the two writes did not both finish within 10 s", round)
-	}
+	testwait.Receive(t, fmt.Sprintf("round %d: both writes to finish", round), done)
 	return a, b
 }
 
