@@ -35,13 +35,14 @@ var (
 	askedEnd      = time.Date(2026, 11, 18, 12, 30, 0, 0, time.UTC)
 )
 
-// The four lines the executor writes, one for each way a row ends without an error. The first
+// The five lines the executor writes, one for each way a row ends without an error. The first
 // is the line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
 	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 	askSuspendedLine = "outbox update ask finished without a publish: the daemon suspended the claim"
+	askAnsweredLine  = "outbox update ask finished without a publish: the role has answered its round"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a

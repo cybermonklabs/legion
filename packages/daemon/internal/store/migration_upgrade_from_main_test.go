@@ -145,7 +145,7 @@ import (
 // pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
 // 20261120012547, 20261120042902, 20261120055717, 20261120144241, 20261121170714, 20261122011615,
-// 20261122040952, 20261123050533, 20261123165139, 20261123212127, 20261123224717 and
+// 20261122040952, 20261123050533, 20261123165139, 20261123212127, 20261123224717,
 // 20261124060500, 20261124073512 and 20261124143026, is the last to rewrite outbox_kind_check: it names those
 // kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the

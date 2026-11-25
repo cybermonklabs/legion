@@ -462,7 +462,7 @@ func (d mentionDeliveries) resolvedAlonePastItsLease(sessionID string) bool {
 // or the comment never named it. The copy carries the event's own key: the edit's destinations
 // read no mention of the comment (eventDestinations). What the comment's mentions did is read
 // from the store, never from the edit's payload, which names none (newCreditFilter). The
-// comment's delete follows the comment's copy by this same rule (creditFilter.edit): what is
+// comment's delete follows the comment's copy by this same rule (creditFilter.followsComment): what is
 // said below of the edit holds for the delete too.
 //
 // It waits (creditWaits) while that is still to be decided: while a mention bound for that

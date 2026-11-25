@@ -529,7 +529,7 @@ func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
 // (workflow's TestTheReleasesWakeTaskNeverSaysUnpushedWorkWasKept), and its passage on the
 // plugin's workspace recreated notice says the same words and nothing of kept work either
 // (packages/pi-shared/src/workspace-recreated.test.ts).
-func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
+func TestAReleasedCleanPodsWakeTaskNamesTheReleaseAndNoKeptWork(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()

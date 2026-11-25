@@ -535,9 +535,8 @@ type creditFilter struct {
 	// destination build holds for a new comment (eventDestinations), and for an edit or a delete
 	// the reading of the comment it changes, which only this filter reads (edit).
 	mentions mentionDeliveries
-	// edit is whether the event is the comment's edit or its delete, which both follow the
-	// comment's copy (mentionDeliveries.editCreditCopyOf).
-	edit bool
+	// followsComment selects the original comment's failed-mention decision for a correction.
+	followsComment bool
 }
 
 // creditCopy is what the credits filter makes of the copy of one session that only a document
@@ -591,11 +590,16 @@ func newCreditFilter(event model.Event, routing routing, look lookup, d *destina
 		leavesOut: takesClaimantRoute(event, routing.claimant) || routing.threadHeard,
 		mentions:  d.mentions,
 	}
-	if event.Type == "comment.deleted" {
+	switch event.Type {
+	case "comment.edited":
+		if !filter.leavesOut && !takesThreadRule(event, routing) {
+			return filter, nil
+		}
+	case "comment.deleted":
 		if !takesThreadRule(event, routing) {
 			return filter, nil
 		}
-	} else if event.Type != "comment.edited" || (!filter.leavesOut && !takesThreadRule(event, routing)) {
+	default:
 		return filter, nil
 	}
 	if commentID := payloadString(event.Payload, "id"); commentID != "" {
@@ -603,7 +607,7 @@ func newCreditFilter(event model.Event, routing routing, look lookup, d *destina
 		if err != nil {
 			return creditFilter{}, err
 		}
-		filter.mentions, filter.edit = reading, true
+		filter.mentions, filter.followsComment = reading, true
 	}
 	return filter, nil
 }
@@ -613,7 +617,7 @@ func (f creditFilter) copyOf(sessionID string) creditCopy {
 	switch {
 	case !f.leavesOut:
 		return creditKept
-	case f.edit:
+	case f.followsComment:
 		return f.mentions.editCreditCopyOf(sessionID)
 	}
 	return f.mentions.creditCopyOf(sessionID)
