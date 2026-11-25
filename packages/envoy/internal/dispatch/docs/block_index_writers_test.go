@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -40,28 +41,42 @@ func deferredList(items int) string {
 }
 
 // writeDocumentThroughTheRequestPath writes one document the way a request writes it (api's
-// storeArtifact): the text seeded in the writer's transaction, the version row, the version's
-// references and blocks indexed from the rendering that transaction wrote, the version's event,
-// and then what the block index stated, appended under that event.
+// storeArtifact): the document's node and then its row, dated with one time
+// (graphstore.StatementTime), the text seeded in the writer's transaction, the version row, the
+// version's references and blocks indexed from the rendering that transaction wrote, the version's
+// event, and then what the node write and the block index stated, appended under that event.
 func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database *store.Store, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
-	var artifactID string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, slug).Scan(&artifactID); err != nil {
-		t.Fatalf("create document %s: %v", slug, err)
-	}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the document write: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	refKey := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug)
+	createdAt, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, refKey)
+	if err != nil {
+		t.Fatalf("read the time of document %s: %v", slug, err)
+	}
+	documentNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.ArtifactNode(refKey, "CORE", "", alice, createdAt)}, nil)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, documentNode)
+		return nil
+	}); err != nil {
+		t.Fatalf("write the node of document %s: %v", slug, err)
+	}
+	var artifactID string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}', $2)
+		returning id::text
+	`, slug, createdAt).Scan(&artifactID); err != nil {
+		t.Fatalf("create document %s: %v", slug, err)
+	}
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	stored, err := service.SeedText(joined, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
+	stored, err := service.SeedText(joined, artifactID, markdown, alice)
 	if err != nil {
 		t.Fatalf("seed %s: %v", slug, err)
 	}
@@ -82,6 +97,9 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	event, err := documentEvent(ctx, tx, "artifact.created", payload)
 	if err != nil {
 		t.Fatalf("record the document's event: %v", err)
+	}
+	if err := causeInWritePhase(joined, tx, documentNode, event); err != nil {
+		t.Fatalf("append what the document's node write stated: %v", err)
 	}
 	if err := causeInWritePhase(joined, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
@@ -545,20 +563,36 @@ var indexPasses = map[string]string{
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
 	// A settlement states right after each event it appends what waited for it: its version's
-	// block index after the artifact.version, and each follow of an ask it opened after that
-	// ask's ask.opened (graphstore.QueueCaused).
-	"docs/settlement.go#appendEvents": "the facts the settlement's index pass and its follows stated and the events it appended after them",
+	// block index after the artifact.version, and each ask it opened, its node and its follow,
+	// after that ask's ask.opened (graphstore.QueueCaused).
+	"docs/settlement.go#appendEvents": "the facts the settlement's index pass, its asks' nodes and its follows stated and the events it appended after them",
+	// The node of every ask and message a request or a settlement creates, before its row, in the
+	// project or between the parties it belongs to, and caused by the event the create appends.
+	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
+	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
+	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
+	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
+	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
+	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
+	// The removal of an untouched document states its node gone before its row goes, caused by
+	// the artifact.removed event it appends.
+	"api/artifact_removal.go#removeArtifact": "the document the request removes and the event it appended",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.QueueCaused), which reads no
 	// projection and mends nothing.
-	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated and the event the upload appended",
+	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated and the issue's own event",
-	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated",
+	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
+	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	// The seed's issues, asks and messages: each one's node, in its project, drawn from the plan
+	// before the batch writes its rows.
+	"cmd/dispatch-seed/write_core.go#writeIssues":    "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeAsks":     "the seed's own plan",
+	"cmd/dispatch-seed/write_items.go#writeMessages": "the seed's own plan",
 	// The seed's asks: the session node of each follower the batch copies, drawn from the plan.
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "the seed's own plan",
 	"docs/block_index.go#stampVersionEvent":               "the event that recorded the version",
@@ -593,9 +627,23 @@ var indexPasses = map[string]string{
 	// names now or an ask.follower_added event ever named (recordedSessions). It writes the nodes
 	// the store lacks of them, and a node another write made it leaves alone.
 	"graphcensus/backfill_sessions.go#writeSessionBatch": "the sessions a row names now or an ask.follower_added event ever named (recordedSessions)",
-	"graphstore/arms.go#nodeArm":                         "the nodes its caller states",
-	"graphstore/arms.go#claimArms":                       "the claims its caller states",
-	"graphstore/arms.go#tupleInsert":                     "the tuples its caller states",
+	// The backfill of the project of every node: the rows of the issues, documents, asks and
+	// messages that their marker does not mark, each read again under its owner lock before its node is
+	// written, and the comment and block nodes that name no project, each with the row its
+	// project is read from.
+	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows their marker does not mark",
+	"graphcensus/projects_backfill.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
+	// The block-index tick's sweep of a document the release before this one removed without
+	// stating its node gone. What decides is the store's own row of the node: a document node not
+	// gone at an issue's address that no artifacts row stands behind (graphcensus'
+	// OrphanedDocumentNodes), which it locks and reads again to find it still so under that lock.
+	// The artifact.removed event naming the address is only the cause it states the node gone
+	// under, and the sentinel where there is none, as this build's removal does. It reads no
+	// projected table, and the store only to state the store's own next fact, so it is no repair.
+	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
+	"graphstore/arms.go#nodeArm":               "the nodes its caller states",
+	"graphstore/arms.go#claimArms":             "the claims its caller states",
+	"graphstore/arms.go#tupleInsert":           "the tuples its caller states",
 	// A node write (queueNodes): the insert of the nodes the store lacks, which locks the ones it
 	// holds, and the move of the ones it holds. The move reads each row it moves, in the snapshot
 	// taken once the insert holds them all, to say which base attributes the write moved: it reads
@@ -608,6 +656,12 @@ var indexPasses = map[string]string{
 	// which it reads off those rows' marks (graphstore's nodeMarks). It reads the store's own rows
 	// its write just wrote, no projection, and mends nothing.
 	"graphstore/write.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
+	// FillScopes states the project of a node an earlier build stored with none: it locks and
+	// updates the rows of the nodes its caller names, reading of each only whether it carries a
+	// project already and its own made_at, made_by and cause, which the fact it states takes. The
+	// project itself is its caller's, read off the node's own row of its kind (graphcensus'
+	// backfillScopes), so it reads no projection to mend the store.
+	"graphstore/scope.go#FillScopes": "the nodes its caller names and the rows of them it fills",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",
@@ -636,11 +690,12 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one. The names are every exported function of graphstore that writes the store
-// or builds the statement that does, the list that test holds as storeWriteFunctions:
-// QueueSessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|Caused|QueueWrite|QueueNodes|QueueCaused|QueueAuthored|QueueReached|QueueSessionRecorded|WriteArms|WriteArmsUncaused)\b`)
+// the same use as one. The names are graphstoretest.WriteFunctions, the one list of every function
+// a write of the store from outside graphstore goes through, which that test and api's scan of
+// the projected tables' writers read too, so a writer the store gains is scanned here with no
+// second list to keep: QueueSessionRecorded writes a session's node through arms of its own, and a
+// pass that wrote the store through it alone would otherwise be read as no writer at all.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(` + strings.Join(graphstoretest.WriteFunctions(), "|") + `)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

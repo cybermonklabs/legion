@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -486,11 +487,26 @@ func (s *server) writeBroadcast(
 	sent.Recipients = make([]broadcastRecipient, 0, len(recipients))
 	for position, recipient := range recipients {
 		target := "session:" + recipient.sessionID
+		// Each copy's node goes in before its row, between the sender and the recipient, the
+		// parties of the thread the copy opens, dated with the broadcast's own time, which is the
+		// transaction's now() the copy's created_at defaults to; what that write states waits
+		// for its event.
+		messageID := uuid.NewString()
+		messageNode, err := planMessageNode(ctx, tx, messageID, nil, nil, actor, &target, sent.CreatedAt)
+		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, messageNode)
+			return nil
+		}); err != nil {
+			return broadcastRead{}, nil, err
+		}
 		message, err := scanMessage(tx.QueryRow(ctx, `
-			insert into messages (issue_key, author, body, target, broadcast_id, broadcast_position)
-			values (null, $1, $2, $3, $4, $5)
+			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position)
+			values ($1, null, $2, $3, $4, $5, $6)
 			returning `+messageColumns+`
-		`, author, body, target, sent.ID, position))
+		`, messageID, author, body, target, sent.ID, position))
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
@@ -517,7 +533,9 @@ func (s *server) writeBroadcast(
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
-		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
+		// The event and what the copy's node write stated under it, in one batch
+		// (appendCausingEvent).
+		event, err := s.appendCausingEvent(ctx, tx, messageEvent(message, "message.created", actor, payload), messageNode)
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
