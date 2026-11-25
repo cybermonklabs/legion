@@ -529,14 +529,17 @@ step "a stacked branch whose base branch main took reworded as a squash is refus
 # The first branch's entry text changes after its conversion, in review, and main takes it so as a
 # squash. The stacked branch, which merged the first branch before that, still carries the old
 # text, which then opens no entry file of that main; the constant convertProbeContract, which its
-# entry declares, is the one the entry file declares.
+# entry declares, is the one the entry file declares. A constant main declares can also be another
+# change's, which took the same name, so the refusal names both causes and what to do for each.
 old_text=$(git rev-parse "$branch:$entry")
 new_text=$(git show "$branch:$entry" | sed '0,/the probe entry the conversion test adds/s//the probe entry, reworded in review, that the conversion test adds/' | git hash-object -w --stdin)
 [ "$new_text" != "$old_text" ] || fail "the reword changed nothing of $entry"
 reworded=$(git commit-tree "$(tree_with "$branch" --cacheinfo "100644,$new_text,$entry")" -p "$this" -m "convert-test: the first branch, reworded and taken as a squash")
 refused "the conversion of the stacked branch over a main that took its base branch reworded as a squash" \
   "entry $k of this branch declares convertProbeContract, which $entry of $reworded declares too" \
-  "--base naming the base branch's last commit before the squash" -- --base "$reworded"
+  "Either $reworded took that entry from a base branch as a squash after the cutover" \
+  "--base naming the base branch's last commit before the squash" \
+  "Or another change took that name: rename the entry's constant in the branch" -- --base "$reworded"
 
 step "a branch with two merge bases with its base branch is refused"
 # The first branch, converted, merges the commit the crossed branch merges: the crossed branch's
