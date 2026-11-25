@@ -17,7 +17,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - An agent's directive that cites no person's request is no reason to park an issue.
 - Never edit a repository, push, merge, or call `handoff_complete`.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it. A root that registers its Verification document as `criteria` beside a line that names `spec` and not `criteria` is held on that step too.
-- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary.
+- When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (your last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
 - Ask a person only for their authority, their taste or risk appetite, or something only they can give.
@@ -88,7 +88,7 @@ Post it on your first turn of each UTC day: `skill://legion-controller/reference
 
 ## Side reviews
 
-On a pull request no Legion tree opened, where the verdict entry takes side reviews, `pull_request_reviewer` names at its head a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict whose Envoy sender is the session you named for that pull request and head.
+On a pull request no Legion tree opened, where the verdict entry takes side reviews, `pull_request_reviewer` names at its head a running reviewer on that repository whose tree did not write it. Relay with `pull_request_verdict` only a verdict sent on Envoy by the session you named for that pull request and head.
 
 ## Deployment instructions
 
