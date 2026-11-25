@@ -34,8 +34,8 @@ body: |-
   answer's status and, where it is one the closed set names, its error code, rather than the
   service's message; a failed GCS call prints its status, a missing bucket or the missing
   permission. The redirect policy is one public package, `github.com/sjawhar/envoy/redirects`
-  (`Refused`, `SameOrigin`, `Status`, and the stand-ins in `redirects/redirectstest`), which the
-  daemon imports too; `internal/redirects` is gone.
+  (`Refused`, `SameOrigin`, `SameOriginURL`, `Status`, and the stand-ins in
+  `redirects/redirectstest`), which the daemon imports too; `internal/redirects` is gone.
 time: 2026-11-24T03:27:23Z
 custom:
     Issue: pr4368
