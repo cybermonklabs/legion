@@ -24,6 +24,7 @@ import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import {
   answerAsk,
   createAsk,
+  createComment,
   createMessage,
   editArtifact,
   getArtifact,
@@ -101,11 +102,13 @@ import {
   focusBranchControl,
   ownWords,
   rowAuthor,
+  scrollAtRest,
   seedChildWithSpec,
   seedTallSpec,
   specRuns,
   statementBlock,
   threeThings,
+  wordAtCaret,
 } from "./issue-page-j";
 import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13 } from "./issue-page-p";
@@ -2049,5 +2052,158 @@ test("a key that only scrolls the page keeps the reader's place in the Spec view
         `${key} moves the focus off the statement it was pressed on`
       ).toBeFocused();
     }
+  });
+});
+
+// The tester's finding at cac836d5: a press on a statement's words puts the caret at the press
+// and keeps the reader's place. The press opens the statement's editor with the caret where the
+// reader pressed, as a press on any text a reader may edit does, so the page has nothing to bring
+// on screen and does not move. At cac836d5 the press puts the caret at the start of the statement's
+// words, offset 0 of its first text, whatever word was pressed, and where the statement's top
+// stands above the screen the page jumps up to that start: at 1440 x 900 on a large issue's copy,
+// 471 px for a statement whose top stood 400 px above the screen and 191 px for one 120 px above
+// it, and 459 px and 179 px at 390 x 844 by touch.
+// SLOW(>=2s): a seeded issue of sixty statements and one of 600 words, a load of the Spec view, a
+// turn of the wheel and a press, each read once the page has stopped moving.
+test("a press on a Spec statement's words puts the caret at the press and keeps the reader's place", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: statementBlock(LONG_BLOCK_ID, longWords("long", 600)),
+          op: "insert",
+        },
+      ],
+    });
+    return seeded;
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const body = issuePage(page).locator("[data-spec-body]");
+    const statements = body.locator("[data-spec-statement]");
+    const traffic = watchApiRequests(page);
+    await openPreset(page, seeded.key, "spec");
+    await expectLoadSettled(traffic);
+    await expect(
+      statements,
+      "the Spec view does not draw every statement of the spec and the long one"
+    ).toHaveCount(seeded.requirements.length + 1);
+    const long = body.locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    );
+    // A turn of the wheel, the reader's own act, stands the long statement's top 200 px above the
+    // screen, with the rest of its 600 words on screen under the column heads.
+    const heads = body.locator("[data-spec-head]");
+    const headsBottom = await heads.evaluate((head) => head.getBoundingClientRect().bottom);
+    const top = await long.evaluate((row) => row.getBoundingClientRect().top);
+    const wheelAt = await scrollAtRest(page);
+    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+    await page.mouse.wheel(0, top + 200);
+    await expect
+      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
+      .not.toBe(wheelAt);
+    const box = await long.evaluate((row) => {
+      const { bottom, left, top: rowTop, width } = row.getBoundingClientRect();
+      return { bottom, left, top: rowTop, width };
+    });
+    expect(
+      box.top,
+      "after the wheel the long statement's top is not above the screen"
+    ).toBeLessThan(0);
+    expect(
+      box.bottom - headsBottom,
+      "after the wheel the long statement shows under 100 px of its words below the column heads"
+    ).toBeGreaterThanOrEqual(100);
+    // The press is on a word of the statement's words, clear of a link or a chip, 60 px under the
+    // column heads: the word the browser would put the caret in there is read before the press.
+    const at = { x: box.left + box.width / 3, y: headsBottom + 60 };
+    expect(
+      await long.evaluate(
+        (row, point) => {
+          const hit = document.elementFromPoint(point.x, point.y);
+          return row.contains(hit) && hit?.closest("a, button") === null;
+        },
+        { x: at.x, y: at.y }
+      ),
+      `the point (${at.x}, ${at.y}) is not on the long statement's words`
+    ).toBe(true);
+    const pressed = await wordAtCaret(page, at);
+    expect(pressed, "the press's point holds no word of the long statement").toMatch(/^long\d+/);
+    const pressedAt = await scrollAtRest(page);
+    await page.mouse.click(at.x, at.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message: "a press on the long statement's words does not put the caret in them",
+      })
+      .toBe(true);
+    const moved = (await scrollAtRest(page)) - pressedAt;
+    expect(
+      await wordAtCaret(page, "selection"),
+      `a press on the word "${pressed}" puts the caret in another word`
+    ).toBe(pressed);
+    expect(
+      Math.abs(moved),
+      `a press on the long statement's words, its top above the screen, moves the page ${moved} px`
+    ).toBeLessThanOrEqual(1);
+  });
+});
+
+// The tester's finding at cac836d5: a row the Spec view keeps that is no statement - a comment of
+// the issue its address names - draws its text whole, as the outline draws that comment and as
+// every node's text is drawn in every view. At cac836d5 the row is whole while it holds the focus
+// and is cut at six lines behind "more" once the focus leaves it: on a large issue's copy a comment
+// of 240 words stood 632 px tall with the focus and 195 px, behind "more · 183 words", after
+// ArrowUp to the statement above it, where the outline draws it whole either way.
+// SLOW(>=2s): a seeded issue of sixty statements and a comment of 240 words, a load of Settings
+// and of the comment's address under Spec, and a key.
+test("a comment the Spec view's address keeps is drawn whole with the focus on it and after it leaves", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    const long = await createComment(seeded.key, { body: longWords("said", 240) });
+    return { ...seeded, longCommentId: long.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const body = issuePage(page).locator("[data-spec-body]");
+    await page.goto("/settings");
+    await expect(
+      page.getByRole("heading", { level: 1, name: "Settings" }),
+      "Settings is not drawn before the comment's address is loaded"
+    ).toBeVisible();
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, `${presetPath(seeded.key, "spec")}?comment=${seeded.longCommentId}`);
+    await expectLoadSettled(traffic);
+    const comment = body.locator(`[data-node-row][data-node-id="${seeded.longCommentId}"]`);
+    await expect(
+      comment,
+      "the comment's address under Spec leaves the focus off the comment's row of the Spec view"
+    ).toBeFocused();
+    await expect(
+      rowMore(comment),
+      "the comment's row cuts its words behind more while it holds the focus"
+    ).toHaveCount(0);
+    // ArrowUp takes the focus to the row above the comment's, a statement of the view.
+    await page.keyboard.press("ArrowUp");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "ArrowUp from the comment's row leaves the focus on the comment",
+      })
+      .not.toBe(seeded.longCommentId);
+    await expect(
+      rowMore(comment),
+      "the comment's row cuts its words behind more once the focus has left it"
+    ).toHaveCount(0);
+    expect(
+      await rowWords(comment).evaluate((words) => words.scrollHeight - words.clientHeight),
+      "the comment's words are clipped once the focus has left its row"
+    ).toBeLessThanOrEqual(1);
   });
 });

@@ -350,3 +350,44 @@ export async function expectOnScreen(target: Locator, what: string): Promise<voi
     )
     .toBe("on screen");
 }
+
+/** The page's scroll once it has stopped moving: two frames apart, two reads that agree. */
+export function scrollAtRest(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    let last = window.scrollY;
+    for (;;) {
+      const frames = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+      await frames.promise;
+      if (window.scrollY === last) return Math.round(last);
+      last = window.scrollY;
+    }
+  });
+}
+
+/** The word the caret stands in, or the one a point of the page would put it in: the run of
+ *  characters that are no space around `offset` in the text of `node`. Read in the page. */
+export function wordAtCaret(
+  page: Page,
+  at: { x: number; y: number } | "selection"
+): Promise<string> {
+  return page.evaluate((point) => {
+    let node: Node | null = null;
+    let offset = 0;
+    if (point === "selection") {
+      const selection = window.getSelection();
+      node = selection?.anchorNode ?? null;
+      offset = selection?.anchorOffset ?? 0;
+    } else {
+      const position = document.caretPositionFromPoint(point.x, point.y);
+      node = position?.offsetNode ?? null;
+      offset = position?.offset ?? 0;
+    }
+    const text = node?.nodeType === Node.TEXT_NODE ? (node.textContent ?? "") : "";
+    let start = offset;
+    let end = offset;
+    while (start > 0 && !/\s/.test(text.charAt(start - 1))) start -= 1;
+    while (end < text.length && !/\s/.test(text.charAt(end))) end += 1;
+    return text.slice(start, end);
+  }, at);
+}
