@@ -3078,13 +3078,6 @@ const agentActionFixtures: Record<string, true> = {
   "agent-resume.json": true,
 };
 
-/** The daemon's tables of every answer's shape, one row per answer (and per contract), which
- * name the agent actions' `suspendedBy` in that answer's rows alone. */
-const shapeTables: Record<string, true> = {
-  "contract-shapes.json": true,
-  "enumerated-fields.json": true,
-};
-
 /** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
  * and nullable wrappers, pipes and lazy references. Zod holds each of those on its definition
  * under a member of its own, so the walk reads the definition as the open record it is. */
@@ -3118,9 +3111,9 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from the agent-actions contract, to the controller's four
-// agent actions (agentActionSchemas), and nowhere else; this holds that for every schema the
-// module exports, present and future.
+// `suspendedBy` is served to the operator's bearer and, from the agent-actions contract, to the
+// controller's four agent actions (agentActionSchemas), and nowhere else; this holds that for every
+// schema the module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
   let walked = 0;
   for (const [name, schema] of Object.entries(legionApi)) {
@@ -3135,25 +3128,25 @@ test("no session-facing response carries suspendedBy", () => {
   expect([...schemaKeys(LegionAgentActionResponse)]).toContain("suspendedBy");
 
   // And no body the daemon writes carries it outside the operator's own and the four routes'.
-  // The daemon's own tables of the answers' shapes (`contract-shapes.json`,
-  // `enumerated-fields.json`) are no body a route writes: they record each answer's key paths and
-  // value domains, so they name `suspendedBy` at the four routes' answer, `agent-action`, and
-  // must name it at no other answer.
+  // The fixtures of this directory are bodies, and main's frozen tables, none of which names it.
+  // The daemon's records of every answer's key paths and value domains are the frozen tables and
+  // then each entry's fixture under `contracts/`, composed as `daemonApiRecords` composes them: they
+  // name `suspendedBy` at the four routes' answer, `agent-action`, and must name it at no other.
   const fixtures = readdirSync(fixtureDir);
   for (const name of fixtures.filter((entry) => entry.endsWith(".json"))) {
     if (name.startsWith("operator-") || agentActionFixtures[name] === true) continue;
-    if (shapeTables[name] === true) {
-      const rows = JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8")) as {
-        readonly answer: string;
-      }[];
-      for (const row of rows.filter((entry) => entry.answer !== "agent-action")) {
-        expect(JSON.stringify(row), `${name}: the ${row.answer} answer`).not.toContain(
-          "suspendedBy"
-        );
-      }
-      continue;
-    }
     expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+  const build = daemonApiRecords(fixtureDir);
+  const naming = [...build.records, ...build.enumeratedFields].filter((row) =>
+    JSON.stringify(row).includes("suspendedBy")
+  );
+  // The composition finds the key where it does live, so an empty read cannot pass for a clean one.
+  expect(naming.length).toBeGreaterThan(0);
+  for (const row of naming) {
+    expect(row.answer, `a record names suspendedBy at the ${row.answer} answer`).toBe(
+      "agent-action"
+    );
   }
   // The exception is the four routes' and no wider: each of their fixtures exists.
   for (const name of Object.keys(agentActionFixtures)) {
