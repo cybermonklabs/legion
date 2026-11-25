@@ -1,0 +1,797 @@
+{
+  "cases": [
+    {
+      "block_id": "quote-plain",
+      "item": "plain",
+      "node": "key/tree#quote-plain",
+      "plainText": "Pick the blue line or the blue square.",
+      "text": ":::decision{#quote-plain replaced=\"false\"}\nPick the blue line or the blue square.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-plain",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "Pick the blue line or the blue square.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.plain[0].anchorBlock",
+              "quote": "blue"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 13,
+              "start": 9
+            },
+            "quote": "blue"
+          }
+        },
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.plain[0].anchorBlock",
+              "quote": "blue"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": {
+              "end": 30,
+              "start": 26
+            },
+            "quote": "blue"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-link",
+      "item": "link",
+      "node": "key/tree#quote-link",
+      "plainText": "Follow the reading guide first.",
+      "text": ":::decision{#quote-link replaced=\"false\"}\nFollow the [reading guide](https://example.com/guide) first.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-link",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "Follow the ",
+                    "type": "text"
+                  },
+                  {
+                    "marks": [
+                      {
+                        "attrs": {
+                          "href": "https://example.com/guide"
+                        },
+                        "type": "link"
+                      }
+                    ],
+                    "text": "reading guide",
+                    "type": "text"
+                  },
+                  {
+                    "text": " first.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.link[0].anchorBlock",
+              "quote": "the reading guide"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 24,
+              "start": 7
+            },
+            "quote": "the reading guide"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "the reading guide"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-emphasis",
+      "item": "emphasis",
+      "node": "key/tree#quote-emphasis",
+      "plainText": "Keep the first line visible.",
+      "text": ":::decision{#quote-emphasis replaced=\"false\"}\nKeep the *first* line visible.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-emphasis",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "Keep the ",
+                    "type": "text"
+                  },
+                  {
+                    "marks": [
+                      {
+                        "attrs": {
+                          "marker": "*"
+                        },
+                        "type": "emphasis"
+                      }
+                    ],
+                    "text": "first",
+                    "type": "text"
+                  },
+                  {
+                    "text": " line visible.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.emphasis[0].anchorBlock",
+              "quote": "first"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 14,
+              "start": 9
+            },
+            "quote": "first"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "first"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-code-span",
+      "item": "code-span",
+      "node": "key/tree#quote-code-span",
+      "plainText": "Run format from the root.",
+      "text": ":::decision{#quote-code-span replaced=\"false\"}\nRun `format` from the root.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-code-span",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "Run ",
+                    "type": "text"
+                  },
+                  {
+                    "marks": [
+                      {
+                        "type": "inlineCode"
+                      }
+                    ],
+                    "text": "format",
+                    "type": "text"
+                  },
+                  {
+                    "text": " from the root.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.code-span[0].anchorBlock",
+              "quote": "format"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 10,
+              "start": 4
+            },
+            "quote": "format"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "format"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-issue-reference",
+      "item": "issue-reference",
+      "node": "key/tree#quote-issue-reference",
+      "plainText": "See dispatch://child before you send.",
+      "text": ":::decision{#quote-issue-reference replaced=\"false\"}\nSee dispatch://child before you send.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-issue-reference",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "See dispatch://child before you send.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.issue-reference[0].anchorBlock",
+              "quote": "dispatch://child"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 20,
+              "start": 4
+            },
+            "quote": "dispatch://child"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "dispatch://child"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-block-reference",
+      "item": "block-reference",
+      "node": "key/tree#quote-block-reference",
+      "plainText": "See dispatch://key/spec#b-r-s1 before you send.",
+      "text": ":::decision{#quote-block-reference replaced=\"false\"}\nSee dispatch://key/spec#b-r-s1 before you send.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-block-reference",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "See dispatch://key/spec#b-r-s1 before you send.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.block-reference[0].anchorBlock",
+              "quote": "dispatch://key/spec#b-r-s1"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 30,
+              "start": 4
+            },
+            "quote": "dispatch://key/spec#b-r-s1"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "dispatch://key/spec#b-r-s1"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-heading",
+      "item": "heading",
+      "node": "key/tree#quote-heading",
+      "plainText": "Read the heading This is a different line.",
+      "text": ":::decision{#quote-heading replaced=\"false\"}\n### Read the heading\n\nThis is a different line.\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-heading",
+              "replaced": false
+            },
+            "content": [
+              {
+                "attrs": {
+                  "level": 3
+                },
+                "content": [
+                  {
+                    "text": "Read the heading",
+                    "type": "text"
+                  }
+                ],
+                "type": "heading"
+              },
+              {
+                "content": [
+                  {
+                    "text": "This is a different line.",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.heading[0].anchorBlock",
+              "quote": "Read the heading"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 16,
+              "start": 0
+            },
+            "quote": "Read the heading"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "Read the heading"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-list-item",
+      "item": "list-item",
+      "node": "key/tree#quote-list-item",
+      "plainText": "First list entry Second list entry",
+      "text": ":::decision{#quote-list-item replaced=\"false\"}\n- First list entry\n- Second list entry\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-list-item",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "attrs": {
+                      "spread": false
+                    },
+                    "content": [
+                      {
+                        "content": [
+                          {
+                            "text": "First list entry",
+                            "type": "text"
+                          }
+                        ],
+                        "type": "paragraph"
+                      }
+                    ],
+                    "type": "list_item"
+                  },
+                  {
+                    "attrs": {
+                      "spread": false
+                    },
+                    "content": [
+                      {
+                        "content": [
+                          {
+                            "text": "Second list entry",
+                            "type": "text"
+                          }
+                        ],
+                        "type": "paragraph"
+                      }
+                    ],
+                    "type": "list_item"
+                  }
+                ],
+                "type": "bullet_list"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.list-item[0].anchorBlock",
+              "quote": "First list entry"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 16,
+              "start": 0
+            },
+            "quote": "First list entry"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "First list entry"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-table-cell",
+      "item": "table-cell",
+      "node": "key/tree#quote-table-cell",
+      "plainText": "Type Value Color pale green",
+      "text": ":::decision{#quote-table-cell replaced=\"false\"}\n| Type | Value |\n| --- | --- |\n| Color | pale green |\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-table-cell",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "alignment": null
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "Type",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "table_header"
+                      },
+                      {
+                        "attrs": {
+                          "alignment": null
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "Value",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "table_header"
+                      }
+                    ],
+                    "type": "table_header_row"
+                  },
+                  {
+                    "content": [
+                      {
+                        "attrs": {
+                          "alignment": null
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "Color",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "table_cell"
+                      },
+                      {
+                        "attrs": {
+                          "alignment": null
+                        },
+                        "content": [
+                          {
+                            "content": [
+                              {
+                                "text": "pale green",
+                                "type": "text"
+                              }
+                            ],
+                            "type": "paragraph"
+                          }
+                        ],
+                        "type": "table_cell"
+                      }
+                    ],
+                    "type": "table_row"
+                  }
+                ],
+                "type": "table"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.table-cell[0].anchorBlock",
+              "quote": "pale green"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 27,
+              "start": 17
+            },
+            "quote": "pale green"
+          }
+        },
+        {
+          "answer": {
+            "code": "TARGET_NOT_FOUND",
+            "status": 404
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": null,
+            "quote": "pale green"
+          }
+        }
+      ]
+    },
+    {
+      "block_id": "quote-overlap",
+      "item": "overlap",
+      "node": "key/tree#quote-overlap",
+      "plainText": "aaaa",
+      "text": ":::decision{#quote-overlap replaced=\"false\"}\naaaa\n:::\n",
+      "text_tree": {
+        "content": [
+          {
+            "attrs": {
+              "blockId": "quote-overlap",
+              "replaced": false
+            },
+            "content": [
+              {
+                "content": [
+                  {
+                    "text": "aaaa",
+                    "type": "text"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "type": "decision"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.overlap[0].anchorBlock",
+              "quote": "aaa"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 3,
+              "start": 0
+            },
+            "quote": "aaa"
+          }
+        },
+        {
+          "answer": {
+            "anchor": {
+              "block_id": "quotes.overlap[0].anchorBlock",
+              "quote": "aaa"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": {
+              "end": 4,
+              "start": 1
+            },
+            "quote": "aaa"
+          }
+        }
+      ]
+    }
+  ],
+  "gate": "B0",
+  "recordedOn": "296d5d0c29bb1b4362261e594ea69e92ecb0bfe7",
+  "skipped": [
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "post-block-reply"
+    },
+    {
+      "gate": "REPLY_QUOTE",
+      "item": "message-block-reply"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "lens-anchor"
+    },
+    {
+      "gate": "NODE_ANCHOR",
+      "item": "risk-anchor"
+    }
+  ]
+}

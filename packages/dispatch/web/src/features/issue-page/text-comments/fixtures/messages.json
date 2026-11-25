@@ -1,0 +1,105 @@
+{
+  "gate": "B0",
+  "messages": [
+    {
+      "message": {
+        "author": {
+          "id": "issue-layout-planner",
+          "kind": "session",
+          "origin": {
+            "session_title": "Planner (issue layout)"
+          }
+        },
+        "body": "Use a marker when the marker is visible.\n\nRead the next line in `order`.\n\n- First item\n- Second item",
+        "body_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Use a marker when the marker is visible.",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            },
+            {
+              "content": [
+                {
+                  "text": "Read the next line in ",
+                  "type": "text"
+                },
+                {
+                  "marks": [
+                    {
+                      "type": "inlineCode"
+                    }
+                  ],
+                  "text": "order",
+                  "type": "text"
+                },
+                {
+                  "text": ".",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            },
+            {
+              "content": [
+                {
+                  "attrs": {
+                    "spread": false
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "First item",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "list_item"
+                },
+                {
+                  "attrs": {
+                    "spread": false
+                  },
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "text": "Second item",
+                          "type": "text"
+                        }
+                      ],
+                      "type": "paragraph"
+                    }
+                  ],
+                  "type": "list_item"
+                }
+              ],
+              "type": "bullet_list"
+            }
+          ],
+          "type": "doc"
+        },
+        "broadcast_id": null,
+        "created_at": "instant-001",
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [],
+        "edited_at": null,
+        "id": "message",
+        "in_reply_to": null,
+        "issue_key": "key",
+        "reply_block": null,
+        "target": null
+      },
+      "replies": []
+    }
+  ],
+  "recordedOn": "296d5d0c29bb1b4362261e594ea69e92ecb0bfe7"
+}
