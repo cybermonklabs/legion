@@ -53,7 +53,7 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching } from "../shell/roving";
+import { closestMatching, focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
@@ -491,12 +491,17 @@ export function IssueBoard({
   // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
   // move that ends without placing it takes no focus later. The effect runs on the
   // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
-  // observer has notified, and would focus the doomed node.
+  // observer has notified, and would focus the doomed node. It moves the focus only while the
+  // focus stands where the move's press left it (`from`): on the card the press moved, or on the
+  // body that card's going left it on. A move the rule's dry run checks first places the card only
+  // once the dry run answers, and a reader who has moved the focus on by then - a key to another
+  // card, a Tab, a click - keeps it where they put it.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
     status: IssueStatus;
     laneId: string | null;
+    from: Element | null;
   } | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
@@ -512,6 +517,9 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    const { from } = pending;
+    const stands = document.activeElement === from || (!from?.isConnected && focusOnDocument());
+    if (!stands) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -582,6 +590,8 @@ export function IssueBoard({
     // moved is already in its cell, so the count holds them. A move that ends without placing
     // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    // Where the press left the focus: the card it moves (`focusAfterMove`).
+    const from = document.activeElement;
     /** Says where the card stands now - its position and count in the visible cell, the one the
      *  user sees, or nothing while it is not in that cell - and has focus follow it once the
      *  board has drawn it there (`focusAfterMove`). */
@@ -596,7 +606,7 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
-      focusAfterMove.current = { key, status: target.status, laneId };
+      focusAfterMove.current = { from, key, laneId, status: target.status };
     };
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);

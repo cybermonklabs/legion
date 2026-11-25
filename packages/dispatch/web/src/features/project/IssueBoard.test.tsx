@@ -1675,6 +1675,44 @@ test("board: checking - a second drop while the first is checking waits behind i
   }
 });
 
+// INFRA-3135: a keyboard move the rule's dry run checks first places the card only once the dry
+// run answers. The focus follows the card then only while it stands where the reader's press left
+// it; a reader who has moved on - here `j` to the next card - keeps their place.
+for (const movedOn of [false, true]) {
+  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (${movedOn ? "the reader moved on" : "the reader stayed"})`, async () => {
+    const user = userEvent.setup();
+    const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+    const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues);
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      act(() => within(board).getByRole("article", { name: "CORE-1 Parent" }).focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+      if (movedOn) await user.keyboard("j");
+      const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
+      if (movedOn) expect(bravo).toHaveFocus();
+      await act(async () => {
+        dryRun.resolve(fixtureAnswer("dry-run"));
+        await settle();
+      });
+      const inProgress = within(board).getByRole("region", { name: "In progress" });
+      await waitFor(() =>
+        expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
+      );
+      await afterFrameAndTasks();
+      expect(
+        movedOn ? bravo : within(inProgress).getByRole("article", { name: "CORE-1 Parent" })
+      ).toHaveFocus();
+    } finally {
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}
+
 test("board: checking - the dry run answers 200, and the move goes as today", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const queryKey = ["issues", "project", "CORE"] as const;
