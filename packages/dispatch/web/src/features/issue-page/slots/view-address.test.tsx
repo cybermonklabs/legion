@@ -2,7 +2,14 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
+import {
+  createPath,
+  MemoryRouter,
+  type NavigateFunction,
+  type Navigator,
+  Router,
+  useLocation,
+} from "react-router-dom";
 
 import { api } from "../../../api/client";
 import type { Comment, IssueDetails } from "../../../api/types";
@@ -20,7 +27,12 @@ import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
 import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
@@ -168,9 +180,11 @@ const COMMENT_ROW = '[data-issue-body] [data-node-row][data-node-id="head-b"]';
 
 // Under a statement the Verification view draws that statement's checks alone
 // (`verificationReading`), so a plan task that serves the statement, which the tree places under
-// it, is no row of the view, though the view keeps it as the address's node. The view tells the
-// stage so, and the stage draws the outline in the view's place, which lands on the task's row.
-test("a plan task under a statement, named on the Verification view's address, draws the outline in the view's place, with the focus on the task's row", async () => {
+// it, is no row of the view, though the view keeps it as the address's node, and Conversation
+// draws no plan task either. The view tells the stage so, and the stage draws the outline in the
+// view's place, which opens the filter of the task's kind, Plan, at the task: its step takes the
+// focus.
+test("a plan task under a statement, named on the Verification view's address, opens Plan at the task, with the focus on its step", async () => {
   answerVerificationReads();
   const task = blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK);
   const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
@@ -180,16 +194,18 @@ test("a plan task under a statement, named on the Verification view's address, d
       `the plan task's address left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
     ).toBe(task)
   );
-  // Only the outline draws the task's row, once the view has said it draws none, and the stage
-  // takes nothing more the view says in this following, so nothing is waited for here.
-  expect(drawnSlot(view), "the stage drew the view, which has no row for the plan task").toBe(
-    "the body"
+  expect(
+    view.container.querySelector(TASK_STEP),
+    "the focus is on no step of the Plan view"
+  ).toHaveFocus();
+  expect(drawnSlot(view), "the stage drew the outline, which has no row for the plan task").toBe(
+    "the view"
   );
   expect(
-    view.container.querySelector("[data-verification-body]"),
-    "the Verification view was drawn beside the outline"
+    view.container.querySelector("[data-verification-body], [data-issue-body]"),
+    "the Verification view or the outline was drawn beside Plan"
   ).toBeNull();
-  expect(focusedRow(), "the focus left the plan task's row").toBe(task);
+  expect(focusedRow(), "the focus left the plan task's step").toBe(task);
 });
 
 // A node the Verification view draws a row of keeps the view: a comment of the issue, which is
@@ -251,6 +267,47 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
     "the Plan view was drawn beside the outline"
   ).toBeNull();
 });
+
+for (const reply of ["answers", "is refused"] as const) {
+  test(`a cold Plan task address waits until its Plan read ${reply} before choosing a row or the outline`, async () => {
+    answerVerificationReads();
+    const plan = Promise.withResolvers<TreeAnswer>();
+    const nodes = verifiedTree();
+    const outline = treeOf(
+      nodes.filter((node) => node.supertag !== "plan_task"),
+      SERVES
+    );
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+      query?.view === "plan" ? plan.promise : outline
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage(`#b-${PLAN_TASK}`, {
+      client,
+      issue: verifiedIssue(),
+      preset: "plan",
+    });
+    await waitFor(() => {
+      expect(client.getQueryState(viewQuery(KEY, "plan").queryKey)?.fetchStatus).toBe("fetching");
+      expect(client.getQueryData<TreeAnswer>(outlineQuery(KEY, "conversation").queryKey)).toBe(
+        outline
+      );
+      expect(client.isFetching()).toBe(1);
+    });
+    expect(view.container.querySelector("[data-issue-body]")).toBeNull();
+    if (reply === "is refused") {
+      await act(async () => plan.reject(REFUSED));
+      await waitFor(() =>
+        expect(view.getByRole("heading", { name: "No row for this block" })).toHaveFocus()
+      );
+      return;
+    }
+    const planNodes = nodes
+      .filter((node) => node.supertag === "plan_task")
+      .map((node): TreeAnswerNode => ({ ...node, role: "query" }));
+    await act(async () => plan.resolve(treeOf(planNodes)));
+    await rowTakesFocus(view, TASK_STEP, "the Plan read answering last");
+  });
+}
 
 // A key pressed on the Plan view's step is an act of the following too, but the step it leaves the
 // focus on leaves the page with the view where the view then draws no node the address names.
@@ -600,14 +657,34 @@ test("Graph's address with an id no read holds opens with the focus where Graph'
 
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps
 // the view. A plan task under the statement, changed to with the fragment alone under the same
-// key, is no row of the view, which draws a statement's checks alone: the stage draws the outline
-// in the view's place, which lands on the task's row.
-test("under the Verification view, a fragment the browser changes under one key from a check to a plan task draws the outline, with the focus on the task's row", async () => {
+// key, is no row of the view, which draws a statement's checks alone, and one Conversation draws
+// no row of either: the stage draws the outline in the view's place, which opens the filter of the
+// task's kind, Plan, at the task, and the task's step takes the focus.
+test("under the Verification view, a fragment the browser changes under one key from a check to a plan task opens Plan at the task, with the focus on its step", async () => {
   answerVerificationReads();
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const verification = presetPath(KEY, "verification");
-  const view = drawAtBrowserEntry(`${verification}#b-${CHECK}`, verifiedIssue());
+  const plan = presetPath(KEY, "plan");
+  // A router that keeps the browser's one key, and records where the page replaces the address.
+  const replaced: string[] = [];
+  const navigator: Navigator = {
+    createHref: (to) => (typeof to === "string" ? to : createPath(to)),
+    go: () => {},
+    push: () => {},
+    replace: (to) => {
+      replaced.push(typeof to === "string" ? to : createPath(to));
+    },
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={navigator}>
+      <AppProviders client={client}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </Router>
+  );
+  const view = render(draw(`${verification}#b-${CHECK}`));
   const checkRow = `[data-verification-body] [data-node-row][data-node-id="${blockNodeId(VERIFICATION_SLUG, CHECK)}"]`;
   await waitFor(() =>
     expect(
@@ -621,11 +698,20 @@ test("under the Verification view, a fragment the browser changes under one key 
   expect(drawnSlot(view), "the check's fragment drew the outline in place of the view").toBe(
     "the view"
   );
-  view.follow(`${verification}#b-${PLAN_TASK}`);
-  await rowTakesFocus(view, TASK_ROW, "the task's fragment under the same key");
+  expect(replaced, "the check's fragment replaced the address").toEqual([]);
+  view.rerender(draw(`${verification}#b-${PLAN_TASK}`));
+  await waitFor(() =>
+    expect(
+      replaced,
+      "the task's fragment under the same key did not open Plan at the task"
+    ).toEqual([`${plan}#b-${PLAN_TASK}`])
+  );
+  // The address the page replaced it with is the Plan view's, which lands on the task's step.
+  view.rerender(draw(`${plan}#b-${PLAN_TASK}`));
+  await rowTakesFocus(view, TASK_STEP, "the task's fragment under Plan");
   expect(
-    view.container.querySelector("[data-verification-body]"),
-    "the task's fragment drew the Verification view beside the outline"
+    view.container.querySelector("[data-verification-body], [data-issue-body]"),
+    "the task's fragment drew the Verification view or the outline beside Plan"
   ).toBeNull();
 });
 

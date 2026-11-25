@@ -1680,6 +1680,44 @@ test("a held view answer reaches presetView through root.views", async () => {
   }
 });
 
+test("Plan names both statements a step serves when only the outline holds those statements", async () => {
+  const spec = { ...plan, id: "artifact-spec", name: "Spec", primary: true, slug: "spec" };
+  const shown = { ...issue, artifacts: [plan, spec], primary_artifact_id: spec.id };
+  const statements = ["r1", "r2"].map((id, position) =>
+    answerNode(id, "requirement", {
+      document: { artifact_id: spec.id, position, slug: spec.slug },
+      text: `Statement ${id}`,
+    })
+  );
+  const step = answerNode("t2", "plan_task", {
+    attributes: { serves: `dispatch://${KEY}/spec#b-r1 dispatch://${KEY}/spec#b-r2` },
+    document: { artifact_id: plan.id, position: 1, slug: PLAN },
+    parent: statements[0]?.id,
+    role: "query",
+  });
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
+    tree: fixtureAnswer([answerNode(KEY, "issue", { parent: null }), ...statements]),
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(viewKey(KEY, "plan"), viewAnswer(step));
+  try {
+    const view = renderHook(() => useIssueTree(shown).root, {
+      wrapper: ({ children }) => <RoutedQueries client={client}>{children}</RoutedQueries>,
+    });
+    await waitFor(() => {
+      const [row] = presetView(view.result.current, "plan", "").root.children;
+      expect(row?.id).toBe(`${PLAN}#b-t2`);
+      expect(row?.parentLine?.id).toBe("spec#b-r1");
+      expect(row?.alsoUnder.map((chip) => chip.ref)).toEqual([
+        `dispatch://${KEY}/artifact/spec#b-r2`,
+      ]);
+    });
+  } finally {
+    client.clear();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** `client`'s queries around `children`, under a router at no issue's address, as the page draws
  *  every reader of the outline under its router (`tree-read.ts` reads the address there): the
  *  page with no filter on. */

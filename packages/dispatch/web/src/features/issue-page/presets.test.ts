@@ -352,6 +352,45 @@ test("a node address Conversation draws no row of goes to Graph's ?node= of that
   expect(addressView(graph, toTask, root, undefined, graphRead)).toBeUndefined();
 });
 
+// R9 in a filter's place: where a filter's view draws no row for the address's node, the stage
+// draws the outline, Conversation's, in its place, and a node Conversation draws no row of opens
+// the filter of its kind as on Conversation's address: a plan task under Verification or Spec
+// opens Plan at it. The filter the outline stands in drew none of it, so that filter is never the
+// one opened, and a node address, which the outline alone reads, opens nothing there.
+test("in a filter's place an address of a node Conversation draws no row of opens the filter of its kind", () => {
+  const placed = { artifact_id: "artifact-plan-md", position: 0, slug: "plan-md" };
+  const views = {
+    plan: treeAnswer([treeNode("t9", "plan_task", null, { document: placed, in: "plan-md" })]),
+  };
+  const root = node("CORE-1", "issue", [], { views });
+  const block = { id: "t9", kind: "block" } as const;
+  const on = (preset: Preset, target: AddressTarget) => ({ preset, target }) as const;
+  const plan = { keepsNode: true, preset: "plan" } as const;
+  expect(
+    addressView(on("verification", block), undefined, root, absent(block), undefined),
+    "a block only Plan's view answer holds, in Verification's place"
+  ).toEqual(plan);
+  expect(
+    addressView(on("plan", block), undefined, root, absent(block), undefined),
+    "a block only Plan's view answer holds, in Plan's own place"
+  ).toBeUndefined();
+  const task = node("plan#b-t1", "plan_task", [], { readId: "CORE-1/plan#t1" });
+  const toTask = [node("CORE-1", "issue", [task]), task];
+  expect(
+    addressView(on("spec", block), toTask, root, undefined, undefined),
+    "a plan task the tree holds, in Spec's place"
+  ).toEqual(plan);
+  expect(
+    addressView(on("plan", block), toTask, root, undefined, undefined),
+    "a plan task the tree holds, in Plan's own place"
+  ).toBeUndefined();
+  const unheld = { id: "CORE-1/plan-md#t404", kind: "node" } as const;
+  expect(
+    addressView(on("verification", unheld), undefined, root, absent(unheld), undefined),
+    "a node address no read holds, in Verification's place"
+  ).toBeUndefined();
+});
+
 // R9: an id no read holds opens the outline's own address without it, with no line: on
 // Conversation's own address, Conversation's, whether the page holds no Graph read or holds one
 // that lacks the node, and on Graph's own address Graph's. A node Conversation's read holds none

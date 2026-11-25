@@ -10,9 +10,13 @@ import type {
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { shortDay } from "../web/src/features/issue-page/node-time";
-import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import {
+  coverageNotes,
+  NODE_STATE_WORDS,
+  PRESET_NAMES,
+} from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, getIssueEvents, listComments, listIssueAsks } from "./api";
+import { getIssue, getIssueCoverage, getIssueEvents, listComments, listIssueAsks } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle } from "./issue-page";
 import { expectIssuePageDrawn } from "./issue-page-g";
@@ -606,6 +610,18 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
   expect(unnamed, "the answered question's row carries a chip for each node it shaped").toEqual([]);
 }
 
+/** Wait for the coverage read to stop naming documents that owe indexing. The worker normally
+ *  runs every 30 seconds; this allows a second cycle before failing with the pending lines. */
+export async function awaitIndexedCoverage(key: string): Promise<void> {
+  await expect
+    .poll(async () => coverageNotes(await getIssueCoverage(key)), {
+      intervals: [250, 500, 1_000, 2_000],
+      message: `${key}'s coverage still names documents awaiting indexing`,
+      timeout: 60_000,
+    })
+    .toEqual([]);
+}
+
 /** Row 1 on the seed `name`, which `seed` seeds: as Graph opens, each row stands under the parent
  *  the tree read answers, and reads as the reads drew it. The fixture's `opened` rows are the old
  *  page as it opened, folded to the frontier, and Graph opens with every node unfolded (R11), so
@@ -619,6 +635,7 @@ export async function expectSameRows(
   await phase(browser, seed, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     owedUnless(await convertedGate(page, seeded.key));
+    await awaitIndexedCoverage(seeded.key);
     const outline = await readOutline(page, seeded);
     expect(
       firstRowOutOfPlace("as Graph opens", outline.rows, outline),

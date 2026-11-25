@@ -27,7 +27,8 @@ import {
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
-import { NODE_TYPE_NAMES } from "../page-words";
+import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
+import { presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
@@ -2020,4 +2021,83 @@ test("a prose node of the tree read is drafted and named in Graph", () => {
   ).toEqual([["p1", "Words of p1."]]);
   expect(placementsOf(root, "p1").map((one) => one.parent)).toEqual([blockNodeId("spec", "r1")]);
   expect(NODE_TYPE_NAMES.prose).toBe("paragraph");
+});
+
+// R9, R10 and root R1: the tree read answers a plain block of the room's fragment - a paragraph,
+// a list, a heading: a block whose text opens no typed block - as a block node of the supertag
+// `block`, and only its `kind` filter names it prose (the server's `nodeKind`). Graph draws it as
+// a prose row, and so does Conversation, whose read asks for prose and answers it so too. A
+// finding, a block whose id names its lens, and a typed block keep the steps that draft them, and
+// an ask's, a comment's or a message's own block stays part of its item. A block of a converted
+// document, which names its `document`, is a prose row of Graph and no row of Conversation, and
+// no filter draws a block its view read marks as context.
+test("a plain block of the room's fragment is drafted and named as prose in Graph", () => {
+  const lens = "c3000000-0000-4000-8000-000000000003";
+  const shared = [
+    block("r1", "requirement", KEY, SPEC, 0),
+    block("c1", "check", "r1", VERIFICATION, 0),
+    node(lens, "lens", KEY),
+    { ...node("f1", "block", lens), id: `lens/${lens}#f1` },
+    node("p1", "block", KEY),
+    block("d1", "block", KEY, SPEC, 1),
+    node("c-1", "comment", KEY),
+    { ...node("cb1", "block", "c-1"), id: "comment/c-1#cb1", kind: "comment_block" },
+    node("q1", "block", KEY, { issue: "CORE-2" }),
+  ];
+  const graph = drawn(answer([...shared, block("t1", "plan_task", KEY, PLAN, 0)]));
+  const typeOf = (id: string) => graph.drafts.get(id)?.type;
+  const proseRows = (root: TreeNode, preset: "conversation" | "graph") =>
+    nodesOf(presetView(root, preset, "").root)
+      .filter((one) => one.type === "prose")
+      .map((one) => [one.id, nodeWords(one)]);
+
+  const drafted = typeOf("p1");
+  expect(drafted, "the plain block is drafted as prose").toBe("prose");
+  expect(
+    drafted && [NODE_TYPE_NAMES[drafted], GLYPH_TOKENS.types[drafted]],
+    "the word and the shape its row draws"
+  ).toEqual(["paragraph", "prose"]);
+  expect(typeOf(blockNodeId("spec", "r1")), "the typed block keeps its step").toBe("requirement");
+  expect(typeOf("f1"), "a finding is drafted as prose").toBeUndefined();
+  expect(typeOf("cb1"), "a comment's own block is drafted as prose").toBeUndefined();
+  expect(typeOf("c-1")).toBe("comment");
+  expect(typeOf("q1"), "another issue's plain block is drafted as prose").toBeUndefined();
+  expect(proseRows(graph.root, "graph"), "Graph's prose rows").toEqual([
+    ["p1", "Words of p1."],
+    [blockNodeId("spec", "d1"), "Words of d1."],
+  ]);
+  expect(placementsOf(graph.root, "p1").map((one) => one.parent)).toEqual([KEY]);
+
+  // Conversation's read: the kinds Conversation names, which hold no plan task.
+  const conversation = drawn(answer(shared));
+  expect(proseRows(conversation.root, "conversation"), "Conversation's prose rows").toEqual([
+    ["p1", "Words of p1."],
+  ]);
+
+  // Each filter's view read marks the plain block as context beside a node of its own kind, which
+  // the filter draws; drawn from that read or read off the tree, no filter draws the block.
+  const context = node("p1", "block", KEY, { role: "context" });
+  const query = { role: "query" } as const;
+  const own = {
+    plan: [block("t1", "plan_task", KEY, PLAN, 0, query), blockNodeId("plan-md", "t1")],
+    spec: [block("r1", "requirement", KEY, SPEC, 0, query), blockNodeId("spec", "r1")],
+    verification: [
+      block("c1", "check", KEY, VERIFICATION, 0, query),
+      blockNodeId("verification-md", "c1"),
+    ],
+  } as const;
+  const views = {
+    plan: answer([context, own.plan[0]], [], { view: "plan" }),
+    spec: answer([context, own.spec[0]], [], { view: "spec" }),
+    verification: answer([context, own.verification[0]], [], { view: "verification" }),
+  };
+  for (const filter of ["spec", "verification", "plan"] as const) {
+    const fromView = nodesOf(presetView({ ...graph.root, views }, filter, "").root).map(
+      (one) => one.id
+    );
+    expect(fromView, `${filter} drawn from its view read`).toContain(own[filter][1]);
+    expect(fromView, `${filter} drawn from its view read`).not.toContain("p1");
+    const offTree = nodesOf(presetView(graph.root, filter, "").root).map((one) => one.id);
+    expect(offTree, `${filter} read off the tree`).not.toContain("p1");
+  }
 });

@@ -162,6 +162,8 @@ export interface TreeDraftContext extends TreeWords {
   readonly lineOf: (readId: string) => string | undefined;
   /** The node of the answer `readId` names. */
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
+  /** The node of the answer by its drawn id, for a pointer written as a document address. */
+  readonly nodeByTreeId: (id: string) => TreeAnswerNode | undefined;
   /** Where the read places `node`, as the tree draws it: under the nearest node a draft stands
    *  for, walking up from its parent, which is the nearest node before it in the walk that its
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
@@ -203,7 +205,8 @@ export type TreeDraftMark = (
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
  * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, a paragraph, a reading, and a child issue.
+ * comment and a message, a callout and an image, a paragraph and every other plain block
+ * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   lensDrafts,
@@ -254,6 +257,7 @@ export function treeDraftsFrom(
     pushInto(ending, tuple.to.id, tuple);
   }
   const idOfNode = nodeIdsIn(reads);
+  let byTreeId: Map<string, TreeAnswerNode> | undefined;
   const idOf = (readId: string): string => {
     const node = nodes.get(readId);
     return node === undefined ? readId : idOfNode(node);
@@ -272,6 +276,16 @@ export function treeDraftsFrom(
       return draft === undefined ? undefined : context.lineWords(draft);
     },
     nodeOf: (readId) => nodes.get(readId),
+    nodeByTreeId: (id) => {
+      if (byTreeId === undefined) {
+        byTreeId = new Map();
+        for (const node of answer.nodes ?? []) {
+          const drawn = idOfNode(node);
+          if (!byTreeId.has(drawn)) byTreeId.set(drawn, node);
+        }
+      }
+      return byTreeId.get(id);
+    },
     // A node under a kind the page does not draw stands under that node's nearest drawn
     // ancestor, and a chain of parents that runs in a circle ends where it comes round.
     placeOf: (node) => {
@@ -546,6 +560,21 @@ function draftServing(
     const target = tuple.kind === "serves" ? context.nodeOf(tuple.to.id) : undefined;
     return target === undefined || isForeign(target, context.key) ? [] : [target];
   });
+  // The Plan read omits a tuple whose statement is outside its answer. When the outline
+  // supplies that statement as context, read the step's authored pointer to it.
+  if (node.supertag === "plan_task" && node.role === "query") {
+    for (const pointer of pointersOf(node, "serves")) {
+      const id = context.nodeIdOf(pointer);
+      const target = id === undefined ? undefined : context.nodeByTreeId(id);
+      if (
+        target !== undefined &&
+        !isForeign(target, context.key) &&
+        isStatementNode(target, context)
+      ) {
+        served.push(target);
+      }
+    }
+  }
   const requirements = served.flatMap((target) =>
     isStatementNode(target, context) ? [context.treeIdOf(target.id)] : []
   );
@@ -796,16 +825,36 @@ function draftBlock(
   return draftOf(node, node.supertag, context);
 }
 
-/** A prose node: a document's plain paragraph, as the model stores it, drawn by its kind and its
- *  words and nothing more. It stands under the parent the read gives it, as every draft whose
+/** A prose node: a block of a document's text that opens no typed block - a paragraph, a list, a
+ *  heading - drawn by its kind and its words and nothing more, whether the read names it by the
+ *  supertag `prose` or answers it as a plain block of this issue (`isPlainBlock`): a plain block
+ *  the read marks as another issue's is a block of that issue's text, which the conversation of
+ *  this issue never wrote. It stands under the parent the read gives it, as every draft whose
  *  step names no parent does (`placeOf`). */
 function draftProse(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.supertag !== "prose") return undefined;
+  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
+    return undefined;
+  }
   return draftOf(node, "prose", context);
+}
+
+/**
+ * Whether `node` is a plain block, which the read's `kind` filter takes as prose by the server's
+ * kind rule (`nodeKind` in `api/issue_tree_kinds.go`) while every read answers it as a block node
+ * of the supertag `block`: a block node that is no finding and whose text opens no typed block.
+ * The read types a block by the typed block its text opens and answers that type as its
+ * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
+ * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
+ * lens, `lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id. A block of
+ * an ask, a comment or a message is a node of its item's own block kind (`comment_block`), part
+ * of that item, and no block node.
+ */
+function isPlainBlock(node: TreeAnswerNode): boolean {
+  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn

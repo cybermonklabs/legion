@@ -11,7 +11,7 @@ tags:
   - pane-contract
   - LEGION_GRANT_FILE
 date: 2026-09-12
-status: superseded by LEGION-631 — the gate stands (the contract `legion.daemonApiVersion` declares), but the skew example is stale, since gh and jj git push read the role's App token from the gh files under GH_CONFIG_DIR and never a grant, and GH_CONFIG_DIR with the emptied GH_TOKEN, GITHUB_TOKEN and GH_HOST are part of the pane contract
+status: superseded by LEGION-631 — the gate stands (the contract the packed `legion.daemonApiVersion` declares), but the skew example is stale, since gh and jj git push read the role's App token from the gh files under GH_CONFIG_DIR and never a grant, and GH_CONFIG_DIR with the emptied GH_TOKEN, GITHUB_TOKEN and GH_HOST are part of the pane contract; the bump rule superseded by dispatch://INFRA-1569 — a contract change adds an entry with scripts/daemon-contract-entry.sh and edits no number, and each pack step writes the build's number into the manifest it packs
 module: packages/daemon, packages/contracts, packages/pi-envoy
 related_issues:
   - "LEGION-21"
@@ -64,10 +64,12 @@ design and, more usefully, the two alternatives that were rejected and why.
   `pi-legion-envoy at <manifest path> (package <version>) speaks daemon API contract <n|none>;
   this daemon requires <N>. Install the @sjawhar/pi-legion-envoy release built from this
   daemon's commit into the active profile.`
-- Bump rule (now in `packages/daemon/src/daemon/AGENTS.md`): any change to a `LegionDaemonApi`
-  request or response shape bumps the constant and the manifest field together, and the
-  deployment installs the plugin release built from the same commit into the active profile
-  before the daemon restarts on the new code.
+- Bump rule (then in `packages/daemon/src/daemon/AGENTS.md`): any change to a `LegionDaemonApi`
+  request or response shape bumped the constant and the manifest field together, and the
+  deployment installed the plugin release built from the same commit into the active profile
+  before the daemon restarted on the new code. Since dispatch://INFRA-1569 the change adds a
+  contract entry instead (`bash scripts/daemon-contract-entry.sh <slug>`, `CONTRIBUTING.md`)
+  and edits no number, and the deployment order is the same.
 
 Negative control on the rig: a daemon from the branch started against a profile whose plugin
 was the released 1.3.0 refused with exactly that message (`speaks daemon API contract none;
@@ -91,8 +93,9 @@ number, and it was rejected for three concrete reasons:
    plugin packed from the branch, which carries the *last released* version string. A lower
    bound set to the next release refuses exactly the build that has the fix.
 
-A contract integer has none of these problems: it changes only when the shape changes, it is
-bumped by hand in the same commit as the shape, and a branch build carries the new value.
+A contract integer has none of these problems: it changes only when the shape changes, the shape's
+commit carries the change (a hand bump then, an entry since dispatch://INFRA-1569), and a branch
+build carries the new value.
 
 Two other alternatives were also rejected. A tolerant (non-strict) parse in the plugin would have
 hidden the skew instead of surfacing it, contradicts the repository's strict-contract rule, and
@@ -129,27 +132,27 @@ first boot. The Go coordinator keeps the rule: its boot gate
 (`packages/daemon-go/internal/daemon/bootgate.go`) and the Go `legion probe-image`, which the image
 build runs as its final step, share the probes and hold the plugin to `legion.goDaemonApiVersion`.
 
-## The bump is a step the author must take; the gate only catches its absence at deploy (LEGION-20)
+## The contract change is a step the author must take; the gate only catches its absence at deploy (LEGION-20)
 
 LEGION-20 (#975) changed `register_gate`'s request from `{askId}` to `{artifactId, version}` and
 the gate record in the state response — a `LegionDaemonApi` shape change on both sides. Neither
 the plan nor the first implementation bumped `LEGION_DAEMON_API_VERSION` or the plugin manifest's
 `legion.daemonApiVersion`; the architect caught it in review and the bump landed as a follow-up
 commit ("daemon API contract 2 — register_gate and the gate record changed shape"). Nothing
-automatic could have caught it: `daemon-api-version.test.ts` pins the two numbers *equal*, not
-*changed*, and the gate itself only fires at boot against an installed plugin. Two habits now:
+automatic could have caught it: `daemon-api-version.test.ts` pinned the two numbers *equal*, not
+*changed*, and the gate itself only fires at boot against an installed plugin. The habit, and what
+the number cost until dispatch://INFRA-1569:
 
-- **Any diff that touches `packages/contracts/src/legion-daemon-api.ts` bumps the constant and
-  the manifest in the same commit as the shape change**, and the pull request body says so.
-  Put "grep the diff for `LegionDaemonApi`" on the planner's checklist and the reviewer's.
-- **A serial number claimed on a long-lived branch is re-checked against main at every rebase.**
-  Two branches that each change a shape will both bump 1 → 2; see
-  `docs/solutions/legion/schema-bump-branch-rechecks-mains-version-at-every-rebase.md`,
-  where the same thing happened to the state version on this branch. It then happened to this
-  number: LEGION-16 (#961) had also taken 2 for the controller handshake, and after rebasing over
-  #975 its tester found main's plugin release at contract 2 passing a daemon whose shapes differed.
-  LEGION-16 renumbered to 3 and main's 1.23.x/1.24.0 plugin releases are refused by name — and
-  then, after LEGION-25 and LEGION-102 landed at 3 and 4, renumbered again to 5.
+- **Any diff that changes a shape the plugin parses adds its contract entry in the same commit as
+  the shape change** (`bash scripts/daemon-contract-entry.sh <slug>`; a bump of the constant and
+  the manifest then), and the pull request body names the entry. Put "grep the diff for
+  `LegionDaemonApi`" on the planner's checklist and the reviewer's.
+- Until dispatch://INFRA-1569 a number claimed on a long-lived branch could be taken first by
+  another branch: LEGION-16 (#961) had also taken 2 for the controller handshake, and after
+  rebasing over #975 its tester found main's plugin release at contract 2 passing a daemon whose
+  shapes differed. LEGION-16 renumbered to 3, and then, after LEGION-25 and LEGION-102 landed at 3
+  and 4, to 5 (`../legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md`).
+  An entry takes no number, so no branch takes another's.
 
 ## The number covers the pane contract too (LEGION-52)
 
@@ -159,8 +162,9 @@ plugin reads or writes. Sixteen of them at the time of writing; the authoritativ
 comment on `LEGION_DAEMON_API_VERSION` in `packages/contracts/src/legion-daemon-api.ts`, and the
 same list is repeated verbatim in `packages/daemon/src/daemon/AGENTS.md`, `packages/pi-envoy/AGENTS.md`,
 and the pi-envoy `CHANGELOG.md` (`boot-probes.ts` points at the constant instead of repeating it).
-The rule that follows: a change to one of those variables bumps the constant and the manifest in
-the same commit, exactly like an HTTP shape change. Three things the round taught:
+The rule that followed: a change to one of those variables is a contract change exactly like an
+HTTP shape change (a bump of the constant and the manifest then, an entry since
+dispatch://INFRA-1569). Three things the round taught:
 
 - **A list that says "every" is verified with two greps, one per side, and the count is
   checked 1:1.** The first draft was "verified against `processes.ts`" and still missed
@@ -199,7 +203,7 @@ the same commit, exactly like an HTTP shape change. Three things the round taugh
   contract's failure mode, read it out of the source (and the test that pins it) rather than out
   of the incident you remember.
 
-## When another branch takes the number first: a contract integer is a skew detector, not a changelog
+## A rebase that turned a fix into a docs-only pull request (LEGION-52)
 
 LEGION-52 first landed as a code change: bump 1 → 2 on both sides so that a daemon on `main`
 would refuse every pre-credential-file release. Fifty-two minutes after its first handoff,
@@ -207,20 +211,9 @@ LEGION-20 (#975) merged its own 1 → 2 for the `stateGate`/`GatesRegister` shap
 1.23.0 — the first to declare 2 — also carried the credential file. The tester caught it on the
 first round by booting the branch daemon against a copy of the installed 1.23.0 tree (it passed
 the gate, which the PR body said it would refuse). On rebase the branch's constant and manifest
-edits collapsed to nothing and the pull request became docs-only.
-
-The decision that followed is the transferable part, because it is the *opposite* of the state
-schema rule in `../legion/schema-bump-branch-rechecks-mains-version-at-every-rebase.md`. A
-migration version keys a step; two branches cannot share one, so the second renumbers. A contract
-integer only has to *differ from the number every incompatible release declares*; two branches
-that each need "a bump since the last release" are both satisfied by one bump. Bumping to 3 would
-have refused 1.23.0 — a release that already has the behaviour — for no change in behaviour and
-forced the operator to reinstall. So: when `main` has moved the counter under you, check whether
-the release that first declares the new number already carries what your branch needs; if it
-does, do not renumber, drop your bump, and land the rule and the history instead. Check at every
-phase boundary (`jj file show -r main@origin packages/contracts/src/legion-daemon-api.ts | grep
-LEGION_DAEMON_API_VERSION`, and `npm view @sjawhar/pi-legion-envoy@<v> legion` for the release),
-not only when GitHub says CONFLICTING — this collision produced a clean rebase.
+edits collapsed to nothing and the pull request became docs-only. Choosing between such numbers
+was the hand-picked number's cost, which dispatch://INFRA-1569 removed: a contract change adds an
+entry, and a build numbers its entries in `main`'s merge order.
 
 A rebase that turns a fix PR into a docs PR also changes the review discipline: the "Thermo"
 line is skipped (docs-only), the E2E proof becomes "the branch daemon boots against a copy of the
@@ -231,8 +224,8 @@ PR wrote said contract 2 *was* the credential file, which was true on the branch
 
 ## Related
 
-- `packages/daemon/src/daemon/AGENTS.md`, "OMP invocation and daemon tools": the gate, the bump
-  rule, and the load probe, as the current contract.
+- `CONTRIBUTING.md`: the contract entry that replaced the bump rule (dispatch://INFRA-1569),
+  and `docs/kubernetes.md`, "Contract discipline": how an operator reads a build's numbers.
 - `docs/solutions/daemon/handoff-schema-migration-patterns.md`: versioning of persisted state,
   the other place a shape change needs a number.
 - `../legion/release-bound-claims-are-verified-against-tags-and-tarballs.md`: how the "first

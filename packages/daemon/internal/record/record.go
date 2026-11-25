@@ -341,8 +341,8 @@ type Assignment struct {
 	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
-	// off, which draws for no unit, and the answer a hand-over settles a child at for an
-	// experiment the tree it left held no row for.
+	// off, which gives every new unit no arm, and the answer a hand-over settles a child at for
+	// an experiment the tree it left held no row for.
 	Variant string
 	// Mode is the experiment's mode when the draw was made (a config.ExperimentMode word), "" where
 	// a hand-over settled the row and the old tree held none, so no draw was ever made under any
@@ -1473,7 +1473,9 @@ func (m MergeState) Mergeable() bool {
 // LastWakeAt when; WakeAt is when the check is next looked at — the time the checking agent
 // named on a pending report, or the retry of a look nobody reported — and is nil when neither
 // stands. Last marks the bound's look, after which no look starts. A closed check has ClosedAt
-// and its Outcome.
+// and its Outcome. FailedLooks counts the looks in a row whose checking role's claim failed, in
+// the look or after it ended, since the role last reported a look: what the next look's backoff
+// doubles by (workflow.failedLookRetry), and 0 again once a look is reported.
 type ProductionCheck struct {
 	Issue   string
 	Project string
@@ -1500,6 +1502,7 @@ type ProductionCheck struct {
 	Last           bool
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
+	FailedLooks    int
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -2631,6 +2634,12 @@ type Store interface {
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
 	DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error
+	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
+	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
+	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
+	// queues the row that replaces the check's wake (failedBetweenLooks). A row the runner has leased
+	// is dropped too; its fact is the one applying, and its finish then finds nothing to delete.
+	DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
 	// another transaction deleted it while the runner held it (DropCatchUps).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)

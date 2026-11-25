@@ -771,11 +771,10 @@ export function RowMargin({
     return (
       <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
-          {/* A plain span: its control stays inline, so the 6 px a control's touch target takes
-              above and below it on a phone adds nothing to the line's height. */}
-          <span data-node-tag="">
+          {/* The button keeps its touch padding without raising the height of the line. */}
+          <span className="inline-flex" data-node-tag="">
             <button
-              className={`dispatch-inline-link font-semibold whitespace-nowrap ${pageKindTag.child}`}
+              className={`dispatch-inline-link font-semibold whitespace-nowrap max-[1279px]:-my-[6px] ${pageKindTag.child}`}
               data-child-key=""
               onClick={() => openChildEntry(key)}
               tabIndex={tabStops ? undefined : -1}
@@ -804,7 +803,7 @@ export function RowMargin({
               <KindTag node={node} />
             ) : (
               <Link
-                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px]"
+                className="dispatch-inline-link inline-flex items-center gap-1 underline decoration-page-hair underline-offset-[3px] max-[1279px]:-my-[6px]"
                 data-node-tag-link=""
                 tabIndex={tabStops ? undefined : -1}
                 to={tagTo}

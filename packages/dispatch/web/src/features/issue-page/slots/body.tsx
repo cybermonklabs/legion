@@ -277,8 +277,11 @@ export interface AddressView {
  * holds none of opens Graph at it where Graph's read answers a node of its id, and else - Graph's
  * read lacking it, or refused - Conversation's own address without it. On Graph's address, a
  * node its read holds none of opens Graph's address without it, zoomed as the address zooms where
- * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. Undefined for
- * every other address, and on every other preset.
+ * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. In a filter's
+ * place, where the stage draws the outline because that filter's view draws no row for the node
+ * (`StageSlot`), the outline is Conversation's, and a node it draws no row of opens the filter of
+ * its kind or Graph as on Conversation's address, but never the filter it stands in, whose view
+ * drew none of it. Undefined for every other address.
  */
 export function addressView(
   address: Pick<IssueAddress, "preset" | "target">,
@@ -292,12 +295,13 @@ export function addressView(
   if (address.preset === "graph") {
     return unheld === undefined ? undefined : { keepsNode: false, preset: "graph" };
   }
-  if (address.preset !== "conversation") return undefined;
   if (reveal !== undefined) {
     const filter = filterOfUndrawn(reveal.at(-1) ?? root);
-    if (filter === undefined) return undefined;
+    if (filter === undefined || filter === address.preset) return undefined;
     return { keepsNode: true, preset: address.target?.kind === "node" ? "graph" : filter };
   }
+  // A node address is the outline's alone (`issueAddress`), so a filter's place opens none.
+  if (unheld !== undefined && address.preset !== "conversation") return undefined;
   if (unheld !== undefined) {
     return (graphRead?.nodes ?? []).some((node) => node.id === unheld.id)
       ? { keepsNode: true, preset: "graph" }
@@ -307,7 +311,9 @@ export function addressView(
   const preset =
     filterHolding(root.views, fallback.target) ??
     (answerHolds(graphRead, fallback.target) ? "graph" : undefined);
-  return preset === undefined ? undefined : { keepsNode: true, preset };
+  return preset === undefined || preset === address.preset
+    ? undefined
+    : { keepsNode: true, preset };
 }
 
 /** The address `view` opens for an address of `search` and `hash`: its preset's own address -
