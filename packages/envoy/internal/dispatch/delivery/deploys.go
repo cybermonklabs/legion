@@ -181,7 +181,7 @@ func RecordDeploy(ctx context.Context, pool *store.Pool, broker *events.Broker, 
 	if err != nil {
 		return model.Deploy{}, false, err
 	}
-	appended, err := appendDeployEvents(ctx, tx, broker, owners, deploy)
+	appended, err := appendDeployEvents(ctx, tx, broker, owners[:0], deploy)
 	if err != nil {
 		return model.Deploy{}, false, err
 	}
