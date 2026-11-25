@@ -673,8 +673,9 @@ function draftDecision(
  * with the ask as the record its words are, kept by the tree read's reading of them, else by the
  * node (`stableSourceOf`). An approval request belongs to the document it reviews and is no node
  * of the tree, as in the outline. An ask the asks read has not answered for yet is open, as the
- * outline drew an ask block before that read answered. A question the read answers `overtaken`
- * waits on nobody (R2), as the header's count does not count it.
+ * outline drew an ask block before that read answered.
+ * No reader waits on a question the read answers `overtaken` (R2), as the header's count does
+ * not count it.
  *
  * An `ask` block of a document is drawn by its question as the asks read holds it, with that
  * read's reading of it, as the outline drew an ask: the read's reading of the block is of its

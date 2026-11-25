@@ -44,7 +44,7 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    which no statement stands on any longer (R5: "A replaced decision draws no line").
  *
  * An overtaken decision or question, a node the read answers `overtaken`, stands in the part its
- * kind puts it in, and waits on nobody (`waitingOrder`, R2).
+ * kind puts it in, and no reader waits on it (`waitingOrder`, R2).
  *
  * Before the five parts stands the node the address names where it is neither an ask nor a
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
@@ -210,9 +210,9 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 /**
  * Every entry that waits on the reader, in the filter's order: each open question whose turn
  * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12). An overtaken
- * one waits on nobody (R2): its question's node does not wait (`tree-read/tree-nodes.ts`'
- * `draftAsk`), and its decision says it is overtaken.
+ * what waits walks: each press goes to the next of them (R13, the tester's F12).
+ * No reader waits on an overtaken one (R2): its question's node does not wait
+ * (`tree-read/tree-nodes.ts`' `draftAsk`), and its decision says it is overtaken.
  */
 export function waitingOrder(parts: DecisionsParts): readonly string[] {
   return [
