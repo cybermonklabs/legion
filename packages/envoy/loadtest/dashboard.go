@@ -26,13 +26,10 @@ const (
 // probeDashboard asks the Dispatch at dispatch which dashboard stream it serves, once, before the
 // window: it dials the live socket, and, when that is refused, asks for the SSE feed. It returns
 // the kind (dashboardLive or dashboardSSE) and the URL the step's streams open. A build that
-// serves neither is an error naming what each answered: the step would measure no frames. The SSE
-// feed's path is joined onto dispatch (urljoin.Join): onto its path, after its query, its fragment
-// dropped, where the path appended to the URL's text would sit inside a query or a fragment and
-// Dispatch would be asked another path. A URL that does not join, or whose joined URL does not
-// parse again (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape), is
-// refused in fixed words: url.Parse's error, which http.NewRequest's carries, quotes the URL
-// whole, user information and query included.
+// serves neither is an error naming what each answered: the step would measure no frames. A URL
+// that does not join, or whose joined URL does not parse again (url.URL.String can write text
+// url.Parse refuses, such as an IPv6 zone escape), is refused in fixed words: url.Parse's error,
+// which http.NewRequest's carries, quotes the URL whole, user information and query included.
 func probeDashboard(ctx context.Context, dispatch string) (string, string, error) {
 	joined, err := urljoin.Join(dispatch, ssePath)
 	if err != nil {

@@ -204,14 +204,10 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 
 // readCloudSQLSeries is the instance's aligned points of one metric from ws to we, oldest first.
 // It calls projects.timeSeries.list, the API's GET of a project's time series with the filter,
-// the interval and the aggregation as query parameters, following its pages. The route and the
-// read's parameters are joined onto base, the -api URL (urljoin.Join): the route onto its path, the
-// parameters after its own query, which is kept, while its fragment, which no request sends, is
-// dropped: the route appended to base's text would sit inside a query or a fragment, and Cloud
-// Monitoring would be asked another path. A base that does not parse or names no host, or whose
-// joined URL does not parse again (url.URL.String can write text url.Parse refuses, such as an
-// IPv6 zone escape), is refused in fixed words: url.Parse's error, which http.NewRequest's carries,
-// quotes the URL whole, user information and query included.
+// the interval and the aggregation as query parameters, following its pages. A base that does not
+// parse or names no host, or whose joined URL does not parse again (url.URL.String can write text
+// url.Parse refuses, such as an IPv6 zone escape), is refused in fixed words: url.Parse's error,
+// which http.NewRequest's carries, quotes the URL whole, user information and query included.
 //
 // The read is refused by name, never written as a zero: a 403 (an identity that may not read the
 // project's time series), a 404 (no such project or route), any other status, an answer that does

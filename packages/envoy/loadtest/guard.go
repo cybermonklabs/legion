@@ -743,9 +743,7 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
 // the listener answers /v1/sessions with the stack's API token and refuses any other token (a
 // listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here. Each route is joined
-// onto its endpoint's URL (urljoin.Join; the listener client joins its own), and a refusal names
-// the URL it asked without its credentials (redactURL).
+// production Dispatch hold other tokens, so a mistaken target fails here.
 func checkStack(ctx context.Context, e endpoints) error {
 	client := redirects.Refused(shortClient)
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
@@ -794,8 +792,7 @@ func joinRedacted(base, route string) string {
 
 // checkNATSServerName confirms that the NATS server monitored at monURL names itself name, so a
 // command that publishes (a step, a backlog run) reaches the stack's own NATS and no other. An
-// empty name skips the check. /varz is joined onto monURL (urljoin.Join), and a monitor URL that
-// does not join is refused in fixed words.
+// empty name skips the check.
 func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name string) error {
 	if name == "" {
 		return nil

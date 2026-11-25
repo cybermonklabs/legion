@@ -576,10 +576,8 @@ func (s *sampler) all() []sample {
 var shortClient = &http.Client{Timeout: 10 * time.Second}
 
 // routeURL is route, a path with or without its own query, joined onto base, an endpoint's URL
-// (urljoin.Join): onto its path, after its query, its fragment dropped, where route appended to
-// the URL's text would sit inside a query or a fragment and the endpoint would be asked another
-// path. A base that does not join is refused in fixed words that name the route: url.Parse's
-// error quotes the URL whole, user information and query included.
+// (urljoin.Join). A base that does not join is refused in fixed words that name the route:
+// url.Parse's error quotes the URL whole, user information and query included.
 func routeURL(base, route string) (string, error) {
 	joined, err := urljoin.Join(base, route)
 	if err != nil {
