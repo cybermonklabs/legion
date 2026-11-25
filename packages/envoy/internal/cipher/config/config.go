@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/netip"
@@ -2082,7 +2083,9 @@ func parsePrivateUpstream(entry string) (PrivateUpstream, error) {
 		return PrivateUpstream{}, fmt.Errorf("%s must be <host>=<url> entries, each with a host before its first = and a URL after it", setting)
 	}
 	if why := rulehost.Refusal(host); why != "" {
-		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its =, got %q, which %s", setting, host, why)
+		// Not the text before the =: an entry written as a URL alone whose query or password holds
+		// an = puts that URL's user information there. rulehost.Refusal's words say what is wrong.
+		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its first =, and the text before it %s", setting, why)
 	}
 	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
 		return PrivateUpstream{}, fmt.Errorf("%s must name its host in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
@@ -2369,14 +2372,16 @@ func databaseIAM(databaseURL string) (bool, error) {
 	}
 	conn, err := pgconn.ParseConfig(databaseURL)
 	if err != nil {
-		// A ParseConfigError's own text quotes the URL; what it wraps says what was wrong.
-		var parseErr *pgconn.ParseConfigError
-		if errors.As(err, &parseErr) && errors.Unwrap(parseErr) != nil {
-			err = errors.Unwrap(parseErr)
-		} else {
-			err = errors.New("its connection settings do not parse")
+		// Not pgx's words: a ParseConfigError quotes the URL, and what it wraps can quote a part of
+		// it too (a query pair with no =, a component whose escape does not decode, the path of an
+		// sslrootcert file), so the refusal says in fixed words that pgx cannot read it, and for a
+		// file it could not open, such as an sslrootcert that names none, the call and the
+		// system's reason alone (redact.File).
+		var unread *fs.PathError
+		if errors.As(err, &unread) {
+			return refuse("pgx cannot read a file its connection settings name: " + redact.File(err).Error())
 		}
-		return refuse("pgx cannot read it: " + err.Error())
+		return refuse("pgx cannot read its connection settings")
 	}
 	// pgx signs in with the password it reads, which net/url can miss: a query pair holding a ';'
 	// (net/url drops it), PGPASSWORD, or a passfile entry. A connection that has one signs in with

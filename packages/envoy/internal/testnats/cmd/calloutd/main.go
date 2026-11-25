@@ -80,7 +80,9 @@ func run(args []string) error {
 	ready, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 	if err := service.Ready(ready); err != nil {
-		return fmt.Errorf("the service did not reach %s within %s: %w", *server, readyTimeout, err)
+		// The server by its host alone: -nats is unchecked, so its user information and query print
+		// nowhere.
+		return fmt.Errorf("the service did not reach %s within %s: %w", natscallout.HubHosts("-nats", []string{*server}), readyTimeout, err)
 	}
 	fmt.Println("calloutd: ready")
 	<-ctx.Done()
