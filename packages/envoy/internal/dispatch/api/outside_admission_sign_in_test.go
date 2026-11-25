@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // stalledIssuer is a sign-in issuer that answers no refresh until release closes, or the
@@ -50,6 +51,7 @@ func (i *stalledIssuer) Refresh(ctx context.Context, _ string) (oidc.Session, er
 // cannot renew them, each socket is refused 503 SIGNIN_UNAVAILABLE and each check answers
 // ErrSignInUnavailable, as before, and every place is free again.
 func TestASignInIssuerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	limiter := admission.New(admission.DefaultLimits())
 	issuer := &stalledIssuer{release: make(chan struct{})}
@@ -134,21 +136,12 @@ func TestASignInIssuerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *test
 
 	answer()
 	for range len(lapsed) / 2 {
-		select {
-		case err := <-checks:
-			if !errors.Is(err, identity.ErrSignInUnavailable) {
-				t.Errorf("a heartbeat check once the issuer answered it cannot renew: %v, want ErrSignInUnavailable", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("a heartbeat check that waited on the issuer was never answered once it answered")
+		if err := testwait.Receive(t, "a heartbeat check that waited on the issuer to be answered once it answered", checks); !errors.Is(err, identity.ErrSignInUnavailable) {
+			t.Errorf("a heartbeat check once the issuer answered it cannot renew: %v, want ErrSignInUnavailable", err)
 		}
-		select {
-		case answered := <-sockets:
-			if answered.Code != http.StatusServiceUnavailable || !strings.Contains(answered.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) {
-				t.Errorf("a document socket once the issuer answered it cannot renew: status=%d body=%s, want 503 SIGNIN_UNAVAILABLE", answered.Code, answered.Body.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("a document socket that waited on the issuer was never answered once it answered")
+		if answered := testwait.Receive(t, "a document socket that waited on the issuer to be answered once it answered", sockets); answered.Code != http.StatusServiceUnavailable ||
+			!strings.Contains(answered.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) {
+			t.Errorf("a document socket once the issuer answered it cannot renew: status=%d body=%s, want 503 SIGNIN_UNAVAILABLE", answered.Code, answered.Body.String())
 		}
 	}
 	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.Queued != 0 {
@@ -179,6 +172,7 @@ func (c *countedLogins) Login(r *http.Request) (string, error) {
 // SIGNIN_UNAVAILABLE and each check answers ErrSignInUnavailable, as for a sign-in issuer that
 // cannot be reached, and every place is free again.
 func TestAnIAPKeySetSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	database := storetest.Open(t)
 	signed := newIAPSocketKeys(t, database)
@@ -259,21 +253,12 @@ func TestAnIAPKeySetSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testin
 
 	answer()
 	for range admission.OutsideLimit / 2 {
-		select {
-		case err := <-checks:
-			if !errors.Is(err, identity.ErrSignInUnavailable) {
-				t.Errorf("a heartbeat check once the key set answered it cannot be read: %v, want ErrSignInUnavailable", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("a heartbeat check that waited on the key set was never answered once it answered")
+		if err := testwait.Receive(t, "a heartbeat check that waited on the key set to be answered once it answered", checks); !errors.Is(err, identity.ErrSignInUnavailable) {
+			t.Errorf("a heartbeat check once the key set answered it cannot be read: %v, want ErrSignInUnavailable", err)
 		}
-		select {
-		case answered := <-sockets:
-			if answered.Code != http.StatusServiceUnavailable || !strings.Contains(answered.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) {
-				t.Errorf("a document socket once the key set answered it cannot be read: status=%d body=%s, want 503 SIGNIN_UNAVAILABLE", answered.Code, answered.Body.String())
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("a document socket that waited on the key set was never answered once it answered")
+		if answered := testwait.Receive(t, "a document socket that waited on the key set to be answered once it answered", sockets); answered.Code != http.StatusServiceUnavailable ||
+			!strings.Contains(answered.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) {
+			t.Errorf("a document socket once the key set answered it cannot be read: status=%d body=%s, want 503 SIGNIN_UNAVAILABLE", answered.Code, answered.Body.String())
 		}
 	}
 	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.Queued != 0 {
@@ -327,6 +312,7 @@ func (h *heldLogins) Login(r *http.Request) (string, error) {
 // verification, the place went to the waiting work, and the resolution waited out the share's
 // second for it and was answered a busy pool.
 func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	database := storetest.Open(t)
 	signed := newIAPSocketKeys(t, database)
@@ -394,11 +380,7 @@ func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *
 				defer close(done)
 				caller.run(assertion)
 			})
-			select {
-			case <-person.entered:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s never reached its resolution", caller.name)
-			}
+			testwait.Receive(t, caller.name+" to reach its resolution", person.entered)
 			if stats := outside.Stats(); stats.InUse != admission.OutsideLimit {
 				t.Fatalf("%s is resolving its caller with %d places of the share held, want all %d: it holds the last", caller.name, stats.InUse, admission.OutsideLimit)
 			}
@@ -410,12 +392,7 @@ func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *
 			})
 
 			person.proceed <- struct{}{}
-			var answer heldLogin
-			select {
-			case answer = <-person.answered:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s's resolution never answered", caller.name)
-			}
+			answer := testwait.Receive(t, caller.name+"'s resolution to answer", person.answered)
 			if answer.err != nil || answer.email != "a.person@example.com" {
 				t.Errorf("%s's resolution with the key set read and fresh answered %q, %v; want a.person@example.com", caller.name, answer.email, answer.err)
 			}
@@ -432,18 +409,9 @@ func TestAnIAPKeySetAlreadyReadKeepsThePlaceOfTheShareThroughTheVerification(t *
 			}
 
 			releaseHeld()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s never ended once the share's places came free", caller.name)
-			}
-			select {
-			case err := <-waiting:
-				if err == nil {
-					outside.Release()
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the work waiting for a place was never given one")
+			testwait.Receive(t, caller.name+" to end once the share's places came free", done)
+			if err := testwait.Receive(t, "the work waiting for a place to be given one", waiting); err == nil {
+				outside.Release()
 			}
 			if stats := outside.Stats(); stats.InUse != 0 || stats.Queued != 0 {
 				t.Errorf("once %s ended, %d places are held and %d wait, want none", caller.name, stats.InUse, stats.Queued)

@@ -99,16 +99,17 @@ func lapsedCookie(t *testing.T, database *store.Store, people *store.PgPeopleSto
 // a write that names its presser (Dispatch-Login) is resolved by refuseChangedLogin, which hands a
 // request whose caller does not resolve to the next layer and so on to the handler. The token's
 // issuer is undiscovered and its discovery held, so the resolution gives its write unit back for
-// the wait; the row takes every write unit meanwhile; the discovery answers and the take-back waits
-// its class's queue wait and is refused. The request is answered 429 OVERLOADED with Retry-After: 1
-// and the route's handler, which sends no statement and would answer 204, never runs.
+// the wait; the row takes every write unit meanwhile and only then lets the discovery answer
+// (heldDiscoveryIssuer), and the take-back waits its class's queue wait and is refused. The
+// request is answered 429 OVERLOADED with Retry-After: 1 and the route's handler, which sends no
+// statement and would answer 204, never runs.
 func TestARefusedTakeBackOfAServiceTokenBehindALayerThatSwallowsItIsAnsweredOverloaded(t *testing.T) {
-	issuer := newServiceTokenIssuer(t)
-	issuer.DelayDiscovery(3 * time.Second)
+	t.Parallel()
+	address, token, discoveries, release := heldDiscoveryIssuer(t)
 	limiter := networkWaitLimiter()
 	database := storetest.Open(t)
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{
-		store: database, admission: limiter, oidc: oidc.NewLazyVerifier(issuer.URL(), serviceTokenAudience),
+		store: database, admission: limiter, oidc: oidc.NewLazyVerifier(address, serviceTokenAudience),
 	})
 	var ran atomic.Bool
 	route := apiRoute{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/test-refused-take-back", Auth: authAny,
@@ -117,11 +118,11 @@ func TestARefusedTakeBackOfAServiceTokenBehindALayerThatSwallowsItIsAnsweredOver
 			w.WriteHeader(http.StatusNoContent)
 		}}}
 	request := httptest.NewRequest(http.MethodPost, route.Pattern, nil)
-	request.Header.Set("Authorization", "Bearer "+issuer.mint(t, serviceTokenAudience))
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set(contracts.DispatchLoginHeader, "alice")
 	answered := serveInBackground(served.routeHandler(route, limiter, time.Minute), request)
-	testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the token's resolution waiting on its issuer's discovery, holding no write unit", func() bool {
-		return issuer.DiscoveryRequests() == 1 && limiter.Stats()[admission.Write].InFlight == 0
+	waitUntil(t, "the token's resolution waiting on its issuer's discovery, holding no write unit", func() bool {
+		return discoveries.Load() == 1 && limiter.Stats()[admission.Write].InFlight == 0
 	})
 	held := takeEvery(t, limiter, admission.Write)
 	defer func() {
@@ -130,6 +131,7 @@ func TestARefusedTakeBackOfAServiceTokenBehindALayerThatSwallowsItIsAnsweredOver
 		}
 	}()
 	acquired := database.Pool.Stat().AcquireCount()
+	release()
 	answer := testwait.Receive(t, "the request once the discovery answered", answered)
 	requireRefusedTakeBack(t, answer, ran.Load(), database.Pool, acquired)
 }
@@ -141,6 +143,7 @@ func TestARefusedTakeBackOfAServiceTokenBehindALayerThatSwallowsItIsAnsweredOver
 // answered 429 OVERLOADED with Retry-After: 1, and nothing of the handler after its caller check -
 // which sends no statement and would answer 204 - runs.
 func TestARefusedTakeBackOfACookiesRefreshBehindACallerCheckThatSwallowsItIsAnsweredOverloaded(t *testing.T) {
+	t.Parallel()
 	limiter := networkWaitLimiter()
 	issuer := &stalledIssuer{release: make(chan struct{})}
 	answerIssuer := sync.OnceFunc(func() { close(issuer.release) })
@@ -165,7 +168,7 @@ func TestARefusedTakeBackOfACookiesRefreshBehindACallerCheckThatSwallowsItIsAnsw
 	request := httptest.NewRequest(http.MethodGet, route.Pattern, nil)
 	request.AddCookie(lapsedCookie(t, database, people, sessions, "lapsed@d.example"))
 	answered := serveInBackground(served.routeHandler(route, limiter, time.Minute), request)
-	testwait.WithinPolling(t, 10*time.Second, time.Millisecond, "the cookie's renewal waiting on the sign-in issuer, holding no read unit", func() bool {
+	waitUntil(t, "the cookie's renewal waiting on the sign-in issuer, holding no read unit", func() bool {
 		return issuer.entered.Load() == 1 && limiter.Stats()[admission.Read].InFlight == 0
 	})
 	held := takeEvery(t, limiter, admission.Read)
@@ -187,6 +190,7 @@ func TestARefusedTakeBackOfACookiesRefreshBehindACallerCheckThatSwallowsItIsAnsw
 // its upgrade, where it was answered 503 as an unserved read, and reads nothing more: not its
 // document's issue, not the live server processes.
 func TestARefusedTakeBackOfADocumentSocketsPlaceIsAnsweredOverloadedBeforeTheUpgrade(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	issuer := &stalledIssuer{release: make(chan struct{})}
 	answerIssuer := sync.OnceFunc(func() { close(issuer.release) })
@@ -205,7 +209,7 @@ func TestARefusedTakeBackOfADocumentSocketsPlaceIsAnsweredOverloadedBeforeTheUpg
 	socket := httptest.NewRequest(http.MethodGet, "/ws/doc/00000000-0000-4000-8000-000000000001", nil)
 	socket.AddCookie(lapsedCookie(t, database, people, sessions, "lapsed@d.example"))
 	answered := serveInBackground(documents, socket)
-	testwait.WithinPolling(t, 10*time.Second, time.Millisecond, "the socket's renewal waiting on the sign-in issuer, holding no place", func() bool {
+	waitUntil(t, "the socket's renewal waiting on the sign-in issuer, holding no place", func() bool {
 		return issuer.entered.Load() == 1 && outside.Stats().InUse == 0
 	})
 	for range admission.OutsideLimit {

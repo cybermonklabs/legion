@@ -6,25 +6,19 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// answeredWithin reads what the write under name answered, or fails the test when nothing
-// answered within the allowance, which for these cases means a gate still held: the writer
-// before it has committed and is only doing its post-commit work. It answers whether a response
-// came, so the caller knows whether the channel still owes it one.
-func answeredWithin(t *testing.T, answers chan *httptest.ResponseRecorder, allowance time.Duration, name string) bool {
+// requireAnsweredWhileHeld requires the write under name answered 200 while the writer before it,
+// which has committed and is only doing its post-commit work, is held there: the row holds that
+// writer until after this answer, so a write that still waited on its documents' writer gates
+// would be answered no 200 while it is held, and the answer itself, not how soon it came, is the
+// proof. Its one bound is the test binary's deadline (testwait.Receive).
+func requireAnsweredWhileHeld(t *testing.T, answers chan *httptest.ResponseRecorder, name string) {
 	t.Helper()
-	select {
-	case response := <-answers:
-		if response.Code != http.StatusOK {
-			t.Errorf("%s: status=%d body=%s, want 200", name, response.Code, response.Body.String())
-		}
-		return true
-	case <-time.After(allowance):
-		t.Errorf("%s is still unanswered %s into the write before it, which has committed already: want its documents' writer gates handed on at that commit",
-			name, allowance)
-		return false
+	if response := testwait.Receive(t, name+"'s answer while the write before it is held past its commit", answers); response.Code != http.StatusOK {
+		t.Errorf("%s: status=%d body=%s, want 200: the documents' writer gates are handed on at the commit", name, response.Code, response.Body.String())
 	}
 }
 
@@ -33,6 +27,7 @@ func answeredWithin(t *testing.T, answers chan *httptest.ResponseRecorder, allow
 // so the next writer of that document waits for the ask's transaction alone and never for a
 // check that has up to five seconds to answer.
 func TestAnAskCreateReleasesItsDocumentsGateBeforeItsRelatedCheck(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	var holding atomic.Bool
 	entered := make(chan struct{}, 1)
@@ -63,19 +58,16 @@ func TestAnAskCreateReleasesItsDocumentsGateBeforeItsRelatedCheck(t *testing.T) 
 		}, "alice")
 	}()
 	// The ask has committed and published by now: its related-item check is the next thing it does.
-	<-entered
+	testwait.Receive(t, "the ask's related-item check to start", entered)
 
 	edited := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		edited <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("Written while the ask's check is held."))
 	}()
-	answered := answeredWithin(t, edited, 15*time.Second, "an edit of the document the ask anchored to")
+	requireAnsweredWhileHeld(t, edited, "an edit of the document the ask anchored to")
 
 	releaseChecks()
-	if !answered {
-		<-edited
-	}
-	if response := <-asked; response.Code != http.StatusCreated {
+	if response := testwait.Receive(t, "the anchored ask's answer", asked); response.Code != http.StatusCreated {
 		t.Errorf("the anchored ask: status=%d body=%s, want 201", response.Code, response.Body.String())
 	}
 }
@@ -83,6 +75,7 @@ func TestAnAskCreateReleasesItsDocumentsGateBeforeItsRelatedCheck(t *testing.T) 
 // The same for a comment: its mentions are delivered after its commit, each a round trip to the
 // listener, and the documents it marked are free for the next writer from the commit on.
 func TestACommentCreateReleasesItsDocumentsGatesBeforeItsMentionDeliveries(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
 	sending := make(chan struct{}, 1)
 	resume := make(chan struct{})
@@ -108,7 +101,7 @@ func TestACommentCreateReleasesItsDocumentsGatesBeforeItsMentionDeliveries(t *te
 	// The sends go through before the listener closes, which waits for them.
 	defer listener.Close()
 	defer releaseSends()
-	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
+	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: pastTheRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Comment gate release", "alpha bravo charlie")
 
 	posted := make(chan *httptest.ResponseRecorder, 1)
@@ -120,19 +113,16 @@ func TestACommentCreateReleasesItsDocumentsGatesBeforeItsMentionDeliveries(t *te
 		})
 	}()
 	// The comment has committed and published by now: its mention is held at the listener.
-	<-sending
+	testwait.Receive(t, "the comment's mention send to reach the listener", sending)
 
 	edited := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		edited <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("Written while the mention is held."))
 	}()
-	answered := answeredWithin(t, edited, 15*time.Second, "an edit of the document the comment anchored to")
+	requireAnsweredWhileHeld(t, edited, "an edit of the document the comment anchored to")
 
 	releaseSends()
-	if !answered {
-		<-edited
-	}
-	if response := <-posted; response.Code != http.StatusCreated {
+	if response := testwait.Receive(t, "the anchored comment's answer", posted); response.Code != http.StatusCreated {
 		t.Errorf("the anchored comment: status=%d body=%s, want 201", response.Code, response.Body.String())
 	}
 }

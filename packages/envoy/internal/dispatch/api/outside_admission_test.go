@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // checkStep is what one resolution of a heartbeat's check answers (scriptedCheckIdentity).
@@ -79,6 +80,7 @@ func (i *scriptedCheckIdentity) Login(r *http.Request) (string, error) {
 // socket's own (signInStillResolves), each answered as the script says, on a connection whose
 // handler waits for its context to end; no check is made after the one that closes it.
 func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 100 * time.Millisecond
 	busy, lost, hangs, resolves, refuses := checkFindsPoolBusy, checkLosesItsConnection, checkHangs, checkResolves, checkRefuses
 	for _, run := range []struct {
@@ -133,12 +135,7 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 			})
 			go connection(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws/doc/room", nil))
 
-			var cause error
-			select {
-			case cause = <-ended:
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the socket was still open after %d resolutions, want it closed at resolution %d", scripted.asked.Load(), run.closesAt)
-			}
+			cause := testwait.Receive(t, fmt.Sprintf("the socket to close, which it should at resolution %d (the resolutions so far are counted below)", run.closesAt), ended)
 			if asked := int(scripted.asked.Load()); asked != run.closesAt {
 				t.Fatalf("the socket closed at resolution %d (%v), want at resolution %d", asked, cause, run.closesAt)
 			}
@@ -178,6 +175,7 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 // for it would close the socket at the third such heartbeat. The verifier's clock is moved past the
 // live answer it remembers, so that heartbeat is the next one.
 func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	limiter := admission.New(admission.DefaultLimits())
 	var ahead atomic.Int64
@@ -224,6 +222,7 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 // are read from the numbers they are made of rather than from the limit, so a limit taken out is a
 // burst this test still holds to them.
 func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves(t *testing.T) {
+	t.Parallel()
 	share := store.SharedPoolSize - admission.MaxAdmittedUnits
 	queue := admission.ReadBurstFactor * share
 	burst := share + queue + share
@@ -251,7 +250,7 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 		}()
 	}
 	answered, peak := 0, 0
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
+	testwait.UntilPolling(t, time.Millisecond, fmt.Sprintf("each of the %d presentations answered, waiting on the request pool or waiting for a place (how many of each)", burst), func() (string, bool) {
 		for more := true; more; {
 			select {
 			case <-done:
@@ -263,13 +262,8 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 		waiting := int(requestPoolStats(t, rig.database.Pool).Acquire.Waiting)
 		queued := limiter.Outside().Stats().Queued
 		peak = max(peak, waiting)
-		if answered+waiting+queued == burst {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after 20 s %d of the %d presentations are answered, %d wait on the request pool and %d for a place", answered, burst, waiting, queued)
-		}
-	}
+		return fmt.Sprintf("%d answered, %d waiting on the pool and %d for a place", answered, waiting, queued), answered+waiting+queued == burst
+	})
 	if peak > share {
 		t.Fatalf("the burst of %d presentations had %d acquires of the request pool waiting at once before admission, want at most the %d admission leaves", burst, peak, share)
 	}
@@ -278,11 +272,7 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 	}
 	release()
 	for ; answered < burst; answered++ {
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("%d of the %d presentations were never answered once the request pool was free", burst-answered, burst)
-		}
+		testwait.Receive(t, "a presentation to be answered once the request pool was free", done)
 	}
 
 	reference := admissionsQueueFullRefusal(t, rig, limiter, share)
@@ -326,6 +316,7 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 // refused admission's 429, and the share counts every refusal. The verifier's clock stands still,
 // so the remembered answer outlasts however long a loaded runner takes.
 func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	t.Parallel()
 	burst := 2 * admission.OutsideLimit
 	limiter := admission.New(admission.DefaultLimits())
 	broker := &heldIntrospections{release: make(chan struct{})}
@@ -379,11 +370,7 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 
 	answer()
 	for range burst {
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Fatal("a presentation that waited on the broker was never answered once it answered")
-		}
+		testwait.Receive(t, "a presentation that waited on the broker to be answered once it answered", done)
 	}
 	refused := 0
 	for i, response := range answers {
@@ -408,6 +395,7 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 // waits, and a place is given back: the presentation is served, and the broker was asked once,
 // where the proof's check asked it again, under the place, for the answer the cache no longer held.
 func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	var ahead atomic.Int64
 	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *ciphertoken.Options) {
@@ -428,12 +416,7 @@ func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T)
 	ahead.Store(int64(ciphertoken.AffirmativeCacheTTL + time.Second))
 	release()
 
-	var response *httptest.ResponseRecorder
-	select {
-	case response = <-answered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the presentation was never answered once a place came free")
-	}
+	response := testwait.Receive(t, "the presentation to be answered once a place came free", answered)
 	if response.Code != http.StatusOK {
 		t.Fatalf("the presentation a place came free for: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
@@ -544,9 +527,10 @@ type outsideWorkAnswer struct {
 }
 
 // newOutsideWorkRig builds the rig on a server of its own, with gates for gated arrivals and
-// outsideWait the work's wait for a place (zero is the second every server waits). Its took holds
-// a report from every work the places and their queue can hold at once, so work none of the test
-// reads reports to it without waiting.
+// outsideWait the work's wait for a place (zero is the second every server waits). Its request
+// pool's acquire bound is past any run, so the work holding a place waits on a held pool for as
+// long as the row holds it. Its took holds a report from every work the places and their queue
+// can hold at once, so work none of the test reads reports to it without waiting.
 func newOutsideWorkRig(t *testing.T, gated int, outsideWait time.Duration) *outsideWorkRig {
 	t.Helper()
 	limits := admission.DefaultLimits()
@@ -556,7 +540,7 @@ func newOutsideWorkRig(t *testing.T, gated int, outsideWait time.Duration) *outs
 		rig.gates = append(rig.gates, make(chan struct{}))
 	}
 	_, rig.database, _, rig.served = newRegisteredTestServer(t, testServerOptions{
-		requestPoolSize: 2, acquireBound: 30 * time.Second, admission: rig.limiter, identity: outsideWorkIdentity{rig},
+		requestPoolSize: 2, acquireBound: pastTheRun, admission: rig.limiter, identity: outsideWorkIdentity{rig},
 	})
 	t.Cleanup(func() {
 		for _, gate := range rig.gates {
@@ -645,37 +629,29 @@ func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
 //   - On a held pool freed within the wait: every connection of the request pool is held, so the
 //     eight holding wait on it, and 176 more wait for a place, the most the queue holds; four more
 //     are refused at once for the full queue, the checks skipped and the sockets refused. The
-//     pool's acquires waiting stay at the eight. Once the pool is freed, inside the wait, all 184
-//     are served. Their wait is a minute here rather than a server's second, since 184 arrivals
-//     one after another take longer than a second to queue.
+//     pool's acquires waiting stay at the eight, and work past the full queue is answered while
+//     the pool is still held. Once the pool is freed, inside the wait, all 184 are served. Their
+//     wait is past any run here rather than a server's second, since 184 arrivals one after
+//     another take longer than a second to queue.
 //   - On a held pool past the wait: the eight holding wait on the pool and twelve more for a
 //     place, and the pool is held past the second: each of the twelve is refused once its own
 //     second has run out, the checks skipped and the sockets refused, and the eight are served once
 //     the pool frees.
 func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T) {
+	t.Parallel()
 	const queued = 12
 	t.Run("in the order it asked", func(t *testing.T) {
 		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued, 0)
 		answers, _ := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for range admission.OutsideLimit {
-			select {
-			case arrival := <-rig.took:
-				if arrival >= admission.OutsideLimit {
-					t.Fatalf("arrival %d took a place while the first %d held them all", arrival, admission.OutsideLimit)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("the work holding the places never reported its place")
+			if arrival := testwait.Receive(t, "the work holding the places to report its place", rig.took); arrival >= admission.OutsideLimit {
+				t.Fatalf("arrival %d took a place while the first %d held them all", arrival, admission.OutsideLimit)
 			}
 		}
 		for next := range queued {
 			close(rig.gates[next])
-			select {
-			case arrival := <-rig.took:
-				if want := admission.OutsideLimit + next; arrival != want {
-					t.Fatalf("the place arrival %d gave back went to arrival %d, want arrival %d: the one that has waited longest", next, arrival, want)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatalf("the place arrival %d gave back went to nobody; %d still waiting", next, rig.limiter.Outside().Stats().Queued)
+			if arrival, want := testwait.Receive(t, fmt.Sprintf("the place arrival %d gave back to go to the one that has waited longest", next), rig.took), admission.OutsideLimit+next; arrival != want {
+				t.Fatalf("the place arrival %d gave back went to arrival %d, want arrival %d: the one that has waited longest", next, arrival, want)
 			}
 		}
 		for next := queued; next < len(rig.gates); next++ {
@@ -692,7 +668,7 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 	})
 
 	t.Run("on a held pool freed within the wait", func(t *testing.T) {
-		rig := newOutsideWorkRig(t, 0, time.Minute)
+		rig := newOutsideWorkRig(t, 0, pastTheRun)
 		release := holdEveryConnection(t, rig.database.Pool)
 		served := admission.OutsideLimit + admission.OutsideQueueLimit
 		answers, _ := rig.arrive(t, 0, served)
@@ -700,14 +676,13 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 			return requestPoolStats(t, rig.database.Pool).Acquire.Waiting == admission.OutsideLimit
 		})
 		for arrival := served; arrival < served+4; arrival++ {
-			select {
-			case got := <-rig.start(arrival):
-				var refusal *admission.OutsideRefusal
-				if !errors.As(got.err, &refusal) || refusal.Reason != admission.QueueFull || (arrival%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
-					t.Fatalf("arrival %d past a full queue: %v, want refused for the full queue (a check skipped)", arrival, got.err)
-				}
-			case <-time.After(500 * time.Millisecond):
-				t.Fatalf("arrival %d past a full queue of %d was not answered within 500 ms, want it refused at once", arrival, admission.OutsideQueueLimit)
+			// The pool is held and the wait for a place is past any run, so work past the full
+			// queue that waited rather than being refused would not be answered before the test
+			// binary's deadline.
+			got := testwait.Receive(t, fmt.Sprintf("arrival %d past a full queue of %d to be refused", arrival, admission.OutsideQueueLimit), rig.start(arrival))
+			var refusal *admission.OutsideRefusal
+			if !errors.As(got.err, &refusal) || refusal.Reason != admission.QueueFull || (arrival%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
+				t.Fatalf("arrival %d past a full queue: %v, want refused for the full queue (a check skipped)", arrival, got.err)
 			}
 		}
 		if waiting := requestPoolStats(t, rig.database.Pool).Acquire.Waiting; waiting != admission.OutsideLimit {
@@ -715,13 +690,8 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 		}
 		release()
 		for arrival, answer := range answers {
-			select {
-			case got := <-answer:
-				if got.err != nil {
-					t.Errorf("arrival %d: %v, want it served once the pool freed within its wait", arrival, got.err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("arrival %d was never answered once the pool freed", arrival)
+			if got := testwait.Receive(t, fmt.Sprintf("arrival %d to be answered once the pool freed", arrival), answer); got.err != nil {
+				t.Errorf("arrival %d: %v, want it served once the pool freed within its wait", arrival, got.err)
 			}
 		}
 		stats := rig.limiter.Outside().Stats()
@@ -738,17 +708,13 @@ func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T)
 		release := holdEveryConnection(t, rig.database.Pool)
 		answers, arrived := rig.arrive(t, 0, admission.OutsideLimit+queued)
 		for i := admission.OutsideLimit; i < len(answers); i++ {
-			select {
-			case got := <-answers[i]:
-				var refusal *admission.OutsideRefusal
-				if !errors.As(got.err, &refusal) || refusal.Reason != admission.WaitExceeded || (i%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
-					t.Fatalf("arrival %d, no place free for it: %v, want refused for its wait (a check skipped)", i, got.err)
-				}
-				if waited := got.at.Sub(arrived[i]); waited < admission.DefaultReadWait-50*time.Millisecond || waited > admission.DefaultReadWait+slack {
-					t.Errorf("arrival %d refused %v after it was seen waiting, want after its %v wait and within %v of it", i, waited, admission.DefaultReadWait, slack)
-				}
-			case <-time.After(admission.DefaultReadWait + 5*time.Second):
-				t.Fatalf("arrival %d was still waiting %v after it asked, want it refused at its %v wait", i, time.Since(arrived[i]), admission.DefaultReadWait)
+			got := testwait.Receive(t, fmt.Sprintf("arrival %d, no place free for it, to be refused at its %v wait", i, admission.DefaultReadWait), answers[i])
+			var refusal *admission.OutsideRefusal
+			if !errors.As(got.err, &refusal) || refusal.Reason != admission.WaitExceeded || (i%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
+				t.Fatalf("arrival %d, no place free for it: %v, want refused for its wait (a check skipped)", i, got.err)
+			}
+			if waited := got.at.Sub(arrived[i]); waited < admission.DefaultReadWait-50*time.Millisecond || waited > admission.DefaultReadWait+slack {
+				t.Errorf("arrival %d refused %v after it was seen waiting, want after its %v wait and within %v of it", i, waited, admission.DefaultReadWait, slack)
 			}
 		}
 		release()

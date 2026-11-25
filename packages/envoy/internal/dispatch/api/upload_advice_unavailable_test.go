@@ -14,6 +14,7 @@ import (
 // cancels it. The upload still lands, its answer carries no issue state, and it must still carry
 // superseded_approval, as an edit's does when its advice is lost.
 func TestAnUploadSupersedingAnApprovalSaysSoWhenItsAdviceIsUnavailable(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "your_open_asks", 0)
 	createAdviceProject(t, handler, "UPLOST")
 	spec := "# Transport\n\nThe design, as approved.\n"

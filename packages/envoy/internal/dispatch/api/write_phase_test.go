@@ -117,6 +117,7 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 // (store.WithLockWaitForTest) rather than production's ten seconds, and the first writer is a
 // transaction of the test's own that holds the lock until the test lets it go.
 func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
+	t.Parallel()
 	const bound = time.Second
 	for _, row := range []struct {
 		name string
@@ -217,11 +218,15 @@ func TestAWriterQueuedOnABusyLockIsRefusedOnceItsWaitRunsOut(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The seeded spec's settlement takes the owner lock a row holds; keep it out of the queue.
-			handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 			issue := createInteractionIssue(t, handler, "TEST", "Held past the bound", "A spec")
 			if row.seed != nil {
 				row.seed(t, handler)
 			}
+			// The seed's creates start a term-statistics refresh that writes search_term_stats and
+			// search_term_totals after the create answers: let it end before the fingerprint is read.
+			served.detached.wait()
+			awaitTermStatsRefresh(t, served, "TEST")
 			path := strings.NewReplacer("{key}", issue.Key, "{doc}", issue.PrimaryArtifactID).Replace(row.path)
 			body := row.body
 			if strings.Contains(body, "{base}") {

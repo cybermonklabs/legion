@@ -512,22 +512,25 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 }
 
 // A cold process's agents list waits for the refresh's first fetch for the fetch bound and no
-// longer: with the listener holding that fetch for the client's whole minute, the list answers 503
-// ENVOY_UNAVAILABLE once the half-second bound has passed - not before it, since it waited for
-// that fetch, and not at the client's minute - and the refresh asked the listener once.
+// longer: with the listener holding that fetch, and the listener client's window past any run, the
+// list answers 503 ENVOY_UNAVAILABLE once the half-second bound has passed - not before it, since
+// it waited for that fetch, and at all, which a list that waited out the client's window would not
+// do before the test binary's deadline - and the refresh asked the listener once. The TTLs are past
+// any run too, so no refresh of the fetch's silence asks again however slow the machine.
 func TestAColdAgentsListWaitsForTheFirstFetchOnlyForTheFetchBound(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls, _ := heldRosterListener(t)
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun})
 	const bound = 500 * time.Millisecond
-	served.rosters.ttl, served.rosters.timeout = time.Minute, bound
+	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = pastTheRun, pastTheRun, bound
 
-	answer := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"))
+	answer := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"),
+		"a cold agents list while the listener holds the refresh's first fetch past the client's window")
 	if answer.status != http.StatusServiceUnavailable || !strings.Contains(answer.body, `"code":"ENVOY_UNAVAILABLE"`) {
 		t.Fatalf("a cold agents list with the listener held: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", answer.status, answer.body)
 	}
-	if answer.elapsed < bound || answer.elapsed > noRosterWait {
-		t.Fatalf("a cold agents list with the listener held answered after %v, want at the %v fetch bound", answer.elapsed, bound)
+	if answer.elapsed < bound {
+		t.Fatalf("a cold agents list with the listener held answered after %v, inside the %v fetch bound: it did not wait for the fetch", answer.elapsed, bound)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("a cold agents list had the listener asked %d times, want once, by the refresh", got)

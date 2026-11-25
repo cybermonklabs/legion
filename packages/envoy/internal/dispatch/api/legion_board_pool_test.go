@@ -36,6 +36,7 @@ func seedClimbingLegionBoard(t *testing.T, handler http.Handler, database *store
 // Served without the pin - every statement taking a connection of its own, as main serves every
 // read - the same answer takes one acquire per statement and fails here.
 func TestALegionBoardRequestTakesOneRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedClimbingLegionBoard(t, handler, database, "INFRA")
 	awaitQuietRequestPool(t, database.Pool)
@@ -61,6 +62,7 @@ func TestALegionBoardRequestTakesOneRequestPoolConnection(t *testing.T) {
 // acquires grow by the read's. Pointed back at the request pool, as main's read was written, the
 // read waits out the request pool's bound and is retried, and no snapshot comes.
 func TestALegionBoardViewReadsThroughTheLivePoolWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{
 		requestPoolSize: 4, acquireBound: partitionAcquireBound,
 	})

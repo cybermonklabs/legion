@@ -43,11 +43,6 @@ const networkWaitReads = 2
 // the read class's limit, so the waiters would hold every read unit and queue for more.
 const networkWaiters = 3 * networkWaitReads
 
-// normalLatency bounds a request whose caller resolves from memory, served while the waiters
-// wait: half a read's queue wait (admission.DefaultReadWait), where a request that queued behind
-// the waiters for a unit and was refused takes the whole second.
-const normalLatency = admission.DefaultReadWait / 2
-
 // networkWaitLimiter is a limiter whose read class holds networkWaitReads units, with the
 // deployment's waits: a read waits a second for room, and is refused 429 OVERLOADED after it.
 func networkWaitLimiter() *admission.Limiter {
@@ -103,33 +98,30 @@ func startWaiters(handler http.Handler, requests []*http.Request) *waiterGroup {
 	return group
 }
 
-// collect receives every waiter's answer, failing the row for one not answered within bound.
-func (g *waiterGroup) collect(t *testing.T, count int, bound time.Duration) []timedAnswer {
+// collect receives every waiter's answer, each with testwait.Receive: its one bound is the test
+// binary's deadline, so a waiter a loaded machine answers late is not a failure.
+func (g *waiterGroup) collect(t *testing.T, count int) []timedAnswer {
 	t.Helper()
 	answers := make([]timedAnswer, 0, count)
-	deadline := time.After(bound)
-	for range count {
-		select {
-		case answer := <-g.answers:
-			answers = append(answers, answer)
-		case <-deadline:
-			t.Fatalf("%d of %d waiters were answered within %v", len(answers), count, bound)
-		}
+	for index := range count {
+		answers = append(answers, testwait.Receive(t, fmt.Sprintf("waiter %d of %d to be answered", index+1, count), g.answers))
 	}
 	return answers
 }
 
 // requireCachedCallersServed sends each request of cached in turn while the waiters wait, and
-// requires each answered 200 within normalLatency: admitted at once, as nothing of the read class
-// is held by the waiters.
+// requires each answered 200: admitted, as nothing of the read class is held by the waiters. The
+// row holds the waiters until after these answers, so a request that queued behind them for a
+// read unit would be refused 429 OVERLOADED once its queue wait ran out (admission.DefaultReadWait):
+// the 200 itself, answered while they wait, is the proof, not how soon it came.
 func requireCachedCallersServed(t *testing.T, handler http.Handler, cached map[string]func() *http.Request) {
 	t.Helper()
 	for name, request := range cached {
 		for attempt := range networkWaiters {
 			answer := serveTimed(handler, request())
-			if answer.status != http.StatusOK || answer.elapsed > normalLatency {
-				t.Errorf("%s, request %d while %d callers wait on the issuer: status=%d after %v body=%s, want 200 within %v",
-					name, attempt+1, networkWaiters, answer.status, answer.elapsed, strings.TrimSpace(answer.body), normalLatency)
+			if answer.status != http.StatusOK {
+				t.Errorf("%s, request %d while %d callers wait on the issuer: status=%d after %v body=%s, want 200",
+					name, attempt+1, networkWaiters, answer.status, answer.elapsed, strings.TrimSpace(answer.body))
 			}
 		}
 	}
@@ -139,21 +131,20 @@ func requireCachedCallersServed(t *testing.T, handler http.Handler, cached map[s
 // was admitted, as the waiters hold no unit to queue behind - and the read class to hold no unit
 // while they wait on the issuer: the units in flight do not count them. A waiter's resolution is
 // counted as it begins, a moment before it gives its unit back, so the read class is read until it
-// holds none, for as long as a resolution is given to begin; a waiter that held its unit across the
-// wait would hold it until the row lets the issuer answer, which comes after this.
+// holds none; a waiter that held its unit across the wait would hold it until the row lets the
+// issuer answer, which comes after this, and a waiter that queued behind such units would be
+// refused at its queue wait without reaching its resolution. Each wait's one bound is the test
+// binary's deadline (testwait.Until).
 func requireWaitersHoldNoReadUnit(t *testing.T, limiter *admission.Limiter, begun func() int32, waiting func() bool) {
 	t.Helper()
-	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool { return int(begun()) == networkWaiters && waiting() }) {
-		t.Errorf("%d of %d waiters reached their caller's resolution with the issuer's read held, want every one: the rest queued for a read unit", begun(), networkWaiters)
-	}
-	if !testwait.Holds(time.Second, time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("all %d waiters to reach their caller's resolution with the issuer's read held (the waiters there)", networkWaiters), func() (int32, bool) {
+		reached := begun()
+		return reached, int(reached) == networkWaiters && waiting()
+	})
+	testwait.Until(t, fmt.Sprintf("the read class to hold no unit and queue no request with %d callers waiting on the issuer (its units in flight and queued)", networkWaiters), func() (string, bool) {
 		stats := limiter.Stats()[admission.Read]
-		return stats.InFlight == 0 && stats.Queued == 0
-	}) {
-		stats := limiter.Stats()[admission.Read]
-		t.Errorf("with %d callers waiting on the issuer, the read class holds %d units and queues %d requests, want neither: no unit is held across the wait",
-			networkWaiters, stats.InFlight, stats.Queued)
-	}
+		return fmt.Sprintf("%d and %d", stats.InFlight, stats.Queued), stats.InFlight == 0 && stats.Queued == 0
+	})
 }
 
 // heldKeySetReads carries the reads of the test's IAP key cache: at once while hold is unset, and
@@ -202,12 +193,13 @@ type iapWaitRig struct {
 
 func newIAPWaitRig(t *testing.T) *iapWaitRig {
 	t.Helper()
-	return newIAPWaitRigOn(t, nil)
+	return newIAPWaitRigOn(t, nil, 0)
 }
 
 // newIAPWaitRigOn is newIAPWaitRig with clock as its key cache's clock (oidc.Keys.Now), nil for
-// the wall clock.
-func newIAPWaitRigOn(t *testing.T, clock func() time.Time) *iapWaitRig {
+// the wall clock, and fetchTimeout as its key set read's bound (oidc.Keys.FetchTimeout), zero for
+// the deployment's.
+func newIAPWaitRigOn(t *testing.T, clock func() time.Time, fetchTimeout time.Duration) *iapWaitRig {
 	t.Helper()
 	database := storetest.Open(t)
 	issuer := oidctest.New(t)
@@ -217,6 +209,9 @@ func newIAPWaitRigOn(t *testing.T, clock func() time.Time) *iapWaitRig {
 	source := oidc.NewKeysAt(issuer.URL() + "/keys")
 	source.HTTPClient = &http.Client{Transport: reads}
 	source.Now = clock
+	if fetchTimeout != 0 {
+		source.FetchTimeout = fetchTimeout
+	}
 	rig := &iapWaitRig{
 		limiter: networkWaitLimiter(),
 		person: &countedLogins{Identity: identity.IAPIdentity{
@@ -293,10 +288,11 @@ func insideKeyLookup() bool {
 // before it, every run. Once the read answers, the request takes its unit back and is answered
 // 200.
 func TestAKeySetBoundaryPassedBeforeTheLookupStillGivesTheUnitBackBeforeTheWait(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"the set's Lifetime ends", "the miss window opens again"} {
 		t.Run(boundary, func(t *testing.T) {
 			clock := &boundaryClock{at: time.Now()}
-			rig := newIAPWaitRigOn(t, clock.now)
+			rig := newIAPWaitRigOn(t, clock.now, 0)
 			presented := rig.cached
 			// A set stale by less than MinRefresh still answers the key it holds at once, and
 			// refreshes in the background (oidc.Keys.Key): the lookup waits on a read only past
@@ -319,19 +315,16 @@ func TestAKeySetBoundaryPassedBeforeTheLookupStillGivesTheUnitBackBeforeTheWait(
 			clock.jump.Store(int64(jump))
 			group := startWaiters(rig.handler, []*http.Request{whoamiAs(rig.assertion(t, presented))})
 			rig.waiting = append(rig.waiting, group)
-			if !testwait.Holds(5*time.Second, time.Millisecond, func() bool {
-				return rig.person.begun.Load() == 1 && rig.reads.held.Load() == 1
-			}) {
-				t.Fatalf("the request's resolution began %d times and %d key set reads are held, want the one resolution waiting on the one read", rig.person.begun.Load(), rig.reads.held.Load())
-			}
-			if !testwait.Holds(time.Second, time.Millisecond, func() bool {
-				return rig.limiter.Stats()[admission.Read].InFlight == 0
-			}) {
-				t.Errorf("with the request waiting on the key set read its passed boundary started, the read class holds %d units, want none: the unit is given back before the wait",
-					rig.limiter.Stats()[admission.Read].InFlight)
-			}
+			testwait.Until(t, "the request's one resolution to wait on the one key set read its passed boundary started (the resolutions begun and the reads held)", func() (string, bool) {
+				begun, held := rig.person.begun.Load(), rig.reads.held.Load()
+				return fmt.Sprintf("%d and %d", begun, held), begun == 1 && held == 1
+			})
+			testwait.Until(t, "the read class to hold no unit with the request waiting on the key set read its passed boundary started: the unit is given back before the wait (its units in flight)", func() (int, bool) {
+				inFlight := rig.limiter.Stats()[admission.Read].InFlight
+				return inFlight, inFlight == 0
+			})
 			rig.reads.letGo()
-			answer := group.collect(t, 1, rig.timeout+5*time.Second)[0]
+			answer := group.collect(t, 1)[0]
 			if answer.status != http.StatusOK {
 				t.Errorf("the request once the read answered: status=%d body=%s, want 200", answer.status, strings.TrimSpace(answer.body))
 			}
@@ -356,35 +349,44 @@ func (r *iapWaitRig) waitOnRotatedKey(t *testing.T, count int) *waiterGroup {
 }
 
 // Rows 1 and 2 behind IAP: a key IAP rotated in sends every browser presenting it to read IAP's
-// key set, and that read is held - until the row lets it go with the new key in the set, or for
-// its whole bound, the keys' ten-second FetchTimeout, after which it fails. While it is held, the
-// waiters hold no read unit (the read class's in-flight count is zero with all of them inside
-// their caller's resolution), and the requests whose callers resolve from memory - an agent's
-// bearer, a browser whose assertion names the cached key - are admitted and answered 200 at
-// normal latency. Each waiter still ends within the read's bound, plus the take-back's own bound
-// of a read's queue wait, with the answer the read gives it: 200 once the keys arrive, and the
-// 503 SIGNIN_UNAVAILABLE an unreadable key set gives where the read times out.
+// key set, and that read is held - until the row lets it go with the new key in the set, its bound
+// then past any run, or for its whole bound, the keys' ten-second FetchTimeout, after which it
+// fails. While it is held, the waiters hold no read unit (the read class's in-flight count is zero
+// with all of them inside their caller's resolution), and the requests whose callers resolve from
+// memory - an agent's bearer, a browser whose assertion names the cached key - are admitted and
+// answered 200 while the waiters wait. Each waiter ends with the answer the read gives it: 200
+// once the keys arrive, and, where the read times out, the 503 SIGNIN_UNAVAILABLE an unreadable
+// key set gives within the read's bound plus the take-back's own bound of a read's queue wait.
 func TestAnIAPKeySetReadHoldsNoAdmissionUnitWhileItsWaitersWait(t *testing.T) {
+	t.Parallel()
 	for _, keysArrive := range []bool{true, false} {
 		t.Run(fmt.Sprintf("the keys arrive: %t", keysArrive), func(t *testing.T) {
-			rig := newIAPWaitRig(t)
+			var fetchTimeout time.Duration
+			if keysArrive {
+				fetchTimeout = pastTheRun
+			}
+			rig := newIAPWaitRigOn(t, nil, fetchTimeout)
 			waiters := rig.waitOnRotatedKey(t, networkWaiters)
 			requireWaitersHoldNoReadUnit(t, rig.limiter, rig.person.begun.Load, func() bool { return rig.reads.held.Load() == 1 })
 			requireCachedCallersServed(t, rig.handler, map[string]func() *http.Request{
 				"an agent's bearer":                   func() *http.Request { return whoamiAs(bearerHeader("agent-token")) },
 				"a browser presenting the cached key": func() *http.Request { return whoamiAs(rig.assertion(t, rig.cached)) },
 			})
-			want, code := http.StatusOK, ""
 			if keysArrive {
 				rig.reads.letGo()
+				for _, answer := range waiters.collect(t, networkWaiters) {
+					if answer.status != http.StatusOK {
+						t.Errorf("a waiter on the rotated key once the keys arrived: status=%d after %v body=%s, want 200",
+							answer.status, answer.elapsed, strings.TrimSpace(answer.body))
+					}
+				}
 			} else {
-				want, code = http.StatusServiceUnavailable, `"code":"SIGNIN_UNAVAILABLE"`
-			}
-			bound := rig.timeout + admission.DefaultReadWait
-			for _, answer := range waiters.collect(t, networkWaiters, bound+5*time.Second) {
-				if answer.status != want || !strings.Contains(answer.body, code) || answer.elapsed > bound {
-					t.Errorf("a waiter on the rotated key: status=%d after %v body=%s, want %d %s within the read's %v and the take-back's %v",
-						answer.status, answer.elapsed, strings.TrimSpace(answer.body), want, code, rig.timeout, admission.DefaultReadWait)
+				bound := rig.timeout + admission.DefaultReadWait
+				for _, answer := range waiters.collect(t, networkWaiters) {
+					if answer.status != http.StatusServiceUnavailable || !strings.Contains(answer.body, `"code":"SIGNIN_UNAVAILABLE"`) || answer.elapsed > bound {
+						t.Errorf("a waiter on the rotated key whose read timed out: status=%d after %v body=%s, want 503 SIGNIN_UNAVAILABLE within the read's %v and the take-back's %v",
+							answer.status, answer.elapsed, strings.TrimSpace(answer.body), rig.timeout, admission.DefaultReadWait)
+					}
 				}
 			}
 			if stats := rig.limiter.Stats()[admission.Read]; stats.InFlight != 0 {
@@ -443,17 +445,16 @@ func (s *inFlightSampler) most() (read, total int) {
 // whole row, never pass the read class's limit nor the combined cap, and none is left counted for a
 // waiter once it was refused.
 func TestAnIAPKeySetWaiterRefusedItsUnitBackIsAnsweredOverloaded(t *testing.T) {
+	t.Parallel()
 	rig := newIAPWaitRig(t)
 	sampler := sampleInFlight(rig.limiter)
 	defer sampler.stop()
 	const count = networkWaitReads + 1
 	waiters := rig.waitOnRotatedKey(t, count)
-	if !testwait.Holds(5*time.Second, time.Millisecond, func() bool {
-		return rig.person.begun.Load() == count && rig.reads.held.Load() == 1 && rig.limiter.Stats()[admission.Read].InFlight == 0
-	}) {
-		t.Fatalf("%d of %d waiters reached their caller's resolution with the key set's read held (%d reads held), and the read class holds %d units: want every waiter in, holding none",
-			rig.person.begun.Load(), count, rig.reads.held.Load(), rig.limiter.Stats()[admission.Read].InFlight)
-	}
+	testwait.Until(t, fmt.Sprintf("all %d waiters in their caller's resolution with the key set's read held, holding no read unit (the waiters there, the reads held and the read class's units)", count), func() (string, bool) {
+		begun, held, inFlight := rig.person.begun.Load(), rig.reads.held.Load(), rig.limiter.Stats()[admission.Read].InFlight
+		return fmt.Sprintf("%d, %d and %d", begun, held, inFlight), begun == count && held == 1 && inFlight == 0
+	})
 	held := make([]*admission.Ticket, 0, networkWaitReads)
 	defer func() {
 		for _, ticket := range held {
@@ -469,7 +470,7 @@ func TestAnIAPKeySetWaiterRefusedItsUnitBackIsAnsweredOverloaded(t *testing.T) {
 	}
 	released := time.Now()
 	rig.reads.letGo()
-	for _, answer := range waiters.collect(t, count, admission.DefaultReadWait+5*time.Second) {
+	for _, answer := range waiters.collect(t, count) {
 		afterRead := answer.ended.Sub(released)
 		if answer.status != http.StatusTooManyRequests || !strings.Contains(answer.body, `"code":"`+admission.CodeOverloaded+`"`) || answer.retryAfter != admission.RetryAfter {
 			t.Errorf("a waiter whose unit was not free when the key set answered: status=%d Retry-After=%q body=%s, want 429 %s with Retry-After: %s",
@@ -508,45 +509,68 @@ func (c *countedVerifier) Verify(ctx context.Context, raw string) (oidc.Claims, 
 // take before it fails (oidc's discoveryAttemptTimeout).
 const discoveryAttemptBound = 10 * time.Second
 
+// heldDiscoveryIssuer is a service-account issuer whose discovery document the row holds: the
+// verifier and the token it answers name a front of the issuer (heldService) that holds every
+// read of the discovery document until release, or until its reader gives up, and passes every
+// other request on at once. calls counts the discovery reads held.
+func heldDiscoveryIssuer(t *testing.T) (address, token string, calls *atomic.Int32, release func()) {
+	t.Helper()
+	issuer := newServiceTokenIssuer(t)
+	address, calls, release = heldService(t, proxyTo(t, issuer.URL()), func(r *http.Request) bool {
+		return r.URL.Path == "/.well-known/openid-configuration"
+	})
+	issuer.AdvertiseIssuer(address)
+	claims := issuer.Claims(serviceTokenSubject, serviceTokenAudience)
+	claims["iss"] = address
+	return address, issuer.Mint(t, issuer.signing, claims), calls, release
+}
+
 // Row 3: the same for a service-account token while its issuer's discovery is held. The issuer is
 // undiscovered, so the first token's verification reads its discovery document, and the others
-// wait for that read, which the issuer holds - four seconds, after which the document and the key
-// set answer, or past the read's ten-second bound, after which it fails. While it is held the
-// tokens hold no read unit and an agent's bearer is answered 200 at normal latency, and each token
-// ends within the read's bound, plus the take-back's, with the answer the read gives it: 200 once
-// the issuer answers, and the 503 OIDC_ISSUER_UNAVAILABLE an issuer that cannot be reached gives.
+// wait for that read, which the row holds - until it lets the document and the key set answer,
+// after the agent's bearers below are answered, or past the read's ten-second bound, after which
+// it fails. While it is held the tokens hold no read unit and an agent's bearer is answered 200,
+// and each token ends with the answer the read gives it: 200 once the issuer answers, and, within
+// the read's bound plus the take-back's, the 503 OIDC_ISSUER_UNAVAILABLE an issuer that cannot be
+// reached gives.
 func TestAServiceTokenIssuersDiscoveryHoldsNoAdmissionUnitWhileItsWaitersWait(t *testing.T) {
+	t.Parallel()
 	for _, answers := range []bool{true, false} {
 		t.Run(fmt.Sprintf("the issuer answers: %t", answers), func(t *testing.T) {
-			issuer := newServiceTokenIssuer(t)
-			hold := 4 * time.Second
-			want, code := http.StatusOK, ""
-			if !answers {
-				hold = discoveryAttemptBound + 5*time.Second
-				want, code = http.StatusServiceUnavailable, `"code":"OIDC_ISSUER_UNAVAILABLE"`
-			}
-			issuer.DelayDiscovery(hold)
+			address, token, discoveries, release := heldDiscoveryIssuer(t)
 			limiter := networkWaitLimiter()
-			verifier := &countedVerifier{ServiceTokenVerifier: oidc.NewLazyVerifier(issuer.URL(), serviceTokenAudience)}
+			verifier := &countedVerifier{ServiceTokenVerifier: oidc.NewLazyVerifier(address, serviceTokenAudience)}
 			handler, _, _ := newTestServer(t, testServerOptions{admission: limiter, oidc: verifier})
-			token := issuer.mint(t, serviceTokenAudience)
 			requests := make([]*http.Request, networkWaiters)
 			for i := range requests {
 				requests[i] = whoamiAs(bearerHeader(token))
 			}
 			waiters := startWaiters(handler, requests)
-			// Before the server's own cleanups, so no token is still waiting on the issuer when the
-			// server closes.
-			t.Cleanup(waiters.working.Wait)
-			requireWaitersHoldNoReadUnit(t, limiter, verifier.begun.Load, func() bool { return issuer.DiscoveryRequests() == 1 })
+			// Before the server's own cleanups, and letting the discovery go first, so no token is
+			// still waiting on the issuer when the server closes.
+			t.Cleanup(func() {
+				release()
+				waiters.working.Wait()
+			})
+			requireWaitersHoldNoReadUnit(t, limiter, verifier.begun.Load, func() bool { return discoveries.Load() == 1 })
 			requireCachedCallersServed(t, handler, map[string]func() *http.Request{
 				"an agent's bearer": func() *http.Request { return whoamiAs(bearerHeader("agent-token")) },
 			})
-			bound := discoveryAttemptBound + admission.DefaultReadWait
-			for _, answer := range waiters.collect(t, networkWaiters, bound+5*time.Second) {
-				if answer.status != want || !strings.Contains(answer.body, code) || answer.elapsed > bound {
-					t.Errorf("a service token waiting on its issuer's discovery: status=%d after %v body=%s, want %d %s within the read's %v and the take-back's %v",
-						answer.status, answer.elapsed, strings.TrimSpace(answer.body), want, code, discoveryAttemptBound, admission.DefaultReadWait)
+			if answers {
+				release()
+				for _, answer := range waiters.collect(t, networkWaiters) {
+					if answer.status != http.StatusOK {
+						t.Errorf("a service token whose issuer's discovery answered: status=%d after %v body=%s, want 200",
+							answer.status, answer.elapsed, strings.TrimSpace(answer.body))
+					}
+				}
+			} else {
+				bound := discoveryAttemptBound + admission.DefaultReadWait
+				for _, answer := range waiters.collect(t, networkWaiters) {
+					if answer.status != http.StatusServiceUnavailable || !strings.Contains(answer.body, `"code":"OIDC_ISSUER_UNAVAILABLE"`) || answer.elapsed > bound {
+						t.Errorf("a service token whose issuer's discovery never answered: status=%d after %v body=%s, want 503 OIDC_ISSUER_UNAVAILABLE within the read's %v and the take-back's %v",
+							answer.status, answer.elapsed, strings.TrimSpace(answer.body), discoveryAttemptBound, admission.DefaultReadWait)
+					}
 				}
 			}
 			if stats := limiter.Stats()[admission.Read]; stats.InFlight != 0 {
@@ -629,7 +653,7 @@ func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.
 		"a project list": func() *http.Request { return testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice") },
 	})
 	release()
-	for _, answer := range waiters.collect(t, networkWaiters, 10*time.Second) {
+	for _, answer := range waiters.collect(t, networkWaiters) {
 		if answer.status != http.StatusOK {
 			t.Errorf("a read waiting on %s: status=%d after %v body=%s, want 200 once it answered",
 				service, answer.status, answer.elapsed, strings.TrimSpace(answer.body))
@@ -644,6 +668,7 @@ func requireReadsHoldNoUnitOnService(t *testing.T, service string, handler http.
 // and an issue's subscribers on its interests and then its sessions (writeSubscribers), half the
 // waiters each, the registry and the interests held.
 func TestAReadWaitingOnTheListenerHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	registry := &legionRegistryListener{}
 	subscribers, listener := newFakeListener(t, nil, nil)
 	upstream := http.NewServeMux()
@@ -674,6 +699,7 @@ func TestAReadWaitingOnTheListenerHoldsNoReadUnit(t *testing.T) {
 // GitHub: each read asks whether the App is installed on a repository of its own
 // (getAppInstallation), so each makes an installation lookup, which GitHub holds.
 func TestAReadWaitingOnGitHubHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	installation := func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/installation") }
 	github := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if !installation(r) {
@@ -730,6 +756,7 @@ func (h *heldEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 // The embedder: each read is a search, which embeds its query (runSearch), and the embedder holds
 // it. The search lane is as wide as the waiters, so the read class is what would hold them.
 func TestAReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	embedder := newHeldEmbedder("")
 	t.Cleanup(embedder.release)
 	limiter := admission.New(admission.Limits{Read: networkWaitReads, Write: networkWaitReads, HeavyReadLane: networkWaiters})
@@ -774,6 +801,7 @@ func relatedHoldRead(t *testing.T, project string) *http.Request {
 // route reads with two units at once (concurrentReads), so the read class holds two of its
 // checks, and the six waiters would need twelve units.
 func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	embedder := newHeldEmbedder(relatedHeldWord)
 	t.Cleanup(embedder.release)
 	limiter := admission.New(admission.Limits{Read: concurrentReadWeight * networkWaitReads, Write: networkWaitReads})
@@ -802,6 +830,7 @@ func TestARelatedItemReadWaitingOnTheEmbedderHoldsNoReadUnit(t *testing.T) {
 // answered within the meaning allowance, where a check that embedded first was not made, for
 // time.
 func TestARelatedItemReadsKeywordStageKeepsItsShareBesideAHeldEmbedding(t *testing.T) {
+	t.Parallel()
 	embedder := newHeldEmbedder(relatedHeldWord)
 	t.Cleanup(embedder.release)
 	handler, served, key := relatedHoldServer(t, "RSHARE", embedder, nil)
@@ -870,7 +899,8 @@ func (s *heldSeam) awaitEntered(t *testing.T, what string, bound time.Duration) 
 // check has answered. A check that gave its units back once its keyword stage answered would let
 // the list in while its meaning query is held.
 func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T) {
-	limiter := admission.New(admission.Limits{Read: concurrentReadWeight, Write: networkWaitReads, ReadWait: time.Minute})
+	t.Parallel()
+	limiter := admission.New(admission.Limits{Read: concurrentReadWeight, Write: networkWaitReads, ReadWait: pastTheRun})
 	handler, served, _ := relatedHoldServer(t, "RFIRST", &fakeEmbedder{}, limiter)
 	keyword, meaning := newHeldSeam(), newHeldSeam()
 	served.relatedSearchEntered, served.meaningSearchEntered = keyword.hold, meaning.hold
@@ -881,18 +911,14 @@ func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T
 		meaning.release()
 		check.working.Wait()
 	})
-	if !keyword.awaitEntered(t, "the check's keyword search", 10*time.Second) {
-		return
-	}
+	testwait.Receive(t, "the check's keyword search to start", keyword.entered)
 	list := startWaiters(handler, []*http.Request{testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice")})
 	t.Cleanup(func() {
 		keyword.release()
 		meaning.release()
 		list.working.Wait()
 	})
-	if !testwait.Holds(10*time.Second, time.Millisecond, func() bool { return limiter.Stats()[admission.Read].Queued == 1 }) {
-		t.Fatalf("the project list did not queue behind the check: read class %+v", limiter.Stats()[admission.Read])
-	}
+	waitUntil(t, "the project list to queue behind the check", func() bool { return limiter.Stats()[admission.Read].Queued == 1 })
 	meaning.awaitEntered(t, "with its keyword search held, the check's meaning query", relatedMeaningAllowance)
 
 	keyword.release()
@@ -905,8 +931,8 @@ func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T
 			limiter.Stats()[admission.Read])
 	}
 	meaning.release()
-	answered := check.collect(t, 1, 10*time.Second)[0]
-	listed := list.collect(t, 1, 10*time.Second)[0]
+	answered := check.collect(t, 1)[0]
+	listed := list.collect(t, 1)[0]
 	var suggestions model.Suggestions
 	if err := json.Unmarshal([]byte(answered.body), &suggestions); err != nil || answered.status != http.StatusOK ||
 		suggestions.Search != relatedMeaningAndKeywords {
@@ -921,6 +947,7 @@ func TestARelatedItemReadWhoseEmbeddingAnswersFirstGivesNothingBack(t *testing.T
 // The secrets broker: each read is a person's list of the credential requests waiting on them
 // (listCredentialPending), which the broker holds.
 func TestAReadWaitingOnTheSecretsBrokerHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	broker := newFakeBrokerRig(t)
 	broker.bodyByRoute["GET /v1/pending"] = `{"pending":[]}`
 	address, calls, release := heldService(t, proxyTo(t, broker.server.URL), func(r *http.Request) bool { return r.URL.Path == "/v1/pending" })

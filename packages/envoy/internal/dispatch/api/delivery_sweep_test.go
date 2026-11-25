@@ -425,6 +425,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 // and an owed mention attempt - its reads, claims, settles and the display trees of its receipts
 // all included - takes every connection from the background pool and none from the request pool.
 func TestTheDeliverySweepTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	listener, sends := newBroadcastListener(t, agentSessions)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	rig := sweepRig{t: t, database: database}

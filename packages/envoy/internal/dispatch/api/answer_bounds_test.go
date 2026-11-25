@@ -323,6 +323,7 @@ func TestAStoreBelowTheFloorIsCutAsTheStoresDoingAndNotTheReaders(t *testing.T) 
 // every byte, however many graces the download takes. The store's reads and the answer's writes
 // are judged apart, each on its own time, so neither end carries the other's waiting.
 func TestADownloadWhoseStoreAndReaderAreBothAboveTheFloorIsAnsweredInFull(t *testing.T) {
+	t.Parallel()
 	// The store at 320 KiB/s, the reader at 96 KiB/s: both above the floor, the reader the
 	// slower of the two, and the whole download takes several times the grace.
 	const idle, grace, floor = 5 * time.Second, time.Second, 64 << 10
@@ -577,6 +578,7 @@ func awaitRequestPoolIdle(t *testing.T, pool *store.Pool, wait time.Duration) ti
 // Without it the read held its pinned connection, and the admission unit around it, for as long
 // as the client cared to leave the answer unread.
 func TestAPinnedReadGivesItsConnectionBackWhenItsClientStopsReading(t *testing.T) {
+	t.Parallel()
 	const idle, deadline = 500 * time.Millisecond, 30 * time.Second
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle}
@@ -683,6 +685,7 @@ func TestAnOrdinaryReadWhoseAnswerIsCutIsAbortedAndLogged(t *testing.T) {
 // for is not one read of the client's: the kernel takes the answer into its send buffer and wakes
 // the blocked write only once a good part of that buffer has drained.
 func TestASlowButSteadyReaderOfALargeAnswerIsAnsweredInFull(t *testing.T) {
+	t.Parallel()
 	const idle, deadline, answer, chunk = time.Second, 30 * time.Second, 32 << 20, 256 << 10
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle}
@@ -747,6 +750,7 @@ func TestASlowButSteadyReaderOfALargeAnswerIsAnsweredInFull(t *testing.T) {
 // times the idle bound to read an answer the handler wrote in one call, and reads far faster
 // than the floor.
 func TestASlowButSteadyReaderOfAnAnswerWrittenInOneWriteIsAnsweredInFull(t *testing.T) {
+	t.Parallel()
 	const idle, deadline, answer, chunk = time.Second, 30 * time.Second, 32 << 20, 256 << 10
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle, grace: 2 * time.Second, floor: 32 << 10}
@@ -805,6 +809,7 @@ func TestASlowButSteadyReaderOfAnAnswerWrittenInOneWriteIsAnsweredInFull(t *test
 // On the real binary at a7d8b26b, a 4-8 MiB file version (one Write, serveFileVersion) read at
 // 40, 60, 100 and 150 KB/s was cut 20.0-20.2 s in, every time, after 1.7-6.3 MB.
 func TestAReaderSteadilyAboveTheFloorIsAnsweredInFullOverARealConnection(t *testing.T) {
+	t.Parallel()
 	const idle, answer, chunk, every = 2 * time.Second, 4 << 20, 16 << 10, 80 * time.Millisecond
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: idle, grace: 2 * time.Second, floor: 32 << 10}
@@ -860,6 +865,7 @@ func TestAReaderSteadilyAboveTheFloorIsAnsweredInFullOverARealConnection(t *test
 // make that wait 20 s plus 4 MiB at 32 KiB/s, about two and a half minutes; the floor here is
 // 1 MiB/s, so it is a second plus four.
 func TestAReaderThatStopsReadingIsCutWithinTheSendBuffersDrain(t *testing.T) {
+	t.Parallel()
 	const idle, floor, chunk, deadline = time.Second, 1 << 20, 16 << 10, 5 * time.Minute
 	// Larger than the send buffer and the reader's receive buffer together, so the handler's one
 	// Write blocks with the whole of that buffer handed over.
@@ -1023,6 +1029,7 @@ func TestTheLastBytesOfAnAnswerGoOutUnderItsBound(t *testing.T) {
 // it, for that whole wait. Here the flush reads what the request pool still holds while it
 // runs: with the pin given back first, nothing.
 func TestAPinnedReadsLastBytesGoOutAfterItsPinIsBack(t *testing.T) {
+	t.Parallel()
 	// Past the buffer net/http measures an answer in, so there is something left to flush.
 	answer := strings.Repeat("the file version's bytes, ", 200)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})

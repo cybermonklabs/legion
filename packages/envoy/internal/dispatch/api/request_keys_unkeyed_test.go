@@ -289,6 +289,7 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 // apart: a chain that looked the caller up ahead of admission answers the full server's write
 // as the control is answered, or counts a lookup.
 func TestAKeyedWriteTheServerHasNoRoomForIsRefusedBeforeItsCallerIsLookedUp(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{
 		Read: 4, Write: 1, ReadWait: 50 * time.Millisecond, WriteWait: 50 * time.Millisecond,
 	})

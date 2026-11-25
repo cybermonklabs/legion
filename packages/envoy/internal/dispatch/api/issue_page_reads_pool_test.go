@@ -100,6 +100,7 @@ func issuePageReadAcquires(t *testing.T, handler http.Handler, database *store.S
 // Store.Pool, which under the pin runs on that connection. Served without the pin, every one of
 // those statements takes a connection of its own and the row fails.
 func TestAReferenceTargetsRequestTakesOneRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seed := seedIssuePage(t, handler)
 	if acquires := issuePageReadAcquires(t, handler, database, referenceTargetsOf(seed.references...)); acquires != 1 {
@@ -113,6 +114,7 @@ func TestAReferenceTargetsRequestTakesOneRequestPoolConnection(t *testing.T) {
 // stored trees all run on the request's one pinned connection. Served without the pin, each takes
 // a connection of its own and the row fails.
 func TestAResultsRequestTakesOneRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seed := seedIssuePage(t, handler)
 	if acquires := issuePageReadAcquires(t, handler, database, "/api/v1/issues/"+seed.key+"/results"); acquires != 1 {
@@ -125,6 +127,7 @@ func TestAResultsRequestTakesOneRequestPoolConnection(t *testing.T) {
 // and the stored trees all run on the request's one pinned connection. Served without the pin,
 // each takes a connection of its own and the row fails.
 func TestACoverageRequestTakesOneRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seed := seedIssuePage(t, handler)
 	if acquires := issuePageReadAcquires(t, handler, database, "/api/v1/issues/"+seed.key+"/coverage"); acquires != 1 {

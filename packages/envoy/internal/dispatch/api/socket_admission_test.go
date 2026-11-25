@@ -222,11 +222,7 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 				}
 				answered <- got
 			}()
-			select {
-			case <-held.loading:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the socket's admission never loaded its document, so nothing here is tested")
-			}
+			testwait.Receive(t, "the socket's admission to load its document", held.loading)
 
 			// The browser is still waiting for its handshake's answer; the next two heartbeats find
 			// the pool busy, and the one after them checks the caller again. Two, written out rather
@@ -247,12 +243,7 @@ func TestASocketWhoseCallerStopsResolvingDuringTheLoadIsAnsweredAsItsLoadAndNotA
 			}
 
 			close(held.release)
-			var got handshake
-			select {
-			case got = <-answered:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the socket's handshake was never answered once its load was let go")
-			}
+			got := testwait.Receive(t, "the socket's handshake to be answered once its load was let go", answered)
 			if got.status != load.status {
 				t.Fatalf("the waiting browser's handshake was answered %d (%v), want %d", got.status, got.err, load.status)
 			}

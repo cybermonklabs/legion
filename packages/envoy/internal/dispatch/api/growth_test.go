@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -707,6 +706,7 @@ func TestAnchorMarksCannotGrowALiveDocumentPastWhatItsMarksMayCarry(t *testing.T
 // with 900 KB each; the answer bound main has carried since #2679 refuses that, and 40 at the bound
 // are still more than the 1 MiB document can take back.)
 func TestASettlementThatWithholdsReturnedAnswersCompletes(t *testing.T) {
+	t.Parallel()
 	handler, database := blockAskHandler(t)
 	const asks = 40
 	prose := answerAtBound()
@@ -736,13 +736,7 @@ func TestASettlementThatWithholdsReturnedAnswersCompletes(t *testing.T) {
 	}
 	awaitSettled := func(what string) {
 		t.Helper()
-		deadline := time.Now().Add(45 * time.Second)
-		for owed() {
-			if time.Now().After(deadline) {
-				t.Fatalf("the document still owes a settlement 45 s after %s", what)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		waitUntil(t, "the document to owe no settlement after "+what, func() bool { return !owed() })
 	}
 	for index := range asks {
 		blockID := fmt.Sprintf("ask-%d", index)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A record's retry (retryRecord) is work its request leaves behind: it runs after that request
@@ -21,6 +22,7 @@ import (
 // lock is released the request pool has handed out the first attempt's one connection and no
 // other, the background pool the retry's, and the row is written.
 func TestARecordRetryTakesNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createTestIssue(t, handler, "RETRY", "Orchard pickers cannot log a crate")
 	actor := model.Actor{Kind: "user", ID: "alice"}
@@ -85,7 +87,7 @@ func TestARecordRetryTakesNoRequestPoolConnection(t *testing.T) {
 				}
 				return lockTx.QueryRow(context.Background(), query, args...)
 			}
-			deadline := time.Now().Add(10 * time.Second)
+			deadline := time.Now().Add(testwait.Remaining(t, 30*time.Second))
 			for {
 				var waiting bool
 				if err := activity(`
@@ -107,7 +109,7 @@ func TestARecordRetryTakesNoRequestPoolConnection(t *testing.T) {
 					`).Scan(&active); err != nil {
 						t.Fatalf("read the active backends: %v", err)
 					}
-					t.Fatalf("no insert into %s waits on the lock from the background pool within 10s: the retry runs elsewhere; active: %q", record.table, active)
+					t.Fatalf("no insert into %s waits on the lock from the background pool before the test binary's deadline: the retry runs elsewhere; active: %q", record.table, active)
 				}
 				time.Sleep(20 * time.Millisecond)
 			}

@@ -64,16 +64,15 @@ func readAgents(t *testing.T, served *server, ctx context.Context) routeRoster {
 // as an issue read is served it: the listener's list, or its stored silence. An issue read on a
 // cold process waits on no fetch - it reads every route unknown at once (routeRosterPastBound) -
 // so a row that reads the listener's answer through the copy waits for the loop's first fetch
-// with this. Its first read starts the loop.
+// with this. Its first read starts the loop. Its one bound is the test binary's deadline
+// (testwait.UntilPolling), and its failure names the error the last read was served.
 func awaitRoster(t *testing.T, served *server) routeRoster {
 	t.Helper()
 	var roster routeRoster
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 5*time.Millisecond, "the refresh loop to store a listener answer within its bound (the last read's error)", func() (error, bool) {
 		roster = readRoster(t, served, context.Background())
-		return !errors.Is(roster.err, errRouteRosterPastBound)
-	}) {
-		t.Fatal("the refresh loop stored no listener answer within its bound in 10 s")
-	}
+		return roster.err, !errors.Is(roster.err, errRouteRosterPastBound)
+	})
 	return roster
 }
 
@@ -96,14 +95,15 @@ func storeRosterSentAgo(t *testing.T, served *server, ago time.Duration) {
 // heldRosterServer is a test server on a database of its own whose listener's GET /v1/sessions
 // lists ses-sre holding sre, but only once release is called: until then every call waits, so a
 // test can hold one fetch open while other reads arrive. calls counts the requests that reached
-// it. The fetch's bound, the listener client's window and the TTL are each a minute, so however
-// long a loaded machine takes to release the fetch, it reads no timeout as unknown and no expiry
-// calls again.
+// it. The fetch's bound, the listener client's window and the TTL are each past any run
+// (pastTheRun), so however long a loaded machine takes to release the fetch, it reads no timeout
+// as unknown and no expiry calls again, and a read that waited on the fetch would not answer
+// before the test binary's deadline.
 func heldRosterServer(t *testing.T) (served *server, calls *atomic.Int32, release func()) {
 	t.Helper()
 	listenerURL, calls, release := heldRosterListener(t)
-	_, _, _, served = newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute})
-	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
+	_, _, _, served = newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun})
+	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	return served, calls, release
 }
 
@@ -113,9 +113,9 @@ func heldRosterServer(t *testing.T) (served *server, calls *atomic.Int32, releas
 func heldRosterMux(t *testing.T, mux *http.ServeMux, deps Deps) (served *server, calls *atomic.Int32, release func()) {
 	t.Helper()
 	listenerURL, calls, release := heldRosterListener(t)
-	deps.Envoy = envoy.New(listenerURL, envoy.WithTimeout(time.Minute))
+	deps.Envoy = envoy.New(listenerURL, envoy.WithTimeout(pastTheRun))
 	served = register(mux, t.Context(), deps)
-	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
+	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	return served, calls, release
 }
 
@@ -163,12 +163,6 @@ func storedRosterTimes(t *testing.T, served *server) (sent, expires time.Time) {
 	}
 	return sent, expires
 }
-
-// noRosterWait bounds a read the rows below require answered without waiting on the listener.
-// Each row holds its listener for a minute and bounds the fetch by a minute too, so a read that
-// waited on the fetch would take that minute; a read that waits on nothing is answered in
-// milliseconds, and the margin is for a loaded machine.
-const noRosterWait = 5 * time.Second
 
 // The deployment's TTLs are the ones the route_status comment promises: an answer serves five
 // seconds, a listener that did not answer is left alone for five as well, and a fetch is bounded
@@ -233,20 +227,16 @@ func TestAnIssueReadAfterTheTTLReadsTheListenersNewAnswer(t *testing.T) {
 	}
 	roster.end("ses-sre")
 	ended := time.Now()
+	// Twice the TTL: every copy that lists ses-sre was sent before the listener stopped listing it,
+	// so each has passed its bound by now, however late the reads below come.
 	time.Sleep(100 * time.Millisecond)
-	for {
+	testwait.UntilPolling(t, 5*time.Millisecond, "a read to read the listener's new answer, no_holder null (the last read)", func() (string, bool) {
 		got := detailReach(t, handler, key)
-		if got == "no_holder null" {
-			break
-		}
 		if got == "live ses-sre" {
 			t.Fatalf("a read %v after the listener stopped listing ses-sre, past twice the 50 ms TTL, read the old live ses-sre", time.Since(ended))
 		}
-		if time.Since(ended) > 5*time.Second {
-			t.Fatalf("reads %v after the listener stopped listing ses-sre still read %s, want no_holder null", time.Since(ended), got)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return got, got == "no_holder null"
+	})
 	if calls := roster.lookups.Load() - before; calls < 2 {
 		t.Fatalf("reads a TTL apart saw %d listener calls, want the refresh to have asked again", calls)
 	}
@@ -300,34 +290,33 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 	}
 	roster.down.Store(false)
 	roster.set("ses-sre", "sre")
-	back := time.Now()
-	var got string
-	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
-		got = detailReach(t, handler, key)
-		return got == "live ses-sre"
-	}) {
-		t.Fatalf("reads %v after the listener came back, a hundred 50 ms silence windows, still read %s, want live ses-sre", time.Since(back), got)
-	}
+	testwait.UntilPolling(t, 5*time.Millisecond, "the reads to read live ses-sre once the listener came back and its 50 ms silence window passed (the last read)", func() (string, bool) {
+		got := detailReach(t, handler, key)
+		return got, got == "live ses-sre"
+	})
 	if calls := roster.lookups.Load() - before; calls < 2 {
 		t.Fatalf("reads a silence window apart saw %d listener calls, want the listener asked again", calls)
 	}
 }
 
 // A listener that does not answer holds the refresh's fetch only for the fetch's own bound, not
-// the client's window (a minute here), and holds no read at all: a read while that fetch runs
-// reads unknown at once, the fetch's silence is stored once the bound has passed, and the reads
-// inside it read unknown without asking again. The listener client's window is that bound and a
-// millisecond, so a fetch that held its call past the bound it was given is ended by the client's
-// window instead, whatever the machine's speed, and the error says which ended it: the fetch's own
-// context (listRouteRoster) takes its deadline before the call begins and the window starts with
-// the call, so the call's context is the sooner of the two, net/http sets no deadline of its own
-// and its error says "context deadline exceeded"; a call the window ended says "Client.Timeout
-// exceeded" (net/http's setRequestCancel). That error is the fetch's own, which no read is served
-// (a stored silence is read as errListenerSilence), so the row makes the fetch's read itself,
-// before any read starts the loop. Whether a later read asked again is read off the stored answer,
-// not off the listener's count of calls: a fetch asked for again would have stored a silence of its
-// own, sent later, while a call a loaded machine sends past the half-second bound reaches the
-// listener late or not at all, so a count read after the read returns can miss it.
+// the client's window, and holds no read at all: a read while that fetch runs reads unknown, the
+// fetch's silence is stored once the bound has passed, and the reads inside it read unknown without
+// asking again. The listener client's window is that bound and a millisecond, so a fetch that held
+// its call past the bound it was given is ended by the client's window instead, whatever the
+// machine's speed, and the error says which ended it: the fetch's own context (listRouteRoster)
+// takes its deadline before the call begins and the window starts with the call, so the call's
+// context is the sooner of the two, net/http sets no deadline of its own and its error says
+// "context deadline exceeded"; a call the window ended says "Client.Timeout exceeded" (net/http's
+// setRequestCancel). That error is the fetch's own, which no read is served (a stored silence is
+// read as errListenerSilence), so the row makes the fetch's read itself, before any read starts the
+// loop. How long a read takes says nothing here, the fetch ending at its half-second bound; that a
+// read waits on no fetch is decided by order where the listener holds every call past any run
+// (TestReadsPastTheBoundAnswerAtOnceWhileTheListenerIsHeld). Whether a later read asked again is
+// read off the stored answer, not off the listener's count of calls: a fetch asked for again would
+// have stored a silence of its own, sent later, while a call a loaded machine sends past the
+// half-second bound reaches the listener late or not at all, so a count read after the read
+// returns can miss it.
 func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 	t.Parallel()
 	const bound = 500 * time.Millisecond
@@ -340,18 +329,11 @@ func TestAListenerThatDoesNotAnswerHoldsTheFetchOnlyForItsBound(t *testing.T) {
 		t.Fatalf("a fetch of a listener that does not answer ended with answered=%t err=%v, want its own %s bound's %v, not the listener client's window",
 			own.answered, own.err, bound, context.DeadlineExceeded)
 	}
-	started := time.Now()
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
 	}
-	if waited := time.Since(started); waited > noRosterWait {
-		t.Fatalf("a read waited %s on a listener that does not answer, want an answer at once", waited)
-	}
 	if roster := awaitRoster(t, served); roster.answered {
 		t.Fatal("the stored answer of a fetch the listener never answered is an answer")
-	}
-	if waited := time.Since(started); waited > 10*time.Second {
-		t.Fatalf("the silence was stored %s after the first read, want about the 500ms fetch bound", waited)
 	}
 	sent, _ := storedRosterTimes(t, served)
 	if roster := readRoster(t, served, context.Background()); roster.answered {
@@ -390,30 +372,49 @@ func timedRosterServer(t *testing.T, delay time.Duration, hang bool, lifetime co
 }
 
 // An answer's TTL counts from the moment its call was sent, so a slow listener cannot stretch the
-// age of the answers a read is served past the TTL: a 2 s fetch with a 4 s TTL is stored to expire
-// 4 s after its send, and the refresh, due 2 s after the send (half the TTL, under the minute's
-// bound), asks again as soon as that fetch has answered, about 2 s in, where a TTL counted from the
-// answer would leave the listener alone until about 4 s. The 1.5 s between the two is a margin a
-// loaded machine running the race detector still keeps.
+// age of the answers a read is served past the TTL: the answer is stored to expire the TTL after
+// its send, and the refresh turn whose fetch the listener held past the answer's refresh point (the
+// TTL less the lead, here half of it, after the send) asks for its next turn at once, where a TTL
+// counted from the answer would sleep that span again after the answer; the next turn then finds
+// the stored answer with the lead or less left and asks the listener again. The row runs the
+// refresh's turns itself (refreshRouteRosterTurn, whose answer the loop sleeps), so the sleep a
+// turn asks for is read rather than timed, and the listener holds the first fetch until its
+// refresh point has passed, however long the machine takes to get there: the order of the hold
+// and the answer decides, and no margin of the clock's.
 func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 	t.Parallel()
-	served, calls := timedRosterServer(t, 2*time.Second, false, nil)
-	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = 4*time.Second, time.Minute, time.Minute
-	started := time.Now()
-	if !awaitRoster(t, served).answered {
-		t.Fatal("the first fetch did not answer")
+	const ttl = time.Second
+	served, calls, release := heldRosterServer(t)
+	served.rosters.ttl = ttl
+	lead := served.rosters.refreshLead(true)
+	turn := func() <-chan time.Duration {
+		next := make(chan time.Duration, 1)
+		go func() { next <- served.refreshRouteRosterTurn(context.Background()) }()
+		return next
 	}
+
+	first := turn()
+	awaitCalls(t, calls, 1)
+	// The turn counted its call sent before the call reached the listener, so a hold of the
+	// span to the refresh point from the arrival holds the fetch past that point.
+	time.Sleep(ttl - lead)
+	release()
+	if next := testwait.Receive(t, "the refresh turn whose fetch the listener held past its refresh point", first); next != 0 {
+		t.Fatalf("the turn whose fetch was held past its refresh point, %v after its send, sleeps %v before the next turn, want 0: an answer whose TTL counts from its send is due again at once, where one counted from the answer sleeps %v after it",
+			ttl-lead, next, ttl-lead)
+	}
+	var answered bool
 	var life float64
 	if err := served.deps.Store.Pool.QueryRow(context.Background(),
-		`select extract(epoch from expires_at - sent_at)::float8 from route_roster`).Scan(&life); err != nil {
-		t.Fatalf("read the stored answer's life: %v", err)
+		`select answered, extract(epoch from expires_at - sent_at)::float8 from route_roster`).Scan(&answered, &life); err != nil {
+		t.Fatalf("read the stored answer: %v", err)
 	}
-	if life != 4 {
-		t.Fatalf("the stored answer expires %v s after its call was sent, want the 4 s TTL", life)
+	if !answered || life != ttl.Seconds() {
+		t.Fatalf("the stored answer is answered=%t and expires %v s after its call was sent, want the listener's list and the %v TTL", answered, life, ttl)
 	}
-	awaitCalls(t, calls, 2)
-	if since := time.Since(started); since >= 3500*time.Millisecond {
-		t.Fatalf("the refresh asked the listener again %v after the first read, want before 3.5 s: a 2 s fetch with a 4 s TTL counted from its send is due again at once", since)
+	testwait.Receive(t, "the next refresh turn", turn())
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("after the next refresh turn the listener saw %d calls, want 2: an answer sent longer ago than its refresh point has the lead or less left and is fetched again", got)
 	}
 }
 
@@ -498,13 +499,9 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 	}
 	started.Wait()
 	for range readers {
-		select {
-		case roster := <-issueReads:
-			if !errors.Is(roster.err, errRouteRosterPastBound) {
-				t.Fatalf("an issue read on a cold cache read %s (%v), want no answer within its bound", sreReach(roster), roster.err)
-			}
-		case <-time.After(noRosterWait):
-			t.Fatal("an issue read on a cold cache waited on the listener")
+		roster := testwait.Receive(t, "an issue read on a cold cache while the listener holds the refresh's one fetch", issueReads)
+		if !errors.Is(roster.err, errRouteRosterPastBound) {
+			t.Fatalf("an issue read on a cold cache read %s (%v), want no answer within its bound", sreReach(roster), roster.err)
 		}
 	}
 	awaitCalls(t, calls, 1)
@@ -595,28 +592,42 @@ func routedIssueRead(t *testing.T, answer timedAnswer) string {
 	return reachText(issue.RouteStatus, issue.RouteHolder) + " " + reason
 }
 
+// answeredWhileHeld serves request on a goroutine of its own and answers how it was answered,
+// waiting for that with testwait.Receive. Its row's listener holds every call, and the fetch's
+// bound and the listener client's window are past any run, so a read that waited on the listener
+// would not answer before the test binary's deadline: the answer coming at all is what proves the
+// read waited on nothing, not how long it took.
+func answeredWhileHeld(t *testing.T, handler http.Handler, request *http.Request, what string) timedAnswer {
+	t.Helper()
+	answered := make(chan timedAnswer, 1)
+	go func() { answered <- serveTimed(handler, request) }()
+	return testwait.Receive(t, what, answered)
+}
+
 // A read never waits on the listener while the stored copy is within its bound: with the listener
-// holding every call, an issue read and an agents list are answered from the copy at once, and
-// neither they nor the refresh loop they start asks the listener, the copy having more than the
-// refresh's lead left (half the minute's TTL).
+// holding every call, an issue read and an agents list are answered from the copy, and neither they
+// nor the refresh loop they start asks the listener, the copy having more than the refresh's lead
+// left (half its TTL, which is past any run).
 func TestReadsWithinTheBoundAreAnsweredFromTheCopyWhileTheListenerIsHeld(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls, _ := heldRosterListener(t)
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute})
-	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun})
+	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	key := routedIssueKey(t, handler, "role:sre")
 	storeRosterSentAgo(t, served, 0)
 
-	issue := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/issues/"+key, "alice"))
-	if issue.status != http.StatusOK || issue.elapsed > noRosterWait {
-		t.Fatalf("an issue read within the copy's bound: status=%d after %v body=%s, want 200 within %v", issue.status, issue.elapsed, issue.body, noRosterWait)
+	issue := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/issues/"+key, "alice"),
+		"an issue read within the copy's bound while the listener holds every call")
+	if issue.status != http.StatusOK {
+		t.Fatalf("an issue read within the copy's bound: status=%d body=%s, want 200", issue.status, issue.body)
 	}
 	if got := routedIssueRead(t, issue); got != "live ses-sre null" {
 		t.Fatalf("an issue read within the copy's bound reads %s, want the copy's live ses-sre", got)
 	}
-	agents := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"))
-	if agents.status != http.StatusOK || agents.elapsed > noRosterWait || !strings.Contains(agents.body, `"session_id":"ses-sre"`) {
-		t.Fatalf("an agents list within the copy's bound: status=%d after %v body=%s, want 200 listing ses-sre within %v", agents.status, agents.elapsed, agents.body, noRosterWait)
+	agents := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"),
+		"an agents list within the copy's bound while the listener holds every call")
+	if agents.status != http.StatusOK || !strings.Contains(agents.body, `"session_id":"ses-sre"`) {
+		t.Fatalf("an agents list within the copy's bound: status=%d body=%s, want 200 listing ses-sre", agents.status, agents.body)
 	}
 	if got := calls.Load(); got != 0 {
 		t.Fatalf("reads within the copy's bound had the listener asked %d times, want none", got)
@@ -626,36 +637,38 @@ func TestReadsWithinTheBoundAreAnsweredFromTheCopyWhileTheListenerIsHeld(t *test
 // A read past the copy's bound waits on nothing either, the listener holding the refresh's fetch:
 // an issue read answers with every route unknown for the unreachable reason, a judged route_status
 // filter refuses 503 ENVOY_UNAVAILABLE, and an agents list on a process that has built a copy
-// answers 503 ENVOY_UNAVAILABLE saying the copy is past its bound, each at once rather than after
-// the fetch's minute; and the refresh asks the listener once for them all.
+// answers 503 ENVOY_UNAVAILABLE saying the copy is past its bound, each while the listener holds
+// that fetch past any run; and the refresh asks the listener once for them all.
 func TestReadsPastTheBoundAnswerAtOnceWhileTheListenerIsHeld(t *testing.T) {
 	t.Parallel()
 	listenerURL, calls, _ := heldRosterListener(t)
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute})
-	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun})
+	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	key := routedIssueKey(t, handler, "role:sre")
-	// Sent two minutes ago under a minute's TTL: the copy expired a minute ago, and this process
-	// built it, so it is no longer cold.
-	storeRosterSentAgo(t, served, 2*time.Minute)
+	// Sent twice the TTL ago: the copy expired a TTL ago, and this process built it, so it is no
+	// longer cold.
+	storeRosterSentAgo(t, served, 2*pastTheRun)
 
-	issue := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/issues/"+key, "alice"))
-	if issue.status != http.StatusOK || issue.elapsed > noRosterWait {
-		t.Fatalf("an issue read past the copy's bound: status=%d after %v body=%s, want 200 within %v", issue.status, issue.elapsed, issue.body, noRosterWait)
+	issue := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/issues/"+key, "alice"),
+		"an issue read past the copy's bound while the listener holds the refresh's fetch")
+	if issue.status != http.StatusOK {
+		t.Fatalf("an issue read past the copy's bound: status=%d body=%s, want 200", issue.status, issue.body)
 	}
 	if got := routedIssueRead(t, issue); got != "unknown null unreachable" {
 		t.Fatalf("an issue read past the copy's bound reads %s, want unknown null unreachable", got)
 	}
 	awaitCalls(t, calls, 1)
-	filtered := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/issues?project=TEST&route_status=no_holder", "alice"))
-	if filtered.status != http.StatusServiceUnavailable || filtered.elapsed > noRosterWait || !strings.Contains(filtered.body, `"code":"ENVOY_UNAVAILABLE"`) {
-		t.Fatalf("route_status=no_holder past the copy's bound: status=%d after %v body=%s, want 503 ENVOY_UNAVAILABLE within %v",
-			filtered.status, filtered.elapsed, filtered.body, noRosterWait)
+	filtered := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/issues?project=TEST&route_status=no_holder", "alice"),
+		"a judged route_status filter past the copy's bound while the listener holds the refresh's fetch")
+	if filtered.status != http.StatusServiceUnavailable || !strings.Contains(filtered.body, `"code":"ENVOY_UNAVAILABLE"`) {
+		t.Fatalf("route_status=no_holder past the copy's bound: status=%d body=%s, want 503 ENVOY_UNAVAILABLE", filtered.status, filtered.body)
 	}
-	agents := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"))
-	if agents.status != http.StatusServiceUnavailable || agents.elapsed > noRosterWait ||
+	agents := answeredWhileHeld(t, handler, testRequestAs(t, http.MethodGet, "/api/v1/agents", "alice"),
+		"an agents list past the copy's bound while the listener holds the refresh's fetch")
+	if agents.status != http.StatusServiceUnavailable ||
 		!strings.Contains(agents.body, `"code":"ENVOY_UNAVAILABLE"`) || !strings.Contains(agents.body, "older than its bound") {
-		t.Fatalf("an agents list past the copy's bound: status=%d after %v body=%s, want 503 ENVOY_UNAVAILABLE saying the copy is past its bound within %v",
-			agents.status, agents.elapsed, agents.body, noRosterWait)
+		t.Fatalf("an agents list past the copy's bound: status=%d body=%s, want 503 ENVOY_UNAVAILABLE saying the copy is past its bound",
+			agents.status, agents.body)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("three reads past the copy's bound had the listener asked %d times, want once, by the refresh", got)
@@ -663,27 +676,48 @@ func TestReadsPastTheBoundAnswerAtOnceWhileTheListenerIsHeld(t *testing.T) {
 }
 
 // The refresh runs ahead of the copy's bound with no reader: a copy with a 4 s TTL, refreshed a
-// lead of 2 s before it expires (half the TTL, under the minute's bound), has its one fetch reach
-// the listener about 2 s after it was stored though nothing reads it, and only one: the listener
-// holds that fetch past the copy's expiry and no second fetch starts beside it. The window is a
-// second early and two late, so a loaded machine running the race detector still meets it.
+// lead of 2 s before it expires (half the TTL, under the fetch's bound, which is past any run),
+// has its one fetch reach the listener though nothing reads it, once the copy has the lead or less
+// left and before it expires, and only one: the listener holds that fetch until the copy is a lead
+// past its expiry and no second fetch starts beside it. When the fetch arrived is read off the
+// database's clock as the listener sees it, not off the stored answer's sent_at: once the held
+// fetch is let go the loop, finding that answer expired, asks again at once, so the stored row may
+// already be the second fetch's. A fetch arrives after it was sent, and a turn sends one only once
+// the copy has the lead or less left, so an arrival with more than the lead left is a refresh that
+// asked at once; that it arrived before the copy expired is the refresh's own promise, kept by the
+// lead's two seconds.
 func TestTheRefreshStartsOneFetchAheadOfTheBoundWithNoReader(t *testing.T) {
 	t.Parallel()
-	served, calls, _ := heldRosterServer(t)
-	served.rosters.ttl = 4 * time.Second
+	served, calls, release := heldRosterServer(t)
+	const ttl = 4 * time.Second
+	served.rosters.ttl = ttl
+	lead := served.rosters.refreshLead(true)
 	storeRosterSentAgo(t, served, 0)
-	stored := time.Now()
+	_, copyExpires := storedRosterTimes(t, served)
 	// As a first read starts it; no read follows.
 	served.startRouteRosterRefresh()
 
 	awaitCalls(t, calls, 1)
-	if since := time.Since(stored); since < time.Second || since >= 4*time.Second {
-		t.Fatalf("the refresh reached the listener %v after a copy with a 4 s TTL was stored, want about 2 s: ahead of its bound, at its lead", since)
+	var arrived time.Time
+	if err := served.deps.Store.Pool.QueryRow(context.Background(), `select now()`).Scan(&arrived); err != nil {
+		t.Fatalf("read the database's clock when the fetch arrived: %v", err)
 	}
-	time.Sleep(time.Until(stored.Add(6 * time.Second)))
+	if left := copyExpires.Sub(arrived); left > lead {
+		t.Fatalf("the refresh's fetch arrived with %v of the copy's %v TTL left, want its %v lead or less: the refresh asks ahead of the bound at its lead, not at once", left, ttl, lead)
+	} else if left <= 0 {
+		t.Fatalf("the refresh's fetch arrived %v after the copy expired, want before, at its %v lead: the refresh runs ahead of the bound with no reader", -left, lead)
+	}
+	waitUntil(t, "the copy to be a lead past its bound by the database's clock", func() bool {
+		var past bool
+		if err := served.deps.Store.Pool.QueryRow(context.Background(), `select now() >= $1::timestamptz`, copyExpires.Add(lead)).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		return past
+	})
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("the listener saw %d calls with the refresh's fetch held past the copy's expiry, want 1: one fetch at a time", got)
 	}
+	release()
 }
 
 // While the listener answers within the fetch bound, the refresh keeps every read's copy within

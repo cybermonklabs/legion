@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // partitionAcquireBound is the acquire bound these tests give the pools they fill, so a read that
@@ -85,6 +87,7 @@ func readFeedThrough(t *testing.T, client *socketClient, sub string, id int64) {
 // subscription's own catch-up runs on the live pool too, and the socket is opened, and its first
 // frame seen, before the request pool is taken.
 func TestAnOpenEventFeedReceivesACommitWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{
 		requestPoolSize: 4, acquireBound: partitionAcquireBound, streamHeartbeat: time.Hour,
 	}, nil)
@@ -108,6 +111,7 @@ func TestAnOpenEventFeedReceivesACommitWhileTheRequestPoolIsFullyAcquired(t *tes
 // connection of the request pool held, one pass still runs to its end and records the outcome it
 // finds.
 func TestASuggestionSweepPassCompletesWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{requestPoolSize: 4, acquireBound: partitionAcquireBound})
 	srv := directServer(deps)
 	createSuggestionProject(t, handler, "OUT5")
@@ -137,23 +141,25 @@ func TestASuggestionSweepPassCompletesWhileTheRequestPoolIsFullyAcquired(t *test
 		runSuggestionOutcomeSweep(ctx, background, events.NewHorizon(background), nil, sweepRunnerSchedule)
 	}()
 	defer func() { stop(); <-done }()
-	var outcome string
-	for deadline := time.Now().Add(30 * time.Second); outcome != "overridden"; {
-		if time.Now().After(deadline) {
-			t.Fatalf("no sweep pass recorded the outcome with the request pool held: it is %q, want overridden", outcome)
-		}
-		time.Sleep(sweepRunnerSchedule.minGap)
+	testwait.UntilPolling(t, sweepRunnerSchedule.minGap, "a sweep pass to record the suggestion's outcome overridden with the request pool held (its outcome)", func() (string, bool) {
+		var outcome *string
 		if err := background.QueryRow(t.Context(), `
 			select outcome from write_suggestions where source_issue_key = $1 and suggested_id = $2
 		`, source.Key, target.Key).Scan(&outcome); err != nil {
 			t.Fatalf("read the suggestion's outcome: %v", err)
 		}
-	}
+		var got string
+		if outcome != nil {
+			got = *outcome
+		}
+		return got, got == "overridden"
+	})
 }
 
 // The requests read through a pool the background loops never touch: with every connection of the
 // background pool held - its loops all mid-pass - an issue read still answers.
 func TestAnIssueReadAnswersWhileTheBackgroundPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	database.Pool.SetAcquireBoundForTest(store.BackgroundPool, partitionAcquireBound)
@@ -176,22 +182,10 @@ func poolAcquires(database *store.Store, name string) int64 {
 }
 
 // settledAcquires is poolAcquires once the pool has stood still for 300 ms, so a measurement
-// starts from a pool nothing the test did not ask for is taking.
+// starts from a pool nothing the test did not ask for is taking (awaitStill).
 func settledAcquires(t *testing.T, database *store.Store, name string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for last, since := poolAcquires(database, name), time.Now(); ; {
-		if time.Since(since) >= 300*time.Millisecond {
-			return last
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the %s pool was still handing out connections after 10s", name)
-		}
-		time.Sleep(10 * time.Millisecond)
-		if got := poolAcquires(database, name); got != last {
-			last, since = got, time.Now()
-		}
-	}
+	return awaitStill(t, "the "+name+" pool's acquires", 300*time.Millisecond, func() int64 { return poolAcquires(database, name) })
 }
 
 // The delivery hub seeds its events through the live pool (seedEvents): the relay subscription it
@@ -199,6 +193,7 @@ func settledAcquires(t *testing.T, database *store.Store, name string) int64 {
 // the request pool held - the requests of a burst - a generation still takes its feed, and the
 // connections that seed takes are the live pool's.
 func TestAHubSeedsItsEventsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{
 		requestPoolSize: 4, acquireBound: partitionAcquireBound,
 	})
@@ -221,6 +216,7 @@ func TestAHubSeedsItsEventsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
 // (replayThrough): with every connection of the request pool held, a resume whose caller counted
 // nothing still answers, and both statements take live-pool connections.
 func TestAnEventReplayCountsItsBacklogOnTheLivePool(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{
 		requestPoolSize: 4, acquireBound: partitionAcquireBound,
 	})
@@ -249,6 +245,7 @@ func TestAnEventReplayCountsItsBacklogOnTheLivePool(t *testing.T) {
 // claim a keyed repeat takes before it queues an owed send again are each one background
 // connection and none of the request pool's.
 func TestTheMentionSendersOwnStatementsTakeBackgroundConnections(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -295,6 +292,7 @@ func TestTheMentionSendersOwnStatementsTakeBackgroundConnections(t *testing.T) {
 // answered: with every connection of the request pool held, it still writes the claim of a send
 // waiting on a held lane, so the delivery sweep goes on leaving that attempt to this process.
 func TestAMentionClaimRefreshRunsWhileTheRequestPoolIsFullyAcquired(t *testing.T) {
+	t.Parallel()
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, envoyTimeout: 30 * time.Second,
@@ -325,13 +323,8 @@ func TestAMentionClaimRefreshRunsWhileTheRequestPoolIsFullyAcquired(t *testing.T
 	ageQueuedClaims(t, background, served.mentions, model.DeliveryClaimLapse-5*time.Second)
 	aged := attemptClaimedAt(t, background, queued, "session:s1")
 
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		if attemptClaimedAt(t, background, queued, "session:s1").After(aged) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the claim on the queued attempt still stands at %s: nothing wrote it again while the request pool was held", aged)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 10*time.Millisecond, fmt.Sprintf("the claim on the queued attempt, which stands at %s, to be written again while the request pool is held (when it stands)", aged), func() (time.Time, bool) {
+		claimed := attemptClaimedAt(t, background, queued, "session:s1")
+		return claimed, claimed.After(aged)
+	})
 }

@@ -625,6 +625,7 @@ func TestWriteAdviceAnswersWhoOwnsTheIssuesStatus(t *testing.T) {
 // whose row does not exist when the advice is read, and a session's patch that adds the label to
 // an issue in triage, whose stored row does not hold it yet, are each told that Legion owns it.
 func TestWriteAdviceAnswersWhoOwnsTheStatusOfTheRowTheWriteLeaves(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "ROWOWNED")
 	actor := adviceSessionActor("session-row-owner")
@@ -1016,6 +1017,7 @@ func TestDocumentEditAdviceKeepsCountWhenIssueAdviceFails(t *testing.T) {
 // that fails; what it keeps is the block report of the spec it seeded - its own read of the
 // document it wrote - beside the related-item check's result.
 func TestIssueCreateKeepsTheSeededSpecsBlocksWhenIssueAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "SEEDED")
 

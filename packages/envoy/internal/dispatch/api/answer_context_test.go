@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 type answerContextValueKey struct{}
@@ -16,6 +18,7 @@ type answerContextValueKey struct{}
 // still reaches the answer, so a handler can tell the floor what to leave out
 // (leaveOutOfAnswerFloor), and still reads every other value of the parent.
 func TestAContextDerivedFromAReadsAnswerContextEndsWithItsParentAndReachesTheAnswer(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("the read's own end")
 	parent, end := context.WithCancelCause(context.WithValue(context.Background(), answerContextValueKey{}, "the parent's value"))
 	answer := &boundedAnswer{}
@@ -51,11 +54,7 @@ func TestAContextDerivedFromAReadsAnswerContextEndsWithItsParentAndReachesTheAns
 
 	end(cause)
 	for name, ctx := range derived {
-		select {
-		case <-ctx.Done():
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%s did not end within 5 s of its parent", name)
-		}
+		testwait.Receive(t, name+" to end once its parent ended", ctx.Done())
 		if err := ctx.Err(); !errors.Is(err, context.Canceled) {
 			t.Errorf("%s ended with %v, want context.Canceled, as its parent did", name, err)
 		}
@@ -63,9 +62,5 @@ func TestAContextDerivedFromAReadsAnswerContextEndsWithItsParentAndReachesTheAns
 			t.Errorf("%s carries the cause %v, want its parent's %v", name, got, cause)
 		}
 	}
-	select {
-	case <-afterRan:
-	case <-time.After(5 * time.Second):
-		t.Fatal("a context.AfterFunc on boundsAnswerFloor's context did not run within 5 s of its parent's end")
-	}
+	testwait.Receive(t, "a context.AfterFunc on boundsAnswerFloor's context to run once its parent ended", afterRan)
 }

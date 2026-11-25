@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An issue's references read keeps a heavy read lane of its own: on a production-sized database
@@ -19,10 +20,13 @@ import (
 // lock on issues, which each references read's first statement (loadIssue) waits for, holds the
 // lane's read and the 22 queued behind it. A references read past those is refused at once, 429
 // OVERLOADED naming the references lane, and the reads of another route sent while the flood holds
-// are admitted to the read units the lane left free and answered at once. Without the lane the
-// flood takes three of the read class's four units, the references reads past it take the fourth
-// or queue for it, and none of them is refused.
+// are admitted to the read units the lane left free, answered while the flood still holds: the
+// lock goes only after their answers, so a read that queued behind the flood for a unit would be
+// refused once its queue wait ran out. Without the lane the flood takes three of the read class's
+// four units, the references reads past it take the fourth or queue for it, and none of them is
+// refused.
 func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t *testing.T) {
+	t.Parallel()
 	const (
 		readCap = 4
 		lane    = 1
@@ -53,21 +57,16 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 		go func() { refused <- issueReferencesRequest(t, handler, issue.Key, "") }()
 	}
 	for range past {
-		select {
-		case response := <-refused:
-			body := response.Body.String()
-			assertRetryable(t, response.Result(), http.StatusTooManyRequests, admission.CodeOverloaded)
-			if !strings.Contains(body, "references lane") {
-				t.Fatalf("a references read past the lane's place and queue was refused %s, want the references lane named", body)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("a references read past the lane's place and queue was not answered within 2 s, want 429 OVERLOADED "+
-				"naming the references lane at once: the flood holds the read class (%+v)", limiter.Stats()[admission.Read])
+		response := testwait.Receive(t, "a references read past the lane's place and queue to be answered", refused)
+		body := response.Body.String()
+		assertRetryable(t, response.Result(), http.StatusTooManyRequests, admission.CodeOverloaded)
+		if !strings.Contains(body, "references lane") {
+			t.Fatalf("a references read past the lane's place and queue was refused %s, want the references lane named: the flood holds the read class (%+v)",
+				body, limiter.Stats()[admission.Read])
 		}
 	}
 
 	others := make(chan *httptest.ResponseRecorder, readCap-lane)
-	sent := time.Now()
 	for range readCap - lane {
 		go func() { others <- dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "alice") }()
 	}
@@ -77,10 +76,6 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 				response.Code, response.Body.String())
 		}
 	}
-	if took := time.Since(sent); took > time.Second {
-		t.Fatalf("the reads of another route sent while the flood held its lane answered after %s, want at once",
-			took.Round(time.Millisecond))
-	}
 	if stats := referencesLane(t, limiter); stats.InFlight != lane || stats.Queued != queue || stats.QueueFull != past {
 		t.Fatalf("the references lane holds %d, queues %d and refused %d for a full queue, want %d, %d and %d",
 			stats.InFlight, stats.Queued, stats.QueueFull, lane, queue, past)
@@ -88,7 +83,7 @@ func TestAFloodOfIssueReferencesPastItsLaneIsRefusedWhileOtherReadsAreAdmitted(t
 	release()
 
 	for range held {
-		response := awaitFloodResponse(t, flood)
+		response := awaitResponse(t, flood)
 		if response.Code != http.StatusOK {
 			t.Fatalf("a references read the lane held or queued: status=%d body=%s, want 200", response.Code, response.Body.String())
 		}
@@ -111,17 +106,4 @@ func referencesLane(t *testing.T, limiter *admission.Limiter) admission.LaneStat
 	}
 	t.Fatal("the limiter reports no references lane")
 	return admission.LaneStats{}
-}
-
-// awaitFloodResponse is awaitResponse with room for a loaded box: the flood's reads and the reads
-// behind them all answer once the lock goes, one read class's worth at a time.
-func awaitFloodResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *httptest.ResponseRecorder {
-	t.Helper()
-	select {
-	case response := <-responses:
-		return response
-	case <-time.After(10 * time.Second):
-		t.Fatal("a read did not answer within 10 s of the lock's release")
-		return nil
-	}
 }

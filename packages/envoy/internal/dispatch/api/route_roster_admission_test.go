@@ -1,11 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -22,13 +22,16 @@ import (
 //
 // The row holds one roster fetch open with more readers waiting on it than the read class has
 // units, then requires: no read unit held and none queued while they wait; a read that does not
-// ask the roster (the project list) admitted at once meanwhile; and every waiter answered 200 once
-// the listener answers.
+// ask the roster (the project list) admitted meanwhile, answered 200 while the fetch is held, where
+// one that queued behind the waiters for a unit would be refused at its queue wait; and every waiter
+// answered 200 once the listener answers. The fetch's bound and the listener client's window are
+// past any run, so the fetch ends only when the row lets the listener answer.
 func TestAReadWaitingOnTheListenersRosterHoldsNoReadUnit(t *testing.T) {
+	t.Parallel()
 	listenerURL, calls, release := heldRosterListener(t)
 	limiter := networkWaitLimiter()
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: time.Minute, admission: limiter})
-	served.rosters.ttl, served.rosters.timeout = time.Minute, time.Minute
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL, envoyTimeout: pastTheRun, admission: limiter})
+	served.rosters.ttl, served.rosters.timeout = pastTheRun, pastTheRun
 	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "TEST", "name": "Test project"}, "alice")
 	if project.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", project.Code, project.Body.String())
@@ -45,24 +48,20 @@ func TestAReadWaitingOnTheListenersRosterHoldsNoReadUnit(t *testing.T) {
 	waiters := startWaiters(handler, requests)
 	awaitCalls(t, calls, 1)
 
-	if !testwait.Holds(2*time.Second, time.Millisecond, func() bool {
+	testwait.Until(t, fmt.Sprintf("the read class to hold no unit and queue no request with %d reads waiting on the listener's roster (its units in flight and queued)", networkWaiters), func() (string, bool) {
 		stats := limiter.Stats()[admission.Read]
-		return stats.InFlight == 0 && stats.Queued == 0
-	}) {
-		stats := limiter.Stats()[admission.Read]
-		t.Errorf("with %d reads waiting on the listener's roster, the read class holds %d units and queues %d requests, want neither: no unit is held across a wait on the listener",
-			networkWaiters, stats.InFlight, stats.Queued)
-	}
+		return fmt.Sprintf("%d and %d", stats.InFlight, stats.Queued), stats.InFlight == 0 && stats.Queued == 0
+	})
 	for attempt := range networkWaiters {
 		answer := serveTimed(handler, testRequestAs(t, http.MethodGet, "/api/v1/projects", "alice"))
-		if answer.status != http.StatusOK || answer.elapsed > normalLatency {
-			t.Errorf("project list %d while %d reads wait on the listener's roster: status=%d after %v body=%s, want 200 within %v",
-				attempt+1, networkWaiters, answer.status, answer.elapsed, strings.TrimSpace(answer.body), normalLatency)
+		if answer.status != http.StatusOK {
+			t.Errorf("project list %d while %d reads wait on the listener's roster: status=%d after %v body=%s, want 200",
+				attempt+1, networkWaiters, answer.status, answer.elapsed, strings.TrimSpace(answer.body))
 		}
 	}
 
 	release()
-	for _, answer := range waiters.collect(t, networkWaiters, 10*time.Second) {
+	for _, answer := range waiters.collect(t, networkWaiters) {
 		if answer.status != http.StatusOK {
 			t.Errorf("a read waiting on the listener's roster: status=%d after %v body=%s, want 200 once the listener answered",
 				answer.status, answer.elapsed, strings.TrimSpace(answer.body))

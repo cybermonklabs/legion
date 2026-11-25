@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A test helper that opens a request pool of its own (newTestServer's requestPoolSize and
@@ -19,6 +20,7 @@ import (
 // connections to the test's database, whose drop then fails on any login without
 // pg_signal_backend, and the whole package reports FAIL after every test passed.
 func TestATestHelperWithItsOwnRequestPoolClosesEveryPoolItOpened(t *testing.T) {
+	t.Parallel()
 	helpers := map[string]func(t *testing.T) *store.Store{
 		"newTestServer": func(t *testing.T) *store.Store {
 			_, database, _ := newTestServer(t, testServerOptions{requestPoolSize: 4})
@@ -48,8 +50,10 @@ func TestATestHelperWithItsOwnRequestPoolClosesEveryPoolItOpened(t *testing.T) {
 }
 
 // requireNoPoolConnectionLeft fails t when application still holds a connection to databaseName
-// 5 seconds after the test's own cleanups ran. It reads pg_stat_activity through a connection of
-// its own to the server's maintenance database, since the test's pools are closed by then.
+// after the test's own cleanups ran: a pool's closed connections leave pg_stat_activity once their
+// backends end, and its one bound is the test binary's deadline (testwait.UntilPolling). It reads
+// pg_stat_activity through a connection of its own to the server's maintenance database, since the
+// test's pools are closed by then.
 func requireNoPoolConnectionLeft(t *testing.T, databaseName, application string) {
 	t.Helper()
 	if databaseName == "" {
@@ -60,20 +64,13 @@ func requireNoPoolConnectionLeft(t *testing.T, databaseName, application string)
 		t.Fatalf("connect to read pg_stat_activity: %v", err)
 	}
 	defer admin.Close(context.Background())
-	var open int
-	for deadline := time.Now().Add(5 * time.Second); ; {
+	testwait.UntilPolling(t, 100*time.Millisecond, application+"'s connections to "+databaseName+" to end after the test's cleanups ran (the connections left)", func() (int, bool) {
+		var open int
 		if err := admin.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity where datname = $1 and application_name = $2
 		`, databaseName, application).Scan(&open); err != nil {
 			t.Fatalf("count %s's connections: %v", application, err)
 		}
-		if open == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s still holds %d connection(s) to %s 5s after the test's cleanups ran, want 0",
-				application, open, databaseName)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return open, open == 0
+	})
 }

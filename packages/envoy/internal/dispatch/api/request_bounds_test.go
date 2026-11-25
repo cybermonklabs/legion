@@ -78,6 +78,7 @@ func holdIssueRow(t *testing.T, database *store.Store, key string) func() {
 // is held only to arriving while the write is still held and inside the next bound a request
 // meets, the request pool's 3 s acquire bound.
 func TestARequestPastTheAdmissionLimitIsRefusedOverloaded(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{Read: 1, Write: 1})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	issue := createInteractionIssue(t, handler, "TEST", "Held write", "A spec")
@@ -122,6 +123,7 @@ func TestARequestPastTheAdmissionLimitIsRefusedOverloaded(t *testing.T) {
 // which is where INFRA-592's slow read refusals came from: at ten times the load 103 to 167 reads
 // a run were refused between 1.0 and 2.4 s into a 1 s wait, every one of them on a lane route.
 func TestALaneRouteIsRefusedWithinOneWaitOfItsArrival(t *testing.T) {
+	t.Parallel()
 	const (
 		wait     = 400 * time.Millisecond
 		laneHeld = 300 * time.Millisecond
@@ -160,13 +162,7 @@ func TestALaneRouteIsRefusedWithinOneWaitOfItsArrival(t *testing.T) {
 // waitForWritesInFlight returns once limiter has admitted writes of them.
 func waitForWritesInFlight(t *testing.T, limiter *admission.Limiter, writes int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for limiter.Stats()[admission.Write].InFlight != writes {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d writes were admitted, want %d", limiter.Stats()[admission.Write].InFlight, writes)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, fmt.Sprintf("%d writes admitted", writes), func() bool { return limiter.Stats()[admission.Write].InFlight == writes })
 }
 
 // countingReader counts the bytes read from it.
@@ -186,6 +182,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // past what the sockets buffer between the two, so a server that answered and closed first would
 // leave most of it unread.
 func TestARefusedPostIsAnsweredAfterItsBodyIsDrained(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{Read: 1, Write: 1})
 	handler, _, _ := newTestServer(t, testServerOptions{admission: limiter})
 	issue := createInteractionIssue(t, handler, "TEST", "Refused upload", "A spec")
@@ -220,6 +217,7 @@ func TestARefusedPostIsAnsweredAfterItsBodyIsDrained(t *testing.T) {
 // A read whose work runs past its deadline is stopped there and answered 503 REQUEST_TIMEOUT, not
 // left holding its connection for as long as the lock it waits on is held.
 func TestAReadHeldPastItsDeadlineAnswersRequestTimeout(t *testing.T) {
+	t.Parallel()
 	const deadline = time.Second
 	handler, database, _ := newTestServer(t, testServerOptions{readDeadline: deadline})
 	issue := createInteractionIssue(t, handler, "TEST", "Read past its deadline", "A spec")
@@ -259,6 +257,7 @@ func lockTables(t *testing.T, database *store.Store, tables string) func() {
 // A write has no deadline: one held past the deadline a read would get still runs to its end and
 // commits once what held it lets go.
 func TestAWriteHeldPastTheReadDeadlineCompletesAndCommits(t *testing.T) {
+	t.Parallel()
 	const deadline = time.Second
 	handler, database, _ := newTestServer(t, testServerOptions{readDeadline: deadline})
 	issue := createInteractionIssue(t, handler, "TEST", "Write past the deadline", "A spec")
@@ -289,6 +288,7 @@ func TestAWriteHeldPastTheReadDeadlineCompletesAndCommits(t *testing.T) {
 // A request that cannot get a database connection within the request pool's acquire bound is
 // answered 503 DATABASE_BUSY, which its client may retry, rather than 500.
 func TestARequestOnAFullPoolAnswersDatabaseBusy(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	handler, database, _ := newTestServer(t, testServerOptions{requestPoolSize: 1, acquireBound: bound})
 	held, err := database.Pool.Acquire(context.Background())
@@ -453,6 +453,7 @@ func TestAWriteWhoseBeginTheDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testi
 // deadlines: measured on a 3-CPU pod, a 20 ms heartbeat (40 ms to answer) dropped the socket in
 // 6 runs of 400, and a 100 ms one in 1 of 600.
 func TestTheLiveSocketOutlivesTheReadDeadline(t *testing.T) {
+	t.Parallel()
 	const deadline, heartbeat = 20 * time.Millisecond, 250 * time.Millisecond
 	rig := newLiveSocketRig(t, testServerOptions{
 		readDeadline: deadline, streamHeartbeat: heartbeat,
@@ -510,8 +511,7 @@ func holdCommits(t *testing.T, database *store.Store) func() {
 // waitForHeldCommit returns once a commit waits on holdCommits' lock.
 func waitForHeldCommit(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitUntil(t, "a commit waiting on the held lock", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
@@ -520,14 +520,8 @@ func waitForHeldCommit(t *testing.T, database *store.Store) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("look for the held commit: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no commit ever waited on the held lock")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 }
 
 // storedText renders the document the store holds, update by update, as a room loading it would.
@@ -560,6 +554,7 @@ func storedText(t *testing.T, database *store.Store, artifactID string) string {
 // disconnect cut short would leave its outcome unknown and fail the room, closing the browser's
 // connection and reloading the document.
 func TestAWriteWhoseClientDisconnectsMidCommitKeepsItsRoom(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	service := deps.Docs.(*docs.Service)
 	issue := createInteractionIssue(t, handler, "TEST", "Commit after the client left", "Before.")
@@ -757,6 +752,7 @@ func TestAKeyedWriteWhoseKeyStepRunsOutTheCommitBoundIsRefusedDatabaseBusy(t *te
 // answered 503 DOC_SERVICE_UNAVAILABLE with no Retry-After. The room heap budget closes idle
 // rooms sooner, so cold reads of this shape are common.
 func TestAKeyedResultOnADocumentNoRoomHoldsIsRecorded(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	service := deps.Docs.(*docs.Service)
 	issue := createInteractionIssue(t, handler, "COLD", "Cold verification", "A spec\n")
@@ -784,6 +780,7 @@ func TestAKeyedResultOnADocumentNoRoomHoldsIsRecorded(t *testing.T) {
 // held on a table lock the test takes, so each read in flight holds its connection until the
 // test lets go.
 func TestTheDeliveryTimelineHoldsAtMostTwoConnections(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
@@ -821,6 +818,7 @@ func TestTheDeliveryTimelineHoldsAtMostTwoConnections(t *testing.T) {
 // its body arrives under. Twelve of them once held every write unit of a process for as long as
 // they cared to, and every other write on it was refused 429 OVERLOADED.
 func TestATricklingBodyDoesNotHoldItsWriteUnitWithoutEnd(t *testing.T) {
+	t.Parallel()
 	const idle, queueWait = 2 * time.Second, 3 * time.Second
 	limiter := admission.New(admission.Limits{Read: 4, Write: 2, ReadWait: queueWait, WriteWait: queueWait})
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{admission: limiter})
@@ -881,6 +879,7 @@ func TestATricklingBodyDoesNotHoldItsWriteUnitWithoutEnd(t *testing.T) {
 // written rather than refused. Here the body is sent steadily for three times the grace its rate
 // is judged after, which the total bound this replaced would have cut.
 func TestABodyThatKeepsArrivingIsTakenHoweverLongItTakes(t *testing.T) {
+	t.Parallel()
 	const grace, sending = time.Second, 3 * time.Second
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.transfer = transferBounds{idle: time.Second, grace: grace, floor: 1 << 10}
@@ -908,9 +907,10 @@ func TestABodyThatKeepsArrivingIsTakenHoweverLongItTakes(t *testing.T) {
 
 // A client that goes away while its request waits for room is recorded as the 499 it is, not as
 // the 200 of a handler that wrote nothing: under load a client that gives up while queued is the
-// most frequent way a request ends with nothing written.
+// most frequent way a request ends with nothing written. The queue's waits are past any run, so
+// the request leaves the queue for its client alone.
 func TestARequestWhoseClientLeavesWhileItIsQueuedIsLoggedClientGone(t *testing.T) {
-	limiter := admission.New(admission.Limits{Read: 4, Write: 1, ReadWait: 10 * time.Second, WriteWait: 10 * time.Second})
+	limiter := admission.New(admission.Limits{Read: 4, Write: 1, ReadWait: pastTheRun, WriteWait: pastTheRun})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	issue := createInteractionIssue(t, handler, "TEST", "Queued writes", "A spec")
 	release := holdIssueRow(t, database, issue.Key)
@@ -953,13 +953,7 @@ func TestARequestWhoseClientLeavesWhileItIsQueuedIsLoggedClientGone(t *testing.T
 // waitForQueuedWrites returns once limiter holds writes of them in its queue.
 func waitForQueuedWrites(t *testing.T, limiter *admission.Limiter, writes int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for limiter.Stats()[admission.Write].Queued != writes {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d writes were queued, want %d", limiter.Stats()[admission.Write].Queued, writes)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, fmt.Sprintf("%d writes queued", writes), func() bool { return limiter.Stats()[admission.Write].Queued == writes })
 }
 
 // accessLineOfRoute is the one access-log line logged holds for route.
@@ -1028,9 +1022,11 @@ func TestACommitPastItsBoundIsLoggedWhenItsClientHasGone(t *testing.T) {
 // only once the request's body has been read, and a queued write's body has not been. On the real
 // binary at 1176657a, a comment write closed 0.4 s into its queue wait was logged
 // `status=429 elapsed_ms=1000 bytes=135` - its slot held for the whole wait and a refusal written to
-// a client that had gone - while a GET closed the same way was logged 499.
+// a client that had gone - while a GET closed the same way was logged 499. The queue's waits here
+// are past any run, so a write that held its slot for its whole wait would not leave the queue
+// before the test binary's deadline: that it leaves at all, not how soon, is the proof.
 func TestAQueuedWriteWhoseClientHangsUpIsLoggedClientGone(t *testing.T) {
-	limiter := admission.New(admission.Limits{Read: 4, Write: 1, ReadWait: 10 * time.Second, WriteWait: 10 * time.Second})
+	limiter := admission.New(admission.Limits{Read: 4, Write: 1, ReadWait: pastTheRun, WriteWait: pastTheRun})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
 	server := httptest.NewServer(handler)
 	defer server.Close()
@@ -1058,21 +1054,13 @@ func TestAQueuedWriteWhoseClientHangsUpIsLoggedClientGone(t *testing.T) {
 	_ = connection.Close()
 	hungUp := time.Now()
 
-	deadline := time.Now().Add(15 * time.Second)
-	for limiter.Stats()[admission.Write].Queued != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the write whose client hung up was still queued 15 s later")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the queued write whose client hung up to leave the queue", func() bool {
+		return limiter.Stats()[admission.Write].Queued == 0
+	})
 	left := time.Since(hungUp)
-	time.Sleep(200 * time.Millisecond)
-	line := accessLineOfRoute(t, logged, "/api/v1/issues/{key}/comments")
+	line := awaitAccessLineOfRoute(t, logged, "/api/v1/issues/{key}/comments")
 	if !strings.Contains(line, "status=499") {
 		t.Fatalf("the queued write whose client hung up left the queue %v later and logged:\n%s\nwant status=499", left, line)
-	}
-	if left > 2*time.Second {
-		t.Fatalf("the queued write whose client hung up held its queue slot %v, want it given up once its client had gone, not at the end of its 10 s wait", left)
 	}
 	release()
 	if response := awaitResponse(t, held); response.Code != http.StatusOK {
@@ -1090,6 +1078,7 @@ func TestAQueuedWriteWhoseClientHangsUpIsLoggedClientGone(t *testing.T) {
 // for them again once the body ended, waited for room twice: the second wait began behind
 // everything that had arrived meanwhile, and refused writes the server had already admitted.
 func TestAWriteWhoseBodyOutlastsItsWaitIsAdmittedAfterIt(t *testing.T) {
+	t.Parallel()
 	const wait, sending = 500 * time.Millisecond, 1500 * time.Millisecond
 	limiter := admission.New(admission.Limits{Read: 4, Write: 1, ReadWait: wait, WriteWait: wait})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{admission: limiter})
@@ -1183,16 +1172,11 @@ func TestAKeyedWriteWhoseClientLeavesMidBodyIsLoggedClientGone(t *testing.T) {
 	}
 }
 
-// awaitAccessLineOfRoute is accessLineOfRoute once the line is there, within ten seconds of the
-// call: a request whose client has gone is answered nobody, so nothing but its line says it ended.
+// awaitAccessLineOfRoute is accessLineOfRoute once the line is there: a request whose client has
+// gone is answered nobody, so nothing but its line says it ended. Its one bound is the test
+// binary's deadline (waitUntil).
 func awaitAccessLineOfRoute(t *testing.T, logged *logBuffer, route string) string {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(logged.String(), " route="+route+" ") {
-		if time.Now().After(deadline) {
-			t.Fatalf("no access-log line named route %s within ten seconds:\n%s", route, logged.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "an access-log line naming route "+route, func() bool { return strings.Contains(logged.String(), " route="+route+" ") })
 	return accessLineOfRoute(t, logged, route)
 }

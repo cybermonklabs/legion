@@ -2317,6 +2317,7 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 // hook holds that expiry open, between its mark of the view as computing and its end, while the
 // test writes a second pull request and has the hub catch it up.
 func TestAChangeCaughtUpWhileAViewExpiresIsRecomputed(t *testing.T) {
+	t.Parallel()
 	clock := newStillHubClock()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	expiring, release := make(chan struct{}), make(chan struct{})
@@ -2359,11 +2360,7 @@ func TestAChangeCaughtUpWhileAViewExpiresIsRecomputed(t *testing.T) {
 
 	start := rig.mark()
 	clock.Advance(3 * time.Second)
-	select {
-	case <-expiring:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the view's expiry did not begin within 5s of the clock passing it")
-	}
+	testwait.Receive(t, "the view's expiry to begin once the clock passed it", expiring)
 	// The second pull request is written and caught up while the expiry computes.
 	upsertPR(t, rig.database, hubPR(2, now.Add(-time.Hour)))
 	rig.hub.catchUpNow()

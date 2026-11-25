@@ -15,6 +15,7 @@ import (
 // Retry-After, as the same GET is (TestAReadWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy), and
 // never 500 COMMIT_OUTCOME_UNKNOWN.
 func TestAHeadWhoseDatabaseStopsAnsweringIsRefusedDatabaseBusy(t *testing.T) {
+	t.Parallel()
 	socket := storetest.NewStalledSocket(store.RequestsPool)
 	handler, _, _ := newTestServer(t, testServerOptions{dialRequestPool: socket.Dial, settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "The database stops answering a head", "A spec")

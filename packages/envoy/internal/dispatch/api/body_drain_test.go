@@ -419,6 +419,7 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 // and net/http closed the connection under the client still sending it. Every place of the share
 // is held, so the decision waits its second for one and is refused.
 func TestADPoPWriteRefusedAPlaceReachesAClientThatSendsItsWholeBodyFirst(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.DefaultLimits())
 	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter})
 	served := httptest.NewServer(rig.handler)
@@ -469,6 +470,7 @@ func (b repeatedByte) Read(p []byte) (int, error) {
 // upload row is answered as an upload by being an upload row, with no list of upload patterns to
 // keep in step.
 func TestEveryRoutesOversizedBodyIsAnsweredByItsRowsLimit(t *testing.T) {
+	t.Parallel()
 	served := &server{}
 	uploads := 0
 	for _, route := range served.routes() {
@@ -1019,6 +1021,7 @@ func refusedAtResume(t *testing.T, limiter *admission.Limiter, address, target, 
 // only then had its 201 replaced by the 429 - and every client that obeyed Retry-After uploaded
 // the file a second time.
 func TestAWriteRefusedWhenItAsksItsUnitsBackCommitsNothing(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{
 		Read: 4, Write: 1, ReadWait: 250 * time.Millisecond, WriteWait: 250 * time.Millisecond,
 	})
@@ -1094,6 +1097,7 @@ func countIssueRows(t *testing.T, database *store.Store, query, issueKey string)
 // answered the client that was still there an empty 200 OK, which a client reads as its write
 // having been taken.
 func TestAWriteWhoseBodyFramingFailsIsRefusedRatherThanAnsweredEmpty(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{Read: 4, Write: 1})
 	handler, _, _ := newTestServer(t, testServerOptions{admission: limiter})
 	issue := createInteractionIssue(t, handler, "TEST", "Malformed framing", "A spec")
@@ -1184,6 +1188,7 @@ func TestAKeyedWriteWhoseBodyStopsArrivingIsNotTakenForAGoneClient(t *testing.T)
 // which leaves the re-read of the spool a request read itself into before it asked for room
 // (drainedBody.readWhole): a temporary file Dispatch wrote and cannot read.
 func TestAKeyedBodyWhoseSpoolCannotBeReadBackIsTheServersFault(t *testing.T) {
+	t.Parallel()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	route := apiRoute{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/issues", Auth: authAny,
 		Handler: func(http.ResponseWriter, *http.Request) {

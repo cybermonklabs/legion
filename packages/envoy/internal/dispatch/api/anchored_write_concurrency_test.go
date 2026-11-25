@@ -206,19 +206,16 @@ func waitForAcquiredConns(t *testing.T, database *store.Store, want int32) {
 }
 
 // waitForSettlementConns waits until the settlements pool has handed out want connections: the
-// settlements the test arranged are in their transactions, waiting on the row the held write locks.
+// settlements the test arranged are in their transactions, waiting on the row the held write
+// locks. Its one bound is the test binary's deadline (testwait.Until), as waitForAcquiredConns's.
 func waitForSettlementConns(t *testing.T, database *store.Store, want int32) {
 	t.Helper()
 	settlements, err := database.Pool.Settlements()
 	if err != nil {
 		t.Fatalf("open the settlements pool: %v", err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if settlements.Stat().AcquiredConns() >= want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("settlements pool never handed out %d connections (acquired %d)", want, settlements.Stat().AcquiredConns())
+	testwait.Until(t, fmt.Sprintf("the settlements pool to hand out %d connections (the connections it had out)", want), func() (int32, bool) {
+		acquired := settlements.Stat().AcquiredConns()
+		return acquired, acquired >= want
+	})
 }

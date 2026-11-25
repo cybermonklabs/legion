@@ -202,6 +202,7 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 // that sends the request again without reading it is the load that caused the refusal
 // (openAPIServerAnswers).
 func TestOpenAPIDescribesTheAnswersTheServerWritesForItself(t *testing.T) {
+	t.Parallel()
 	_, document := readOpenAPI(t)
 	for _, row := range []struct {
 		// what names the row in a failure, and the operation it reads.

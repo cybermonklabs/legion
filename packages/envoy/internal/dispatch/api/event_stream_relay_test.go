@@ -453,6 +453,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 // TestAHubRereadsTheGapAnotherReaderProvedWhileItRead: the hub no longer reads the log, so the
 // relay's read holds it (eventStreamRelay.read, events.Horizon.Gap).
 func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
+	t.Parallel()
 	// Settlement is held off, so nothing of the seeded specs commits an event behind the
 	// relay's back: only this test's own appends wake it, and after the rollback nothing
 	// notifies at all.
@@ -508,6 +509,7 @@ func TestARelayRereadsTheGapAnotherReaderProvedWhileItRead(t *testing.T) {
 // again, since a horizon that moves is the gap closing from below and the next re-read is the one
 // worth making soon. A read that left no gap open schedules nothing at all.
 func TestTheGapRereadWaitsFromTheStartAgainWhenTheHorizonMoves(t *testing.T) {
+	t.Parallel()
 	var gaps eventGapReread
 	defer gaps.stop()
 

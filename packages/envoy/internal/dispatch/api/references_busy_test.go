@@ -19,6 +19,7 @@ import (
 // filled by the one connection the test holds, and its error is answered by the route's own
 // classification (writeClosureRefusal).
 func TestAReferenceClosureOnABusyRequestPoolIsRefusedDatabaseBusy(t *testing.T) {
+	t.Parallel()
 	const bound = 300 * time.Millisecond
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{requestPoolSize: 1, acquireBound: bound})
 	held, err := database.Pool.Acquire(context.Background())

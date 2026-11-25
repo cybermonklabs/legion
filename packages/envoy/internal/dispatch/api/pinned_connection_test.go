@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // requestPoolStats is the request pool's stats: its connection counts and what its acquire tracer
@@ -27,21 +28,18 @@ func requestPoolStats(t *testing.T, pool *store.Pool) store.PoolStats {
 }
 
 // awaitQuietRequestPool returns once the request pool holds no connection and has counted no
-// acquire for a while, so the work the seed's writes left running (a settlement, a durable
-// append) is not counted against the read measured next.
+// acquire for 300 ms, so the work the seed's writes left running (a settlement, a durable
+// append) is not counted against the read measured next. The 300 ms is the calm it needs, not a
+// bound: its one bound is the test binary's deadline (testwait.UntilPolling).
 func awaitQuietRequestPool(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	last, quietSince := requestPoolStats(t, pool).Acquire.Count, time.Now()
-	for time.Since(quietSince) < 300*time.Millisecond {
-		if time.Now().After(deadline) {
-			t.Fatal("the request pool never went quiet after the seed")
-		}
-		time.Sleep(20 * time.Millisecond)
+	testwait.UntilPolling(t, 20*time.Millisecond, "the request pool to hold no connection and count no acquire for 300 ms after the seed (its acquires)", func() (uint64, bool) {
 		if now := requestPoolStats(t, pool).Acquire.Count; now != last || pool.Stat().AcquiredConns() != 0 {
 			last, quietSince = now, time.Now()
 		}
-	}
+		return last, time.Since(quietSince) >= 300*time.Millisecond
+	})
 }
 
 // pinnedReadSeed is an issue shaped like the load harness's seed: a spec with a requirement table,
@@ -95,6 +93,7 @@ func hotReadPaths(seed pinnedReadSeed) []string {
 // dozen for an issue read, run one after another on the connection its first statement took,
 // rather than each waiting for a connection of its own.
 func TestEachHotReadTakesOneRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`[{"session_id":"ses-lg-0001","title":"reviewer","last_seen":100,"roles":["reviewer"]}]`))
 	}))
@@ -122,6 +121,7 @@ func TestEachHotReadTakesOneRequestPoolConnection(t *testing.T) {
 // An issue read needs only the one connection it pins, so a request pool of one connection answers
 // it, in one checkout.
 func TestAnIssueReadIsAnsweredByAOneConnectionRequestPool(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{requestPoolSize: 1})
 	seed := seedPinnedReadIssue(t, handler)
 	awaitQuietRequestPool(t, database.Pool)
@@ -151,6 +151,7 @@ func serveTestRoute(t *testing.T, s *server, method string, handler http.Handler
 // is refused at once with ErrNestedAcquire, as on a pool connection of its own, rather than
 // waiting on its own connection or interleaving two statements on it.
 func TestAReadThatNestsOnItsPinnedConnectionIsRefused(t *testing.T) {
+	t.Parallel()
 	_, database, _, s := newRegisteredTestServer(t, testServerOptions{})
 	var nested error
 	response := serveTestRoute(t, s, http.MethodGet, func(w http.ResponseWriter, r *http.Request) {
@@ -184,6 +185,7 @@ func TestAReadThatNestsOnItsPinnedConnectionIsRefused(t *testing.T) {
 // first statement to its end, so the gate refuses it, since a gate holder may be waiting for a
 // connection that read holds.
 func TestTheWriterGateAdmitsAWriteAndRefusesAPinnedRead(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, s := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Gated", "A spec")
 	gate := func(r *http.Request) error {

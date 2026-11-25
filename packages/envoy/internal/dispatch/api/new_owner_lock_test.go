@@ -25,6 +25,7 @@ import (
 // its ledger's commit, whose own bound (store.CommitContext) ends that wait too; a project create
 // appends on its own transaction, where nothing else ends it (INFRA-592, tester round 47).
 func TestACreateBehindItsNewOwnersHeldLockIsRefusedBusyAtItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = time.Second
 	for _, row := range []struct {
 		name string

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // backendState is the state pg_stat_activity holds for backend pid, and whether that backend is
@@ -21,7 +22,7 @@ import (
 func backendState(t *testing.T, database *store.Store, pid int32) (state string, connected bool) {
 	t.Helper()
 	err := database.Pool.QueryRow(context.Background(), `
-		select coalesce(state, '') from pg_stat_activity where pid = $1
+		select coalesce(state, '') from pg_stat_activity where pid = $1 and datname = current_database()
 	`, pid).Scan(&state)
 	switch {
 	case err == nil:
@@ -51,6 +52,7 @@ func backendState(t *testing.T, database *store.Store, pid int32) (state string,
 // the client by design - and committed a write whose answer nobody would read, holding every one
 // of those locks for as long as it took.
 func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
+	t.Parallel()
 	var canceled context.CancelFunc
 	var backend int32
 	entered := make(chan struct{})
@@ -90,11 +92,7 @@ func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		answered <- response
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the edit never reached its superseded-approval advice")
-	}
+	testwait.Receive(t, "the edit to reach its superseded-approval advice", entered)
 
 	if response := awaitResponse(t, answered); response.Body.Len() != 0 {
 		t.Fatalf("the write whose client left was answered %d %s, want nothing written",
@@ -134,6 +132,7 @@ func TestAWriteWhoseClientGoesAwayEndsItsTransactionAtOnce(t *testing.T) {
 // after the write's statements, as the advice once was, that hold would keep a transaction with
 // an id open below Await's observation, and Await could not answer until it ended.
 func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
@@ -145,7 +144,7 @@ func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
 			close(entered)
 			select {
 			case <-release:
-			case <-time.After(30 * time.Second):
+			case <-t.Context().Done():
 			}
 			return nil
 		},
@@ -159,18 +158,13 @@ func TestWriteAdviceDoesNotHoldTheEventHorizon(t *testing.T) {
 			"actor": adviceSessionActor("session-horizon"),
 		})
 	}()
-	select {
-	case <-entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the comment never reached its open-asks advice query")
-	}
+	testwait.Receive(t, "the comment to reach its open-asks advice query", entered)
 
-	// The comment's transaction is open and its advice held: every event committed so far is in
-	// the log, read on a connection of its own.
+	// The comment's transaction is open and its advice held until after Await answers, whose one
+	// bound is the test binary's deadline (testwait.Context): an Await that waited on the advice
+	// would not answer before it.
 	committed := eventHead(t, database)
-	awaiting, stop := context.WithTimeout(t.Context(), 10*time.Second)
-	defer stop()
-	safe, err := served.horizon().Await(awaiting)
+	safe, err := served.horizon().Await(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("await the event horizon while the write's advice is held: %v", err)
 	}

@@ -198,7 +198,6 @@ func TestCommentAndAskReadsStandWhenTheAnchorDocumentCannotBeRead(t *testing.T) 
 // read whose own request has gone away fails, and, nobody being left to read it, is answered
 // nothing and logs no ERROR line. The two reads meet the same error; only the request differs.
 func TestAnAnchoredReadDecidesCancellationByItsOwnRequest(t *testing.T) {
-	t.Parallel()
 	writer, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, writer, "TEST", "Cancelled writer", "Intro.\n\nThe quoted line.\n")
 	created := func(path string, body map[string]any) string {

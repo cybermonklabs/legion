@@ -610,6 +610,7 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 // flight as the session ends may still find it, so the close comes within two checks of the
 // logout.
 func TestALogoutClosesTheDocumentSocketAtItsNextHeartbeat(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	peer := rig.openDocument(t, nil)
@@ -638,6 +639,7 @@ func TestALogoutClosesTheDocumentSocketAtItsNextHeartbeat(t *testing.T) {
 // free for is skipped, and counts toward the heartbeat's ceiling
 // (TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird).
 func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	peer := rig.openDocument(t, nil)

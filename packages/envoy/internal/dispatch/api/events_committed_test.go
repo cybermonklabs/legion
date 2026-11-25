@@ -14,6 +14,7 @@ import (
 // an ask and a settlement. Each side is read with the document service quiet, so no settlement
 // commits between the two reads.
 func TestCommittedEventsRiseByTheEventLogsGrowth(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()

@@ -199,6 +199,7 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 // stored newest review is the approval of the version right below, which read alone would name a
 // superseded approval the carry has just renewed.
 func TestAnUploadOfTheApprovedTextOverTheApprovedVersionSupersedesNothing(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload the approved text over itself", restoreSpec)
 	if review := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", ""); review.Version != 1 {

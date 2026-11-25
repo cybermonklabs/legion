@@ -343,6 +343,7 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 // the key set and its person recorded, and only then is its room read, here a name that is no
 // document's.
 func TestADocumentSocketPresentingNoIAPAssertionIsRefused401BeforeItTakesAPlace(t *testing.T) {
+	t.Parallel()
 	outside := admission.New(admission.DefaultLimits()).Outside()
 	database := storetest.Open(t)
 	signed := newIAPSocketKeys(t, database)

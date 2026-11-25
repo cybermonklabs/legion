@@ -340,6 +340,7 @@ func routeWeightOf(t *testing.T, method, pattern string) int32 {
 // three are held (settle), so the check's own reads are every connection of the request pool
 // there is to count.
 func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{}
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder, settle: time.Hour})
 	createSuggestionProject(t, handler, "WGHT")
@@ -382,11 +383,7 @@ func TestAnEditHoldsNoMoreConnectionsThanItsRouteWeighs(t *testing.T) {
 	}()
 	awaitMark := func(what string, entered <-chan struct{}) {
 		t.Helper()
-		select {
-		case <-entered:
-		case <-time.After(20 * time.Second):
-			t.Fatalf("the edit's check never reached its %s read with a connection in hand", what)
-		}
+		testwait.Receive(t, "the edit's check to reach its "+what+" read with a connection in hand", entered)
 	}
 	awaitMark("keyword", keyword)
 	awaitMark("meaning", meaning)

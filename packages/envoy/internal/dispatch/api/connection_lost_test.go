@@ -39,6 +39,7 @@ func insertEditBody(markdown string) map[string]any {
 // report runs before its reads), so the savepoint rollback it freezes is that report's own,
 // whatever savepoints the edit's transaction opened and rolled back before it.
 func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testing.T) {
+	t.Parallel()
 	socket := storetest.NewFrozenSocket(store.RequestsPool)
 	var editing atomic.Bool
 	handler, _, _ := newTestServer(t, testServerOptions{
@@ -76,6 +77,7 @@ func TestAnEditWhoseReportRollbackRunsOutItsBoundIsRefusedDatabaseBusy(t *testin
 // meets Postgres's FATAL, and pgconn refuses every later call on the connection `conn closed`
 // (pgconn.ErrConnClosed), the report's rollback among them.
 func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *testing.T) {
+	t.Parallel()
 	var terminated atomic.Bool
 	var backend int32
 	// The hook terminates the backend through the test's own handle on the store, which the
@@ -120,6 +122,7 @@ func TestAnEditWhoseBackendIsTerminatedBeforeItsCommitIsRefusedDatabaseBusy(t *t
 // twice. The COMMIT is held at the test's lock (holdCommits), and its backend is ended with
 // pg_terminate_backend while it waits there.
 func TestAnEditWhoseBackendIsTerminatedDuringItsCommitIsAnOutcomeNobodyKnows(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "The edit's backend is terminated at its COMMIT", "Before.")
 	release := holdCommits(t, database)
@@ -134,7 +137,7 @@ func TestAnEditWhoseBackendIsTerminatedDuringItsCommitIsAnOutcomeNobodyKnows(t *
 	var ended bool
 	if err := database.Pool.QueryRow(context.Background(), `
 		select pid, pg_terminate_backend(pid, 5000) from pg_stat_activity
-		where lower(query) = 'commit' and wait_event = 'advisory' and application_name = $1
+		where datname = current_database() and lower(query) = 'commit' and wait_event = 'advisory' and application_name = $1
 	`, "dispatch-"+store.RequestsPool).Scan(&backend, &ended); err != nil || !ended {
 		t.Fatalf("terminate the COMMIT's backend %d: ended=%v err=%v", backend, ended, err)
 	}

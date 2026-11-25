@@ -18,8 +18,11 @@ import (
 // main answered 93.0%. So a burst of references reads that hold the database must leave the rest
 // of the read class to the other routes. Here a lock on refs, which the closure reads, holds every
 // references read inside its first refs statement, and a read of another route sent behind the
-// burst must be answered at once, not when the references reads give their units back.
+// burst must be answered while the lock still holds the burst, not when the references reads give
+// their units back: the lock goes only after its answer, so a read that queued behind the burst for
+// a unit would be refused once its queue wait ran out, and the 200 itself is the proof.
 func TestABurstOfSlowIssueReferencesLeavesTheReadClassToOtherReads(t *testing.T) {
+	t.Parallel()
 	const readCap = 4
 	limiter := admission.New(admission.Limits{Read: readCap, Write: 4, HeavyReadLane: 1, ReadWait: 5 * time.Second})
 	handler, database, _ := newTestServer(t, testServerOptions{admission: limiter})
@@ -37,28 +40,28 @@ func TestABurstOfSlowIssueReferencesLeavesTheReadClassToOtherReads(t *testing.T)
 	waitUntil(t, "a references read waiting on the held refs lock", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where wait_event_type = 'Lock' and query like '%refs.Closure%'`).Scan(&waiting); err != nil {
+			where datname = current_database() and wait_event_type = 'Lock' and query like '%refs.Closure%'`).Scan(&waiting); err != nil {
 			t.Fatalf("read the references reads waiting on the lock: %v", err)
 		}
 		return waiting > 0
 	})
-	// Every request of the burst has reached its admission by now: it is admitted or queued at
-	// once, and only the admitted ones go on to the lock.
-	time.Sleep(300 * time.Millisecond)
+	// Every request of the burst reaches its admission: the admitted ones go on to the lock, and
+	// the rest wait in the references lane's queue.
+	waitUntil(t, "every references read of the burst admitted or queued in its lane", func() bool {
+		return limiter.Stats()[admission.Read].InFlight+referencesLane(t, limiter).Queued == readCap
+	})
 	stats := limiter.Stats()[admission.Read]
 
-	sent := time.Now()
 	other := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "alice")
-	took := time.Since(sent)
 	release()
 	for range readCap {
-		awaitFloodResponse(t, burst)
+		awaitResponse(t, burst)
 	}
 
-	if other.Code != http.StatusOK || took > time.Second {
+	if other.Code != http.StatusOK {
 		t.Fatalf("a read of another route sent behind %d references reads that held the database (read class %d in flight of %d) "+
-			"answered status %d after %s, want 200 at once: a burst of one slow route takes the whole read class, "+
+			"answered status %d with the burst still held, want 200: a burst of one slow route takes the whole read class, "+
 			"and every other read waits for it or is refused",
-			readCap, stats.InFlight, readCap, other.Code, took.Round(time.Millisecond))
+			readCap, stats.InFlight, readCap, other.Code)
 	}
 }

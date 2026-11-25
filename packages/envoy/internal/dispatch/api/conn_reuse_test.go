@@ -35,6 +35,7 @@ import (
 // client reads the answer before the reset. A body that stopped arriving is cut by the bound it
 // arrives under and the drain says the connection closes itself (sayTheConnectionCloses).
 func TestAnEarlyRefusalLeavesAConnectionAnsweringOrSayingItCloses(t *testing.T) {
+	t.Parallel()
 	const idle = time.Second
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	served.transfer = transferBounds{idle: idle}
@@ -118,6 +119,7 @@ func TestAnEarlyRefusalLeavesAConnectionAnsweringOrSayingItCloses(t *testing.T) 
 // silently off for the dominant answer of a loaded process: the round-22 run refused 97,954
 // writes 429 OVERLOADED, and every one of them on an aged connection kept it alive.
 func TestARefusalKeepsTheConnectionCloseOfAnAgedConnection(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{
 		Read: 4, Write: 1, ReadWait: 250 * time.Millisecond, WriteWait: 250 * time.Millisecond,
 	})

@@ -25,6 +25,7 @@ import (
 // request-pool connection and its admission unit for as long as the first held the row: tester
 // round 46 measured 150 s on the real binary, ended only by the holder letting go (INFRA-592).
 func TestAStepWriteBehindItsRunsHeldRowIsRefusedBusyAtItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = time.Second
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createTestIssue(t, handler, "LEG", "A step behind a held row")

@@ -60,6 +60,7 @@ type heldRowRequest struct {
 // The bound is the test's (store.WithLockWaitForTest) rather than production's ten seconds, and the
 // holder is a transaction of the test's own that holds the row until the test lets it go.
 func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = time.Second
 	for _, row := range []struct {
 		name    string
@@ -477,6 +478,7 @@ func TestARequestBehindARowAnotherTransactionHoldsIsRefusedBusyAtItsBound(t *tes
 // the test gives up well before production's ten seconds, which the connection's own setting
 // would end the wait at.
 func TestAPlainLockWaitOfARequestTransactionIsRefusedBusyAtTheWriteLockBound(t *testing.T) {
+	t.Parallel()
 	const bound = time.Second
 	database := storetest.Open(t)
 	ctx := context.Background()

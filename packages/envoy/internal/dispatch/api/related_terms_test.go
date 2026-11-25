@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -526,6 +525,7 @@ func TestRelatedTermsTokenizeATextAsADocumentVersionsVectorIsBuilt(t *testing.T)
 // refresh waits on it for as long as that session holds it; while it waits, the request pool has no
 // connection taken.
 func TestARefreshTheRelatedCheckStartedHoldsNoRequestPoolConnection(t *testing.T) {
+	t.Parallel()
 	handler, database, srv := relatedTermsServer(t)
 	createSuggestionProject(t, handler, "HELD")
 	other := storetest.SecondProcess(t, database)
@@ -544,22 +544,15 @@ func TestARefreshTheRelatedCheckStartedHoldsNoRequestPoolConnection(t *testing.T
 	createSearchIssue(t, handler, "HELD", "Lighthouse lens", "")
 	// The create answered; the refresh its check started runs after it. Wait until that refresh
 	// is waiting on the held row, read from another process's pool so the read takes nothing here.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	waitUntil(t, "a statistics refresh the create started waiting on the held totals row", func() bool {
 		var waiting int
 		if err := other.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
 			where datname = current_database() and wait_event_type = 'Lock'
 			  and query like 'insert into search_term_totals%'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
-		if waiting > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no statistics refresh waited on the held totals row within 10 s of the create")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 	if held := database.Pool.Stat().AcquiredConns(); held != 0 {
 		t.Fatalf("%d request-pool connections taken while the statistics refresh the create started waits, want 0", held)
 	}

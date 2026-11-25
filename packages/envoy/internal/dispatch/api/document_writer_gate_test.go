@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // writerGateHandler serves the API on a request pool of maxConns connections, with limiter
@@ -142,6 +143,7 @@ func requireEditsLanded(t *testing.T, responses []*httptest.ResponseRecorder) {
 // so they hold no connection: before the gate each held one while it waited for the issue row and
 // the writer slot, and writers clustered on one document took the whole pool.
 func TestAnchoredWritesQueuedForADocumentHoldNoConnection(t *testing.T) {
+	t.Parallel()
 	gate := &gatedMarkQuote{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, service, database := writerGateHandler(t, 16, patientWriterLimiter(), func(service *docs.Service) docs.API {
 		gate.API = service
@@ -190,6 +192,7 @@ func TestAnchoredWritesQueuedForADocumentHoldNoConnection(t *testing.T) {
 // A document's writer gate queues at most 32 writers behind its holder; the next is answered 429
 // EDIT_QUEUE_FULL with Retry-After before it opens a transaction, and the queued ones still land.
 func TestTheWriterQueuedPastTheBoundIsRefusedWithRetryAfter(t *testing.T) {
+	t.Parallel()
 	handler, service, _ := writerGateHandler(t, 8, patientWriterLimiter(), nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Writer queue bound", "First line.")
 	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
@@ -217,6 +220,7 @@ func TestTheWriterQueuedPastTheBoundIsRefusedWithRetryAfter(t *testing.T) {
 
 // Writers queued for one document do not hold up a write to another.
 func TestAWriteToAnotherDocumentProceedsWhileWritersQueueOnTheFirst(t *testing.T) {
+	t.Parallel()
 	handler, service, _ := writerGateHandler(t, 8, patientWriterLimiter(), nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Writers on two documents", "First line.")
 	other := createSecondDocument(t, handler, issue.Key)
@@ -240,6 +244,7 @@ func TestAWriteToAnotherDocumentProceedsWhileWritersQueueOnTheFirst(t *testing.T
 // A writer queued for a document gives its admission units back while it waits: with room for two
 // writes at once, two writers queued on one document leave room for a write to another.
 func TestWritersQueuedOnADocumentLeaveAdmissionRoomForOthers(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{Read: 4, Write: 2})
 	handler, service, _ := writerGateHandler(t, 8, limiter, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Parked writers", "First line.")
@@ -267,6 +272,7 @@ func TestWritersQueuedOnADocumentLeaveAdmissionRoomForOthers(t *testing.T) {
 // (docs.AcquireDocumentWriter), so it is long enough here for the gate to reach the writer: a
 // shorter one would answer it the gate's own 429 EDIT_QUEUE_FULL before this test's holder let go.
 func TestAQueuedWriterThatFindsNoAdmissionRoomIsRefusedOverloaded(t *testing.T) {
+	t.Parallel()
 	limiter := admission.New(admission.Limits{
 		Read: 4, Write: 1, ReadWait: 20 * time.Millisecond, WriteWait: 2 * time.Second,
 	})
@@ -334,6 +340,7 @@ func TestAQueuedWriterThatFindsNoAdmissionRoomIsRefusedOverloaded(t *testing.T) 
 // (admission.Ticket.Waited), so the take-back's timer gets only what is left of it. Uncounted,
 // this write waited 2 s at the gate and then a whole fresh 3 s for a unit.
 func TestAWriteParkedAtAGateAndRefusedOnItsTakeBackCostsOneWait(t *testing.T) {
+	t.Parallel()
 	const (
 		writeWait = 3 * time.Second
 		parkFor   = 2 * time.Second
@@ -408,6 +415,7 @@ func TestAWriteParkedAtAGateAndRefusedOnItsTakeBackCostsOneWait(t *testing.T) {
 // "the server has no room for another write request", which was neither true nor within any wait
 // (INFRA-592).
 func TestAWriteParkedAtABusyDocumentIsAnsweredWithinItsWait(t *testing.T) {
+	t.Parallel()
 	const (
 		writeWait = 500 * time.Millisecond
 		// Slack for the work the write does before it parks: its body, its admission, and the
@@ -474,6 +482,7 @@ func TestAWriteParkedAtABusyDocumentIsAnsweredWithinItsWait(t *testing.T) {
 // writer holding that gate must not delay it, and a queue full of writers must not turn it into a
 // retryable 429 that a client would send again for ever.
 func TestACommentEditRefusedForItsInputWaitsOnNoWriterGate(t *testing.T) {
+	t.Parallel()
 	handler, service, _ := writerGateHandler(t, 8, nil, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Refused edit", "alpha bravo charlie")
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -499,16 +508,10 @@ func TestACommentEditRefusedForItsInputWaitsOnNoWriterGate(t *testing.T) {
 			"blocks": []map[string]any{{"id": "b1", "from": 0}},
 		}, "alice")
 	}()
-	select {
-	case refused := <-answered:
-		if refused.Code != http.StatusBadRequest {
-			t.Errorf("an edit with blocks and no base_revision: status=%d body=%s, want 400", refused.Code, refused.Body.String())
-		}
-	case <-time.After(2 * time.Second):
-		t.Errorf("an edit with blocks and no base_revision is still unanswered 2 s into another writer's hold of the document's gate (%d writers queued), want its 400 at once",
-			service.QueuedDocumentWriters())
-		releaseHold()
-		<-answered
+	// The gate is held until after the answer, so an edit that queued for it would not be answered
+	// its 400 while it is held: the answer coming at all is the proof.
+	if refused := testwait.Receive(t, "the answer of an edit with blocks and no base_revision while another writer holds the document's gate", answered); refused.Code != http.StatusBadRequest {
+		t.Errorf("an edit with blocks and no base_revision: status=%d body=%s, want 400", refused.Code, refused.Body.String())
 	}
 }
 
@@ -516,6 +519,7 @@ func TestACommentEditRefusedForItsInputWaitsOnNoWriterGate(t *testing.T) {
 // ask's reply: its 400 TURN_REQUIRES_ASK is the request's own, answered before it queues for the
 // anchored document's writer gate, like the other refusals the request decides alone.
 func TestAnAnchoredCommentWithATurnIsRefusedBeforeTheWriterGate(t *testing.T) {
+	t.Parallel()
 	handler, service, _ := writerGateHandler(t, 8, nil, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Refused turn", "alpha bravo charlie")
 	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
@@ -534,18 +538,12 @@ func TestAnAnchoredCommentWithATurnIsRefusedBeforeTheWriterGate(t *testing.T) {
 			"turn":   "agent",
 		}, "alice")
 	}()
-	select {
-	case refused := <-answered:
-		if refused.Code != http.StatusBadRequest || decodeBody[struct {
-			Code string `json:"code"`
-		}](t, refused).Code != "TURN_REQUIRES_ASK" {
-			t.Errorf("an anchored comment with a turn: status=%d body=%s, want 400 TURN_REQUIRES_ASK", refused.Code, refused.Body.String())
-		}
-	case <-time.After(2 * time.Second):
-		t.Errorf("an anchored comment with a turn is still unanswered 2 s into another writer's hold of the document's gate (%d writers queued), want its 400 at once",
-			service.QueuedDocumentWriters())
-		releaseHold()
-		<-answered
+	// The gate is held until after the answer, as in TestACommentEditRefusedForItsInputWaitsOnNoWriterGate.
+	refused := testwait.Receive(t, "the answer of an anchored comment with a turn while another writer holds the document's gate", answered)
+	if refused.Code != http.StatusBadRequest || decodeBody[struct {
+		Code string `json:"code"`
+	}](t, refused).Code != "TURN_REQUIRES_ASK" {
+		t.Errorf("an anchored comment with a turn: status=%d body=%s, want 400 TURN_REQUIRES_ASK", refused.Code, refused.Body.String())
 	}
 }
 
@@ -555,6 +553,7 @@ func TestAnAnchoredCommentWithATurnIsRefusedBeforeTheWriterGate(t *testing.T) {
 // not gate: like every other gated write, it gates them once more and lands, rather than
 // refusing a close for a document somebody else created in between (gatedWrite).
 func TestAnIssueCloseWhoseDocumentsMovedWhileItWaitedIsGatedAgain(t *testing.T) {
+	t.Parallel()
 	handler, service, _ := writerGateHandler(t, 8, nil, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Close past a new document", "First line.")
 	_, hold, err := service.AcquireDocumentWriter(context.Background(), issue.PrimaryArtifactID)
@@ -587,6 +586,7 @@ func TestAnIssueCloseWhoseDocumentsMovedWhileItWaitedIsGatedAgain(t *testing.T) 
 // later write first. So a second writer of the document waits at the gate for as long as the
 // first edit's publish is held (1f2f572d; the same holds for storeArtifact).
 func TestAnEditHoldsItsDocumentsGateUntilItsEventsArePublished(t *testing.T) {
+	t.Parallel()
 	handler, _, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	service, documents := deps.Docs.(*docs.Service)
 	if !documents {
@@ -608,39 +608,26 @@ func TestAnEditHoldsItsDocumentsGateUntilItsEventsArePublished(t *testing.T) {
 	go func() {
 		first <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("The first edit."))
 	}()
-	select {
-	case <-publishing:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the first edit never reached its publish")
-	}
+	testwait.Receive(t, "the first edit to reach its publish", publishing)
 	second := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		second <- editDocument(t, handler, issue.PrimaryArtifactID, insertAtEnd("The second edit."))
 	}()
 
-	deadline := time.Now().Add(15 * time.Second)
-	for service.QueuedDocumentWriters() == 0 {
+	waitUntil(t, "the second edit to reach the document's writer gate", func() bool {
 		select {
 		case response := <-second:
 			t.Fatalf("a second writer of the document answered %d while the first edit's events were still unpublished, want it held at the gate until they are out",
 				response.Code)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second edit never reached the document's writer gate")
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return service.QueuedDocumentWriters() != 0
+	})
 	close(holdPublish)
 
 	for name, answers := range map[string]chan *httptest.ResponseRecorder{"first": first, "second": second} {
-		select {
-		case response := <-answers:
-			if response.Code != http.StatusOK {
-				t.Fatalf("the %s edit: status=%d body=%s, want 200", name, response.Code, response.Body.String())
-			}
-		case <-time.After(15 * time.Second):
-			t.Fatalf("the %s edit was never answered", name)
+		if response := testwait.Receive(t, "the "+name+" edit's answer", answers); response.Code != http.StatusOK {
+			t.Fatalf("the %s edit: status=%d body=%s, want 200", name, response.Code, response.Body.String())
 		}
 	}
 }
