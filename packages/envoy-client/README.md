@@ -1184,10 +1184,10 @@ where it holds none. A write goes again under the same `Idempotency-Key`. A read
 for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
 made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
 the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`).
-`dispatch api`'s read is one send, which Dispatch's answer of no route does not repeat, and the
-command prints that refusal as it came. If the broker refuses the new trade, the call fails in
-the broker's words, unless an attempt of the write may have landed: then the write asks again
-on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
+`dispatch api`'s request, its GET or its write, is one send, which Dispatch's answer of no route
+does not repeat, and the command prints that refusal as it came. If the broker refuses the new
+trade, the call fails in the broker's words, unless an attempt of the write may have landed: then
+the write asks again on its pacing, and with no ask left it is `DispatchWriteUnsettledError`.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1342,42 +1342,55 @@ typed into. The earlier login is the one the file holds just before the save, re
 the save holds, so of two logins made at once the one kept second names the other. On a machine
 whose `AGENT_SECRETS_MACHINE_IDENTITY` is not `device-login`, it says to set that variable.
 
-`dispatch api <METHOD> <path> [--body-file <file>|-]` sends one request of Dispatch's HTTP API and
-prints the answer's body (`dispatch-commands/api.ts`). It is for a script or a job: a broker token
-is bound to a key, so no script can send it as a bearer. `runDispatchCli` runs it before it parses
-any other command, as it runs `dispatch login`. `<METHOD>` is `GET`, `POST`, `PUT`, `PATCH` or
-`DELETE`. `<path>` is `/api/v1`, which lists every route, or a path under `/api/v1/`, with its
-query if it has one. It must parse against the Dispatch URL the command is set for to that URL's
-origin, and the path before `?` must be the pathname the URL parser reads, so a URL, `..`,
-`%2e%2e`, `\` and every other spelling the parser changes are refused before anything is sent,
-and the credential goes to no other server and no other route. `--body-file <file>` sends the
-file's text, and `--body-file -` standard input, as the request's JSON body
-(`Content-Type: application/json`); standard input is read only with that flag, and `GET` takes
-no body. The credential is the one every command presents: a set bearer, else a token traded at
-the secrets broker, with a new DPoP proof for the request. It sends the request once: it follows
-no redirect, retries nothing and sends no `Idempotency-Key`. The answer's body goes to standard
-output as text, and every line of the command's own to standard error. It exits 0 on a 2xx
-answer; 1 on any other answer, writing `dispatch api: <METHOD> <path> answered <status> <code>`,
-where `<code>` is the body's `code` or `with no code` for a body that is not Dispatch's JSON, on
-no answer, naming the failure, and on a write AskGate refuses (below); and 2 on a usage error,
-which sends nothing.
+`dispatch api --path <route> [--method POST|PUT|PATCH|DELETE] [--body-file <file>|-]` sends one
+request of a route under `/api/v1` that no other command sends (`apiCommand`,
+`src/dispatch-commands/api.ts`), with the session's own credential as every command presents it
+(a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
+new DPoP proof for the request), and prints Dispatch's JSON answer for `jq`. It is the contract's
+spec `dispatch_api`, so an agent's tool call runs it as the CLI does. With no `--method` it sends
+a GET (`DispatchClient.readRoute`); `--method` sends `POST`, `PUT`, `PATCH` or `DELETE` in its
+place (`DispatchClient.sendRoute`), and `GET` is no value of it. A write that a named command
+makes goes through that command (`dispatch --help` lists them): `dispatch api` is for a route no
+command sends, and it is how a script or a job writes, since a broker token is bound to a key and
+no script can send it as a bearer. `--body-file <file>` sends the file's text, `--body-file -`
+standard input, and `--body` its value, as the request's JSON body
+(`Content-Type: application/json`), and only beside `--method`: a GET sends no body, and a write
+given none sends no body and no `Content-Type`. Standard input is read only with
+`--body-file -`. `<route>` is `/api/v1`, which lists every route, or a route under it, with its
+query after `?`. The spec refuses, before anything is sent, a path that does not begin `/api/v1`
+(a URL among them), one that holds a space, a backslash, a `#` or a character outside printable
+ASCII, one that holds `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its query, which a URL parser
+would send percent-encoded, and one with a `.` or `..` segment, plain or percent-encoded, since a
+URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
+credential goes to no other server and no other route. It sends the request once: it follows no
+redirect and sends no `Idempotency-Key`. It exits 0 on a 2xx answer, printing a bodiless 204 as
+empty text. A refusal is Dispatch's error with its code and, where Dispatch gives one, its hint
+(`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), exit 1; an answer
+that is not Dispatch's JSON, such as a proxy's page or a redirect, is named by its status, exit
+1 too. A call refused before anything is sent, such as a path outside `/api/v1` or a body with
+no method, is a usage error, exit 2. Under Claude Code, an answer longer than the output limit is
+written to a file the output names.
 
 Under a host it acts as that host's session, as every command does, and refuses a missing
-session id with the usage error they give. Where no host is found, as in a GitHub Actions job, it
-reads Dispatch from the environment alone and no envoy.json: `DISPATCH_URL`, and
-`DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE` or the broker's `AGENT_SECRETS_URL` and
+session id with the usage error they give. Where no host is found (`commandHost`), as in a
+GitHub Actions job, it runs all the same, like `dispatch login`: it reads Dispatch from the
+environment alone and no envoy.json (`unhostedDispatch`): `DISPATCH_URL`, and `DISPATCH_TOKEN`,
+`DISPATCH_TOKEN_FILE`, the token files (below) or the broker's `AGENT_SECRETS_URL` and
 `AGENT_SECRETS_MACHINE_IDENTITY`, with `DISPATCH_TOKEN_BROKER` read as every command reads it.
 Its trade names the session `DISPATCH_SESSION_ID` holds, else `AGENT_SECRETS_SESSION`'s, else no
 session, which the fixed session of the job's broker entry answers; with none, the broker refuses
 the trade and the command exits 1 naming the refusal. With no Dispatch or no credential set it
-exits 2, naming those variables. For a write, the AskGate record of every session the environment
-names (`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is
-read, host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
+exits 2, naming those variables. It keeps no session's state there: a refusal before a request
+goes to the ledger of the session the environment names, if any, and a request that was sent
+records nothing. For a write, the AskGate record of every session the environment names
+(`ENVOY_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `DISPATCH_SESSION_ID`, `CODEX_THREAD_ID`) is read,
+host or no host. Where any of them is on, or cannot be read, it sends only `GET`, and refuses
 every other method before any request with exit 1, naming the `dispatch` command that makes that
-write (`WRITE_ROUTES`), which AskGate reviews. A variable that holds no valid session id (1 to 128
-letters, digits, `.`, `_` or `-`) is a usage error that names the variable, a `GET` included.
-Where every record is off, or the environment names no
-session (CI, a terminal, a script), every method is sent.
+write (`WRITE_ROUTES`), which AskGate reviews, for the CLI and an agent's tool call alike; the
+refusal's ledger line carries AskGate's mark, so pi-envoy counts it. For a write, a variable that
+holds no valid session id (1 to 128 letters, digits, `.`, `_` or `-`) is a usage error that names
+the variable; a `GET` reads no AskGate record. Where every record is off, or the environment
+names no session (CI, a terminal, a script), every method is sent.
 
 A GitHub Actions job runs it with no host plugin. The command is the `bin/dispatch` of
 `@sjawhar/codex-envoy`, which is that package's npm `bin`
@@ -1394,7 +1407,7 @@ permissions:
   id-token: write
 steps:
   # bun is on PATH from an earlier step: bin/dispatch runs dist/dispatch.js with it.
-  - run: npx --package @sjawhar/codex-envoy dispatch api GET /api/v1/whoami
+  - run: npx --package @sjawhar/codex-envoy dispatch api --path /api/v1/whoami
     env:
       DISPATCH_URL: https://dispatch.example
       AGENT_SECRETS_URL: https://cipher.example
@@ -1607,13 +1620,3 @@ answers that request and records the same verdict on every document the request 
 the version the request names. The output names the state, the version and the actor that
 Dispatch recorded, and says when the review also answered an open request. A refusal starts with
 Dispatch's code.
-
-`dispatch api --path <route>` sends one GET of a route under `/api/v1` that no other command
-reads (`apiCommand`, `src/dispatch-commands/api.ts`, through `DispatchClient.readRoute`), with the
-session's own credential as every command presents it, and prints Dispatch's JSON answer for
-`jq`. It takes no method and no body: a write goes through the command named for it. The spec
-refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
-backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
-plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
-refusal of the read is Dispatch's error with its code and, where Dispatch gives one, its hint,
-exit 1.

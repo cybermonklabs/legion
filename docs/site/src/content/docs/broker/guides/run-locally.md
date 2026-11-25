@@ -589,7 +589,7 @@ seeded EXAMPLE
 ok   [job pod] GET /api/v1/whoami: exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE (want exit 0 -, owner null, service system:serviceaccount:example-ns:example-job, session example-job-session, project EXAMPLE)
 ok   [job pod] POST /api/v1/issues (EXAMPLE, body on standard input): exit 0 -, key EXAMPLE-1 (want exit 0 -, a key)
 ok   [job pod] GET /api/v1/issues/EXAMPLE-1/events: exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none (want exit 0 -, issue.created by session:example-job-session, service system:serviceaccount:example-ns:example-job, owner none)
-ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 403 PROJECT_SCOPE (want exit 1 PROJECT_SCOPE)
+ok   [job pod] POST /api/v1/issues (OPS, body on standard input): exit 1 PROJECT_SCOPE (want exit 1 PROJECT_SCOPE)
 ok   [job workflow] POST /api/v1/issues/EXAMPLE-1/comments (body from a file): exit 0 - (want exit 0 -)
 ok   [job workflow] GET /api/v1/whoami: exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main, session example-workflow-session, project null (want exit 0 -, owner null, service example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main)
 ok   [person entry] GET /api/v1/whoami: exit 0 -, owner ada@example.com, service null, session example-worker-session, project EXAMPLE (want exit 0 -, owner ada@example.com)

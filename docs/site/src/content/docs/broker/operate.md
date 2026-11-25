@@ -847,10 +847,12 @@ permission `id-token: write`, so that GitHub sets `ACTIONS_ID_TOKEN_REQUEST_URL`
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and `AGENT_SECRETS_MACHINE_AUDIENCE`, which must
 equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`: the client asks GitHub for a token of that
 audience, and the broker refuses a token of any other. Each trade asks GitHub for a new token,
-since the broker takes each GitHub token once. `dispatch api <METHOD> <path>`, the `bin/dispatch`
+since the broker takes each GitHub token once. `dispatch api --path <route>`, the `bin/dispatch`
 of `@sjawhar/codex-envoy` or `@sjawhar/pi-envoy`, then sends the job's requests to Dispatch under
-the traded token. `agent-secrets` refuses `github-actions` (exit 2), as it refuses `kubernetes`,
-since the broker mints no launcher credential for a workflow run.
+the traded token: a `GET`, or with `--method POST`, `PUT`, `PATCH` or `DELETE` a write, whose body
+`--body-file` reads from a file or, as `--body-file -`, from standard input. `agent-secrets`
+refuses `github-actions` (exit 2), as it refuses `kubernetes`, since the broker mints no launcher
+credential for a workflow run.
 
 No setting turns on a read trade. Every trade the exchange takes but a job entry's may ask for
 the scope `read` (`scope=read`), and its token keeps the identity the same trade would have had

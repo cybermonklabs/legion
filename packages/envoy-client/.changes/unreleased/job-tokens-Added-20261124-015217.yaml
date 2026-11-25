@@ -1,17 +1,13 @@
 kind: Added
 body: |-
-  `dispatch api <METHOD> <path> [--body-file <file>|-]` sends one request of Dispatch's HTTP API
-  with the credential every `dispatch` command presents, a token traded at the secrets broker
-  included, and prints the answer's body. It takes `/api/v1` and the paths under `/api/v1/` of the
-  configured Dispatch, and refuses any other path and any URL before it sends anything. It sends
-  the request once, with no retry, no redirect followed and no `Idempotency-Key`. It exits 0 on a
-  2xx answer, 1 on any other answer, naming the status and Dispatch's code, and 2 on a usage error.
-  With no host plugin, as in a GitHub Actions job, it reads Dispatch from the environment alone
-  (`DISPATCH_URL` and a credential, the token files `DISPATCH_BROKER_TOKEN_FILE` and
-  `DISPATCH_BROKER_DPOP_KEY_FILE` among them, as every `dispatch` command takes them) and reads no
-  envoy.json. In a session whose AskGate reviews
-  Dispatch writes, it sends only `GET` and names the `dispatch` command that makes the write; the
-  session's ledger records that refusal with AskGate's mark, so AskGate's report counts it.
+  `dispatch api` runs with no host plugin too, as in a GitHub Actions job: it then reads Dispatch
+  from the environment alone (`DISPATCH_URL` and a credential, the token files
+  `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE` among them, as every `dispatch`
+  command takes them) and reads no envoy.json, and its broker trade names the session of
+  `DISPATCH_SESSION_ID`, else of `AGENT_SECRETS_SESSION`, else the session the job's broker entry
+  fixes. With no Dispatch or no credential set, it exits 2 naming the variables to set. Such a job
+  writes to Dispatch under its own token with `dispatch api --method POST` (or `PUT`, `PATCH` or
+  `DELETE`), its body read from a file or from standard input.
 
   `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` trades a GitHub Actions run's OIDC token at the
   broker. The client asks GitHub for a new token at every trade, at `ACTIONS_ID_TOKEN_REQUEST_URL`

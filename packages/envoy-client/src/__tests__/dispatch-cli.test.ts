@@ -1735,9 +1735,10 @@ describe("the dispatch CLI", () => {
   });
 });
 
-// `dispatch api`: one GET of a route under /api/v1, with the session's own credential, Dispatch's
-// JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each request
-// carried, which the server above does not, and a broker of its own answers a pod's trade.
+// `dispatch api`: one request of a route under /api/v1 (a GET here; its writes are in
+// dispatch-api.test.ts), with the session's own credential, Dispatch's JSON answer printed as `jq`
+// reads it. Its own Dispatch records the Authorization each request carried, which the server
+// above does not, and a broker of its own answers a pod's trade.
 describe("dispatch api", () => {
   interface Asked {
     readonly method: string;

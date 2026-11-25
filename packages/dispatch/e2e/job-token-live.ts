@@ -1,11 +1,13 @@
 /** `bun e2e/job-token-live.ts`: the live proof that a job's token a running secrets broker mints
  *  writes to a running Dispatch under the job's own identity and no person's, through
- *  `dispatch api`. A job entry (BROKER_EXCHANGE_JOB_ACCOUNTS, BROKER_EXCHANGE_JOB_WORKFLOWS) names
- *  an identity, its projects and a fixed session, and no person; the broker's exchange answers that
- *  identity's own token with a token whose service is the identity, and Dispatch records each write
- *  of it under the session with that service and no owner, and holds a token of one project to that
- *  project (PROJECT_SCOPE elsewhere). The example entry's token, which names a person, is the
- *  control: whoami names that person as its owner, so the read tells a person's token from a job's.
+ *  `dispatch api`: `--path <route>` for a GET, and `--method POST` with `--body-file` for a write,
+ *  its body read from a file or from standard input. A job entry (BROKER_EXCHANGE_JOB_ACCOUNTS,
+ *  BROKER_EXCHANGE_JOB_WORKFLOWS) names an identity, its projects and a fixed session, and no
+ *  person; the broker's exchange answers that identity's own token with a token whose service is
+ *  the identity, and Dispatch records each write of it under the session with that service and no
+ *  owner, and holds a token of one project to that project (PROJECT_SCOPE elsewhere). The example
+ *  entry's token, which names a person, is the control: whoami names that person as its owner, so
+ *  the read tells a person's token from a job's.
  *
  *  Run it from packages/dispatch once two stacks are up on this machine:
  *
@@ -98,7 +100,8 @@ function actionsRequestUrl(issuerLog: string, tokenFile: string): string {
 }
 
 /** What one `dispatch api` run did: its exit status, the body it printed, and the code Dispatch
- *  answered (`<status> <code>` off its refusal line, "-" for an answer it took). */
+ *  answered (the `<CODE>` of the `<CODE>: <error>` line the command prints for Dispatch's refusal,
+ *  "-" for an answer it took, and the command's own last line in parentheses for any other end). */
 interface Ran {
   readonly exit: number;
   readonly body: string;
@@ -135,9 +138,10 @@ async function dispatchApi(
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  const refused = / answered (\d+ \S+.*)$/m.exec(stderr)?.[1];
-  const said = stderr.trim().split("\n").at(-1) ?? "";
-  return { body, code: refused ?? (exit === 0 ? "-" : `(${said})`), exit };
+  // The command prints Dispatch's refusal on standard output, as it prints every line of its own.
+  const refused = exit === 0 ? undefined : /^([A-Z][A-Z0-9_]*): /.exec(body)?.[1];
+  const said = (body.trim() || stderr.trim()).split("\n").at(-1) ?? "";
+  return { body, code: exit === 0 ? "-" : (refused ?? `(${said})`), exit };
 }
 
 let mismatches = 0;
@@ -211,7 +215,7 @@ async function main(work: string): Promise<void> {
     AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
     AGENT_SECRETS_MACHINE_TOKEN_FILE: join(brokerDir, "job-token"),
   };
-  whoami("[job pod]", await dispatchApi(brokerUrl, pod, ["GET", "/api/v1/whoami"]), {
+  whoami("[job pod]", await dispatchApi(brokerUrl, pod, ["--path", "/api/v1/whoami"]), {
     owner: null,
     service: jobAccount,
     session: jobSession,
@@ -221,7 +225,7 @@ async function main(work: string): Promise<void> {
   const created = await dispatchApi(
     brokerUrl,
     pod,
-    ["POST", "/api/v1/issues", "--body-file", "-"],
+    ["--method", "POST", "--path", "/api/v1/issues", "--body-file", "-"],
     JSON.stringify({ project, spec, title: `Filed by a job pod in ${project}` })
   );
   const key = parsed(created.body).key;
@@ -233,7 +237,7 @@ async function main(work: string): Promise<void> {
   );
   if (typeof key !== "string") throw new Error(`the job pod created no issue: ${created.body}`);
 
-  const listed = await dispatchApi(brokerUrl, pod, ["GET", `/api/v1/issues/${key}/events`]);
+  const listed = await dispatchApi(brokerUrl, pod, ["--path", `/api/v1/issues/${key}/events`]);
   let events: unknown;
   try {
     events = JSON.parse(listed.body);
@@ -258,12 +262,12 @@ async function main(work: string): Promise<void> {
   const elsewhere = await dispatchApi(
     brokerUrl,
     pod,
-    ["POST", "/api/v1/issues", "--body-file", "-"],
+    ["--method", "POST", "--path", "/api/v1/issues", "--body-file", "-"],
     JSON.stringify({ project: otherProject, spec, title: `Filed by a job pod in ${otherProject}` })
   );
   report(
     `[job pod] POST /api/v1/issues (${otherProject}, body on standard input)`,
-    elsewhere.exit === 1 && / PROJECT_SCOPE$/.test(elsewhere.code),
+    elsewhere.exit === 1 && elsewhere.code === "PROJECT_SCOPE",
     `exit ${elsewhere.exit} ${elsewhere.code}`,
     "exit 1 PROJECT_SCOPE"
   );
@@ -281,7 +285,9 @@ async function main(work: string): Promise<void> {
     JSON.stringify({ body: `Written by job-token-live.ts, run ${randomUUID()}.` })
   );
   const commented = await dispatchApi(brokerUrl, workflow, [
+    "--method",
     "POST",
+    "--path",
     `/api/v1/issues/${key}/comments`,
     "--body-file",
     commentFile,
@@ -292,7 +298,7 @@ async function main(work: string): Promise<void> {
     `exit ${commented.exit} ${commented.code}`,
     "exit 0 -"
   );
-  whoami("[job workflow]", await dispatchApi(brokerUrl, workflow, ["GET", "/api/v1/whoami"]), {
+  whoami("[job workflow]", await dispatchApi(brokerUrl, workflow, ["--path", "/api/v1/whoami"]), {
     owner: null,
     service: workflowService,
   });
@@ -303,7 +309,7 @@ async function main(work: string): Promise<void> {
     AGENT_SECRETS_MACHINE_TOKEN_FILE: join(brokerDir, "exchange-token"),
     DISPATCH_SESSION_ID: personSession,
   };
-  whoami("[person entry]", await dispatchApi(brokerUrl, control, ["GET", "/api/v1/whoami"]), {
+  whoami("[person entry]", await dispatchApi(brokerUrl, control, ["--path", "/api/v1/whoami"]), {
     owner: person,
   });
 }

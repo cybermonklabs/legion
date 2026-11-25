@@ -4,10 +4,10 @@ body: |-
   run's identity. It reads `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`,
   which GitHub sets in a job that holds `id-token: write`, and `AGENT_SECRETS_MACHINE_AUDIENCE`,
   which must equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`. It asks GitHub for a new token
-  at every trade, and the Codex plugin passes the two GitHub variables to its server. The bundled
-  `dispatch` command gains `dispatch api <METHOD> <path>`, which sends one request of Dispatch's
-  HTTP API with the credential every command presents. A GitHub Actions job runs it with no host,
-  as `npx --package @sjawhar/codex-envoy dispatch api …`, with bun on its `PATH`.
+  at every trade, and the Codex plugin passes the two GitHub variables to its server. A GitHub
+  Actions job runs the bundled `dispatch api` with no host, as
+  `npx --package @sjawhar/codex-envoy dispatch api --path <route>`, with bun on its `PATH`, and
+  writes to Dispatch with its `--method` and a body.
 time: 2026-11-24T01:52:17Z
 custom:
     Issue: job-tokens
