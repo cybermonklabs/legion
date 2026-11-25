@@ -70,6 +70,7 @@ jobs:
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
       # package of the envoy module holds. It saves none.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -77,6 +78,11 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
       # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built
