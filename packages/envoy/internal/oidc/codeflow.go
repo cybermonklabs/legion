@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/redirects"
 )
 
 // TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -25,13 +26,11 @@ const TokenTimeout = 10 * time.Second
 
 // tokenClient is the HTTP client every call that carries the client's credentials is made with:
 // the code flow's own calls to the token and revocation endpoints, and CheckClient's discovery
-// read and token request. A redirect is answered as it stands: following a 307 or 308 would
-// re-send the form, and with it a code, a refresh token or the client's secret, to wherever the
-// redirect points.
+// read and token request. A redirect is answered as it stands (redirects.Refused): following a
+// 307 or 308 would re-send the form, and with it a code, a refresh token or the client's secret,
+// to wherever the redirect points.
 func tokenClient() *http.Client {
-	return &http.Client{Timeout: TokenTimeout, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+	return redirects.Refused(&http.Client{Timeout: TokenTimeout})
 }
 
 // signInScopes are the scopes a sign-in asks for: an ID token (openid) naming the person.
