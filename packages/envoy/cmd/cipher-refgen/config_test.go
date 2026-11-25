@@ -52,6 +52,39 @@ func TestConfigReadsEachStoresVariables(t *testing.T) {
 	}
 }
 
+// TestConfigReadsEachProvidersVariables: a variable only one caller identity provider's package
+// parses is read and documented from that package, as a store's is, so the configuration page
+// keeps every identity setting after the providers took their own parsing.
+func TestConfigReadsEachProvidersVariables(t *testing.T) {
+	vars, err := readConfig(repoRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := map[string]variable{}
+	for _, v := range vars {
+		read[v.Name] = v
+	}
+	for name, where := range map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":           envoyDir + "/internal/cipher/identity/kubernetes/",
+		"BROKER_POD_REGISTRATION_AUDIENCE": envoyDir + "/internal/cipher/identity/kubernetes/",
+		"BROKER_GOOGLE_OIDC_AUDIENCE":      envoyDir + "/internal/cipher/identity/google/",
+		"BROKER_VM_SERVICES":               envoyDir + "/internal/cipher/identity/google/",
+		"BROKER_EXCHANGE_GITHUB_ISSUER":    envoyDir + "/internal/cipher/identity/github/",
+	} {
+		v, ok := read[name]
+		if !ok {
+			t.Errorf("%s is read by no package the config page reads", name)
+			continue
+		}
+		if !strings.HasPrefix(v.At, where) {
+			t.Errorf("%s is read at %s, want its own provider's package under %s", name, v.At, where)
+		}
+		if strings.TrimSpace(v.Doc) == "" {
+			t.Errorf("%s has no documentation", name)
+		}
+	}
+}
+
 // TestSettingsFieldsAreDocumented: GET /v1/settings's body lists each store's own fields, each
 // with the text its SettingsFields struct documents it by, beside the fields every store answers.
 func TestSettingsFieldsAreDocumented(t *testing.T) {

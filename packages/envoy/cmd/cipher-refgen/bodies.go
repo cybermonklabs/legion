@@ -129,14 +129,16 @@ func (g *graph) fields(ref structRef) ([]jsonField, error) {
 	return out, nil
 }
 
-// storeSettingsFields is the JSON fields each secret store's own SettingsFields struct declares,
-// in registry file order, for a body field tagged refgen:"store-settings". Any other refgen tag
-// is a mistake, named at where.
+// storeSettingsFields is the JSON fields the backends' own SettingsFields structs declare, in
+// registry file order — every secret store's, then each caller identity provider that answers a
+// field of its own — for a body field tagged refgen:"store-settings". A store with no such struct
+// is a mistake, since every store answers its own settings; a provider with none simply adds no
+// field. Any other refgen tag is a mistake, named at where.
 func (g *graph) storeSettingsFields(tag, where string) ([]jsonField, error) {
 	if tag != "store-settings" {
 		return nil, fmt.Errorf("%s: refgen:%q is no tag refgen knows; the one it knows is store-settings", where, tag)
 	}
-	ids, err := storeIDs(g.src.root)
+	ids, err := registryIDs(g.src.root, storeRegistryDir, "backends.go")
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +153,25 @@ func (g *graph) storeSettingsFields(tag, where string) ([]jsonField, error) {
 			return nil, fmt.Errorf("%s: the %s store declares no SettingsFields, so its settings fields are documented nowhere", where, id)
 		}
 		fields, err := g.fields(structRef{store, ts, gd})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, fields...)
+	}
+	kinds, err := registryIDs(g.src.root, identityRegistryDir, "boot.go")
+	if err != nil {
+		return nil, err
+	}
+	for _, kind := range kinds {
+		provider, err := g.pkg(identityDir + kind)
+		if err != nil {
+			return nil, err
+		}
+		ts, gd := provider.typeSpec("SettingsFields")
+		if ts == nil {
+			continue
+		}
+		fields, err := g.fields(structRef{provider, ts, gd})
 		if err != nil {
 			return nil, err
 		}
