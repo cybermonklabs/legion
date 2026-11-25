@@ -28,6 +28,7 @@ import {
 } from "./agents";
 import {
   answerAsk,
+  changeIssueStatus,
   claimIssue,
   createAgentMessage,
   createAsk,
@@ -10447,5 +10448,95 @@ test("the project List's Claimed by filter draws no count of the lapsed claims b
   for (const route of held.splice(0)) await route.continue();
   // The control: once the list answers, the lapsed claim counts beside the unclaimed issue.
   await expect.poll(claimOptions).toContain("Nobody or lapsed, 2 issues");
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the project List opened over two open and two closed issues, with Done added while the closed issues read is held.
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-24 08:07Z (never a
+// count of the rows read so far) and the round-23 rule. Measured in builds Jobs
+// infra-3135-c3-h-pwg42 (head 8e7e463a), infra-3135-c3-b-w7gw5 (34dc6a07) and infra-3135-c3-m-9gdl4
+// (main 0dbe5048), in Chromium, Firefox and WebKit at 1440x900: with Done added to the Status
+// filter and the closed issues read (`GET /api/v1/issues?project=CORE` without `open`) held, the
+// page says "Loading closed issues…" and Status offers "Done, not loaded", but Assignee offers
+// "alice, 1 issue" and Priority "P1, 1 issue", counts of the open issues alone; once the closed
+// issues answer they read "alice, 3 issues" and "P1, 3 issues". The table is drawn from the open
+// read while the closed one is out (IssuesTable.tsx:211-213), only Done is marked unread
+// (`DONE_UNLOADED`, :69, :597), and every other value is counted over the rows read so far
+// (`filterCounts={openFacets}`, :596, with no `filterCounted`; the `counted` of :249 gates the
+// Showing chip alone).
+test("the project List's header filters draw no count while the closed issues they count are out @firefox @webkit", async ({
+  page,
+}) => {
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  const open = await createIssue({ project: "CORE", title: "Open work for alice" });
+  await patchIssue(open.key, { assignee: "alice", priority: 1 });
+  const other = await createIssue({ project: "CORE", title: "Open work for bob" });
+  await patchIssue(other.key, { assignee: "bob", priority: 2 });
+  const closed: string[] = [];
+  for (const title of ["Closed work one", "Closed work two"]) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { assignee: "alice", priority: 1 });
+    await changeIssueStatus(issue.key, { status: "done" });
+    closed.push(issue.key);
+  }
+  // The closed issues read - the project's whole list, asked for once Done is picked - is held
+  // until the row lets it through; the open issues read goes through.
+  let holding = true;
+  const held: Route[] = [];
+  await page.route(
+    (url) =>
+      url.pathname === "/api/v1/issues" &&
+      url.searchParams.get("project") === "CORE" &&
+      !url.searchParams.has("open"),
+    async (route) => {
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.continue();
+    }
+  );
+  /** Each option of one header filter, by its accessible name, read once it holds `count`. */
+  const headerOptions = async (header: string, count: number): Promise<string[]> => {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^Filter ${header}(?:: \\d+ picked)?$`, "u"),
+    });
+    await trigger.click();
+    const options = listOf(trigger).getByRole("option");
+    await expect(options).toHaveCount(count);
+    const names = await options.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("aria-label") ?? "")
+    );
+    await page.keyboard.press("Escape");
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    return names;
+  };
+  await page.goto("/projects/CORE/issues");
+  await expect(page.locator(`[data-issue-row="${other.key}"]`)).toBeVisible();
+  const status = page.getByRole("button", { name: /^Filter Status(?:: \d+ picked)?$/u });
+  await status.click();
+  await listOf(status)
+    .getByRole("option", { name: /^Done\b/u })
+    .click();
+  await page.keyboard.press("Escape");
+  await expect(page).toHaveURL(/[?&]status=done/u);
+  await expect(page.getByText("Loading closed issues…")).toBeVisible();
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  const wrong: string[] = [];
+  for (const header of ["Assignee", "Priority"]) {
+    wrong.push(
+      ...(await headerOptions(header, 2))
+        .filter((name) => /, \d+ issues?$/u.test(name))
+        .map((name) => `closed issues out: ${header} offers "${name}"`)
+    );
+  }
+  holding = false;
+  for (const route of held.splice(0)) await route.continue();
+  await expect(page.getByText("Loading closed issues…")).toHaveCount(0);
+  await expect(page.locator(`[data-issue-row="${closed[0]}"]`)).toBeVisible();
+  // The control: with the closed issues read, each value counts them too.
+  expect(await headerOptions("Assignee", 2)).toEqual(["alice, 3 issues", "bob, 1 issue"]);
+  expect(await headerOptions("Priority", 2)).toEqual(["P1, 3 issues", "P2, 1 issue"]);
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
