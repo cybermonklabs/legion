@@ -9,21 +9,24 @@
 // starts each worker as a child process group of the test process instead of as a pane on the
 // daemon's private tmux server, wherever it runs.
 //
-// Everything below the pane is the real thing: the command is the one a pane runs,
+// Everything below the pane is the real thing. An Oh My Pi worker runs the command a pane runs:
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
-// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_OMP_PATH names; the
-// environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over tmux.PaneInputs), which is
-// the function that package exports for exactly this — a process it does not start that must be
-// told what a pane is told. The agent therefore registers over the daemon's own HTTP routes,
-// speaks the daemon's own worker stream through the real shim, and loads this branch's two
-// plugins, as a pane does.
+// <omp argv>`. It is built from this checkout's `legion` and the Oh My Pi the proof names. A
+// Claude Code worker runs the same shim prefix around the inner command of
+// `internal/runtime/tmux`'s own Claude Code launcher, under `sh -c` (agentCommand). A claim the
+// proof stands in for runs a placeholder process instead, and the proof plays its agent
+// (standsIn). The environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over
+// tmux.PaneInputs). That package exports the function for exactly this: a process it does not
+// start that must be told what a pane is told. So the agent registers over the daemon's own HTTP
+// routes, and speaks the daemon's own worker stream through the real shim. It loads this
+// branch's plugins, as a pane does.
 //
 // What differs from `internal/runtime/tmux`, and why:
 //
-//   - There is no tmux, so there is no window, no pane id, no `sh -c` and no server-wide
-//     environment table. The locator still says `tmux`, because `runtime.Locator.Validate` admits
-//     two runtime words and a local process is neither a pod nor nothing; its window is the claim's
-//     issue and its pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
+//   - There is no tmux, so there is no window, no pane id and no server-wide environment table.
+//     The locator still says `tmux`, because `runtime.Locator.Validate` admits two runtime words,
+//     and a local process is neither a pod nor nothing. Its window is the claim's issue and its
+//     pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
 //     the tmux runtime's own `<pid>:<start ticks>`, read from /proc, so a reissued pid is told from
 //     the process the locator recorded exactly as it is there.
 //   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
@@ -37,9 +40,9 @@
 //   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
-// Every child is started in a process group of its own (Setpgid) and every stop signals that
-// group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
-// behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
+// Every child is started in a process group of its own (Setpgid), and every stop signals that
+// group. So the agent and the shim go together. A failed or finished run leaves no child behind:
+// the test's cleanup kills every group the runtime ever started, whatever the proof did.
 //
 // Two things here are a step's rather than a runtime's, and both are of that process group: a
 // step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
@@ -316,9 +319,9 @@ func (r *localRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec r
 	return r.launch(ctx, spec)
 }
 
-// launch starts one worker: its working directory and boot-token file written, then the shim
-// around Oh My Pi in a process group of its own. A claim whose process still runs is refused —
-// one claim, one process — as the tmux runtime refuses it.
+// launch starts one worker: its working directory and boot-token file written, then its child in
+// a process group of its own (agentCommand). A claim whose process still runs is refused, one
+// claim and one process, as the tmux runtime refuses it.
 func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := runtime.ValidateSpawnSpec(spec, nil); err != nil {
 		return runtime.Locator{}, err

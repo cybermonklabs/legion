@@ -589,6 +589,9 @@ func readStandinResponse(t *testing.T, stream string) standinResponse {
 	for _, event := range readStandinEvents(t, stream) {
 		switch event.name {
 		case "message_start":
+			if started {
+				t.Fatalf("the stand-in wrote a second message_start in one response:\n%s", stream)
+			}
 			started = true
 			message, _ := event.data["message"].(map[string]any)
 			response.id, _ = message["id"].(string)
@@ -812,15 +815,16 @@ func TestStepModelsLive(t *testing.T) {
 
 // run runs one check as a subtest of its own, between its `== name` and `ok name (<s>s)` lines. The
 // run's reads fail that subtest rather than the whole test. Every read of liveAgentProof goes
-// through r.t, which is the check's own testing.T while it runs. So a failed check leaves the later
-// checks to run, and every measurement is printed.
+// through r.t, and every read of the daemon and of Dispatch through their own t. Each is the
+// check's own testing.T while it runs. So a failed check leaves the later checks to run, and
+// every measurement is printed. The fixtures' cleanups run after the last check restores them.
 func (r *stepModelsLive) run(name string, body func()) {
 	parent := r.t
 	parent.Run(name, func(t *testing.T) {
-		r.t, r.failedAt = t, ""
+		r.t, r.d.t, r.dispatch.t, r.failedAt = t, t, t, ""
 		started := time.Now()
 		defer func() {
-			r.t = parent
+			r.t, r.d.t, r.dispatch.t = parent, parent, parent
 			if t.Failed() {
 				at := r.failedAt
 				if at == "" {
@@ -2106,7 +2110,8 @@ func (r *stepModelsLive) controlLowerOne() {
 }
 
 // controlWrongSettings is check 9: the same command, over a copy of agents.json whose A's
-// implementer names another setModel, exits 1 and names both models.
+// implementer names another setModel, exits 1. One of its FAIL lines names both models. The other
+// model shares no text with the recorded one, so a line that names only one cannot pass.
 func (r *stepModelsLive) controlWrongSettings() {
 	body, err := os.ReadFile(r.evidenceFileAt("agents.json"))
 	if err != nil {
@@ -2118,15 +2123,21 @@ func (r *stepModelsLive) controlWrongSettings() {
 	}
 	implementer := string(r.issueNamed("A").implementer)
 	settings := agents[implementer]
-	recorded, wrong := settings.SetModel, settings.SetModel+"-not-the-settings"
+	recorded, wrong := settings.SetModel, "another-provider/another-model"
+	if strings.Contains(recorded, wrong) || strings.Contains(wrong, recorded) {
+		r.fails("the other model", "the recorded model %s and the other model %s share their text", recorded, wrong)
+	}
 	settings.SetModel = wrong
 	agents[implementer] = settings
 	r.writeEvidenceJSON("agents-wrong-settings.json", agents)
 	compared := r.compare(r.evidenceFileAt("agents-wrong-settings.json"))
 	r.writeEvidence("compare-wrong-settings.txt", []byte(compared.out))
 	r.note("with %s's setModel %s in a copy of agents.json the comparator exited %d", implementer, wrong, compared.code)
-	if compared.code != 1 || !strings.Contains(compared.out, recorded) || !strings.Contains(compared.out, wrong) {
-		r.fails("the second control", "with %s's setModel %s the comparator exited %d, want 1 naming %s and %s:\n%s",
+	namesBoth := slices.ContainsFunc(stepModelsOutputLines(compared.out), func(line string) bool {
+		return strings.HasPrefix(line, "FAIL: ") && strings.Contains(line, recorded) && strings.Contains(line, wrong)
+	})
+	if compared.code != 1 || !namesBoth {
+		r.fails("the second control", "with %s's setModel %s the comparator exited %d, want 1 with a FAIL line naming %s and %s:\n%s",
 			implementer, wrong, compared.code, recorded, wrong, compared.out)
 	}
 }
