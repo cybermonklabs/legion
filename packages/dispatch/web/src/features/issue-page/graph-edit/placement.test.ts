@@ -103,9 +103,9 @@ function place(node: string, extra: Partial<PlacementInput> = {}, held: TreeAnsw
 const EDITING: readonly Entry[] = ENTRIES.filter((entry) => entry !== "lens");
 
 /** A grey verdict, whose reason must be a key of the page's words. */
-function grey(reason: string): Verdict {
+function grey(reason: string): Extract<Verdict, { kind: "grey" }> {
   expect(Object.hasOwn(ANSWER_LINES, reason), `${reason} is no key of ANSWER_LINES`).toBe(true);
-  return { kind: "grey", reason } as Verdict;
+  return { kind: "grey", reason } as Extract<Verdict, { kind: "grey" }>;
 }
 
 /** The kinds of node the tree read tells apart (`api/issue_tree_kinds.go`) and the typed blocks of the
@@ -603,7 +603,9 @@ test("the new node's PATCH waits until the node holds a rank", () => {
   });
   // The read after the index holds the paragraph with its rank and its placement_seq: one body.
   const written = nodeOf(indexed, "<owed-paragraph>");
-  expect(placingOf({ held: indexed, node: "<owed-paragraph>", place: under.place })).toStrictEqual({
+  expect<unknown>(
+    placingOf({ held: indexed, node: "<owed-paragraph>", place: under.place })
+  ).toStrictEqual({
     body: under.place.body,
     kind: "send",
     placementSeq: written.placement_seq,
