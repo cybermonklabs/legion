@@ -424,6 +424,14 @@ const (
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = "not started"
+	PlannedStepRunning    = "running"
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:

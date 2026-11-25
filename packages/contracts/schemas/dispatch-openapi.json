@@ -26748,6 +26748,13 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "not started",
+              "running",
+              "passed",
+              "failed",
+              "stopped"
+            ],
             "type": "string"
           },
           "step": {
@@ -29419,8 +29426,8 @@
               "type": "string"
             },
             "type": [
-              "array",
-              "null"
+              "null",
+              "array"
             ]
           },
           "planned": {

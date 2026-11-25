@@ -6324,7 +6324,8 @@ export interface components {
     };
     PlannedStep: {
       name: string;
-      state: string;
+      /** @enum {string} */
+      state: "not started" | "running" | "passed" | "failed" | "stopped";
       step: number;
     };
     PostHistoryEntry: {
@@ -6971,7 +6972,7 @@ export interface components {
       type?: null | string;
     };
     StepTask: {
-      needs: string[] | null;
+      needs: null | string[];
       planned?: components["schemas"]["PlannedStep"][];
       steps: components["schemas"]["StepRecord"][] | null;
       task: string;
