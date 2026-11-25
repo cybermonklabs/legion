@@ -363,13 +363,12 @@ test("a block a spec address names is found in the spec, not in another document
 });
 
 // R20: the children's own address (`/children`, today's Children tab) names the first row of
-// their group in the outline, which the page unfolds the path to and puts the focus on; the
-// documents' address (`/artifacts`) opens the node menu.
-test("the children's address names the first row of their group, and the documents' address opens the node menu", () => {
+// their group in the outline, which the page unfolds the path to and puts the focus on.
+test("the children's address names the first row of their group", () => {
   const children = issueAddress({ key: "CORE-1", kind: "children" }, "", "", "spec");
   expect(children.target).toEqual({ id: "CORE-1", kind: "children" });
   expect(children.preset).toBe("conversation");
-  expect(children.nodeMenu).toBe(false);
+  expect(children.documents).toBe(false);
   const withChildren = node("CORE-1", "issue", {
     children: [askNode, node("CORE-2", "child_issue"), node("CORE-3", "child_issue")],
   });
@@ -377,8 +376,25 @@ test("the children's address names the first row of their group, and the documen
     "CORE-1",
     "CORE-2",
   ]);
+});
 
-  const documents = issueAddress({ key: "CORE-1", kind: "artifacts" }, "", "", "spec");
-  expect(documents.nodeMenu).toBe(true);
-  expect(documents.target).toBeUndefined();
+// Part N's R1, R2 and R6: Documents' own address (`/documents`) and today's Artifacts tab's
+// (`/artifacts`) each open Documents' list in place of the outline, on no node and no document.
+test("`/documents` and `/artifacts` open Documents", () => {
+  for (const kind of ["issue-documents", "artifacts"] as const) {
+    const documents = issueAddress({ key: "CORE-1", kind }, "", "", "spec");
+    expect([kind, documents.documents]).toEqual([kind, true]);
+    expect([kind, documents.document]).toEqual([kind, undefined]);
+    expect([kind, documents.target]).toEqual([kind, undefined]);
+  }
+  for (const route of [
+    { key: "CORE-1", kind: "issue" },
+    { key: "CORE-1", kind: "spec" },
+    { key: "CORE-1", kind: "artifact", slug: "notes-md" },
+  ] as const) {
+    expect([route.kind, issueAddress(route, "", "", "spec").documents]).toEqual([
+      route.kind,
+      false,
+    ]);
+  }
 });

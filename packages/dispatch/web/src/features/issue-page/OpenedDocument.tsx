@@ -48,7 +48,7 @@ const DOCUMENT_FOCUS_FALLBACKS: readonly FocusFallback[] = [headingOf];
 /**
  * A document or file of the issue, opened in the main column in place of the outline
  * (dispatch://INFRA-1196 R3): what its own address `/issues/<key>/artifacts/<slug>` draws, and
- * what choosing it in the node menu opens. A document is drawn with its editor, so the caret,
+ * what choosing it in Documents' list opens. A document is drawn with its editor, so the caret,
  * the collaborative cursors and the comment-on-selection chord work in it as they do anywhere a
  * document is edited; its versions, their downloads and what references it are drawn under it.
  *
@@ -141,8 +141,6 @@ export function OpenedDocument({
       label: CONTROL_LABELS.close_document,
       palette: false,
       run: () => navigate(outline),
-      // A menu open over the document closes first, on the same press (`IssuePresets.tsx`).
-      when: () => document.querySelector('[role="menu"]') === null,
     },
   ]);
 

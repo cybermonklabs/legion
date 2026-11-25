@@ -15,7 +15,8 @@ export interface OpenedAddress {
   readonly route: Extract<IssueRoute, { kind: "artifact" }>;
 }
 
-/** The outline address a navigation carried in its state (`NodeMenu.tsx`), if it carried one. */
+/** The outline address a navigation carried in its state (`DocumentsList.tsx`'s rows), if it
+ *  carried one. */
 function outlineOf(state: unknown): string | undefined {
   if (typeof state !== "object" || state === null || !("outline" in state)) return undefined;
   return typeof state.outline === "string" ? state.outline : undefined;
@@ -70,7 +71,8 @@ export function useOpenedDocument(
 }
 
 /** The outline the reader goes back to from a document they opened: the address they opened it
- *  from, which the node menu hands over (`NodeMenu.tsx`), and the issue's own otherwise. */
+ *  from, which the navigation hands over (`DocumentsList.tsx`'s rows hand over the list's own),
+ *  and the issue's own otherwise. */
 export function useOutlineAddress(key: string): string {
   const { state } = useLocation();
   return outlineOf(state) ?? buildIssuePath({ key, kind: "issue" });

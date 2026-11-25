@@ -12,9 +12,9 @@ import { blockNodeId } from "./tree-drafts";
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
  * place that says what each one opens: which preset, which document is opened in place of the
- * outline, which node the page unfolds the path to and puts the focus on, whether the node menu
- * is open, and which version is pinned. `refs/routes.ts` still parses the address; this reads the
- * route it answers.
+ * outline, which node the page unfolds the path to and puts the focus on, whether Documents' list
+ * is drawn in its place, and which version is pinned. `refs/routes.ts` still parses the address;
+ * this reads the route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.
@@ -61,10 +61,11 @@ export interface IssueAddress {
     | { readonly kind: "ask" | "comment"; readonly id: string }
     | { readonly kind: "mark"; readonly id: string }
     | undefined;
+  /** Whether the address names Documents, whose list is drawn in place of the outline and of
+   *  every view: `/documents` and `/artifacts`, the old page's Artifacts tab (part N's R1, R2). */
+  readonly documents: boolean;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
-  /** Whether the address opens the node menu, which `/artifacts` does (R20). */
-  readonly nodeMenu: boolean;
   readonly preset: Preset;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
@@ -184,8 +185,8 @@ export function issueAddress(
         ? addressed
         : undefined,
     documentItem,
+    documents: route.kind === "issue-documents" || route.kind === "artifacts",
     filter: query.get("q") ?? "",
-    nodeMenu: route.kind === "artifacts",
     preset: ROUTE_PRESETS[route.kind] ?? "conversation",
     target:
       documentItem === undefined

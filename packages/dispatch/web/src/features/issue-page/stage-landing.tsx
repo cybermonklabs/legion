@@ -458,7 +458,7 @@ function useOutlinePlace(drawn: boolean, namesNode: boolean): void {
   const { pathname, search } = useLocation();
   const following = useFollowing();
   const move = useNavigationType();
-  // The address as a document's way back writes it (`NodeMenu.tsx`'s `outline`).
+  // The address as a document's way back writes it (the location's `outline`).
   const address = `${pathname}${search}`;
   const places = useRef(new Map<string, number>());
   const last = useRef<{ readonly address: string; readonly top: number } | undefined>(undefined);

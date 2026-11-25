@@ -292,8 +292,8 @@ function drawRowTools(
 }
 
 // R3: the control reads a document only where the page shows one, the view's or the opened
-// one's. The outline, the Decisions view, which has no document of its role, and the node menu
-// open over the outline draw none, even with an editor of the spec open in the outline.
+// one's. The outline, the Decisions view, which has no document of its role, and Documents' list
+// draw none, even with an editor of the spec open in the outline.
 test("with no view on and no document open the version control is not drawn", async () => {
   for (const address of [
     "/issues/CORE-1",

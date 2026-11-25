@@ -17,7 +17,7 @@ import { api } from "../../api/client";
 import type { GraphReferences, IssueDetails, IssueReferences } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
-import { parseIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { artifact, issueDetails } from "./decisions-filter/decisions-fixtures";
 import { useFollowing } from "./slots/following";
 import { ProvidersSlot } from "./slots/providers";
@@ -33,7 +33,7 @@ import { ViewRowSlot } from "./slots/view-row";
  * order's (`escape-order.test.tsx`).
  */
 
-/** The issue's spec and a document of no role, which the node menu opens. */
+/** The issue's spec and a document of no role, which a document's opener opens. */
 const NOTES = artifact("artifact-notes", "notes-md");
 const ISSUE: IssueDetails = {
   ...issueDetails(),
@@ -70,7 +70,9 @@ const STAND_INS: ViewSlots = {
 };
 
 /** Where the router is: the address with its words, how it got there, the location's state, and
- *  the following the stage and the views read; and Back. */
+ *  the following the stage and the views read; Back; and a link that opens the notes with the
+ *  address it is pressed at as the outline a document goes back to (the location's `outline`,
+ *  which a document's opener hands over). */
 function Where(): ReactNode {
   const { pathname, search, state } = useLocation();
   const navigate = useNavigate();
@@ -88,6 +90,12 @@ function Where(): ReactNode {
         Back
       </button>
       <Link to="/issues/CORE-1/spec?q=other">Other words</Link>
+      <Link
+        state={{ outline: `${pathname}${search}` }}
+        to={buildIssuePath({ key: "CORE-1", kind: "artifact", slug: NOTES.slug })}
+      >
+        Open the notes
+      </Link>
     </>
   );
 }
@@ -388,8 +396,7 @@ test("open with words, opening a document draws the document and keeps the box a
   const view = drawPage("/issues/CORE-1/spec");
   try {
     await typeWords(user, "ab");
-    await user.click(screen.getByRole("button", { name: "Files and documents" }));
-    await user.click(await screen.findByRole("button", { name: "notes-md" }));
+    await user.click(screen.getByRole("link", { name: "Open the notes" }));
     await waitFor(() => expect(where()).toHaveTextContent("/issues/CORE-1/artifacts/notes-md"));
     expect(await screen.findByRole("heading", { name: "notes-md" })).toBeVisible();
 

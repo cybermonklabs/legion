@@ -35,6 +35,10 @@ export type IssueRoute =
   | { key: string; kind: "decisions" }
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
+  /** The new issue page's Documents (dispatch://INFRA-3940 R2, R4), `/issues/<key>/documents`:
+   *  not `documents`, which a project's route holds (`ProjectRoute`, `isProjectRoute`). Today's
+   *  page has no tab there and draws Not found (`features/issue/IssuePage.tsx`). */
+  | { key: string; kind: "issue-documents" }
   | { key: string; kind: "collaborators" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
   | ({ key: string; kind: "ask"; id: string } & BlockTarget)
@@ -440,6 +444,9 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "spec") {
     return { key, kind: "spec" };
   }
+  if (target === "documents") {
+    return { key, kind: "issue-documents" };
+  }
   const plain = plainIssueTab(target);
   if (plain !== undefined) {
     return { key, kind: plain };
@@ -617,6 +624,10 @@ function pageRoutes(
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
   }
+  // An issue's Documents address is a list, no node: as before the route read it, no page.
+  if (route.kind === "issue-documents") {
+    return undefined;
+  }
   // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
   // whatever its fragment, as the server's `text` and the agent client read the page.
   if (route.kind === "decisions") {
@@ -718,6 +729,11 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   }
   if (route.kind === "decisions") {
     return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
+  }
+  // An issue's Documents is the new page's list of what today's Artifacts tab lists, so it is
+  // referenced as that tab is.
+  if (route.kind === "issue-documents") {
+    return `${issue}/artifacts`;
   }
   if (route.kind === "artifact") {
     return `${issue}/artifact/${encodeURIComponent(route.slug)}${
@@ -902,6 +918,8 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} comment${block}`;
     case "message":
       return `${route.key} message${block}`;
+    case "issue-documents":
+      return `${route.key} artifacts`;
   }
 }
 
@@ -959,6 +977,9 @@ export function buildIssuePath(route: IssueRoute): string {
   }
   if (route.kind === "decisions") {
     return `${issue}/decisions`;
+  }
+  if (route.kind === "issue-documents") {
+    return `${issue}/documents`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;

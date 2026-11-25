@@ -35,7 +35,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssueOutlinePage } from "./IssueOutlinePage";
 import { MarginSlotProvider } from "./margin-slot";
-import { EMPTY_STATE_LINES } from "./page-words";
+import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
 
 /*
  * The whole new issue page, mounted through part A's root (`IssueOutlinePage.tsx`) with every
@@ -742,6 +742,72 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
     await expectPreset("Conversation");
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// Part N's R1 and R2: Documents' own address and today's Artifacts tab's each draw Documents'
+// list in the stage, in place of the outline, and no three sentences, no children's section and
+// no Contents pane (root R8, R12, R14). The same issue on Conversation draws all three, so their
+// absence is Documents'.
+test("`/documents` and `/artifacts` draw Documents' list and no three sentences, children's section or Contents pane", async () => {
+  const notes = {
+    ...issue.artifacts[0],
+    id: "artifact-notes",
+    name: "notes.md",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    slug: "notes-md",
+  };
+  const withChild: IssueDetails = {
+    ...issue,
+    artifacts: [...issue.artifacts, notes],
+    children: [
+      {
+        active_at: "2026-09-09T00:00:00Z",
+        external_links: [],
+        key: "CORE-2",
+        status: "todo",
+        subtree_done: 0,
+        subtree_total: 0,
+        title: "The child issue",
+      },
+    ],
+  };
+  const restore = stubIssuePage(withChild);
+  const childRow = () => document.querySelector('[data-node-row][data-node-id="CORE-2"]');
+  const tree = () => screen.queryByRole("tree", { name: CONTROL_LABELS.tree });
+  try {
+    const conversation = renderIssuePage("/issues/CORE-1");
+    try {
+      await waitFor(() => expect(childRow(), "Conversation draws no child's row").not.toBeNull());
+      expect(screen.getByTestId("issue-contents")).toBeInTheDocument();
+      expect(screen.getByTestId("issue-three-things")).toBeInTheDocument();
+    } finally {
+      conversation.unmount();
+    }
+    for (const address of ["/issues/CORE-1/documents", "/issues/CORE-1/artifacts"]) {
+      const view = renderIssuePage(address);
+      try {
+        const list = await screen.findByRole("list");
+        expect(within(list).getByRole("link", { name: "spec.md" }), address).toHaveAttribute(
+          "href",
+          "/issues/CORE-1/artifacts/spec"
+        );
+        expect(within(list).getByRole("link", { name: "notes.md" }), address).toHaveAttribute(
+          "href",
+          "/issues/CORE-1/artifacts/notes-md"
+        );
+        expect(tree(), `${address} draws the outline`).toBeNull();
+        expect(childRow(), `${address} draws the child's row`).toBeNull();
+        expect(screen.queryByTestId("issue-three-things"), address).toBeNull();
+        expect(screen.queryByTestId("issue-contents"), address).toBeNull();
+        expect(screen.getByTestId("current-route").textContent).toBe(address);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
     restore();
   }
 });

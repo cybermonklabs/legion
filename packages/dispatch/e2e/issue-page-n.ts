@@ -1317,6 +1317,10 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
       opens: (seed) => ({ kind: "node", node: seed.planTask.node }),
     },
   ],
+  // The new page's own address of Documents, which opens the same list as `/artifacts`.
+  "issue-documents": [
+    { address: (seed) => issuePath(seed, "/documents"), opens: () => ({ kind: "node-menu" }) },
+  ],
   message: [
     {
       address: (seed) => issuePath(seed, `/messages/${seed.message.id}`),

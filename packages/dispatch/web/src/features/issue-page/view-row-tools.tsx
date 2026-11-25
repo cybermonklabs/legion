@@ -14,26 +14,22 @@ import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
 import { VersionControl } from "./VersionControl";
 
-/** What part N hands the view row's `IssuePresets` beside part D's props (its R3, R4, R6). */
+/** What part N hands the view row's `IssuePresets` beside part D's props (its R3, R4). */
 export interface ViewRowTools {
-  readonly artifacts: readonly Artifact[];
   readonly filter: string;
-  readonly isClosed: boolean;
-  readonly nodeMenu: boolean;
   readonly onFilterChange: (next: string) => void;
-  /** Present at 760 px and below only: the Outline sheet that holds the three small controls,
+  /** Present at 760 px and below only: the Outline sheet that holds the two small controls,
    *  which the row draws in place of part D's Outline control (`slots/view-row.tsx`). */
   readonly sheet?: (tools: ReactNode) => ReactNode;
   readonly toolbar: ReactNode;
 }
 
 /**
- * The view row's three small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
- * R3, R4): the issue's documents and files for the node menu, which `/artifacts` opens; the
- * filter by words, which writes `?q=` in place; and the version control, which reads the opened
- * document's versions, else the view's document's, else is not drawn. At 760 px and below the
- * three stand in the Outline sheet, which the row then draws with a view on or a document open
- * too.
+ * The view row's two small controls, as `IssuePresets` props (dispatch://INFRA-1196 part N's
+ * R3, R4): the filter by words, which writes `?q=` in place; and the version control, which reads
+ * the opened document's versions, else the view's document's, else is not drawn. At 760 px and
+ * below the two stand in the Outline sheet, which the row then draws with a view on or a document
+ * open too.
  */
 export function useViewRowTools(props: SlotProps): ViewRowTools {
   const { issue, route } = props;
@@ -120,20 +116,9 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
       />
     ) : undefined;
   return {
-    artifacts: issue.artifacts ?? [],
     filter: address.filter,
-    isClosed,
-    nodeMenu: address.nodeMenu,
     onFilterChange,
     toolbar,
-    // At 760 px and below the node menu stands in the Outline sheet, so an address that opens the
-    // menu (`/artifacts`) opens the sheet with it (R4, R6).
-    ...(phone
-      ? {
-          sheet: (tools: ReactNode) => (
-            <OutlineSheet opened={address.nodeMenu} slot={props} tools={tools} />
-          ),
-        }
-      : {}),
+    ...(phone ? { sheet: (tools: ReactNode) => <OutlineSheet slot={props} tools={tools} /> } : {}),
   };
 }

@@ -52,6 +52,11 @@ export function IssuePage(): ReactNode {
   if (route === undefined) {
     return <NotFoundPage />;
   }
+  // `/issues/<key>/documents` is the new issue page's Documents (dispatch://INFRA-3940 R2, R12):
+  // this page has no tab there, and draws Not found at it as it did before the route was read.
+  if (route.kind === "issue-documents") {
+    return <NotFoundPage />;
+  }
   // key={route.key}: switching to a different issue remounts IssueDetail
   // fresh (discarding any unsaved local drafts); switching tabs within the
   // same issue keeps route.key unchanged, so it only re-renders.

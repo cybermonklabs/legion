@@ -176,9 +176,9 @@ export function CreateDocument({
 }
 
 /** One control's making of a document: whether its form is open, the press that opens it, and
- *  the strip the form is drawn in. The new issue page's node menu holds one behind an item of the
- *  menu, which closes as it is pressed, so the form is drawn beside the menu rather than in it
- *  (`features/issue-page/NodeMenu.tsx`). */
+ *  the strip the form is drawn in. The new issue page's Documents' list holds one behind its own
+ *  New document control, which the form takes the place of while it is open
+ *  (`features/issue-page/DocumentsList.tsx`). */
 export interface DocumentCreation {
   /** Whether the form is open. */
   readonly open: boolean;

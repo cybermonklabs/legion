@@ -13,6 +13,7 @@ import {
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
+import { useOpenedDocument } from "./document-address";
 import { issueAddress } from "./issue-address";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -41,8 +42,13 @@ export const PAGE_INSET = "px-3.5 md:px-7";
  */
 export function IssueContentsPane(props: SlotProps): ReactNode {
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
+  // Part N's: Documents' list and a document drawn in place of the outline draw no Contents
+  // pane (its R2, root R14).
+  const opened = useOpenedDocument(props.issue, props.route);
+  const documents = issueAddress(props.route, "", "", undefined).documents;
   const viewOn = isFilter(issueAddress(props.route, "", "", undefined).preset);
   if (!paned || viewOn) return null;
+  if (documents || opened !== undefined) return null;
   return (
     <aside
       aria-label={CONTROL_LABELS.contents}
@@ -63,26 +69,14 @@ export function IssueContentsPane(props: SlotProps): ReactNode {
  * (`contents-chosen.ts`'s `useContentsChosen`). Escape and its Close close it.
  */
 export function OutlineSheet({
-  opened = false,
   slot,
   tools,
 }: {
   /** The page's slot props, which the sheet hands `slots/contents.tsx`. */
   slot: SlotProps;
-  /** Part N's: whether the address opens what the sheet holds, which opens the sheet with it:
-   *  `/artifacts` opens the node menu, which stands in the sheet at 760 px and below (its R4,
-   *  R6). Leaving that address closes the sheet again, as it closes the menu. */
-  opened?: boolean;
   tools?: ReactNode;
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  // Part N's: the sheet follows `opened` as it changes, the first drawing included; between two
-  // changes the reader's own Close and Escape stand.
-  const [openedFor, setOpenedFor] = useState(false);
-  if (openedFor !== opened) {
-    setOpenedFor(opened);
-    setOpen(opened);
-  }
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useDialog<HTMLDivElement>({
     initialFocusRef: closeButton,

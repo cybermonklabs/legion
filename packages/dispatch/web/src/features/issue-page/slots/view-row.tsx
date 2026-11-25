@@ -34,10 +34,9 @@ import { useViewRowTools } from "../view-row-tools";
  * and under the navigation's backdrop (`z-20`), so an open navigation dims it as it dims the
  * page, and its height is published (`VIEW_ROW_HEIGHT_PROPERTY`).
  *
- * Part N adds the row's three small controls, the version control, the node menu and the filter
- * by words, before Keys, and at 760 px and below the Outline sheet that holds them with a view on
- * or a document open too (`view-row-tools.tsx`), which the row draws in place of D's Outline
- * control there.
+ * Part N adds the row's two small controls, the version control and the filter by words, before
+ * Keys, and at 760 px and below the Outline sheet that holds them with a view on or a document
+ * open too (`view-row-tools.tsx`), which the row draws in place of D's Outline control there.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -61,7 +60,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const tools = useViewRowTools(props);
   // Part D's Outline sheet, beside the one control below 1024 px with no view on. At 760 px and
   // below part N's sheet stands in its place, with a view on or a document open too, and holds
-  // the row's three small controls (`view-row-tools.tsx`).
+  // the row's two small controls (`view-row-tools.tsx`).
   const drawsOutline = !paned && !isFilter(address.preset) && tools.sheet === undefined;
   return (
     <div

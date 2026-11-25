@@ -1,7 +1,5 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-
-import type { Artifact } from "../../api/types";
 import {
   borderTransparent,
   focusVisibleRing,
@@ -21,7 +19,6 @@ import {
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
-import { NodeMenu } from "./NodeMenu";
 import { authorText, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
@@ -69,38 +66,27 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  */
 export function IssuePresets({
   active,
-  artifacts,
   filter,
-  isClosed = false,
   issueKey,
-  nodeMenu = false,
   onFilterChange,
   outline,
   signals,
   sheet,
   toolbar,
 }: {
-  /** Every artifact of the issue, which the node menu lists and which a title typed into its
-   *  New document is held against before the write (part N's R2). No node menu is drawn
-   *  without it. */
-  artifacts?: readonly Artifact[];
   /** What the filter by words holds, which is `?q=`. No words control is drawn without it and
    *  `onFilterChange`. */
   filter?: string;
-  /** Whether the issue is closed, which refuses the node menu's upload and New document. */
-  isClosed?: boolean;
   active: Preset;
   issueKey: string;
-  /** Whether the address opens the node menu, which `/artifacts` does (part N's R6). */
-  nodeMenu?: boolean;
   onFilterChange?: (next: string) => void;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** The Outline sheet at 760 px and below, handed the three small controls this row moves into
-   *  it there - the version control, the node menu and the filter by words (part N's R4) - with a
-   *  view on or a document open too. A caller that gives it leaves `outline` undefined, so the
-   *  row draws one Outline control (`slots/view-row.tsx`). */
+  /** The Outline sheet at 760 px and below, handed the two small controls this row moves into
+   *  it there - the version control and the filter by words (part N's R4) - with a view on or a
+   *  document open too. A caller that gives it leaves `outline` undefined, so the row draws one
+   *  Outline control (`slots/view-row.tsx`). */
   sheet?: (tools: ReactNode) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). A control with no
    *  signal, such as Conversation, draws just its name. The whole record is undefined until the
@@ -134,13 +120,10 @@ export function IssuePresets({
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
-  // Part N's small controls open one menu each - the node menu, the version control's panel -
-  // and the page still opens at most one menu at a time: opening one shuts the row's own.
-  const [small, setSmall] = useState<SmallMenu>(nodeMenu ? "nodes" : undefined);
+  // Part N's version control opens its panel, and the page still opens at most one menu at a
+  // time: opening the panel shuts the row's own, and the row's shuts the panel.
+  const [small, setSmall] = useState<SmallMenu>(undefined);
   const versionPanelId = `${ids}-version`;
-  // An address that opens the node menu opens it on arrival, and leaving that address closes it
-  // again, so the menu says what the address says.
-  useEffect(() => setSmall(nodeMenu ? "nodes" : undefined), [nodeMenu]);
   useEffect(() => {
     if (open !== undefined) setSmall(undefined);
   }, [open]);
@@ -289,22 +272,9 @@ export function IssuePresets({
     );
   // The small controls, at the row's right end from 761 px up.
   const atTheEnd = <div className="flex shrink-0 items-center gap-2">{keys}</div>;
-  // Part N's three small controls (R4): the version control, while a view is on or a document
-  // is open; the node menu, "Files and documents"; and the filter by words. They stand at the
-  // row's right end before Keys from 761 px up, and in the Outline sheet at 760 px and below,
-  // where the node menu hangs from its left edge.
-  const files = (align: "end" | "start") =>
-    artifacts === undefined ? null : (
-      <NodeMenu
-        align={align}
-        artifacts={artifacts}
-        isClosed={isClosed}
-        issueKey={issueKey}
-        onClose={() => setSmall(undefined)}
-        onToggle={() => setSmall((shown) => (shown === "nodes" ? undefined : "nodes"))}
-        open={small === "nodes"}
-      />
-    );
+  // Part N's two small controls (R4): the version control, while a view is on or a document is
+  // open, and the filter by words. They stand at the row's right end before Keys from 761 px up,
+  // and in the Outline sheet at 760 px and below.
   const tools = (
     <div className="flex shrink-0 items-center gap-2">
       {toolbar === undefined ? null : (
@@ -331,18 +301,16 @@ export function IssuePresets({
           </div>
         </div>
       )}
-      {files("end")}
       {filter === undefined || onFilterChange === undefined ? null : (
         <WordsFilter filter={filter} onFilterChange={onFilterChange} />
       )}
     </div>
   );
-  // The same three in the Outline sheet at 760 px and below, each drawn open: the sheet is where
+  // The same two in the Outline sheet at 760 px and below, each drawn open: the sheet is where
   // the reader went to find them.
   const inTheSheet = (
     <>
       {toolbar}
-      {files("start")}
       {filter === undefined || onFilterChange === undefined ? null : (
         <WordsFilter filter={filter} inSheet onFilterChange={onFilterChange} />
       )}
@@ -537,9 +505,8 @@ export function MenuMark(): ReactNode {
 /** Which of the row's menus is open; the page opens at most one at a time. */
 type OpenMenu = "presets" | undefined;
 
-/** Which of part N's small controls has its menu open: the node menu, or the version control's
- *  panel. */
-type SmallMenu = "nodes" | "version" | undefined;
+/** Whether part N's version control has its panel open. */
+type SmallMenu = "version" | undefined;
 
 /** The widths the row is one control at: below 1280 px, from which R2 has the views one row.
  *  1279 px, not `80rem`: the row's widths are the reader's pixels, as the header's are. */

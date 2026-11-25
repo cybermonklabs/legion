@@ -23,7 +23,7 @@ import type {
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { Margin } from "../margin/Margin";
 import { DESKTOP_WIDTH } from "../margin/margin-fixture";
-import { parseIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import {
   artifact,
   issueDetails,
@@ -106,7 +106,9 @@ const BLOCKS: Readonly<Record<string, readonly ArtifactBlock[]>> = {
 };
 
 /** Where the router is: the address, how it got there, the location's state and the following;
- *  Back; and a link to a comment of the issue. */
+ *  Back; a link to a comment of the issue; and a link that opens the notes with the address it
+ *  is pressed at as the outline a document goes back to (the location's `outline`, which a
+ *  document's opener hands over). */
 function Where(): ReactNode {
   const { pathname, search, state } = useLocation();
   const navigate = useNavigate();
@@ -124,6 +126,12 @@ function Where(): ReactNode {
         Back
       </button>
       <Link to={`/issues/${KEY}/conversation?comment=head-b`}>The second thread</Link>
+      <Link
+        state={{ outline: `${pathname}${search}` }}
+        to={buildIssuePath({ key: KEY, kind: "artifact", slug: NOTES.slug })}
+      >
+        Open the notes
+      </Link>
     </>
   );
 }
@@ -393,8 +401,7 @@ test("a document open, no caret: one Escape closes it, back to the outline addre
   const view = drawPage(`/issues/${KEY}/spec?q=${WORDS}`);
   try {
     await rowOf(view, "[data-spec-body]", STATEMENT_NODE);
-    await user.click(screen.getByRole("button", { name: "Files and documents" }));
-    await user.click(await screen.findByRole("button", { name: NOTES.name }));
+    await user.click(screen.getByRole("link", { name: "Open the notes" }));
     await waitFor(() => expect(address()).toBe(`/issues/${KEY}/artifacts/${NOTES.slug}`));
     const heading = await screen.findByRole("heading", { name: NOTES.name });
     await focus(heading.closest<HTMLElement>('[tabindex="-1"]') ?? heading);
@@ -680,8 +687,7 @@ test("Back to the outline address: the outline's place is put back", async () =>
   try {
     await waitFor(() => expect(focusedRow()).toBe("head-b"));
     scrollPage(480);
-    await user.click(screen.getByRole("button", { name: "Files and documents" }));
-    await user.click(await screen.findByRole("button", { name: NOTES.name }));
+    await user.click(screen.getByRole("link", { name: "Open the notes" }));
     await screen.findByRole("heading", { name: NOTES.name });
     scrollPage(0);
     await user.click(screen.getByRole("button", { name: "Back to the conversation" }));

@@ -11,6 +11,7 @@ import {
   buildReferencePath,
   documentItemPath,
   documentRoute,
+  isProjectRoute,
   issueTabForRoute,
   itemRoute,
   nodeRouteFromHref,
@@ -490,6 +491,53 @@ test("artifacts tab has its own issue route", () => {
     kind: "artifacts",
   });
   expect(buildIssuePath({ key: "CORE-1", kind: "artifacts" })).toBe("/issues/CORE-1/artifacts");
+});
+
+// The new issue page's Documents (dispatch://INFRA-3940 R2, R4) has an address of its own, which
+// is an issue's and not the project's Documents (`/projects/<key>/documents`, kind `documents`).
+test("`/issues/<key>/documents` is the issue's Documents route, and it builds back", () => {
+  const route = { key: "CORE-1", kind: "issue-documents" as const };
+
+  expect(parseIssuePath(browserPath("issues/CORE-1/documents"))).toEqual(route);
+  expect(buildIssuePath(route)).toBe("/issues/CORE-1/documents");
+  expect(parseIssuePath(buildIssuePath(route))).toEqual(route);
+  expect(parseProjectPath("/issues/CORE-1/documents")).toBeUndefined();
+});
+
+test("the issue's Documents route is no project route", () => {
+  const route = parseIssuePath("/issues/CORE-1/documents");
+  if (route === undefined) throw new Error("/issues/CORE-1/documents names no route");
+
+  expect(isProjectRoute(route)).toBe(false);
+  expect(routeProjectOf("/issues/CORE-1/documents")).toBe("CORE");
+  expect(isProjectRoute({ kind: "documents", project: "CORE" })).toBe(true);
+});
+
+// A list is no node: a link to the address previews nothing and cites nothing, as before the
+// route read it.
+test("a link to an issue's Documents address has no page to preview", () => {
+  for (const href of [
+    "https://dispatch.test/issues/CORE-1/documents",
+    "https://dispatch.test/issues/CORE-1/documents#b-r1",
+  ]) {
+    expect([href, referenceRouteFromHref(href, "https://dispatch.test")]).toEqual([
+      href,
+      undefined,
+    ]);
+    expect([href, nodeRouteFromHref(href, "https://dispatch.test")]).toEqual([href, undefined]);
+  }
+});
+
+test("the issue's Documents route names the issue's artifacts as its reference", () => {
+  const route = { key: "CORE-1", kind: "issue-documents" as const };
+
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifacts");
+  expect(parseDispatchReference(buildDispatchReference(route))).toEqual({
+    key: "CORE-1",
+    kind: "artifacts",
+  });
+  expect(shortForm(route)).toBe("CORE-1 artifacts");
+  expect(buildReferencePath(route)).toBe("/issues/CORE-1/documents");
 });
 
 test("issue routes select Spec and artifact routes select Artifacts unless primary", () => {

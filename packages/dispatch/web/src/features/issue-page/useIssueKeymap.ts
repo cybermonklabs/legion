@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { buildIssuePath, type IssueTab, parseIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { DOCUMENT_OPEN_ATTRIBUTE, DOCUMENTS_LIST_ATTRIBUTE } from "./DocumentsList";
 import { OUTLINE_CONTROL, WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
@@ -14,11 +15,11 @@ import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "./page-words";
  * checks look for the same element and neither has a name of its own for a part of the page.
  */
 const PARTS = {
+  // Documents' list, which `t a` opens in place of the outline (part N's R2, R4).
+  documents: `[${DOCUMENTS_LIST_ATTRIBUTE}]`,
   // The filter by words: its small control, which a press opens into the box, or the box
   // (`IssuePresets.tsx`); at 760 px and below both are in the Outline sheet (part N's R4).
   filter: `[${WORDS_FILTER_ATTRIBUTE}]`,
-  // The node menu, which `t a` opens with the focus in it (part N's R4).
-  menu: '[role="menu"]',
   // The outline, by its name: the Contents pane's list is a tree too, and it stands before the
   // outline in the page.
   tree: `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`,
@@ -27,9 +28,11 @@ const PARTS = {
 /** What takes the focus inside each part, where the part itself does not: the tree's one tab
  *  stop. */
 const TAKES_FOCUS: Readonly<Record<keyof typeof PARTS, string | undefined>> = {
-  // The words box is its own focus, and the node menu's is its first item once it holds any.
+  // Documents' list's first row, by its link to its document; the list itself where it holds no
+  // row.
+  documents: `[${DOCUMENT_OPEN_ATTRIBUTE}]`,
+  // The words box is its own focus.
   filter: undefined,
-  menu: '[role="menuitem"]',
   tree: '[data-node-row][tabindex="0"]',
 };
 
@@ -174,13 +177,13 @@ const CHORDS: readonly {
     path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
   },
-  // `t a` opens the node menu, which `/artifacts` opens (part N's R4, R6), with the focus on
-  // its first item.
+  // `t a`, today's Artifacts tab, opens Documents' list at its own address (part N's R2, R4,
+  // R6), with the focus on its first row.
   {
     keys: "t a",
-    label: `Open the ${CONTROL_LABELS.other_nodes} menu`,
-    part: "menu",
-    path: (key) => buildIssuePath({ key, kind: "artifacts" }),
+    label: CONTROL_LABELS.open_documents,
+    part: "documents",
+    path: (key) => buildIssuePath({ key, kind: "issue-documents" }),
     tab: "artifacts",
   },
 ];

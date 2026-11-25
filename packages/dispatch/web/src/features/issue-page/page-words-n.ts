@@ -30,14 +30,18 @@ export default {
       versions_loading: "Loading versions to compare…",
       versions_unreadable: "Could not load versions to compare.",
       versions_same: "The two versions are the same.",
-      /** What the node menu's Remove says while its removal is out, which today's control draws
-       *  (`DocumentWayBack.tsx`) and the menu marks as the page's own words (part N's R9). */
+      /** What Documents' list's Remove says while its removal is out, which today's control draws
+       *  (`DocumentWayBack.tsx`) and the list marks as the page's own words (part N's R9). */
       saving_remove: "Removing…",
     },
     CONTROL_LABELS: {
       /** What the list of keys says of `t e`, which opens `/steps`, Details at the issue's steps
        *  where today's page has its Steps tab (part N's R6, `useIssueKeymap.ts`). */
       open_steps: "Open the issue's steps in Details",
+      /** What the list of keys says of `t a`, which opens Documents' list at `/documents` with
+       *  the focus on its first row, where today's page has its Artifacts tab (part N's R4,
+       *  `useIssueKeymap.ts`). */
+      open_documents: "Open the issue's documents",
       /** The opened document's versions under its editor or picture (part N's R2), today's version
        *  list's controls: the press that lists every version where the list shows the named ones,
        *  and back; the comparison of any two versions, the name its region takes before the

@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
 import { focusOnDocument } from "../../shell/roving";
+import { DocumentsList } from "../DocumentsList";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -63,6 +64,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * Part N's first branch stands before them (its R1, R6): what an item's address lands on in
  * place of the stage, and the document or file an address opens, drawn in place of the outline
  * and of every view, inside the same `DocumentStages` (`stage-landing.tsx`).
+ * Its second branch draws Documents' list (`DocumentsList.tsx`) in the same place, inside the
+ * same `DocumentStages`, where the address names Documents, `/documents` or `/artifacts`: no
+ * outline, view, three sentences or children's section while it is the stage.
  * An approval request's own address is the header's: the outline is drawn at the issue's own
  * address under it (`useStageLanding`'s `outline`), as with no view on, and lands on no item.
  * Until the view has told the stage whether its tree draws the node an address names - beside the
@@ -143,6 +147,17 @@ export function StageSlot({
   const View = outline ? undefined : views[preset];
   if (landed.instead !== undefined) return landed.instead;
   if (landed.document !== undefined) return <DocumentStages>{landed.document}</DocumentStages>;
+  if (address.documents) {
+    return (
+      <DocumentStages>
+        <DocumentsList
+          artifacts={props.issue.artifacts ?? []}
+          isClosed={props.issue.closed_at !== null}
+          issueKey={props.issue.key}
+        />
+      </DocumentStages>
+    );
+  }
   if (landed.outline !== undefined) {
     return (
       <DocumentStages>
