@@ -89,7 +89,9 @@ func attemptsSettled(attempts []model.CommentDelivery) bool {
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
 // them; want says what done waits for. A send on the mention sender's lanes may wait a take-over
 // window out after the comment's response - a mention of an ended session does, under a server
-// running the production window (listenerTakeoverWindow) - before its attempt settles.
+// running the production window (listenerTakeoverWindow) - before its attempt settles, so the wait
+// has no bound of its own: it ends on the attempts, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure prints the attempts it last read.
 func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {

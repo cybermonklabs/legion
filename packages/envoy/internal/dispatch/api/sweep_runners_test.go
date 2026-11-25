@@ -81,7 +81,8 @@ func sweepHorizon(pool *store.Pool) *events.Horizon {
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
-// once its context ends.
+// once its context ends. That wait's one bound is the test binary's deadline (testwait.Receive):
+// a run a loaded machine ends slowly passes, and one that never returns fails by name.
 func runSweep(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -140,6 +141,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 	horizontest.PollInProcess(t, "one runner to judge the page and the other to read the cursor it advanced", database, func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
+
 	var cursor *int64
 	if err := database.Pool.QueryRow(ctx, `select event_id from suggestion_outcome_cursor`).Scan(&cursor); err != nil {
 		t.Fatalf("read the cursor: %v", err)

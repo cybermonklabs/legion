@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -27,6 +28,7 @@ import (
 // the same update - two commits that change nothing encode alike - so each of two such updates
 // takes its own class, and only a slice no class holds falls back to the bytes.
 func TestAnUpdateClassHoldsNoCopyAndMatchesByIdentity(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	// Durable classes, so the room's record holds them (pendingUpdates) until each is taken.
@@ -95,7 +97,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	release := make(chan struct{})
 	var released sync.Once
 	releaseSockets := func() { released.Do(func() { close(release) }) }
-	t.Cleanup(releaseSockets)
+	testcleanup.Add(t, releaseSockets)
 	service.afterSocketPreload = func(room string, loaded *persistence.LoadResult) {
 		if room != artifactID {
 			return
@@ -136,7 +138,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}
 		connections = append(connections, socket.connection)
-		t.Cleanup(func() { _ = socket.connection.Close() })
+		testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	}
 	waitFor(t, "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2
@@ -193,6 +195,7 @@ func losingPreload(t *testing.T, service *Service, room string, offered []weak.P
 // follows the Go memory limit the process runs under: a sixteenth of it, at least 64 MiB and at
 // most 1 GiB, and 256 MiB when no limit is set (debug.SetMemoryLimit reports math.MaxInt64).
 func TestTheReadBudgetFollowsTheGoMemoryLimit(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		limit int64

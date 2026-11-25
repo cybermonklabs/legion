@@ -185,10 +185,12 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 }
 
 // waitForAcquiredConns waits until the pool has handed out want connections, so the test knows
-// the holders it arranged are in place before it releases the write they are queued behind.
+// the holders it arranged are in place before it releases the write they are queued behind. Its
+// one bound is the test binary's deadline (testwait.Until), and its failure names the connections
+// the pool last had out.
 func waitForAcquiredConns(t *testing.T, database *store.Store, want int32) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the pool to hand out %d connections", want), func() (int32, bool) {
+	testwait.Until(t, fmt.Sprintf("the pool to hand out %d connections (the connections it had out)", want), func() (int32, bool) {
 		acquired := database.Pool.Stat().AcquiredConns()
 		return acquired, acquired >= want
 	})

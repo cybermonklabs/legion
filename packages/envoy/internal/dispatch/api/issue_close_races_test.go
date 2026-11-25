@@ -442,7 +442,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	default:
 	}
 	releaseSettlement()
-	testwait.Receive(t, "the close to answer once the settlement was released", closing)
+	testwait.Receive(t, "the close's answer once the settlement was released", closing)
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
@@ -546,8 +546,9 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	awaitSettled(t, database, spec)
 }
 
-// awaitRequests releases start and waits for requests, failing the test when they do not all
-// answer: a deadlock between them.
+// awaitRequests releases start, then waits for requests to answer. Its one bound is the test
+// binary's deadline (testwait.Receive): a deadlock between them fails the test by name, and a pair
+// a loaded machine merely slows still answers.
 func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, what string) {
 	t.Helper()
 	answered := make(chan struct{})
@@ -556,7 +557,7 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		close(answered)
 	}()
 	close(start)
-	testwait.Receive(t, what+" to both answer", answered)
+	testwait.Receive(t, what+" both to answer", answered)
 }
 
 // holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
@@ -597,16 +598,19 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 }
 
 // awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+// Its one bound is the test binary's deadline (testwait.Until): a request a loaded machine
+// runs late still ends the wait, and its failure prints the count last read.
 func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%d request(s) waiting on a lock", count), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("%d request(s) to wait on a lock (the count waiting)", count), func() (int, bool) {
 		waiting := lockWaiters(t, database)
 		return waiting, waiting >= count
 	})
 }
 
-// awaitAnswer waits for the answer of a request a test sent from a goroutine of its own, and
-// fails the test, naming the request by what, when none arrives.
+// awaitAnswer waits for the answer of the request what names on answered. Its one bound is the
+// test binary's deadline (testwait.Receive): a request a loaded machine answers late passes, and
+// one that never answers fails the test by name.
 func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
 	t.Helper()
 	return testwait.Receive(t, what+" to answer", answered)

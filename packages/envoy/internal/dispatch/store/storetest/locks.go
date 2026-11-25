@@ -11,6 +11,12 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// The waits below end on the fact each waits for, and their one bound is the test binary's
+// deadline less testwait's margin (testwait.Until): a call that a loaded machine starts or
+// queues late still ends the wait, and one that never queues fails the test by name, with what was
+// last read, before go test's alarm. Each must run on the test's own goroutine, since it can fail
+// the test.
+
 // CountLockWaits counts the sessions of database waiting on a lock whose statement matches the LIKE
 // pattern like. It reads through the pool, never through a transaction: a transaction's first read
 // of pg_stat_activity freezes the view for the rest of it, and a poll inside one spins until it
@@ -50,25 +56,24 @@ func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid 
 // how many of the waiters hold a transaction id. It returns the call's answer and true when the
 // call under test answers on answered before any backend waited, as WaitForQueuedBehind does: such
 // a call never waited for the lock the test holds, and the caller fails with what it answered.
-// what names that call, for the failure when neither happens; the wait has no bound of its own
-// (testwait.Until).
+// what names that call, for the failure when the test binary's deadline comes first.
 func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what string, answered <-chan T) (T, bool, int) {
 	t.Helper()
-	type outcome struct {
-		answer     T
-		answered   bool
-		holdingXid int
+	type seen struct {
+		answer              T
+		early               bool
+		waiting, holdingXid int
 	}
-	got := testwait.Until(t, what+" to wait on an owner lock, or to answer", func() (outcome, bool) {
+	got := testwait.Until(t, what+" to wait on an owner lock, or to answer (the owner-lock waiters last read)", func() (seen, bool) {
 		select {
 		case early := <-answered:
-			return outcome{answer: early, answered: true}, true
+			return seen{answer: early, early: true}, true
 		default:
 		}
 		waiting, holdingXid := OwnerLockWaiters(t, database)
-		return outcome{holdingXid: holdingXid}, waiting > 0
+		return seen{waiting: waiting, holdingXid: holdingXid}, waiting > 0
 	})
-	return got.answer, got.answered, got.holdingXid
+	return got.answer, got.early, got.holdingXid
 }
 
 // waitingBehindHolder is the recursive CTE naming, as waiting(pid), every backend queued behind a
@@ -83,32 +88,35 @@ const waitingBehindHolder = `
 	)
 `
 
-// LockWaiters counts the backends queued behind a lock holder's transaction owns, directly or
-// behind an earlier waiter (a second row-lock waiter is blocked by the first, which holds the
-// tuple lock), at the moment it reads. It reads through holder's own connection: the code under
-// test can drain the shared pool while it waits on that lock, and a read that needed a pool
-// connection of its own would deadlock with it once the pool is exhausted. It reads pg_locks, not
-// pg_stat_activity, whose view is frozen for the rest of a transaction once read. It counts every
-// backend behind the holder, a background document settlement's among them; a test that must know
-// the call under test is the one waiting watches that call's backend instead (QueuedBehind).
-func LockWaiters(t testing.TB, holder pgx.Tx) int {
-	t.Helper()
-	var count int
-	if err := holder.QueryRow(context.Background(), waitingBehindHolder+`select count(*) from waiting`).Scan(&count); err != nil {
-		t.Fatalf("inspect database locks: %v", err)
-	}
-	return count
-}
-
-// WaitForLockWaiters waits until want backends queue behind a lock holder's transaction owns, as
-// LockWaiters counts them, and returns how many it saw then. It fails the test, naming the last
-// count, when they never do.
+// WaitForLockWaiters waits for want backends to queue behind a lock holder's transaction owns,
+// directly or behind an earlier waiter (a second row-lock waiter is blocked by the first, which
+// holds the tuple lock), and returns how many it saw then, at least want. It polls through
+// holder's own connection: the code under test can drain the shared pool while it waits on that
+// lock, and a poll that needed a pool connection of its own would deadlock with it once the pool is
+// exhausted. It reads pg_locks, not pg_stat_activity, whose view is frozen for the rest of a
+// transaction once read. It counts every backend behind the holder, a background document
+// settlement's among them; a test that must know the call under test is the one waiting watches
+// that call's backend instead (QueuedBehind).
 func WaitForLockWaiters(t testing.TB, holder pgx.Tx, want int) int {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("%d backends to queue behind the lock holder's transaction owns", want), func() (int, bool) {
-		count := LockWaiters(t, holder)
+	return testwait.Until(t, fmt.Sprintf("%d backends to queue behind the held lock (the count last read)", want), func() (int, bool) {
+		count, err := LockWaiters(context.Background(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return count, count >= want
 	})
+}
+
+// LockWaiters counts the backends queued behind a lock holder's transaction owns, as
+// WaitForLockWaiters counts them, through holder's own connection. It fails no test, so a
+// goroutine other than the test's can read it and hand the count to the test's goroutine.
+func LockWaiters(ctx context.Context, holder pgx.Tx) (int, error) {
+	var count int
+	if err := holder.QueryRow(ctx, waitingBehindHolder+`select count(*) from waiting`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("inspect database locks: %w", err)
+	}
+	return count, nil
 }
 
 // QueuedBehind reports whether the backend pid waits on a lock holder's transaction owns,
@@ -143,7 +151,7 @@ func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answere
 			return "answered", true
 		default:
 		}
-		queued, err := QueuedBehind(ctx, holder, pid)
+		queued, err := QueuedBehind(context.Background(), holder, pid)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -50,7 +50,7 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 			map[string]any{"actor": sessionActor()}).Code
 	}
 	// atOnce sends each of targets' requests at the same moment and answers their statuses, or
-	// fails when one never answers.
+	// fails when one never answers: its one bound is the test binary's deadline (testwait.Receive).
 	atOnce := func(targets []string) []int {
 		t.Helper()
 		statuses := make([]int, len(targets))

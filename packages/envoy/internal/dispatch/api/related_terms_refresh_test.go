@@ -321,7 +321,7 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 	`, issue.Key); err != nil {
 		t.Fatalf("write a comment: %v", err)
 	}
-	if result := testwait.Receive(t, "the check's refresh to end", srv.ensureSearchTermStats(project)); result.Err != nil {
+	if result := testwait.Receive(t, "the check's refresh of the term statistics to end", srv.ensureSearchTermStats(project)); result.Err != nil {
 		t.Fatalf("the check's refresh failed: %v", result.Err)
 	}
 	if queued := queuedChanges(t, database); queued != 0 {

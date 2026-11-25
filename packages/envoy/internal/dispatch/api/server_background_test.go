@@ -101,6 +101,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 		testwait.Eventually(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
+
 	})
 }
 
@@ -122,7 +123,8 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 
 // requireBackgroundWaitHoldsUntilTheSubscriberLeaves requires served's background wait to hold
 // while what (the relay or the hub) still runs for an open subscription, and to return once leave
-// has taken that subscription away, without the server's lifetime ending.
+// has taken that subscription away, without the server's lifetime ending. The wait for that return
+// has one bound, the test binary's deadline (testwait.Receive).
 func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *server, what string, leave func()) {
 	t.Helper()
 	waited := make(chan struct{})

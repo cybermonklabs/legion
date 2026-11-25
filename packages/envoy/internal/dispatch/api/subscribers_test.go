@@ -725,7 +725,7 @@ func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the other completion: %v", err)
 	}
-	if got := testwait.Receive(t, "the completion to answer once the other one committed", completed); got.err != nil {
+	if got := testwait.Receive(t, "the completion's answer once the other one committed", completed); got.err != nil {
 		t.Fatalf("the completion: %v", got.err)
 	}
 	var removals int

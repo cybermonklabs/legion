@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -18,6 +19,7 @@ import (
 // Here the catch-up lane holds a transaction while the issue closes. The close must still reach
 // the room, and alice's browser must be closed.
 func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	task, server := newTestServiceInstance(t, database)
@@ -41,7 +43,7 @@ func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *
 			close(release)
 		}
 	}
-	t.Cleanup(releaseOnce)
+	testcleanup.Add(t, releaseOnce)
 	lane.push(func(ctx context.Context) {
 		tx, err := task.store.Pool.Begin(ctx)
 		if err != nil {

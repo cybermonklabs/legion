@@ -37,6 +37,7 @@ const sweepMargin = deliverySweepInterval + 15*time.Second
 // Dispatch waits for the send in flight to settle before it closes its pool, so the outcome the
 // listener answered is recorded rather than lost with the process.
 func TestSIGTERMSettlesTheMentionSendInFlightAndLeavesTheQueuedOnePending(t *testing.T) {
+	t.Parallel()
 	var sends atomic.Int32
 	arrived := make(chan struct{}, 2)
 	answer := make(chan struct{})
@@ -276,8 +277,8 @@ func waitForSent(t *testing.T, database *store.Store, process *dispatchProcess, 
 // process's registry row is still live when the next starts, and a key the next minted in its own
 // data dir would hold its start up to a live window, until that row lapsed (processes.Register).
 //
-// The claim is the real minute. The test marks itself parallel once the second process runs, so
-// that minute passes beside the tests that run after it rather than after them; the bound is read
+// The claim is the real minute. The test pauses at t.Parallel once the next process runs
+// (dispatchSlots.parallelHoldingItsProcesses), so the minute passes while the serial tests run; the bound is read
 // off when the listener took the last resend, which a pause does not move.
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
 	sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t, benchtime.EveryRun)
@@ -312,7 +313,7 @@ func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLaps
 	listener.letAnswer()
 	next := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	next.waitHealthy(t)
-	t.Parallel()
+	dispatchSlots.parallelHoldingItsProcesses(t)
 
 	waitForSent(t, database, next, []string{inFlight, queued}, 4)
 	lastResend := listener.lastSend().Sub(killedAt)
@@ -350,9 +351,10 @@ func sigkillWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLaps
 // take one DISPATCH_SIGNING_KEY, as every process of a deployment does: a live server process
 // refuses a successor whose signing keys it does not hold (processes.Register).
 //
-// The test marks itself parallel once the old process has exited, so the sweep interval passes
-// beside the tests that run after it rather than after them; the bound is read off when the
-// listener took the last send, which a pause does not move.
+// The old process and its successor run at once, so the test reserves both slots before its first
+// start. It pauses at t.Parallel once the old process has exited (dispatchSlots.parallelHoldingItsProcesses), so
+// the claim lease and the sweep interval pass while the serial tests run; the bound is read off
+// when the listener took the last send, which a pause does not move.
 func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T) {
 	aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t, benchtime.EveryRun)
 }
@@ -367,6 +369,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnceOnTheClock
 // aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce is the scene of the two rows
 // above; lane says whether its reading of the clock is held to its figure (benchtime.Lane).
 func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T, lane benchtime.Lane) {
+	dispatchSlots.reserve(t, 2)
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
 	options := dispatchOptions{SigningKey: "rolling-update-mentions-key", Env: map[string]string{"ENVOY_URL": listener.url}}
@@ -391,6 +394,11 @@ func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T,
 		id, err := old.postMention(key, "Accepted during the HTTP drain.", "session:s2")
 		answered <- posted{id, err}
 	}()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the old process's output:\n%s", old.Output.String())
+		}
+	})
 	storetest.WaitForLockWaiters(t, holder, 1)
 
 	old.Terminate(t)
@@ -407,7 +415,7 @@ func aRollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testing.T,
 	listener.letAnswer()
 	old.WaitExit(t, "SIGTERM")
 	exited := time.Now()
-	t.Parallel()
+	dispatchSlots.parallelHoldingItsProcesses(t)
 
 	waitForSent(t, database, successor, []string{inFlight, queued, drained}, 3)
 	lastSend := listener.lastSend().Sub(exited)

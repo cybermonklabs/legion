@@ -176,7 +176,14 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			for try := 1; try <= 4; try++ {
 				failer.take()
 				unpark()
-				unpark = testwait.Receive(t, fmt.Sprintf("try %d: the first send to park again or go", try), timers)
+				testwait.Eventually(t, fmt.Sprintf("try %d: the first send parked again, or a send reaching s1", try), func() bool {
+					select {
+					case unpark = <-timers:
+						return true
+					default:
+						return len(state.bodiesTo("s1")) > 0
+					}
+				})
 				reads, statements, writes := failer.take()
 				t.Logf("try %d with the rule's reads failing: %d reads of the rule, %d statements on comment_deliveries (%d writes); s1 took %q",
 					try, reads, statements, writes, state.bodiesTo("s1"))

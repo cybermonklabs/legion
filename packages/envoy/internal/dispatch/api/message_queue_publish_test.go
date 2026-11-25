@@ -486,7 +486,7 @@ func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
 			"body": "The text its author withdraws.", "target": "session:s1", "delivery": "btw",
 		}, "alice")
 	}()
-	key := testwait.Receive(t, "the message's send to reach the listener", landed)
+	key := testwait.Receive(t, "the message's send at the listener", landed)
 	messageID, _, _ := strings.Cut(key, ":")
 	deleteIssueMessage(t, handler, messageID, "alice")
 	answerSend()

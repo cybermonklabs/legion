@@ -93,7 +93,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// over a row that has gone. Opening it types nothing, so the document is still untouched.
 	secondServer := httptest.NewServer(http.HandlerFunc(holding.ServeHTTP))
 	t.Cleanup(secondServer.Close)
-	connection, wsResponse, err := gws.DefaultDialer.Dial(
+	connection, wsResponse, err := dialLive(t, gws.DefaultDialer,
 		"ws"+strings.TrimPrefix(secondServer.URL, "http")+"/ws/doc/"+document.ID,
 		http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// route removes, which the read below says.
 	thirdServer := httptest.NewServer(http.HandlerFunc(third.ServeHTTP))
 	t.Cleanup(thirdServer.Close)
-	thirdConnection, thirdResponse, err := gws.DefaultDialer.Dial(
+	thirdConnection, thirdResponse, err := dialLive(t, gws.DefaultDialer,
 		"ws"+strings.TrimPrefix(thirdServer.URL, "http")+"/ws/doc/"+untouched.ID,
 		http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {

@@ -889,6 +889,7 @@ func playRelaySchedule(deadline context.Context, seed uint64) string {
 // and what it no longer holds is gone from both (check). The seeds that once broke that run
 // first, then as many randomized ones as scheduleCountEnv asks for.
 func TestEveryInterleavingOfARoomsAwarenessSettlesOnBothProcesses(t *testing.T) {
+	t.Parallel()
 	deadline := testwait.Context(t)
 	for _, seed := range relayScheduleRegressions {
 		if report := playRelaySchedule(deadline, seed); report != "" {

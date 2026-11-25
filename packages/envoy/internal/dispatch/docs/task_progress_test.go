@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -82,7 +83,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 		defer close(done)
 		service.RunTaskProgressReconciliation(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		testwait.Receive(t, "RunTaskProgressReconciliation to return once its context ended", done)
 	})
@@ -92,6 +93,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 // The reconciliation counts every uncounted issue once at start and then returns: every version
 // write counts its own, so it keeps no timer and makes no statement after the boot pass.
 func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	keys := []string{
 		seedUncountedIssue(t, database, 1, "- [x] a\n- [ ] b\n"),
@@ -100,7 +102,7 @@ func TestTaskProgressIsCountedAtStartAndThenNothingRuns(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	service := New(Deps{Store: counted, Events: events.NewBroker(), Settle: stagedAhead})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)
 	testwait.Receive(t, "the reconciliation to return after its boot pass found every row counted", done)
@@ -133,7 +135,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 		t.Fatalf("hold %s: %v", held, err)
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: stagedAhead})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	done := runTaskProgress(t, service)
 	waitFor(t, "the boot pass to give up on the held row", func() bool {

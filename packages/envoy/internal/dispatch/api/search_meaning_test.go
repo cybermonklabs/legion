@@ -58,6 +58,15 @@ type fakeEmbedder struct {
 	// the context's error then. It models a model service slower than its caller allows (the
 	// related-item check's meaning allowance).
 	delay time.Duration
+	// holdDocuments, once set, holds every InputDocument call before it answers: the call is
+	// counted in holding, says so on documentsHeld (without waiting for a reader), and waits until
+	// releaseDocuments is closed or its context ends, then answers as it would have. It models
+	// background work held in its call to the model service. A test makes the two channels before
+	// any call can reach them, and sets holdDocuments after.
+	holdDocuments    atomic.Bool
+	documentsHeld    chan struct{}
+	releaseDocuments chan struct{}
+	holding          atomic.Int32
 
 	callsMu sync.Mutex
 	calls   int
@@ -73,6 +82,18 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string, inputType embe
 		f.counted++
 	}
 	f.callsMu.Unlock()
+	if inputType == embed.InputDocument && f.holdDocuments.Load() {
+		f.holding.Add(1)
+		select {
+		case f.documentsHeld <- struct{}{}:
+		default:
+		}
+		select {
+		case <-f.releaseDocuments:
+		case <-ctx.Done():
+		}
+		f.holding.Add(-1)
+	}
 	if f.delay > 0 {
 		select {
 		case <-time.After(f.delay):
@@ -354,7 +375,13 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // embedder are counted (countedSearch); unthrottled is what one search made before anything was
 // throttled. The sign-in lookup, the drain and the seeding run on the untraced pool or on contexts
 // no search marks, so none of their work is counted.
-func throttledSearchServer(t *testing.T) throttledSearch {
+//
+// With holdFirstCall the drain's first call of the model service is held there, with everything
+// the drain holds in it: its claim on the pending rows, its share of the token budget and its
+// limiter's slot. The function answers once that call is held, and the server's release lets it
+// go; the limiter's pacing interval then lifts past its floor (limited, floor) as the throttled
+// call returns, and the drain waits on the limiter for good.
+func throttledSearchServer(t *testing.T, holdFirstCall bool) throttledSearch {
 	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -399,6 +426,16 @@ func throttledSearchServer(t *testing.T) throttledSearch {
 	throttleErr := embedtest.FakeThrottleError{Code: "ThrottlingException"}
 	embedder.errFor = map[embed.InputType]error{embed.InputDocument: throttleErr}
 	create("SAT", "Other bulk content that never finishes embedding", "Body.")
+	if holdFirstCall {
+		// The channels are made before any call can reach them, and the hold is set before the
+		// drain starts, whose first call it holds.
+		embedder.documentsHeld = make(chan struct{}, 1)
+		embedder.releaseDocuments = make(chan struct{})
+		server.release = sync.OnceFunc(func() { close(embedder.releaseDocuments) })
+		t.Cleanup(server.release)
+		server.limited, server.floor = limited, limited.Interval()
+		embedder.holdDocuments.Store(true)
+	}
 	calls := func() int {
 		embedder.callsMu.Lock()
 		defer embedder.callsMu.Unlock()
@@ -424,6 +461,19 @@ func throttledSearchServer(t *testing.T) throttledSearch {
 		testwait.Receive(t, "the background drain to stop once its context ended", done)
 	})
 
+	if holdFirstCall {
+		testwait.Until(t, "the background drain's first call of the model service to be held (the calls held)", func() (int32, bool) {
+			select {
+			case <-embedder.documentsHeld:
+				return embedder.holding.Load(), true
+			case <-done:
+				t.Fatal("the background drain stopped before its first call of the model service was held")
+			default:
+			}
+			return embedder.holding.Load(), false
+		})
+		return server
+	}
 	// The background goroutine has hit a throttle once the embedder has been called again: only
 	// it calls before the searches start, and only with InputDocument, which throttles.
 	testwait.Eventually(t, "the background drain to hit a throttle", func() bool { return calls() > before })
@@ -432,11 +482,16 @@ func throttledSearchServer(t *testing.T) throttledSearch {
 
 // throttledSearch is throttledSearchServer's server: its handler, the statements of each counted
 // request on its pool, its embedder, and the work one search made before anything was throttled.
+// release, limited and floor are set when the drain's first call is held: release lets the call
+// go, and limited is the drain's embedder, whose pacing interval starts at floor.
 type throttledSearch struct {
 	handler     http.Handler
 	statements  *sentStatements
 	embedder    *fakeEmbedder
 	unthrottled searchWork
+	release     func()
+	limited     *embed.RateLimitedEmbedder
+	floor       time.Duration
 }
 
 // searchWork is what one counted search made: the SQL of each statement it ran, sorted, since the
@@ -481,15 +536,19 @@ func (s throttledSearch) answer(t *testing.T, what, query string) (answer counte
 // TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority
 // over background work (throttledSearchServer): concurrent live search requests keep succeeding
 // non-degraded, because their InputQuery calls go straight to the unwrapped fake embedder and are
-// never subject to that backoff at all. Each search must answer while the limiter's wait stands
-// for good: one paced by the limiter never answers, and the wait for it fails naming it. And each
-// makes the work a search made before anything was throttled, no more: a search that waits on the
-// drain's backoff reads its state, or calls the embedder again, and that is work of its own.
+// never subject to that backoff at all. Each search must answer first while the drain is held in
+// its call of the model service, with everything it holds there, and then while the limiter's wait
+// stands for good. A search that waited behind the drain's held call would not answer until the
+// drain was let go, which happens only once every search of the first phase has answered, and one
+// paced by the limiter never answers: the wait for it fails naming it. And each makes the work a
+// search made before anything was throttled, no more: a search that waits on the drain's backoff
+// reads its state, or calls the embedder again, and that is work of its own.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	t.Parallel()
-	server := throttledSearchServer(t)
-	for i := range 5 {
-		answer := server.answer(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), "q=wibbleflorp")
+	server := throttledSearchServer(t, true)
+	search := func(i int, while string) {
+		t.Helper()
+		answer := server.answer(t, fmt.Sprintf("search request %d to answer %s", i, while), "q=wibbleflorp")
 		recorder := answer.response
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("search request %d: status=%d body=%s", i, recorder.Code, recorder.Body.String())
@@ -506,6 +565,20 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 				"a live query does none of the drain's work and waits on none of it", i, answer.work, server.unthrottled)
 		}
 	}
+	for i := range 5 {
+		search(i, "while the background drain is held in its call of the model service")
+		if server.embedder.holding.Load() == 0 {
+			t.Fatalf("search request %d answered once the background drain's call was no longer held, which shows nothing", i)
+		}
+	}
+	server.release()
+	testwait.Until(t, "the background drain to back off from its throttled call (its pacing interval)", func() (time.Duration, bool) {
+		interval := server.limited.Interval()
+		return interval, interval > server.floor
+	})
+	for i := range 5 {
+		search(i, "while the background drain's limiter waits for good")
+	}
 }
 
 // TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled is the service level of the row
@@ -514,7 +587,7 @@ func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 // as the search's work.
 func TestSearchAnswersWithinASecondWhileEmbedqueueIsThrottled(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
-	server := throttledSearchServer(t)
+	server := throttledSearchServer(t, false)
 	for i := range 5 {
 		started := time.Now()
 		answer := server.answer(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), "q=wibbleflorp")

@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -23,7 +24,7 @@ func TestADocumentDeferredAfterALongPassWaitsItsWholeBackoff(t *testing.T) {
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
 	persistence := &heldUnreadableStore{VersionedStore: NewPgVersioned(database), document: failing, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(persistence.letGo)
+	testcleanup.Add(t, persistence.letGo)
 	passClock := clocktest.New(time.Now())
 	service := newExcerptServiceOn(t, database, persistence, passClock)
 	base := referenceExcerptSchedule.retryBase

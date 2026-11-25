@@ -188,7 +188,8 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 // it, so a viewer here waits for a frame that never comes. The process takes its lock only once
 // it listens (testHookFanout.dial), so from then on every call reaches it and waits for its
 // acknowledgement. The wait is the one the caller makes for its own lock (awaitOwnLock), bounded
-// by the test binary's deadline: how long a loaded machine takes to connect is not under test.
+// by the test binary's deadline (testwait.Receive): how long a loaded machine takes to connect is
+// not under test.
 func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)

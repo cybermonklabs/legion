@@ -203,6 +203,9 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 	return g.API.AcceptSuggestion(ctx, artifactID, markID, replacement, actor)
 }
 
+// waitForSecondReplacementOrCommentLock waits until the second accept reaches the document service
+// or waits on a lock in the test's own database. Its one bound is the test binary's deadline
+// (testwait.Eventually): a request a loaded machine runs late still ends the wait.
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
 	testwait.Eventually(t, "the second acceptance to reach the document service or wait for the comment lock", func() bool {
@@ -1373,6 +1376,10 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 	}
 }
 
+// waitForArtifactVersion waits until version number of artifactID is readable, which is when its
+// settlement has written it. Its one bound is the test binary's deadline (testwait.Eventually): a
+// settlement a loaded machine runs late still ends the wait, and one that never writes the version
+// fails it by name.
 func waitForArtifactVersion(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
 	testwait.Eventually(t, fmt.Sprintf("artifact %s version %d to settle", artifactID, number), func() bool {
@@ -1599,11 +1606,11 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 		}
 		return gate
 	})
-	// The first accept waits at the gate in its transaction until the row lets it go. The server's
-	// and the document service's cleanups, registered before this one, run after it: a row that
-	// fails before the release below lets the accept go rather than leave it held.
-	letFirstGo := sync.OnceFunc(func() { close(gate.releaseFirst) })
-	t.Cleanup(letFirstGo)
+	// The first accept waits at the gate until the test lets it go, holding its transaction's
+	// pooled connection. A test that fails before then lets it go as it ends: the cleanups that run
+	// after this one, the pool's close among them, would otherwise wait on that connection for ever.
+	releaseFirst := sync.OnceFunc(func() { close(gate.releaseFirst) })
+	t.Cleanup(releaseFirst)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent accepts", "foo")
 	suggestion := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Replace foo.", "anchor": map[string]any{"artifact": "spec", "quote": "foo"},
@@ -1617,16 +1624,16 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
-	testwait.Receive(t, "the first acceptance to reach the document replacement", gate.firstEntered)
+	testwait.Receive(t, "the first acceptance's arrival at the document replacement", gate.firstEntered)
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
 	waitForSecondReplacementOrCommentLock(t, database, gate.secondEntered)
-	letFirstGo()
+	releaseFirst()
 
 	var success, conflict int
 	for range 2 {
-		response := testwait.Receive(t, "both concurrent acceptances to answer", responses)
+		response := testwait.Receive(t, "an acceptance's answer once the first was let go", responses)
 		switch response.Code {
 		case http.StatusOK:
 			success++

@@ -83,8 +83,9 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	// The stop's hand-backs go out only once its drain has answered (mayHandBack), so the stop's
 	// calls wait for NATS with no bound of the row's, and the hook puts the wait back as the first
 	// hand-back's publish begins (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(math.MaxInt64)
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	tuning := tuningFor(t)
+	wait := tuning.callWait.Swap(math.MaxInt64)
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -188,8 +189,9 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	// The stop's hand-backs go out only once its drain has answered; the stop's calls wait for NATS
 	// with no bound of the row's, and the hook puts the wait back as the hand-back's publish begins
 	// (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(math.MaxInt64)
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	tuning := tuningFor(t)
+	wait := tuning.callWait.Swap(math.MaxInt64)
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var freezing sync.Once
 	frozen := make(chan struct{})

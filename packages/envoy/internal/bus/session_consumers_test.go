@@ -661,8 +661,8 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 
 // waitUntil waits through the shared wait until ready reports true, naming want, which is what the
 // caller waits for, and the reading ready last took. Each caller waits on a state that follows a
-// publish the server answers nothing to -- an ack, a nak, a delivery -- so the state arrives a
-// moment after the call that caused it rather than with it.
+// publish the server answers nothing to -- an ack, a nak, a delivery -- or a timer of the server's
+// own, so the state arrives a moment after the call that caused it rather than with it.
 func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
 	testwait.Until(t, want, func() (string, bool) {
@@ -767,7 +767,6 @@ func TestAStartBelowTheStreamsFirstSequenceIsAGap(t *testing.T) {
 // Restarts made at once share their reads of the stream's state, and each still reports a gap
 // exactly when the consumer it kept goes on below the stream's first sequence.
 func TestRestartsAtOnceReportEachGap(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const sessions, gone = 24, 10

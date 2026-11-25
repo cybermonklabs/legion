@@ -266,32 +266,30 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	walk := `
+	// The walk's cost is its steps, the rows its recursive term makes (repo_chain): one for each
+	// issue and one per link above it up to the cap, so the issue n links below the root costs
+	// min(n, parentDepthCap)+1 of them. A walk that climbed every chain to its root would make
+	// 2,001,000 here rather than the 65,472 a capped one makes.
+	var steps int
+	if err := database.Pool.QueryRow(ctx, `
 		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
-		` + refs.IssueRepoTerms + `
-		select i.key, ` + refs.IssueRepoColumns + ` from issues i ` + refs.IssueRepoJoin + ` where i.project_key = 'DEEP'`
-	// The walk's cost is its steps: the rows repo_chain's recursive union makes. A walk capped at
-	// parentDepthCap makes, for the issue n links below the root, one step for itself and one per
-	// link up to the cap; one that walked every chain to its root would make a step per link of
-	// each, 2,001,000 here rather than the 65,472 counted below.
-	plan, text := analyzePlan(t, database, walk)
-	var steps float64
-	walked := false
-	for _, node := range plan.everyNode() {
-		if node.NodeType == "Recursive Union" {
-			steps, walked = node.Rows*node.Loops, true
-		}
+		`+refs.IssueRepoTerms+`
+		select count(*) from repo_chain`).Scan(&steps); err != nil {
+		t.Fatalf("count the steps of the walk of %d issues: %v", length, err)
 	}
 	want := 0
-	for n := 1; n <= length; n++ {
-		want += min(n, parentDepthCap+1)
+	for below := range length {
+		want += min(below, parentDepthCap) + 1
 	}
-	if !walked || steps != float64(want) {
-		t.Fatalf("the walk of a %d-issue chain took %.0f steps, want %d, one per link within %d of each issue:\n%s",
-			length, steps, want, parentDepthCap, text)
+	if steps != want {
+		t.Fatalf("the walk of a %d-issue chain took %d steps, want %d: one per issue and one per link within %d links above it",
+			length, steps, want, parentDepthCap)
 	}
 	started := time.Now()
-	rows, err := database.Pool.Query(ctx, walk)
+	rows, err := database.Pool.Query(ctx, `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		`+refs.IssueRepoTerms+`
+		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}

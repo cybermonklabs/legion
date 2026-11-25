@@ -65,7 +65,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh whose answer is lost", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			testwait.Receive(t, "the parked send's park timer", timers)
+			testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			recorded := func() time.Time {
 				sender.mu.Lock()
@@ -173,7 +173,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
 			parkedOne := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := testwait.Receive(t, "the parked send's park timer", timers)
+			unpark := testwait.Receive(t, "the parked send's timer", timers)
 			key := mentionKey{comment: parkedOne, target: "session:s1", attempt: 1}
 			if tc.outage {
 				down.Store(true)

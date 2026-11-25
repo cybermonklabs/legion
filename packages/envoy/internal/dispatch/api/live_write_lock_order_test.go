@@ -151,13 +151,13 @@ func (f *uploadRaceFixture) request(ctx context.Context, method, target string, 
 }
 
 // waitForWriteToEngage returns once the second request has entered its document operation or
-// waits on a database lock.
+// waits on a database lock. Its one bound is the test binary's deadline (testwait.Until).
 func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	t.Helper()
-	testwait.Eventually(t, "the second write to enter its document operation or wait on a lock", func() bool {
+	testwait.Until(t, "the second write to enter its document operation or wait on a database lock (the backends waiting on a lock)", func() (int, bool) {
 		select {
 		case <-f.docs.engaged:
-			return true
+			return 0, true
 		default:
 		}
 		var waiting int
@@ -167,7 +167,7 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		return waiting > 0
+		return waiting, waiting > 0
 	})
 }
 
@@ -188,6 +188,8 @@ func (s *heldAppendStore) holdNextAppend() {
 	s.releaser = make(chan struct{})
 }
 
+// waitHeld waits for the held append to be reached. Its one bound is the test binary's deadline
+// (testwait.Receive).
 func (s *heldAppendStore) waitHeld(t *testing.T) {
 	t.Helper()
 	s.mu.Lock()

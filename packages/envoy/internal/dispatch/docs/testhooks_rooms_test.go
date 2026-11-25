@@ -22,6 +22,7 @@ import (
 // of each settlement-resumption pass that armed a document's owed settlement, on the service's
 // clock: here a fake the test never moves, so the time a pass records is that clock's one reading.
 func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")

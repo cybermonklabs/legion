@@ -1,0 +1,17 @@
+kind: Fixed
+custom:
+  Issue: tree-not-live-ends
+body: |-
+  The pod of a child that has left the workflow while its tree runs on no longer stands for as
+  long as the issue does. The child's park or close is its one close: it suspends or closes each
+  of its claims and deletes its Sandbox. An operator's resume, task or retry and the controller's
+  fresh session start a claim without reading the standing of its issue, so a claim of such a
+  child could run again after that close, in a pod built again for it, and nothing stopped it:
+  every idle pass held that pod as `tree_not_live`. The idle pass now makes the close's stop again
+  once that pod has had no turn, no delivery and no background work for the idle period: it
+  suspends each live claim for the daemon, which keeps the claim's session, and suspends the
+  issue's Sandbox, which deletes it with the pod and the disk. The pass over the pods no claim
+  owns does the same for such a pod whose claims have all stopped, which no pass decided before.
+  `tree_not_live` now holds a pod only while its close is still to come or still running: its
+  tree lingers or its tree root has left the workflow, a look of its production check is open, or
+  a role stop or a Sandbox suspension of the issue is still queued.

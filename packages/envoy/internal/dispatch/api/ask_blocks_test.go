@@ -342,24 +342,31 @@ func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
 }
 
 // awaitIndexedAskBlock polls the inbox until the ask block with blockID on artifactID is
-// indexed, failing the test when settlement never reaches it.
+// indexed, failing the test when settlement never reaches it. Its one bound is the test binary's
+// deadline (testwait.Until): a settlement a loaded machine starts late still ends the wait,
+// and its failure names the block ids the inbox last listed.
 func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockID, question string) {
 	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("ask block %q on %s to be indexed", blockID, artifactID), func() bool {
+	testwait.Until(t, fmt.Sprintf("ask block %q on %s to be indexed (the inbox's ask blocks)", blockID, artifactID), func() ([]string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
+		var listed []string
 		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID == nil || *ask.BlockID != blockID {
+			if ask.BlockID == nil {
+				continue
+			}
+			listed = append(listed, *ask.BlockID)
+			if *ask.BlockID != blockID {
 				continue
 			}
 			if ask.Question != question || ask.State != "open" || ask.BlockArtifact == nil || ask.BlockArtifact.ID != artifactID {
 				t.Fatalf("indexed ask = %#v", ask)
 			}
-			return true
+			return listed, true
 		}
-		return false
+		return listed, false
 	})
 }
 

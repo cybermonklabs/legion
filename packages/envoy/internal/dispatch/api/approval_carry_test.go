@@ -458,7 +458,11 @@ func TestAnAnswerThatIsTheWholeChangeSinceHisApprovalCarriesIt(t *testing.T) {
 // second, still-open block's body, which the comparison leaves out: the version carries.
 func TestAnAnswerCarriesWhenAnAgentEditInsideAnotherBlockLandsInItsVersion(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// The settle window is stagedAhead, staged state for the settlement's timer and not a wait, so no
+	// settlement timer versions alice's answer before the agent's edit does: the edit's own
+	// transaction is what versions it, however long a loaded machine takes between the two
+	// requests, and every settlement the test needs it makes at once (settledDecisionBlocks).
+	handler, _, documents := settlingCarryDocuments(t, stagedAhead)
 	issue := createInteractionIssue(t, handler, "TEST", "Answer beside an edit", "Context\n")
 	insertDecisionMarkdown(t, handler, issue.PrimaryArtifactID, waveAsk+"\n"+regionAsk, 2)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
@@ -496,7 +500,11 @@ func versionMarkdown(t *testing.T, handler http.Handler, artifactID string, numb
 // plus his answer to the second block - carries.
 func TestARewordOfAnAnsweredBlockInTheAnswersVersionDoesNotCarry(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// The settle window is stagedAhead, staged state for the settlement's timer and not a wait, so no
+	// settlement timer versions alice's second answer before the agent's reword does, however long
+	// a loaded machine takes between the two requests; every settlement the test needs it makes at
+	// once (settledVersion, settledDecisionBlocks).
+	handler, _, documents := settlingCarryDocuments(t, stagedAhead)
 	issue := createInteractionIssue(t, handler, "TEST", "Reword under the answer", "Context\n\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -552,7 +560,12 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, database, documents := settlingCarryDocuments(t, time.Second)
+			// The settle window is stagedAhead, staged state for the settlement's timer and not a
+			// wait, so no settlement timer versions alice's second answer or writes the row back over
+			// the forgery before the named version holds both, however long a loaded machine takes
+			// between the requests; every settlement the test needs it makes at once (settledVersion,
+			// settledDecisionBlocks, settledWithoutVersion).
+			handler, database, documents := settlingCarryDocuments(t, stagedAhead)
 			issue := createInteractionIssue(t, handler, "TEST", "Forged "+tc.attribute+" under the answer", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
@@ -630,7 +643,8 @@ func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.S
 // settledWithoutVersion settles the document at once, for a document whose settlement is owed,
 // and waits until that settlement has committed: its pending-settlement row, which a live write
 // leaves and only a settlement's commit clears, is gone. It fails t when the document owes no
-// settlement, since then there would be nothing to wait for.
+// settlement, since then there would be nothing to wait for. The wait's one bound is the test
+// binary's deadline less testwait's margin.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
 	owed := func() bool {
@@ -644,7 +658,7 @@ func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
 	documents.SettleNow(artifactID)
-	testwait.Eventually(t, "the document's settlement to commit", func() bool { return !owed() })
+	testwait.Eventually(t, "the document's settlement to commit (its pending-settlement row gone)", func() bool { return !owed() })
 }
 
 // The human changes his answer. The block's answered_at moves, so the block is newly answered
@@ -970,7 +984,11 @@ func TestAnotherHumansAnswerHeApprovedStaysOutOfTheCarrysTest(t *testing.T) {
 // answer and carries nobody's approval.
 func TestTwoHumansAnswersInOneVersionDoNotCarry(t *testing.T) {
 	t.Parallel()
-	handler, _, documents := settlingCarryDocuments(t, time.Second)
+	// The settle window is stagedAhead, staged state for the settlement's timer and not a wait, so no
+	// settlement timer versions alice's answer before bob answers, however long a loaded machine
+	// takes between the two answers: the one settlement that versions both is the test's own
+	// (settledVersion).
+	handler, _, documents := settlingCarryDocuments(t, stagedAhead)
 	issue := createInteractionIssue(t, handler, "TEST", "Two answerers", "Context\n\n"+waveAsk+"\n"+regionAsk)
 	asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID,
 		map[string]string{"wave": "How many regions take the first wave?", "region": "Which region goes first?"})

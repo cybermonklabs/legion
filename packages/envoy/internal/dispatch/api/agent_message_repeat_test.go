@@ -230,7 +230,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 			"CallWindow, past which a deployment's send would have ended by itself, so a cut inside it is one the "+
 			"span sees")
 	close(release)
-	created := testwait.Receive(t, "the send in flight at shutdown to answer", answered)
+	created := testwait.Receive(t, "the answer of the send in flight at shutdown", answered)
 
 	var messageID string
 	if err := database.Pool.QueryRow(context.Background(),
@@ -303,7 +303,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	fresh := 0
 	ids := map[string]struct{}{}
 	for range senders {
-		response := testwait.Receive(t, "a concurrent send to answer", responses)
+		response := testwait.Receive(t, "a concurrent send's answer", responses)
 		switch {
 		case response.Code == http.StatusCreated:
 			if !replayed(response) {
@@ -370,7 +370,7 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 	testwait.Receive(t, "the send to reach the listener", sending)
 	cancel()
 	close(release)
-	testwait.Receive(t, "the cut-off send to finish", answered)
+	testwait.Receive(t, "the end of the cut-off send", answered)
 
 	var id string
 	if err := database.Pool.QueryRow(context.Background(),

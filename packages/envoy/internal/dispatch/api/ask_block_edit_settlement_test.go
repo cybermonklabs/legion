@@ -133,7 +133,9 @@ func documentVersions(t *testing.T, handler http.Handler, artifactID string) []m
 // releases the authors that version credits from the document's pending authors, so the version
 // can be read while they are still pending, and a write made then is credited to them as well.
 // It publishes the version's event only after releasing them, which makes the event, not the
-// stored version, the signal that settlement has finished.
+// stored version, the signal that settlement has finished. The wait's one bound is the test
+// binary's deadline (testwait.Receive): a settlement a loaded machine runs late still publishes,
+// and one that never does fails the test by name.
 func awaitSettledVersion(t *testing.T, published <-chan model.Event, artifactID string, number int) {
 	t.Helper()
 	for {

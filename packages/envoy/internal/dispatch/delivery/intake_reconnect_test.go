@@ -110,7 +110,7 @@ func TestAHolderWhoseConnectionWasReplacedLeavesTheDurableToTheProcessThatTookIt
 // nothing about how many times NATS delivered the message.
 //
 // A message the take-over did not carry over is redelivered only when the durable's ack wait
-// expires (intakeAckWait) -- intakeMaxAckPending (4) times intakeMessageTimeout (1 min) plus a
+// expires (intakeTuning.ackWait) -- intakeMaxAckPending (4) times intakeMessageTimeout (1 min) plus a
 // minute, five minutes in production, and a day here, where both processes' intakes take a
 // message timeout past the run -- and it holds one of the keeper's four in-flight slots for every
 // second of it, which is longer than the five-minute reconcile this intake exists to beat.
@@ -238,7 +238,6 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 // It also reads the durable's own outstanding count, 0: the redo was acknowledged, so nothing
 // waits out the five-minute ack wait in the next holder's four-slot window.
 func TestAHandlerThatFinishedDuringTheOutageIsRedoneByTheKeeperAndShowsOnce(t *testing.T) {
-	t.Parallel()
 	handlerFinishedDuringTheOutage(t, false)
 }
 
@@ -248,7 +247,6 @@ func TestAHandlerThatFinishedDuringTheOutageIsRedoneByTheKeeperAndShowsOnce(t *t
 // subscription is gone with the hold -- so both end in the keeper's redo, and in one row, one
 // event and one thing a person reads.
 func TestAHandlerThatFinishedWhenTheConnectionWasReplacedIsRedoneByTheKeeperAndShowsOnce(t *testing.T) {
-	t.Parallel()
 	handlerFinishedDuringTheOutage(t, true)
 }
 
@@ -278,8 +276,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	holderFetches, releaseHolder, holderGitHub := writingGitHub(t, true)
 	keeperFetches, _, keeperGitHub := writingGitHub(t, false)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := ackWaitPastTheRun(newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
-	keeper := ackWaitPastTheRun(newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	holder := ackWaitPastTheRun(newIntake(tuningFor(t), holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	keeper := ackWaitPastTheRun(newIntake(tuningFor(t), keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 
 	runIntake(t, holder)
 	waitFor(t, func() bool {
@@ -518,8 +516,8 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake, pa
 	holderFetches, holderHeld, holderGitHub := holderFakeGitHub(t, holderFake)
 	keeperFetches, keeperGitHub := countingGitHub(t)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	holder := newIntake(tuningFor(t), holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(tuningFor(t), keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	if pastTheRun {
 		ackWaitPastTheRun(holder)
 		ackWaitPastTheRun(keeper)

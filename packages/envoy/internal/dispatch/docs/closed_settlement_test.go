@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -103,13 +104,13 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 		Settle:      stagedAhead,
 		TestHooks:   true,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
-	t.Cleanup(held.let)
+	testcleanup.Add(t, held.let)
 	server := newTestServer(t, service)
 	createOwedDocument(t, database, service, "CORE-1", artifactID, "spec", closedSettlementText, closedSettlementVersionOne)
 	return closedSettlementFixture{database: database, service: service, server: server, held: held, artifactID: artifactID}
@@ -505,7 +506,7 @@ func (f closedSettlementFixture) watchRefusals(t *testing.T) *refusalWatch {
 			<-watch.release
 		}
 	}
-	t.Cleanup(watch.let)
+	testcleanup.Add(t, watch.let)
 	return watch
 }
 

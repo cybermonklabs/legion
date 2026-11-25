@@ -523,7 +523,7 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 // holder of the lock (readIssueOwnerLockHolder) and logs it, so a run that waited names the
 // writer it waited for, and a holder sitting on the statement an upload's transaction makes
 // under that lock fails the test there (uploadLockProbe.uploadHoldsTheLock), where retrying
-// could only spend the window. Most runs are refused nothing and log nothing: the settlement
+// could only wait for ever. Most runs are refused nothing and log nothing: the settlement
 // usually commits while fileIssue's own request is still answering, before there is an upload to
 // hold anything.
 func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {

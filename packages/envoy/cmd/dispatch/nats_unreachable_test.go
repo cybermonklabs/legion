@@ -48,6 +48,7 @@ const natsDownCommit = "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
 // durables, and an agent view relays a session's frame. Before INFRA-555 the boot exited on the
 // first failed connect.
 func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedDeliverySettings(t, database)
 	srv, natsURL := testnats.Start(t)
@@ -124,6 +125,8 @@ func TestAProcessReportsASilentNATSCut(t *testing.T) {
 // benchtime's timing lane; that the cut is reported at all, with the process answering 200 ok
 // throughout, is TestAProcessReportsASilentNATSCut, which every run proves.
 func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the 5 s within which
+	// /healthz must report the cut).
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	if reported := reportedSilentNATSCut(t); reported > 5*time.Second {
 		t.Fatalf("/healthz took %s to report a silent cut; want it within seconds", reported)

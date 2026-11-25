@@ -86,9 +86,10 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 	}
 }
 
-// publishedToSession runs the outbox until every event of issueKey is published, then reports
-// whether any event about commentID (its comment.created, a comment.delivery, any other) was
-// published to the session's own topic.
+// publishedToSession runs the outbox until every event of issueKey is published, a wait whose one
+// bound is the test binary's deadline (testwait.Until), then reports whether any event about
+// commentID (its comment.created, a comment.delivery, any other) was published to the session's own
+// topic.
 func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID string) bool {
 	t.Helper()
 	stop := runOutbox(t, outbox.Deps{

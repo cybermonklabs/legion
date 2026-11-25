@@ -49,6 +49,9 @@ const leakCheckHoldEnded = "docs: the leak check's child lets its shut-down serv
 //     so the child exits on its own. A check that waited for it would hold the child until this
 //     test's own wait gave up (testwait.Context), which fails the case by name.
 func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing.T) {
+	// Not parallel: it runs two more copies of this binary at once, each holding a service until its
+	// end-of-run check, one of them past formerLeakBound; beside the package's parallel tests those
+	// children would share the runner's 4 vCPU and its memory with them.
 	if !storetest.Available() {
 		t.Skip("DISPATCH_TEST_DATABASE_URL is unset, so the child builds no service and nothing here is tested")
 	}

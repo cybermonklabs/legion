@@ -158,14 +158,12 @@ func reopenWithoutRestoring(t *testing.T, f repairFixture, issue, status string,
 // the issue's documents held, storing what each had taken first (setRoomIssueOpen, then
 // closeRoomForIssue in internal/dispatch/docs/service.go). Nothing here loads one again meanwhile
 // (a settlement armed before a reopen would, once the reopen has closed its room: docs'
-// settlement.take; so a caller whose own writes armed one settles the issue's documents first).
-//
-// The wait has no bound of its own (testwait.Until), and nothing but that close can end it: the
-// fixture's rooms never idle out (repairRoomsNeverIdleOut), the close is asked for before the wait
-// starts, and a notified close closes the room whatever the room's record holds. So a room stays
-// resident only behind a close that never ran, or one that never finished, which is a defect
-// rather than a slow machine. The shared wait fails such a defect by name, printing the issue's
-// documents and what is still resident, rather than hanging the package's run.
+// settlement.take; so a caller whose own writes armed one settles the issue's documents first),
+// and the fixture's rooms never idle out (repairRoomsNeverIdleOut), so that close is the only way
+// the rooms empty: a close or reopen that closed none of them fails here by name, with the issue's
+// documents and the rooms still resident when the wait gave up, rather than passing once ygo's
+// idle sweep evicted them. Its one bound is the test binary's deadline (testwait.Until): a room
+// sync a loaded machine runs late still ends the wait.
 func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	t.Helper()
 	rows, err := f.database.Pool.Query(store.WithTransactionTracking(context.Background()),
@@ -177,10 +175,9 @@ func awaitIssueRoomsClosed(t *testing.T, f repairFixture, issue string) {
 	if err != nil {
 		t.Fatalf("list the documents of %s: %v", issue, err)
 	}
-	type residency struct{ Resident []string }
-	testwait.Until(t, fmt.Sprintf("every room of %s's documents %v to leave residency", issue, documents), func() (residency, bool) {
+	testwait.Until(t, fmt.Sprintf("every room of %s's documents %v to leave residency (the rooms resident)", issue, documents), func() ([]string, bool) {
 		resident := f.documents.ResidentRooms()
-		return residency{Resident: resident}, !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
+		return resident, !slices.ContainsFunc(documents, func(document string) bool { return slices.Contains(resident, document) })
 	})
 }
 
@@ -530,9 +527,15 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for. The append gate stores a browser's
+	// update on a closed issue only when its room took it within docs' closeMargin (2 s) of the
+	// close (observedBeforeClose): a second write made only once the first was stored, which a
+	// loaded machine can take longer than that to do, is refused, never stored and never owed.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}
@@ -592,9 +595,14 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 		}
 	}
 	block := `:::ask{#other-room urgency="low" multiple="false"}` + "\nWritten in the other room?\n:::\n"
-	for document, peer := range peers {
+	// Both browsers write before either write is waited for, as in
+	// TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess: a write made more than docs'
+	// closeMargin after the close is refused.
+	for _, peer := range peers {
 		peer.appendParagraph(t, block)
 		peer.barrier(t)
+	}
+	for document := range peers {
 		awaitOwedSettlement(t, f.database, document)
 		awaitLiveText(t, f.handler, document, "#other-room")
 	}
@@ -887,7 +895,8 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}
 }
 
-// awaitOwedSettlement waits until document owes a settlement.
+// awaitOwedSettlement waits until document owes a settlement. Its one bound is the test binary's
+// deadline (testwait.Eventually): a write a loaded machine stores late still ends the wait.
 func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	t.Helper()
 	testwait.Eventually(t, "document "+document+" to owe a settlement", func() bool {
@@ -901,7 +910,9 @@ func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	})
 }
 
-// awaitLiveText waits until document's live text, as this server reads it, holds part.
+// awaitLiveText waits until document's live text, as this server reads it, holds part. Its one
+// bound is the test binary's deadline (testwait.Until), and its failure prints the live
+// text it last read.
 func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("document %s's live text to hold %q", document, part), func() (string, bool) {
@@ -923,7 +934,9 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 
 // awaitStoredUpdates waits until document's stored history holds at least want updates, which is
 // how a test waits for a browser's update to be durable: its room stores it in a batch of its
-// own, after the linger that gathers the room's next keystrokes into the same one.
+// own, after the linger that gathers the room's next keystrokes into the same one. Its one bound
+// is the test binary's deadline (testwait.Until): a batch a loaded machine stores late
+// still ends the wait, and an append that never lands fails it by name.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("document %s to hold %d stored updates", document, want), func() (string, bool) {

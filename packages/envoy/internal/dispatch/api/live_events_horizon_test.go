@@ -756,8 +756,8 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 		t.Fatalf("analyze events: %v", err)
 	}
 	// The process before proves and persists a horizon past the fill, as its relay or hub does. An
-	// event write of this database holds the proof back, so the wait for it keys on the horizon's
-	// own account of itself.
+	// event write of this database holds the proof back, so no clock bounds the wait for it
+	// (horizontest.AwaitPersisted).
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
 	horizontest.AwaitPersisted(t, before, eventHead(t, database), database)

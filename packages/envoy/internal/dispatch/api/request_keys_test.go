@@ -89,7 +89,7 @@ func newKeyedRigWith(t *testing.T, options testServerOptions, pattern string, an
 	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
 		http.MethodPost, pattern,
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
+		keyedRoute{},
 	)))
 	rig.handler = mux
 	return rig
@@ -781,7 +781,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "slow-write") }()
-	testwait.Receive(t, "the keyed handler to reach its held write", holding)
+	testwait.Receive(t, "the keyed handler to hold its write", holding)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -820,7 +820,7 @@ func TestAWriteDetachedPastTheAnswerCommits(t *testing.T) {
 		t.Fatalf("first: status=%d", first.Code)
 	}
 	close(answeredSignal)
-	if err := testwait.Receive(t, "the detached write to finish", detached); err != nil {
+	if err := testwait.Receive(t, "the detached write after the answer to finish", detached); err != nil {
 		t.Fatalf("the detached write after the answer = %v, want it committed", err)
 	}
 	if writes := rig.writes(t); len(writes) != 1 {

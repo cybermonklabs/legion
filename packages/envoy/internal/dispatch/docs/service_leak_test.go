@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -26,10 +27,10 @@ import (
 //
 // A service is alive in one of three ways. No Shutdown of it ever started (shutdownStartedHook):
 // the package's test constructor (newTestServiceWith, service_test.go) shuts each service it
-// builds down through the test's own t.Cleanup, before the test ends and so before the check
-// runs, so a service of the constructor is never alive this way, and one a test built with New
-// and left running is. Once the tests have run no test is left to shut such a service down, so
-// the check fails it at once, from that state. Or its Shutdown started and has not finished
+// builds down through a cleanup of the test's own (testcleanup.Add), before the test ends and so
+// before the check runs, so a service of the constructor is never alive this way, and one a test
+// built with New and left running is. Once the tests have run no test is left to shut such a
+// service down, so the check fails it at once, from that state. Or its Shutdown started and has not finished
 // (shutdownServiceHook): a test started it and did not wait for it. Or its Shutdown has finished
 // and a weak pointer to it still resolves after a collection: something still holds it. A
 // Shutdown still running ends by itself, and something can hold a shut-down service for a while -
@@ -162,9 +163,9 @@ func collect() {
 // started on to have ended and been let go, forcing collections in each ask only to read the
 // second, and reports the ones still alive if that wait gives up at the test binary's deadline.
 // The fix for a service no Shutdown of which started, or whose Shutdown never finished, is a
-// t.Cleanup on the test named that shuts it down and waits for that, or building it with
-// newTestServiceWith, which does that; one held after its Shutdown is held by something that
-// outlives it, which the fix lets go. It closes leakCheckStarted as it begins.
+// cleanup on the test named (testcleanup.Add) that shuts it down and waits for that, or building
+// it with newTestServiceWith, which does that; one held after its Shutdown is held by something
+// that outlives it, which the fix lets go. It closes leakCheckStarted as it begins.
 func reportLeakedServices() bool {
 	close(leakCheckStarted)
 	start := time.Now()
@@ -225,7 +226,7 @@ func TestAServiceTheTestConstructorBuildsHasEndedOnceItsTestEnds(t *testing.T) {
 func TestTheLeakCheckNamesAServiceItsTestLeftRunning(t *testing.T) {
 	database := storetest.Open(t)
 	service := New(testServiceDeps(database))
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

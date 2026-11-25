@@ -495,7 +495,7 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	}()
 	awaitCalls(t, calls, 1)
 	cancel()
-	// The fetch is held until release below, so a list that waited on it never answers.
+	// The fetch is held until the release below, so a list that waited on it would never answer.
 	testwait.Receive(t, "the agents list to answer once its request ended", answered)
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) ||

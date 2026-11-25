@@ -806,8 +806,9 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	succeeded(t, "answer the block ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
 		"selected": []string{"Ship"}, "expected_edited_at": ask.EditedAt,
 	}, "alice"))
-	testwait.Eventually(t, fmt.Sprintf("the answer to move the block's changed version past %d", before), func() bool {
-		return readNode(t, handler, blockRef).ChangedVersion > before
+	testwait.Until(t, fmt.Sprintf("the answer to move the block's changed version past %d (its last version)", before), func() (int, bool) {
+		changed := readNode(t, handler, blockRef).ChangedVersion
+		return changed, changed > before
 	})
 	want("after its answer")
 }

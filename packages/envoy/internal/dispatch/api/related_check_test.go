@@ -888,7 +888,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	if recovered := testwait.Receive(t, "the shutdown wait to return once the lock was released", waited); recovered != nil {
+	if recovered := testwait.Receive(t, "the shutdown wait's return once the lock was released", waited); recovered != nil {
 		t.Fatalf("the shutdown wait panicked: %v", recovered)
 	}
 	rows := readRelatedCheckRows(t, database, "source_issue_key = $1 and outcome = 'not_made'", source)

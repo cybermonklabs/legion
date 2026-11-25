@@ -16,10 +16,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		precondition bool
@@ -41,12 +43,12 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 				t.Fatalf("open dedicated table-race pool: %v", err)
 			}
 			database.Pool = store.NewPool(pool)
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				testwait.Returns(t, "every connection of the dedicated table-race pool to come back, so the pool closes", pool.Close)
 			})
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: stagedAhead})
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 					t.Errorf("shutdown service: %v", err)
 				}

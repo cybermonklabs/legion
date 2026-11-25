@@ -162,7 +162,7 @@ func TestConcurrentBroadcastsWithOneKeyMakeOneBroadcast(t *testing.T) {
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- send() }()
-	testwait.Receive(t, "the first send to read the registry", reading)
+	testwait.Receive(t, "the first send's read of the registry", reading)
 	retry := send()
 	if code, _ := refusalOf(t, retry); retry.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight {
 		t.Fatalf("a retry while the first runs: status=%d body=%s, want 409 %s", retry.Code, retry.Body.String(), contracts.IdempotencyKeyInFlight)

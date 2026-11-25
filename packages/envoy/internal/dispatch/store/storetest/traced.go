@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -31,7 +32,7 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		testwait.Returns(t, "every connection of a second pool on the test's database to come back, so the pool closes", reopened.Close)
 	})
 	return reopened

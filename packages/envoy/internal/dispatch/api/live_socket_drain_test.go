@@ -114,7 +114,7 @@ func (rig *countedRig) openCounted(t *testing.T) *countedSocket {
 		}
 		socket.page = newCountingConn(conn)
 		return socket.page, nil
-	}, HandshakeTimeout: handshakeBound(t)}
+	}}
 	socket.client = rig.open(t, dialer, asUser("alice"))
 	socket.server = testwait.Receive(t, "the server's side of the socket's connection", rig.accepted)
 	socket.client.read()

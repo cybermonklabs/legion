@@ -762,8 +762,10 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	// write to join the document service through the hold and its sweep the second.
 	hold := &closeCommitHold{API: served.deps.Docs, committed: make(chan struct{}), release: make(chan struct{})}
 	served.deps.Docs = hold
-	release := sync.OnceFunc(func() { close(hold.release) })
-	t.Cleanup(release)
+	// Registered after the server's cleanups, so it runs before them: a failure below lets the held
+	// sweep go on.
+	releaseHold := sync.OnceFunc(func() { close(hold.release) })
+	t.Cleanup(releaseHold)
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -773,13 +775,15 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *te
 	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
+		releaseHold()
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
 	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		releaseHold()
 		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
-	release()
+	releaseHold()
 	waitForDatabaseLocks(t, holder, 1)
 	bound := start.Add(keyedHandlerLimit)
 	fake.AwaitArmedAt(t, "the close's run bound", bound)

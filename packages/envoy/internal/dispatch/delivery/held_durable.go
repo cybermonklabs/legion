@@ -209,10 +209,14 @@ type heldDurable struct {
 	holder uuid.UUID
 	// throttle is this intake's own standby-log state (bindThrottle).
 	throttle *bindThrottle
-	// config is the durable's config in this build; each call draws a fresh deliver subject.
-	config func() natsgo.ConsumerConfig
+	// config is the durable's config in this build, timed by tuning; each call draws a fresh
+	// deliver subject.
+	config func(*intakeTuning) natsgo.ConsumerConfig
 	// name is the durable's name: config's Durable, which every call returns alike.
 	name string
+	// tuning is what this intake times its work by and the steps a test hooks (intakeTuning),
+	// shared with every delivery it makes.
+	tuning *intakeTuning
 	// key reads whether this intake wants a message at all and the key whose goroutine handles it
 	// (intakeKey for the delivery intake, jobKey for the job intake).
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool)
@@ -242,15 +246,10 @@ type heldDurable struct {
 	// (JobIntake.schedule, JobIntake.fire). clock.Real, which newHeldDurable gives it, and a test's
 	// clocktest.Fake, set before Run, as boundHook is.
 	clock intakeClock
-	// messageTimeout bounds one message's handling, as the delivery intake's handler deadline
-	// (Intake.deliver), and one run's read, as the job intake's read deadline (JobIntake.fire),
-	// both on clock; the delivery durable's ack wait derives from it (deliveryConsumerConfig).
-	// intakeMessageTimeout, which newHeldDurable gives it, and a test's own, set before Run, as
-	// clock is.
-	messageTimeout time.Duration
 	// messageDeadline is the end a test gives one message's handling and one run's read in place
-	// of messageTimeout after each began (IntakeBounds.MessageDeadline); its zero value,
-	// production's, keeps messageTimeout. The ack wait still derives from messageTimeout.
+	// of the tuning's messageTimeout on clock after each began (Intake.deliver, JobIntake.fire,
+	// IntakeBounds.MessageDeadline); its zero value, production's, keeps messageTimeout. The ack
+	// wait still derives from messageTimeout (intakeTuning.ackWait).
 	messageDeadline clock.Deadline
 	// holdTTL is how long this intake's hold lasts on the database's clock after each take and
 	// renewal (duty.HoldOptions.TTL): intakeHoldTTL, which newHeldDurable gives it, and a test's
@@ -297,15 +296,14 @@ type heldDurable struct {
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
-// consumer lease on leases, routing each message by key and handing it to handle.
-func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
+// consumer lease on leases, routing each message by key and handing it to handle, timed by tuning.
+func newHeldDurable(tuning *intakeTuning, natsClient *bus.Client, leases intakeLeases, config func(*intakeTuning) natsgo.ConsumerConfig,
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},
-		config: config, name: config().Durable, key: key, handle: handle,
-		clock: clock.Real(), holdClock: clock.Real(), messageTimeout: intakeMessageTimeout,
-		holdTTL: intakeHoldTTL,
+		config: config, name: config(tuning).Durable, tuning: tuning, key: key, handle: handle,
+		clock: clock.Real(), holdClock: clock.Real(), holdTTL: intakeHoldTTL,
 	}
 }
 
@@ -339,7 +337,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	// Armed before the first attempt, so a take-over under way as ctx ends -- a standby's poll,
 	// whose JetStream calls take their own time -- spends the stop's budget rather than starting
 	// it late.
-	stopping, release := stopContext(ctx, d.clock, d.stopDeadline)
+	stopping, release := stopContext(ctx, d.clock, d.tuning.stopBudget, d.stopDeadline)
 	defer release()
 	defer d.stop(stopping)
 	// The tries tick on a clock.Ticker durableBindInterval apart from the run's start, and the
@@ -516,7 +514,7 @@ func (d *heldDurable) holds() bool {
 // absent leaves behind).
 func (d *heldDurable) takeOver(ctx context.Context) {
 	js := d.nats.JS()
-	wanted := d.config()
+	wanted := d.config(d.tuning)
 	name := wanted.Durable
 	create := wanted
 	deleteFirst := false
@@ -654,7 +652,7 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		return
 	}
 	if d.retryHeld(finish, "create NATS consumer", func(call context.Context) error {
-		_, err := createDurable(js, &create, natsgo.Context(call))
+		_, err := d.tuning.createDurable(js, &create, natsgo.Context(call))
 		return err
 	}, "subject", create.FilterSubject, "start_seq", create.OptStartSeq) != nil {
 		d.stopDeliveringWithin(intakeHoldRenew)
@@ -727,12 +725,6 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 func (d *heldDurable) failedStep(doing string, err error, attributes []any) error {
 	slog.Error("dispatch delivery: "+doing, append(append([]any{"name", d.name}, attributes...), "error", err)...)
 	return err
-}
-
-// createDurable creates the durable config describes on the notification stream. A var so a test
-// can make a take-over's create fail after its delete.
-var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
-	return js.AddConsumer(bus.Stream, config, opts...)
 }
 
 // durableDeliversElsewhere is the line of an intake whose durable no longer delivers to its

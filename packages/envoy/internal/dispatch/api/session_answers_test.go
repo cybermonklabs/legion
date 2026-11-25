@@ -215,7 +215,8 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 }
 
 // publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
-// what each topic was handed (recordingOutboxPublisher).
+// what each topic was handed (recordingOutboxPublisher). Its wait for the outbox to publish has one
+// bound, the test binary's deadline (testwait.Until).
 func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
 	t.Helper()
 	stop := runOutbox(t, outbox.Deps{

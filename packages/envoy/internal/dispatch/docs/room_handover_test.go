@@ -13,6 +13,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A forced close of a document's room used to throw the room's record away, so the next access
@@ -28,6 +29,7 @@ import (
 // close of such a room); the last three are evictRoom's (Evict, Quiesce and a failed room's
 // eviction).
 func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
+	t.Parallel()
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	const connection = 7
 	for _, closer := range []struct {
@@ -154,6 +156,7 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 // document already held, and left the settlement to the timer that found its record gone and armed
 // another a settle delay later.
 func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
+	t.Parallel()
 	const ask = ":::ask{#transport urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n"
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	// closeWithABrowserJoining closes the document's room and connects a browser in the window
@@ -163,7 +166,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 	closeWithABrowserJoining := func(t *testing.T, service *Service, artifactID string) *roomState {
 		t.Helper()
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(server.Close)
+		testcleanup.Add(t, server.Close)
 		var joined atomic.Bool
 		service.afterRoomClosed = func(room string) {
 			if room != artifactID || !joined.CompareAndSwap(false, true) {
@@ -257,6 +260,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 // the one the record kept from the room that went, or the settlement after it names the earlier
 // editor on its version and events rather than SettlementActor.
 func TestARoomLoadedOntoAKeptRecordTakesTheStoredEditSource(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
@@ -309,6 +313,7 @@ func TestARoomLoadedOntoAKeptRecordTakesTheStoredEditSource(t *testing.T) {
 // Quiesce drops that source once every close and settlement has ended, so the record of a document
 // the browser-test harness truncates next is not held for good.
 func TestQuiesceDropsAnEditSourceRecordedWhileItClosesTheRooms(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
@@ -340,6 +345,7 @@ func TestQuiesceDropsAnEditSourceRecordedWhileItClosesTheRooms(t *testing.T) {
 // no source, so it never keeps the record's: the warm-up of a reopened document's settlement is
 // the load that must read the row.
 func TestALoadTakesTheStoredEditSourceOnlyWhenNothingNewerIsRecorded(t *testing.T) {
+	t.Parallel()
 	quietState := func() *roomState { return newRoomState() }
 	for _, row := range []struct {
 		name    string
@@ -398,6 +404,7 @@ func TestALoadTakesTheStoredEditSourceOnlyWhenNothingNewerIsRecorded(t *testing.
 // by the time the close returns: that room loaded onto it and its settlement ran. The close counts
 // none of them as the closed room's, so a third failure of the replacement still fails it.
 func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
+	t.Parallel()
 	for _, closer := range []struct {
 		name  string
 		force func(t *testing.T, service *Service, artifactID string, live *crdt.Doc)
@@ -453,6 +460,7 @@ func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
 // so the room of a reopened issue starts its own count, as the room that replaces a force-closed
 // one does.
 func TestAnIssueCloseEndsItsRoomsSettlementFailures(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
@@ -490,6 +498,7 @@ func TestAnIssueCloseEndsItsRoomsSettlementFailures(t *testing.T) {
 // version and in no pending row - the loss this issue is about, on the one path that outlives the
 // record.
 func TestAFailedRoomsUnstoredUpdatesGoToTheRecordThatReplacesIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")
@@ -542,6 +551,7 @@ func TestAFailedRoomsUnstoredUpdatesGoToTheRecordThatReplacesIt(t *testing.T) {
 // cleared the failure. That one is stored, and it must still carry the class and the credit its
 // observer recorded, or the person who typed it is on no version and in no pending row.
 func TestAFailedRoomsUpdatesEndOrMoveWithTheRecordThatReplacesIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "before")

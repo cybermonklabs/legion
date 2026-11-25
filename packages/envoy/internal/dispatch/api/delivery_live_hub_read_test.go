@@ -63,7 +63,9 @@ func (p *notePause) at(match func(deliveryHubNote) bool) *pausePoint {
 	return point
 }
 
-// wait waits for the pause to hold a goroutine, and answers the note it holds it at.
+// wait waits for the pause to hold a goroutine, and answers the note it holds it at. Its one bound
+// is the test binary's deadline (testwait.Receive): a hub a loaded machine runs late still reaches
+// the note, and one that never does fails the test by name.
 func (p *pausePoint) wait(t *testing.T, what string) deliveryHubNote {
 	t.Helper()
 	testwait.Receive(t, "the hub's note "+what, p.reached)

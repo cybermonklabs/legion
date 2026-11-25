@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"log/slog"
-	"sync/atomic"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -52,7 +51,7 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 	defer retry.Stop()
 	for {
 		if d.handBacksSettled(flushWithin) {
-			if before := finalizerBeforeRelease.Load(); before != nil {
+			if before := d.tuning.beforeRelease.Load(); before != nil {
 				(*before)()
 			}
 			select {
@@ -203,10 +202,6 @@ func (d *heldDurable) confirmHandBacks(delivery *intakeDelivery) <-chan bool {
 	}()
 	return confirmed
 }
-
-// finalizerBeforeRelease is nil outside the shutdown row. It holds a settled finalizer before it
-// releases, so the row sees that stopIntakes waits for it.
-var finalizerBeforeRelease atomic.Pointer[func()]
 
 // waitFinalizers waits for hand-backs a stopped durable left running to settle after its NATS
 // client closes. They can then no longer wait for that client, and release their holds through the

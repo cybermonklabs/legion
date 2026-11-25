@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -41,6 +42,7 @@ func excerptVersionOf(t *testing.T, database *store.Store, document string) *int
 // it: twenty-five such documents, more than one batch, sort before a document it reads, and that
 // document still gets its excerpt.
 func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const newer = 25
@@ -85,6 +87,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 // first pass each process runs marks them owed and cuts them again: two builds serve one database
 // during every release, and the build that stores none is the one the deploy replaces.
 func TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	document := createProjectDocument(t, database, "# Document\n\nSee dispatch://CORE-1 here.\n")
@@ -241,7 +244,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 func newExcerptServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: stagedAhead, Clock: serviceClock})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }
 
@@ -255,7 +258,7 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		testwait.Receive(t, "the reconciliation to return once its context ended", done)
 	})
@@ -286,6 +289,7 @@ func awaitExcerptPassesEnded(t *testing.T, database *store.Store, logs *storetes
 // refs.DeferExcerpts stamps from and DriftedExcerpts judges at (excerptMoment) - cannot fall due
 // between the two batches, however long the machine takes between them.
 func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, referenceExcerptBatch)
@@ -323,6 +327,7 @@ func TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch(t *test
 // error, and the next batch does not try it again before its retry is due: the service's clock is
 // a fake the test never moves, as in TestAnUnreadableDocumentIsDeferredAndDoesNotHoldBackItsExcerptBatch.
 func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	documents := owedDocuments(t, database, 3)
@@ -370,6 +375,7 @@ func TestADocumentTheExcerptReconciliationCannotRecordIsDeferredAndStaysOwed(t *
 // runs next, the loop's one timer, so every pass must return the failing document's retry: a pass
 // that returned no time would leave the retry to nothing but a wake.
 func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	failing := owedDocuments(t, database, 1)[0]
 	persistence := newUnreadableDocumentStore(database, failing)
@@ -426,6 +432,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 // the documents whose retry is due, and once it has stored that mention none of the twenty has
 // been read again.
 func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, referenceExcerptBatch+1)
 	failing, last := documents[:referenceExcerptBatch], documents[referenceExcerptBatch]
@@ -457,6 +464,8 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 // on a timer, no lease attempt - over a window longer than the two-second step the timer it
 // replaced took, and its last pass asked for no timer.
 func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
+	// Not parallel: it reads the passes' log lines through the default logger (logtest.SetDefault,
+	// awaitExcerptPassesEnded), which the whole test process shares.
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, 3)
 	counter := &storetest.StatementCounter{}
@@ -486,6 +495,9 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 // direct update leaves, as the previous release's code and rebuild-refs write them, with no call
 // in Go to announce them.
 func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
+	// Not parallel: it reads the passes' log lines through the default logger (logtest.SetDefault,
+	// awaitExcerptPassesEnded), which the whole test process shares. Its waits for each excerpt
+	// hold no span of their own, so a pass the package's parallel tests slow only delays them.
 	database := storetest.Open(t)
 	document := owedDocuments(t, database, 1)[0]
 	hub := &pglisten.Hub{Owner: "reference excerpts test", Dial: database.Pool.Listener}
@@ -506,7 +518,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		defer close(hubDone)
 		hub.Run(hubCtx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopHub()
 		testwait.Receive(t, "the hub's Run to return once its context ended", hubDone)
 	})

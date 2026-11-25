@@ -26,12 +26,13 @@ const storeStepWait = 20 * time.Second
 
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
-// and tuple store's writers, beside the test that drives each site's lock steps. Thirteen of them
+// and tuple store's writers, beside the test that drives each site's lock steps. Twelve of them
 // live here, and this test drives them all:
 //
-//   - the comment path (createCommentFor, with the node it queues through graphstore.QueueNodes
-//     and the tuples through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an
-//     issue and on a project document;
+//   - the comment path (createCommentFor, through queueCommentRow, which queues the node through
+//     graphstore.QueueNodes before the row, and queueCommentCreated, which queues the tuples
+//     through graphstore.QueueCaused, then graphstore.QueueAuthored), run on an issue and on a
+//     project document;
 //   - a session's reply to a mention (replyComment, through the same three, and then
 //     queueAnsweredDelivery, which records the session the answered attempt reached: that session
 //     is the reply's author, whose node row the reply already holds, and its delivered_to tuple is
@@ -981,10 +982,10 @@ func newStoreWriterRig(t *testing.T) *storeWriterRig {
 		}
 	}))
 	t.Cleanup(listener.Close)
-	// The issue's spec and the project document settle an hour on, never inside the test: a
-	// settlement locks its owner's row and writes its blocks' nodes, and one that ran under a hold
-	// would stand in front of the write under test.
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: time.Hour})
+	// The issue's spec and the project document settle a day on (stagedAhead), staged state and not
+	// a wait, so never inside the test: a settlement locks its owner's row and writes its blocks'
+	// nodes, and one that ran under a hold would stand in front of the write under test.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, settle: stagedAhead})
 	issue := createInteractionIssue(t, handler, "LOCK", "The store writers' lock steps", "# Spec\n\nWhat the writers write.\n")
 	document := createProjectDocument(t, handler, "LOCK", "Lock steps", "# Lock steps\n\nWhat the writers write.\n")
 	rig := &storeWriterRig{

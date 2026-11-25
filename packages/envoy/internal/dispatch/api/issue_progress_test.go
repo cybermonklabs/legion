@@ -41,6 +41,19 @@ func wantNull(t *testing.T, what string, got *model.ProgressCount) {
 	}
 }
 
+// reconcileTaskProgress runs one task progress reconciliation pass of service and answers what it
+// returned. The pass runs on a goroutine of its own, on a context the test's cleanup cancels, and
+// the wait for its return has one bound, the test binary's deadline less testwait's margin, so a
+// pass that never returns fails the test by name and is then stopped.
+func reconcileTaskProgress(t *testing.T, service *docs.Service) (driftLeft bool) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	returned := make(chan bool, 1)
+	go func() { returned <- service.ReconcileTaskProgress(ctx) }()
+	return testwait.Receive(t, "the task progress reconciliation pass to return", returned)
+}
+
 // The issue read carries the task counts of the spec seeded at creation, nested items included,
 // and null for a spec with no task list; a spec with no task item at all counts the same as one
 // never counted.
@@ -241,8 +254,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	wantNull(t, "uncounted tasks before the pass", progressOf(t, handler, uncounted.Key).Tasks)
 	wantCount(t, "stale tasks before the pass", progressOf(t, handler, stale.Key).Tasks, 0, 1)
 
-	runCtx := testwait.Context(t)
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 
 	wantCount(t, "counted", progressOf(t, handler, counted.Key).Tasks, 1, 2)
 	wantCount(t, "uncounted", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
@@ -259,7 +271,7 @@ func TestIssueProgressReconciliationCountsDriftedIssues(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("drifted issues after the pass = %d, want 0", remaining)
 	}
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 	wantCount(t, "uncounted after a second pass", progressOf(t, handler, uncounted.Key).Tasks, 2, 3)
 }
 
@@ -303,8 +315,7 @@ func TestIssueProgressReconciliationDrainsMoreThanOneBatch(t *testing.T) {
 		t.Fatalf("cleared rows = %d, want %d", drifted, issues)
 	}
 
-	runCtx := testwait.Context(t)
-	deps.Docs.(*docs.Service).ReconcileTaskProgress(runCtx)
+	reconcileTaskProgress(t, deps.Docs.(*docs.Service))
 
 	var remaining int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from issues where project_key = 'MANY' and tasks_version is null`).Scan(&remaining); err != nil {

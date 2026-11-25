@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -165,6 +166,7 @@ func storedDocumentWith(t *testing.T, database *store.Store, artifactID string, 
 // actors: only a share's asker reads them. The clock never moves, so task A's wait cannot run out:
 // the answer it returns is task B's.
 func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
+	t.Parallel()
 	pair, clock := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	pair.heldEditOnB(t, 1, bob, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
@@ -209,6 +211,7 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 // and an answer that large crosses in several notifications and is put back together whole. The
 // clock never moves, so task A's wait cannot run out: the answer it returns came whole.
 func TestAShareReturnsTheOtherProcessesInFlightAppend(t *testing.T) {
+	t.Parallel()
 	pair, _ := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	paragraph := "Bob's long paragraph " + strings.Repeat("with many words ", 1200) + "ends."
@@ -259,6 +262,7 @@ func deliverRoomQuery(t *testing.T, service *Service, sender, room, kind string)
 // waiting is woken, no update the room recorded before the query lingers any more, and none
 // lingers while the answer waits (askRoomAppends).
 func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
+	t.Parallel()
 	pair, _ := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."))
 	defer pair.gateB.release()
@@ -297,6 +301,7 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 // whose call has not taken it yet. Once the gate opens, both are stored once and the instance
 // lists neither: a stored update is unlisted exactly once, by its own call.
 func TestAShareHoldsEveryQueuedUpdateOfAPendingBatch(t *testing.T) {
+	t.Parallel()
 	pair, _ := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	pair.heldEditOnB(t, 1, bob, appendBlocks(t, "Bob's first paragraph.\n"))
@@ -367,7 +372,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the silent member: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	testcleanup.Add(t, func() { _ = conn.Close(context.Background()) })
 	logs := captureWarnings(t)
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {
@@ -486,6 +491,7 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 // (in two tabs) on task B - once each, and not the writer, connected on task B too. The refused
 // write leaves bob's delete to be stored, once the gate opens.
 func TestALostWriteNamesTheParticipantsOfEveryProcess(t *testing.T) {
+	t.Parallel()
 	pair, _ := newQueryProcesses(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -529,6 +535,7 @@ func TestALostWriteNamesTheParticipantsOfEveryProcess(t *testing.T) {
 // through task A, which holds no room, waits for the append rather than forking a store without
 // the delete, and is refused as an edit whose target is gone.
 func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
+	t.Parallel()
 	pair, clock := newQueryProcesses(t)
 	pair.heldEditOnB(t, 1, model.Actor{Kind: "user", ID: "bob"}, withoutTopLevelBlock("Alpha paragraph."))
 	written := make(chan error, 1)
@@ -562,13 +569,14 @@ func TestALiveWriteForksOnlyOnceTheOtherProcessHasStoredItsRoom(t *testing.T) {
 // loss check is bounded on task A's clock, this fake, which never moves here, so the check ends
 // only once task B answers; a check that never does fails the row's wait for the write by name.
 func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(t *testing.T) {
+	t.Parallel()
 	pair, clock := newQueryProcesses(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	committed, proceed := make(chan struct{}), make(chan struct{})
 	var once, proceeded sync.Once
 	letGo := func() { proceeded.Do(func() { close(proceed) }) }
-	t.Cleanup(letGo)
-	t.Cleanup(pair.gateB.release)
+	testcleanup.Add(t, letGo)
+	testcleanup.Add(t, pair.gateB.release)
 	pair.taskA.afterLiveCommit = func(string) {
 		once.Do(func() {
 			close(committed)
@@ -683,6 +691,7 @@ func withoutFirstTopLevelBlock(tree *pmdoc.Node) *pmdoc.Node {
 // without that lock, the write's fork could miss an edit the other process stored under it, and
 // the version recorded a cursor over text it did not hold.
 func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -733,6 +742,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 // actors and then the updates spread across them, the last flagged; put back together, it is the
 // answer that was split.
 func TestARoomAnswerTooLargeForOneNotificationIsSplitIntoParts(t *testing.T) {
+	t.Parallel()
 	actors := make([]model.Actor, 0, 300)
 	for index := range 300 {
 		actors = append(actors, model.Actor{Kind: "user", ID: fmt.Sprintf("reader-with-a-long-login-%03d", index)})

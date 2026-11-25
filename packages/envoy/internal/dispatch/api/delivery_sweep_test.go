@@ -206,7 +206,7 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 				_ = response.Body.Close()
 				answered <- response.StatusCode
 			}()
-			key := testwait.Receive(t, "the write to send its attempt", listener.started)
+			key := testwait.Receive(t, "the write's attempt sent to the listener", listener.started)
 			owner, _, _ := strings.Cut(key, ":")
 			if route.atCommit {
 				if status := testwait.Receive(t, "the write to answer at its commit", answered); status != http.StatusCreated {
@@ -908,7 +908,7 @@ func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransa
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	if got := testwait.Receive(t, "the settle to answer once the owner lock was released", settled); got.err != nil || !got.settled {
+	if got := testwait.Receive(t, "the settle's answer once the owner lock was released", settled); got.err != nil || !got.settled {
 		t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
 	}
 	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {

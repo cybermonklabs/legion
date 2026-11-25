@@ -32,10 +32,11 @@ func refreshTermStats(t *testing.T, database *store.Store, project string) int {
 }
 
 // awaitTermStatsRefresh waits for the refresh of project's statistics srv has running, if any,
-// to end, and starts none of its own.
+// to end, and starts none of its own. Its one bound is the test binary's deadline
+// (testwait.Receive): a refresh a loaded machine runs slowly still ends it.
 func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
 	t.Helper()
-	testwait.Receive(t, fmt.Sprintf("the refresh of %s's statistics to end", project), srv.termStats.DoChan(project, func() (any, error) { return nil, nil }))
+	testwait.Receive(t, fmt.Sprintf("the end of the refresh of %s's statistics", project), srv.termStats.DoChan(project, func() (any, error) { return nil, nil }))
 }
 
 // pickTerms picks from text as an ask's question is picked: the whole text is its title.
@@ -343,12 +344,12 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if edit.Code != http.StatusOK {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
-	testwait.Eventually(t, "the second artifact version", func() bool {
+	testwait.Until(t, "the edit's second artifact version (versions counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		return versions >= 2
+		return versions, versions >= 2
 	})
 
 	if items := refreshTermStats(t, database, "VERS"); items != 2 {

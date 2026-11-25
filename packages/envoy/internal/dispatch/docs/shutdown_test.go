@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -36,13 +37,14 @@ import (
 // does not load a room during shutdown, so a room closed first would leave the edit unversioned
 // until someone next opened the document.
 func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)
@@ -69,6 +71,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 // inside that delay stops the timer, and Shutdown's own settlement of the document loads the room
 // in its place, so the write is versioned before the process exits rather than left to resume.
 func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -105,16 +108,17 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 // read loop, orders Shutdown after it too; TestShutdownJoinsATimersSettlementUnderWay is the row
 // where the join alone does.
 func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	drainClock := clocktest.New(time.Now())
 	service := newShutdownTestServiceOn(t, database, nil, drainClock)
 	pause := pauseRepairCommits(service)
-	t.Cleanup(pause.let)
+	testcleanup.Add(t, pause.let)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := browser.WaitForText(t, peerMarkdown, "before\n"); err != nil {
 		t.Fatal(err)
@@ -211,7 +215,7 @@ func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
 	drainClock := clocktest.New(time.Now())
 	service := newShutdownTestServiceOn(t, database, nil, drainClock)
 	hold := holdSettlementsPastTheirTransaction(service)
-	t.Cleanup(hold.let)
+	testcleanup.Add(t, hold.let)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -302,6 +306,7 @@ func (hold *settlementHold) let() {
 // what it owes and settles on its own, so the quiet document's edit is versioned while the held
 // room's append is still outstanding, and the held room alone is left to resume.
 func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	quiet := createIssueDocument(t, database, 1, "quiet")
 	held := createIssueDocument(t, database, 2, "held")
@@ -310,7 +315,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	service := newShutdownTestServiceOn(t, database, appends, drainClock)
 	// Registered after the service, so it runs before its shutdown: a row that fails while the held
 	// room's append is held lets it go rather than leave that shutdown waiting on it.
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	seedServiceText(t, service, quiet, "quiet")
 	settleCurrentGeneration(t, service, quiet)
 	seedServiceText(t, service, held, "held")
@@ -366,6 +371,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 // The barrier on service.shuttingDown makes that ordering deterministic rather than a race the
 // goroutine scheduler happens to win (LEGION-501).
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
@@ -376,10 +382,10 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	// Registered after the service and the server, so it runs before both: a row that fails while
 	// an append is held at its gate lets it go rather than leave the shutdown waiting on it.
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		first.let()
 		second.let()
 	})
@@ -435,6 +441,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 // resume (a documented, non-error outcome), but the worker returns in time for Shutdown itself to
 // read that back and finish cleanly rather than time out (LEGION-501).
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	drainClock := clocktest.New(time.Now())
@@ -461,7 +468,7 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 		// deadline passes either.
 		<-overrun
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		select {
 		case <-overrun:
 		default:
@@ -550,7 +557,7 @@ func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends Versi
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
-	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }
 

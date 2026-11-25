@@ -24,7 +24,9 @@ func pooledDocumentHandler(t *testing.T, maxConns int32, settle time.Duration) (
 }
 
 // pooledDocumentHandlerWith lets a test wrap the document service the API sees, so it can hold
-// one document call open while it arranges the rest of the pool.
+// one document call open while it arranges the rest of the pool. The service's shutdown at the
+// test's end is waited for with one bound, the test binary's deadline (testwait.Receive): a
+// shutdown a loaded machine runs slowly passes, and one that never returns fails by name.
 func pooledDocumentHandlerWith(
 	t *testing.T,
 	maxConns int32,
@@ -87,7 +89,7 @@ func TestConditionalEditFloodDoesNotStarveSmallPool(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		testwait.Receive(t, fmt.Sprintf("round %d's conditional edit flood to return (a wedge never does)", round), finished)
+		testwait.Receive(t, fmt.Sprintf("round %d's conditional edit flood to return (a wedged pool never returns it)", round), finished)
 	}
 }
 
@@ -123,6 +125,6 @@ func TestConcurrentConditionalAndUnconditionalEditsDoNotWedge(t *testing.T) {
 			group.Wait()
 			close(finished)
 		}()
-		testwait.Receive(t, fmt.Sprintf("round %d's concurrent conditional and unconditional edits to return (a wedge never does)", round), finished)
+		testwait.Receive(t, fmt.Sprintf("round %d's concurrent conditional and unconditional edits to return (a wedged pool never returns them)", round), finished)
 	}
 }

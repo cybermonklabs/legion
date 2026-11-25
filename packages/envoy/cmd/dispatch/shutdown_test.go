@@ -97,6 +97,8 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock is the row above in
 // benchtime's timing lane, where the exit is held to promptShutdown (waitPromptExit).
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (waitPromptExit's
+	// promptShutdown, 3 s).
 	benchtime.TimedRow(t, os.Getenv(benchtime.TimingEnv), sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)
 }
 
@@ -206,6 +208,7 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 // unanswered within their bound would make Dispatch exit with the write uncommitted, which a loaded
 // machine could do at production's two seconds a probe.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
+	t.Parallel()
 	const lockHeldAfterSIGTERM = 27 * time.Second
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
@@ -226,6 +229,11 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 		status, err := process.renameIssue(key, "Committed after the lock")
 		answered <- answer{status, err}
 	}()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
 	// The block-index pass locks the issue too, so a count of the waiters could pass with the
 	// title change still on its way: watch the title change's own backend.
 	waitForRenameBehind(t, database, holder)
@@ -280,6 +288,7 @@ func endsAtTheGiveUp(t testing.TB) string {
 // the longest a deployment's send is held: a shutdown that cut the send anywhere inside that
 // window exits within the span.
 func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T) {
+	t.Parallel()
 	const sessionID = "s1"
 	held, release := make(chan struct{}), make(chan struct{})
 	var holding atomic.Bool
@@ -401,6 +410,7 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 // holds Dispatch's exit off for exactly CallWindow, the longest a deployment's send is held: a
 // shutdown that cut the send anywhere inside that window exits within the span.
 func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *testing.T) {
+	t.Parallel()
 	const heldSession = "s2"
 	// Each selected session is resolved by id against its own record (`/v1/registry/{id}`).
 	sessions := map[string]string{
@@ -507,6 +517,7 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 // shutdown must wait for the socket handler and the delivery hub after cancelling Lifetime, before
 // it closes the database pool they use.
 func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
@@ -618,6 +629,7 @@ func (p *stallingPublisher) Probe(time.Duration) error { return nil }
 // the row never moves, so its wait for the outbox, armed for outboxStopBudget after it began,
 // ends only when the outbox stops.
 func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	observer := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
@@ -945,6 +957,7 @@ func testGitHubApp(t *testing.T, baseURL string) *githubapp.Client {
 // without cancelling first never returned, and the process hung with the panic unprinted while its
 // intake kept consuming.
 func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)
 	// The publisher owns the stream, as the server's does, so the intakes bind their durables.
@@ -1176,6 +1189,7 @@ func (p *dispatchProcess) renameIssue(key, title string) (int, error) {
 // service budget that ends at the test's give-up (endsAtTheGiveUp), so the settlement runs however
 // long a loaded machine takes over it, up to the moment the test's own waits would give up.
 func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		SettleDelay: stagedPastTheRun,
@@ -1229,6 +1243,8 @@ func TestSIGTERMWithTheDatabaseUnansweringExits(t *testing.T) {
 // reaches, so the reading is of the machine's clock and the row runs only in benchtime's timing
 // lane. That it exits at all, saying why, is the row above, which every run proves.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
+	// Not parallel: it holds a step to a wall-clock bound load could break (the shutdown budget the
+	// exit is compared against).
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	exited := exitAfterSIGTERMWithTheDatabaseUnanswering(t)
 	// The request in flight holds the HTTP drain for its whole share, then the document service
@@ -1265,6 +1281,11 @@ func exitAfterSIGTERMWithTheDatabaseUnanswering(t *testing.T) time.Duration {
 	go func() {
 		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
 	}()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
 	waitForIssueCreateBehind(t, database, holder)
 
 	relay.freeze()
@@ -1429,6 +1450,7 @@ func TestAShutdownWithTheDatabaseUnansweringDecidesToExitInsideStopGrace(t *test
 // closePool's pauses and its probes' bounds run on a fake clock the row moves to each wait it arms,
 // so the give-up is read on that clock: no later than silentProbes pauses and probe bounds.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (capturedLog, logtest.SetDefault).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -1627,6 +1649,7 @@ func (p *dispatchProcess) checkSettledAtShutdown(t *testing.T, database *store.S
 // both answers, and takes the same answer from a running process whose output says it serves on
 // the port.
 func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) {
+	t.Parallel()
 	holder := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	t.Cleanup(holder.Close)
 	port := holder.Listener.Addr().(*net.TCPAddr).Port
@@ -1663,6 +1686,7 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 // (connectionRefusalCause): the connection ceiling check counts only this binary's Dispatch
 // processes, so a server whose slots other clients hold passes it, and the process fails later.
 func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
+	// Not parallel: its verdict reads every client backend of the Postgres server.
 	exited := func(output, databaseURL string) error {
 		logged := &cmdtest.LockedBuffer{}
 		_, _ = logged.Write([]byte(output))
@@ -1718,6 +1742,7 @@ func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
 // chose for it, and says that address in its listening line. Without the socket it would bind
 // every interface on 8766.
 func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Without: []string{"DISPATCH_LISTEN_HOST", "DISPATCH_PORT"},
@@ -1737,6 +1762,7 @@ func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 // the test holds, so a bind would log its failure. The refusal comes before Dispatch reads its
 // database, so the test needs none.
 func TestDispatchRefusesAListenFDThatIsNotASocketAndBindsNothing(t *testing.T) {
+	t.Parallel()
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("hold the port DISPATCH_PORT names: %v", err)
@@ -1899,6 +1925,9 @@ func startDispatchProcessWithSettleDelay(t *testing.T, databaseURL string, settl
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
+	// A slot of the lane's server first (dispatchSlots.take): a parallel test waits here for another
+	// test's process to exit rather than running more processes than the server is sized for.
+	releaseSlot := dispatchSlots.take(t)
 	// The server must allow what this process and every other Dispatch process this test binary
 	// runs may open (connection_ceiling_test.go), since a server that allows fewer fails later and
 	// elsewhere.
@@ -1970,11 +1999,14 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.OwnProcessGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
-	// The process leaves the count once it has exited and before Exited closes, so a test that
-	// waits on Exited and starts another process is counted with this one gone: a row that
-	// restarts a process one after another asks the server for one process's worth, not one per
-	// start. A start that fails leaves the count at the test's cleanup (requireConnectionCeiling).
-	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database, databaseURL: databaseURL}
+	// The process leaves the count and gives back its slot once it has exited and before Exited
+	// closes, so a test that waits on Exited and starts another process is counted with this one
+	// gone: a row that restarts a process one after another asks the server for one process's
+	// worth, not one per start. A start that fails leaves both at the test's cleanup.
+	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, func() {
+		releaseConnections()
+		releaseSlot()
+	}), port: held.Port, database: config.Database, databaseURL: databaseURL}
 }
 
 func (p *dispatchProcess) url(path string) string {

@@ -255,7 +255,9 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 }
 
 // awaitRewordedAsk waits until the settlement after f's reopen has taken the block's question into
-// the restored ask: open, asking rewordedQuestion.
+// the restored ask: open, asking rewordedQuestion. Its one bound is the test binary's deadline
+// (testwait.Until): a settlement a loaded machine runs late still ends the wait, and its failure
+// prints the ask as last read, its state and question among it.
 func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the reopened issue's settlement to take the block's question into ask %s, open asking %q", f.ask, rewordedQuestion), func() (model.Ask, bool) {

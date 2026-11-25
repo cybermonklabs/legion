@@ -385,19 +385,21 @@ func (k LineKind) String() string {
 	return ""
 }
 
-// LinePart is which of the waiting line's two parts an entry stands in (Waiting): the issues
-// whose work came back, oldest first, and then the issues that have not started, by the board's
-// rank. The kind does not give it — a LineFirstPhase entry falls in the returned part when the
-// issue is its tree's own root and in the starting part when it is a child — so the entry
-// carries the part the line put it in (LineEntry.Part). The zero value is no part.
+// LinePart is which of the waiting line's two parts an entry stands in within the band of its
+// priority (Waiting): the issues whose work came back, oldest first, and then the issues that have
+// not started, by the board's rank. The kind does not give it — a LineFirstPhase entry falls in
+// the returned part when the issue is its tree's own root and in the starting part when it is a
+// child — so the entry carries the part the line put it in (LineEntry.Part). The zero value is no
+// part.
 type LinePart int
 
 const (
-	// PartReturned is the first part: the issues the daemon has already started whose work has
-	// come back to them, placed by the moment it did (LineEntry.Since).
+	// PartReturned is the first part of each priority's band: the issues the daemon has already
+	// started whose work has come back to them, placed by the moment it did (LineEntry.Since).
 	PartReturned LinePart = iota + 1
-	// PartStarting is the second part: the issues whose first phase has never started, placed by
-	// the Dispatch rank of their tree's root and then their own (LineEntry.RootRank, Issue.Rank).
+	// PartStarting is the second part of each priority's band: the issues whose first phase has
+	// never started, placed by the Dispatch rank of their tree's root and then their own
+	// (LineEntry.RootRank, Issue.Rank).
 	PartStarting
 )
 
@@ -414,16 +416,22 @@ func (p LinePart) String() string {
 	return ""
 }
 
-// LineEntry is one issue of the waiting line with the reason it waits there, the part of the
-// line it waits in and what placed it there, and whether it already holds one of the cap's slots.
+// LineEntry is one issue of the waiting line with the reason it waits there, the priority and the
+// part of the line it waits in and what placed it there, and whether it already holds one of the
+// cap's slots.
 type LineEntry struct {
 	Issue Issue
 	Kind  LineKind
-	// Part is the part of the line the entry stands in and PartPlace its place within that part
-	// alone, counted from 1. Waiting sets both in its last two loops, once each part is sorted,
-	// rather than where the entry was built: the kind does not say the part (LinePart), and the
-	// place is the order the sort left, which is the order the line publishes and not the order
-	// the loops found.
+	// Priority is the priority that placed the entry, the first key of the whole line:
+	// PriorityOf, the issue's own, else its tree root's, else NoPriority, whose band stands after
+	// P3. The issue's own priority is Issue.Priority, which this does not change: the inherited
+	// priority orders the line and nothing else.
+	Priority Priority
+	// Part is the part of the line the entry stands in within its priority's band, and PartPlace
+	// its place within that band and part alone, counted from 1. Waiting sets both in its last
+	// loops, once the line is sorted, rather than where the entry was built: the kind does not
+	// say the part (LinePart), and the place is the order the sort left, which is the order the
+	// line publishes and not the order the loops found.
 	Part      LinePart
 	PartPlace int
 	// Since is the moment the issue's work came back to it, which is what placed the entry in
@@ -1071,19 +1079,29 @@ func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 	return slotted && root.Phase == phase.Admitted && !root.Lingers() && InWorkflow(root) && AtWork(root, gate)
 }
 
-// WaitingLineBand is where the line puts an issue whose work came back: in its first part, oldest
-// first (Waiting). It states a placement, never a position: which place in the line that gives an
-// issue depends on what else waits. The texts that state the line's order carry this fragment
-// word for word — the daemon's own comments, the architect's skills and the operator's guides —
-// and workflow's TestTheShippedWordsNameTheWaitingLineBand reads it from here and holds the
-// files it lists to it. That test reads whether a file carries the words, never whether the
-// sentence around them is true, which is why it also bans, in every one of those files, the
-// wording that claims a position instead.
-const WaitingLineBand = "among the issues whose work came back, oldest first"
+// WaitingLineBand is where the line puts an issue whose work came back: in the band of the
+// priority it takes (PriorityOf), and within that band in its first part, oldest first (Waiting).
+// It states a placement, never a position: which place in the line that gives an issue depends on
+// what else waits. The texts that state the line's order carry this fragment word for word — the
+// daemon's own comments, the architect's skills and the operator's guides — and workflow's
+// TestTheShippedWordsNameTheWaitingLineBand reads it from here and holds the files it lists to
+// it. That test reads whether a file carries the words, never whether the sentence around them
+// is true, which is why it also bans, in every one of those files, the wording that claims a
+// position instead.
+const WaitingLineBand = "within its priority, among the issues whose work came back, oldest first"
 
 // Waiting is the line of issues that wait for an admission slot, in the order admission gives
 // them one. The cap counts the issues the daemon has started rather than the trees, so a child
-// waits in this line as a root does, and the line has two parts.
+// waits in this line as a root does.
+//
+// Priority is the first key of the whole line: each entry stands in the band
+// of the priority that places it (PriorityOf: the issue's own Dispatch priority, else its tree
+// root's, else after P3), P0 first. Within one band the line keeps the order below, in two parts.
+// Priority orders the line only: it takes no slot back from running work. A LineWaitingOnIssue
+// entry is placed by its priority and passed over while its wait lasts, as before, and an entry
+// that already holds a slot is placed by its priority and promoted at its place, taking no slot.
+// The members of a re-admitted tree stand in no line until their root's promotion, so they wait
+// behind their root's band.
 //
 // First, by when their work came back, oldest first: the issues the daemon has already started
 // whose work has come back to them. Four kinds of record say that work came back, and each
@@ -1463,22 +1481,36 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// Each entry's part is the slice it ended in, set here rather than where the entry was
 	// built, so that a loop added above cannot leave an entry with no part at all: an entry at
 	// LinePart(0) would be served no sentence and no `why` and nothing would say so
-	// (projection's waitingLineReason). Its place within that part is the order the part was
-	// just sorted into and not the order the loops above found it; the moment that placed a
-	// returned entry is the sort key itself, taken from the timed value rather than read a
-	// second time from the records (LineEntry.Since); and the rank that placed a starting entry
-	// is its tree root's, which the sort above read the same record for.
+	// (projection's waitingLineReason). The moment that placed a returned entry is the sort key
+	// itself, taken from the timed value rather than read a second time from the records
+	// (LineEntry.Since); and the rank that placed a starting entry is its tree root's, which the
+	// sort above read the same record for.
+	//
+	// Priority is the first key of the whole line: each entry stands in
+	// the band of the priority that places it (PriorityOf: its own, else its tree root's, else
+	// after P3), and within one band the returned part comes first, oldest first, and then the
+	// starting part by its tree root's rank and then its own, the order each part was just
+	// sorted into. So the two parts are laid out one after the other and sorted again by band
+	// alone, stably, which keeps that order within each band; an entry's place within its part
+	// counts within its band and part, read off that final order.
 	line := make([]LineEntry, 0, len(returned)+len(starting))
-	for i, waiting := range returned {
+	for _, waiting := range returned {
 		entry := waiting.entry
-		entry.Part, entry.PartPlace, entry.Since = PartReturned, i+1, waiting.at
+		entry.Part, entry.Since, entry.Priority = PartReturned, waiting.at, PriorityOf(entry.Issue, byKey[entry.Issue.Tree])
 		line = append(line, entry)
 	}
-	for i := range starting {
-		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
-			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
+	for _, entry := range starting {
+		entry.Part, entry.RootRank, entry.Priority = PartStarting, byKey[entry.Issue.Tree].Rank, PriorityOf(entry.Issue, byKey[entry.Issue.Tree])
+		line = append(line, entry)
 	}
-	return append(line, starting...), heldRows
+	sort.SliceStable(line, func(i, j int) bool { return line[i].Priority.band() < line[j].Priority.band() })
+	for i := range line {
+		line[i].PartPlace = 1
+		if i > 0 && line[i-1].Priority == line[i].Priority && line[i-1].Part == line[i].Part {
+			line[i].PartPlace = line[i-1].PartPlace + 1
+		}
+	}
+	return line, heldRows
 }
 
 // WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the

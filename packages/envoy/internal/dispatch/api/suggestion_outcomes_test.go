@@ -169,16 +169,6 @@ func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSche
 	wake := hub.Wake(EventsChannel)
 	connected := make(chan struct{})
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
-	hubCtx, stopHub := context.WithCancel(context.Background())
-	hubDone := make(chan struct{})
-	go func() {
-		defer close(hubDone)
-		hub.Run(hubCtx)
-	}()
-	t.Cleanup(func() {
-		stopHub()
-		testwait.Receive(t, "the listener hub to return once stopped", hubDone)
-	})
 
 	srv := directServer(deps)
 	tracer := &idleSweepTracer{}
@@ -193,11 +183,24 @@ func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSche
 		runSuggestionOutcomeSweep(ctx, fake, counted.Pool, srv.horizon(), wake, schedule)
 	})
 	sweep := idleSweep{handler: handler, server: srv, database: database, counter: &tracer.StatementCounter, clock: fake, schedule: schedule, target: target, source: source}
-	testwait.Receive(t, "the hub's connection", connected)
 	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
 	// an event write of this database open then holds that back, so the wait is the horizon's,
 	// which names the holder, a hold in this test's own database among them, if it gives up.
 	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
+	// The hub starts once the boot pass has set the cursor, so the signal it sends after its LISTEN
+	// earns a pass of its own, after the boot pass, rather than being taken while the boot pass is
+	// still owed.
+	hubCtx, stopHub := context.WithCancel(context.Background())
+	hubDone := make(chan struct{})
+	go func() {
+		defer close(hubDone)
+		hub.Run(hubCtx)
+	}()
+	t.Cleanup(func() {
+		stopHub()
+		testwait.Receive(t, "the listener hub to return once stopped", hubDone)
+	})
+	testwait.Receive(t, "the hub's connection", connected)
 	// The hub's signal after its LISTEN earns one more pass, held to the gap after the boot pass
 	// began on the sweep's clock. The loop reports its next wait only once that pass has returned,
 	// its transaction ended, so the first report that counts both passes is what the loop holds

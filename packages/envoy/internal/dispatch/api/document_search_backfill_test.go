@@ -294,7 +294,7 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 		t.Fatalf("commit the version write: %v", err)
 	}
 
-	answer := testwait.Receive(t, "the fill to finish once the version write committed", done)
+	answer := testwait.Receive(t, "the fill's answer once the version write committed", done)
 	if answer.err != nil {
 		t.Fatalf("fill document_search beside a committing version write: %v", answer.err)
 	}
@@ -307,7 +307,9 @@ func TestAVersionCommittedWhileTheFillRunsIsNotReplacedByTheOlderOneItRead(t *te
 
 // awaitFillQueued waits for the fill's batch statement to queue behind a lock, which is what
 // says the batch has read artifact_versions and reached its own insert. The statement's text
-// names it, so no other session queued on the same lock is taken for it.
+// names it, so no other session queued on the same lock is taken for it. Its one bound is the
+// test binary's deadline (testwait.Eventually): a batch a loaded machine starts late still ends
+// the wait.
 func awaitFillQueued(t *testing.T, database *store.Store) {
 	t.Helper()
 	testwait.Eventually(t, "the fill's batch to queue behind the open version write", func() bool {

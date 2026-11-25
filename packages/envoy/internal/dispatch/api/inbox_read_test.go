@@ -302,10 +302,12 @@ func TestInboxReadMarksOnlyWhatTheNarrowingNames(t *testing.T) {
 	})
 }
 
-// Every refusal, by status and code: the mark itself, the two owner narrowings together, an
-// unknown value in any list - the empty kind among them, which only the list route's own split
-// of an absent ?kind= stands for - a document id that is not one, and a session, for whom the
-// Inbox is nobody's.
+// Every refusal, by status and code: the mark itself - the one ahead of the server's clock is
+// stagedAhead past it, staged state far past the minute the product allows (agentStateCutoffSkew),
+// so it stays past that minute however late the request reaches the server - the two owner
+// narrowings together, an unknown value in any list - the empty kind among them, which only the
+// list route's own split of an absent ?kind= stands for - a document id that is not one, and a
+// session, for whom the Inbox is nobody's.
 func TestInboxReadRefusesWhatItCannotMark(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)

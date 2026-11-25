@@ -232,7 +232,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 			<-release
 		})
 	}()
-	testwait.Receive(t, "the other process to take the embeddings-project-key-fill lease", taken)
+	testwait.Receive(t, "the other process's take of the embeddings-project-key-fill lease", taken)
 
 	// This process, as the boot starts it, on a clock the test moves try by try.
 	leases := sweepLeases(t, database)

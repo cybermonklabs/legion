@@ -789,6 +789,7 @@ func TestBroadcastRejectsMalformedInput(t *testing.T) {
 
 // awaitBroadcastDeliveries reads the broadcast back until no recipient's attempt is pending:
 // delivery runs behind the create response, so a test that asserts on settled attempts waits for it.
+// The wait's one bound is the test binary's deadline less testwait's margin.
 func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) broadcastResponse {
 	t.Helper()
 	return testwait.Until(t, "every recipient of broadcast "+id+" to have a settled attempt", func() (broadcastResponse, bool) {
@@ -970,14 +971,14 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	}
 	releaseOnce()
 
-	// The broadcast's delivery runs as the server's detached work: once that has returned, the
-	// worker has done all it will, a send of an attempt it wrongly opened included.
+	// The broadcast's delivery runs as the server's detached work (broadcasts.go): once that has
+	// returned, the worker has done all it will, a send of an attempt it wrongly opened included.
 	idle := make(chan struct{})
 	go func() {
 		served.detached.wait()
 		close(idle)
 	}()
-	testwait.Receive(t, "the broadcast worker to finish", idle)
+	testwait.Receive(t, "the broadcast's worker to finish", idle)
 	var pending int
 	if err := database.Pool.QueryRow(context.Background(),
 		`select count(*) from message_deliveries where message_id = $1 and state = 'pending'`,

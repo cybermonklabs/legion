@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -38,6 +39,7 @@ import (
 // would show, is caught by `c-clock`'s listing at INFRA-3149's final head, which lists every
 // wall-clock wait of the product's source that its allow-list gives no reason for.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	persist := NewPgVersioned(database)
@@ -55,7 +57,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 	service := newShutdownTestServiceOn(t, database, appends, serviceClock)
 	// Registered after the service, so it runs before its shutdown: a row that fails while the
 	// room's append is held lets it go rather than leave that shutdown waiting on it.
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service.settlementWoke = func(room string) {
 		if room == artifactID && counting.Load() {
 			order.Add(1)
@@ -126,6 +128,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 // gives up after about 100 ms and leaves the document to resume, as it always has. What the wait
 // costs is the question: one lock statement with a bounded wait, not a try-lock every millisecond.
 func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	tracer := &statementTracer{}
 	traced := storetest.TracedStore(t, database, tracer)

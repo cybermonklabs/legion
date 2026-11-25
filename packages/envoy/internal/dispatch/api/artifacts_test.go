@@ -1210,7 +1210,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	})
 
 	releaseOnce()
-	first := testwait.Receive(t, "the first upload to answer once released", answered)
+	first := testwait.Receive(t, "the first upload's answer once released", answered)
 	if code, _ := refusalOf(t, first.ResponseRecorder); first.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
 		t.Fatalf("the first upload, which reached its issue after the close: status=%d body=%s, want 409 ISSUE_CLOSED",
 			first.Code, first.Body.String())

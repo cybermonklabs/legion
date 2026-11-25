@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docwork"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The xid window rig (INFRA-636) measures how long a write transaction holds its transaction id
@@ -489,7 +490,7 @@ func (x *XidTracer) watchDocumentWork(t testing.TB) {
 			"a transaction that has not ended (store.InXidWindow), so the work holds that transaction id, and "+
 			"every reader's snapshot horizon with it, for as long as it takes (INFRA-636)\n%s", work, debug.Stack())
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		x.mu.Lock()
 		defer x.mu.Unlock()

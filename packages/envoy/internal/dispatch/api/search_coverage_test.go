@@ -257,14 +257,15 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		answered <- response
 	}()
-	testwait.Eventually(t, "pg_stat_activity to show the coverage statement blocked by the lock on components", func() bool {
+	testwait.Until(t, "pg_stat_activity to show the coverage statement blocked by the lock on components while the request waits (the backends blocked)", func() (int, bool) {
 		select {
 		case early := <-answered:
 			t.Fatalf("the route answered (status=%d body=%s) before pg_stat_activity showed its statement blocked",
 				early.Code, early.Body.String())
 		default:
 		}
-		return blocked() == 1
+		count := blocked()
+		return count, count == 1
 	})
 	// What ended the statement is told by the route's answer, not by how long it took: the route
 	// answers SEARCH_COVERAGE_TIMEOUT only for a statement Postgres ended at its statement_timeout

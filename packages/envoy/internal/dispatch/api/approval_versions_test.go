@@ -953,7 +953,9 @@ type eventDelivery struct {
 }
 
 // eventDeliveries runs the outbox until it has published every eventType event whose payload's id
-// is id (an ask's, or a comment's), and returns what each one reached, oldest first.
+// is id (an ask's, or a comment's), and returns what each one reached, oldest first. That wait's
+// one bound is the test binary's deadline (testwait.Until): an outbox a loaded machine runs late
+// still ends it, and its failure prints the counts last read.
 func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) []eventDelivery {
 	t.Helper()
 	stop := runOutbox(t, outbox.Deps{
@@ -966,14 +968,13 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 	})
 	defer stop()
 	const about = `from events where type = $1 and payload->>'id' = $2`
-	type publishing struct{ unpublished, total int }
-	testwait.Until(t, fmt.Sprintf("the outbox to publish every %s event for %s", eventType, id), func() (publishing, bool) {
-		var read publishing
+	testwait.Until(t, fmt.Sprintf("the outbox to publish every %s event for %s (the count unpublished of the count in all)", eventType, id), func() (string, bool) {
+		var unpublished, total int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) filter (where published_at is null), count(*) `+about,
-			eventType, id).Scan(&read.unpublished, &read.total); err != nil {
+			eventType, id).Scan(&unpublished, &total); err != nil {
 			t.Fatalf("count %s events for %s: %v", eventType, id, err)
 		}
-		return read, read.total > 0 && read.unpublished == 0
+		return fmt.Sprintf("%d of %d unpublished", unpublished, total), total > 0 && unpublished == 0
 	})
 	rows, err := database.Pool.Query(context.Background(), `select notify, published_destinations `+about+` order by id`, eventType, id)
 	if err != nil {

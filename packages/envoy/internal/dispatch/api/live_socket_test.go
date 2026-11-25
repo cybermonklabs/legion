@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -67,7 +66,8 @@ func withBearer(token string) http.Header {
 	return http.Header{"Authorization": {"Bearer " + token}}
 }
 
-// sockets waits for exactly n sockets open on the server and answers them.
+// sockets waits for exactly n sockets open on the server and answers them. Its one bound is the
+// test binary's deadline (testwait.Until), and its failure names the count it last read.
 func (rig *liveSocketRig) sockets(t *testing.T, n int) []*liveSocket {
 	t.Helper()
 	return testwait.Until(t, fmt.Sprintf("exactly %d live sockets open on the server", n), func() ([]*liveSocket, bool) {
@@ -99,7 +99,7 @@ func (rig *liveSocketRig) open(t *testing.T, dialer *gws.Dialer, header http.Hea
 // reads nothing until read.
 func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.Header) *socketClient {
 	t.Helper()
-	conn, response, err := dialer.Dial(url, header)
+	conn, response, err := dialLive(t, dialer, url, header)
 	if err != nil {
 		status := "no response"
 		if response != nil {
@@ -111,6 +111,91 @@ func openLiveSocketAt(t *testing.T, dialer *gws.Dialer, url string, header http.
 	return &socketClient{conn: conn, frames: make(chan []byte, 4096), ended: make(chan struct{})}
 }
 
+// dialLive dials url with dialer and answers what the dial answered. The handshake ends on the
+// server's answer: dialer's own HandshakeTimeout, 45 s on gorilla's DefaultDialer, is dropped, and
+// the wait's one bound is the test binary's deadline (testwait.Receive), so an answer a loaded
+// machine sends late still ends it and one that never comes fails the test by name.
+//
+// The dial runs on a context the test's cleanup cancels, and the cleanup waits for the dial's
+// goroutine to return, so no dial outlives the test. That context ends gorilla's TCP connect but
+// not its read of the server's answer, which DialContext makes with no deadline when the dialer
+// sets no timeout, so until the handshake ends the context's end also closes the connection the
+// dial opened. A connection the handshake answers once the test no longer waits for it is closed,
+// as the test would have closed it. A dialer whose connect takes no context (NetDial alone) could
+// outlive the cleanup, so dialLive refuses it.
+func dialLive(t *testing.T, dialer *gws.Dialer, url string, header http.Header) (*gws.Conn, *http.Response, error) {
+	t.Helper()
+	if dialer.NetDial != nil && dialer.NetDialContext == nil {
+		t.Fatalf("dialLive dials %s with a dialer whose connect takes no context (NetDial), which no cleanup can end; give it NetDialContext", url)
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	unbounded := *dialer
+	unbounded.HandshakeTimeout = 0
+	// connect is the TCP connect gorilla makes for a ws:// URL: the dialer's NetDialContext, else a
+	// plain net.Dialer's. Both end with ctx.
+	connect := (&net.Dialer{}).DialContext
+	if dialer.NetDialContext != nil {
+		connect = dialer.NetDialContext
+	}
+	// release stops the close the context's end would make of the dialed connection. Gorilla calls
+	// NetDialContext on the goroutine that called DialContext, so only that goroutine sets it and
+	// reads it.
+	var release func() bool
+	unbounded.NetDial = nil
+	unbounded.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		conn, err := connect(dialCtx, network, address)
+		if err == nil {
+			release = context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, err
+	}
+	type dialed struct {
+		conn     *gws.Conn
+		response *http.Response
+		err      error
+	}
+	answered := make(chan dialed, 1)
+	// worked closes once the dial's goroutine has returned, which the cleanup waits for.
+	worked := make(chan struct{})
+	// abandoned says no one takes the answer any more, which the cleanup sets; mu orders it with
+	// the answer's send, so an answer is either taken from answered or closed, never left open.
+	var mu sync.Mutex
+	abandoned := false
+	go func() {
+		defer close(worked)
+		conn, response, err := unbounded.DialContext(ctx, url, header)
+		if release != nil {
+			release()
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if abandoned && conn != nil {
+			_ = conn.Close()
+			conn = nil
+		}
+		answered <- dialed{conn: conn, response: response, err: err}
+	}()
+	t.Cleanup(func() {
+		stop()
+		mu.Lock()
+		abandoned = true
+		// An answer the dial sent that the test never took, its wait having given up first.
+		select {
+		case got := <-answered:
+			if got.conn != nil {
+				_ = got.conn.Close()
+			}
+		default:
+		}
+		mu.Unlock()
+		// The cancel ends the connect, and the close the context's end makes ends the handshake's
+		// read, so the goroutine returns once it has closed any connection it was answered.
+		<-worked
+	})
+	got := testwait.Receive(t, "the server's answer to the upgrade of "+url, answered)
+	return got.conn, got.response, got.err
+}
+
 // dial opens the socket and reads it.
 func (rig *liveSocketRig) dial(t *testing.T, header http.Header) *socketClient {
 	t.Helper()
@@ -120,7 +205,7 @@ func (rig *liveSocketRig) dial(t *testing.T, header http.Header) *socketClient {
 // refused dials the socket and answers the status Dispatch refused the upgrade with.
 func (rig *liveSocketRig) refused(t *testing.T, header http.Header) int {
 	t.Helper()
-	conn, response, err := gws.DefaultDialer.Dial(rig.url, header)
+	conn, response, err := dialLive(t, gws.DefaultDialer, rig.url, header)
 	if err == nil {
 		_ = conn.Close()
 		t.Fatal("the upgrade succeeded; want it refused")
@@ -461,27 +546,16 @@ func (l smallSendBuffers) Accept() (net.Conn, error) {
 
 // smallReadDialer dials with a small receive buffer, so a page that stops reading holds back the
 // socket's writer after kilobytes; beside smallSendBuffers it is how a test plays a slow page. A
-// test that must know the writer stays held holds it with heldWrites instead. Its handshake is
-// bounded by the test binary's deadline less the shared wait's margin (testwait.Context), so a
-// handshake that stalls fails by name, and none under -timeout 0.
-func smallReadDialer(t *testing.T) *gws.Dialer {
+// test that must know the writer stays held holds it with heldWrites instead. Its handshake ends on
+// the server's answer (dialLive).
+func smallReadDialer() *gws.Dialer {
 	return &gws.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetReadBuffer(4096)
 		}
 		return conn, err
-	}, HandshakeTimeout: handshakeBound(t)}
-}
-
-// handshakeBound is a dial's handshake timeout that ends where the shared wait gives up, or none
-// (zero) under -timeout 0.
-func handshakeBound(t *testing.T) time.Duration {
-	deadline, bounded := testwait.GiveUpAt(t)
-	if !bounded {
-		return 0
-	}
-	return max(time.Until(deadline), time.Nanosecond)
+	}}
 }
 
 // heldWrites wraps the server's listener so a test can hold a socket's writer inside a write, as a
@@ -503,9 +577,9 @@ func (held *heldWrites) listen(listener net.Listener) net.Listener {
 	return heldListener{Listener: listener, held: held}
 }
 
-// hold makes every write the server starts from now on wait at the gate until release, or until
-// its connection's write deadline passes, as a write a page holds back would. The test's cleanup
-// releases it, ahead of the rig's, so no socket's handler is left waiting on its writer.
+// hold makes every write the server starts from now on wait at the gate until release, however
+// long the test takes to release it (heldConn). The test's cleanup releases it, ahead of the rig's,
+// so no socket's handler is left waiting on its writer.
 func (held *heldWrites) hold(t *testing.T) {
 	t.Helper()
 	held.mu.Lock()
@@ -554,8 +628,10 @@ func (l heldListener) Accept() (net.Conn, error) {
 	return &heldConn{Conn: conn, held: l.held}, nil
 }
 
-// heldConn is one accepted connection whose writes wait at the gate. It keeps the write deadline
-// the writer sets, so a write the test never releases fails as a stalled one would.
+// heldConn is one accepted connection whose writes wait at the gate. A write waits there for the
+// test's release alone: the write deadline the writer set (liveSocketWriteWait) moves on by the time
+// the write waited, so a release later than that deadline, as a loaded machine can make it between
+// the test's steps, still lets the write through rather than failing it as a stalled one.
 type heldConn struct {
 	net.Conn
 	held     *heldWrites
@@ -581,22 +657,17 @@ func (c *heldConn) setWriteDeadline(at time.Time) {
 
 func (c *heldConn) Write(p []byte) (int, error) {
 	if gate := c.held.current(); gate != nil {
+		reached := time.Now()
+		c.held.waiting.Add(1)
+		<-gate
+		c.held.waiting.Add(-1)
 		c.mu.Lock()
 		deadline := c.deadline
 		c.mu.Unlock()
-		var expired <-chan time.Time
 		if !deadline.IsZero() {
-			timer := time.NewTimer(time.Until(deadline))
-			defer timer.Stop()
-			expired = timer.C
-		}
-		c.held.waiting.Add(1)
-		select {
-		case <-gate:
-			c.held.waiting.Add(-1)
-		case <-expired:
-			c.held.waiting.Add(-1)
-			return 0, os.ErrDeadlineExceeded
+			if err := c.Conn.SetWriteDeadline(deadline.Add(time.Since(reached))); err != nil {
+				return 0, err
+			}
 		}
 	}
 	return c.Conn.Write(p)
@@ -847,7 +918,7 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
 	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(t), asUser("alice"))
+	client := rig.open(t, smallReadDialer(), asUser("alice"))
 
 	// Every frame is answered with an error frame echoing its 4 KiB sub, and the page reads none of
 	// them: the socket's writer blocks, its queue fills, and the next frame overflows it.
@@ -1010,7 +1081,10 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	t.Parallel()
 	busy := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
-	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
+	// A heartbeat staged a day ahead (stagedAhead): the page reads nothing while the writer is held,
+	// so it answers no ping, and the pong deadline would end the socket however long the held steps
+	// take.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: busy.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	held.hold(t)
 	client.send(t, liveSubscribe("busy", eventsView(), ""))

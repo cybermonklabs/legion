@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -23,7 +24,7 @@ import (
 func newEditNoticeSweeper(t *testing.T, database *store.Store, fake *clocktest.Fake) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }
 
@@ -37,7 +38,7 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		testwait.Receive(t, "the edit notice sweep to return once its context ended", done)
 	})
@@ -66,7 +67,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) (wake <-chan struct
 		stopping.Do(cancel)
 		testwait.Receive(t, "the edit-notice hub's Run to return once its context ended", done)
 	}
-	t.Cleanup(stop)
+	testcleanup.Add(t, stop)
 	testwait.Receive(t, "the hub to connect", connected)
 	return wake, stop
 }
@@ -105,6 +106,7 @@ func editNoticeDueIn(t *testing.T, database *store.Store) time.Duration {
 // not move is everything it will do; a loop that swept on a period would hold that period's timer
 // too. Its pass asks to run again at that due time.
 func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -144,6 +146,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 // not before. The loop had no due time before the edit, so only the wake can have scheduled the
 // sweep that sends it.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -215,7 +218,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	// A failed wait below still lets the lease holder go, so it never stays parked past the test.
 	releaseLease := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(releaseLease)
+	testcleanup.Add(t, releaseLease)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -64,7 +65,7 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 			testwait.Receive(t, "the room sync and its listener hub to return once their context ended", done)
 		})
 	}
-	t.Cleanup(stop)
+	testcleanup.Add(t, stop)
 	return connected, stop
 }
 
@@ -85,6 +86,7 @@ func runRoomSync(t *testing.T, rs *roomSync) (stop func()) {
 // process whose listener stops leaves at once, with nothing to collect, because its connection is
 // gone.
 func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -133,6 +135,7 @@ func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
 // sent inside it. The sender's connection is then killed under it, as one idle for long can die,
 // and the next send redials and still arrives.
 func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))

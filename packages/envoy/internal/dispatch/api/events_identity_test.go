@@ -191,7 +191,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 				t.Fatalf("room text after the edit = %q (%v)", text, err)
 			}
 			peer.assertTextLacks(t, "written after the session ended")
-			connection, response, err := gws.DefaultDialer.Dial(peer.wsURL, peer.headers)
+			connection, response, err := dialLive(t, gws.DefaultDialer, peer.wsURL, peer.headers)
 			if connection != nil {
 				_ = connection.Close()
 			}
@@ -340,7 +340,7 @@ func TestASignInIssuerOutageAnswersTheAPIAndTheDocumentSocket503AndKeepsTheSessi
 	socket := func() (int, string) {
 		t.Helper()
 		header := http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}
-		connection, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/doc/"+rig.artifactID, header)
+		connection, response, err := dialLive(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/doc/"+rig.artifactID, header)
 		if connection != nil {
 			_ = connection.Close()
 		}

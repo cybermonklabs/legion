@@ -33,16 +33,69 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// sets (callNATSWait, createDurable, decodeEnvelope and the like), the default logger
-// (captureLogs), t.Setenv, the process's goroutines, a select on a short time.After, or a read of
-// Postgres's whole-server views. Each parallel test has a database of its own (storetest.Open's
-// clone) and a JetStream account of its own (testnats.URL), and waits on NATS and Postgres far more
-// than on a core. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev
-// box, where every test's database and pools at once would open more connections than the test
-// server allows.
+// sets (decodeEnvelope), the default logger (captureLogs), t.Setenv, the process's goroutines, a
+// select on a short time.After, or a read of Postgres's whole-server views. An intake's own timers
+// and hooks are its tuning (tuningFor), which no other test's intake reads. Each parallel test has
+// a database of its own (storetest.Open's clone) and a JetStream account of its own
+// (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default of
+// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
+// and pools at once would open more connections than the test server allows.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const deliveryTestParallelism = 8
+
+// tunings holds each running test's intake tuning, by the test's name (tuningFor).
+var tunings = struct {
+	sync.Mutex
+	byTest map[string]*intakeTuning
+}{byTest: map[string]*intakeTuning{}}
+
+// tuningFor is the tuning (intakeTuning) of every intake test t builds, and the one t changes to
+// shorten a timer or hook a step of those intakes: made for t on its first use and dropped when t
+// ends, as a copy of its nearest ancestor test's when one has a tuning and production's
+// (newIntakeTuning) otherwise. Each test has its own, so a test that changes it runs beside tests
+// that do not, and every intake one test builds shares it, as they shared the package variables it
+// replaces. Set its durations and createDurable before the intakes start; its atomics at any time.
+func tuningFor(t testing.TB) *intakeTuning {
+	tunings.Lock()
+	defer tunings.Unlock()
+	name := t.Name()
+	if tuning, ok := tunings.byTest[name]; ok {
+		return tuning
+	}
+	tuning := newIntakeTuning()
+	for ancestor := name; strings.Contains(ancestor, "/"); {
+		ancestor = ancestor[:strings.LastIndex(ancestor, "/")]
+		if parent, ok := tunings.byTest[ancestor]; ok {
+			tuning = copyTuning(parent)
+			break
+		}
+	}
+	tunings.byTest[name] = tuning
+	t.Cleanup(func() {
+		tunings.Lock()
+		defer tunings.Unlock()
+		delete(tunings.byTest, name)
+	})
+	return tuning
+}
+
+// copyTuning is a tuning holding what from holds now: its fields copied one by one, since its
+// atomics cannot be copied with it.
+func copyTuning(from *intakeTuning) *intakeTuning {
+	to := &intakeTuning{
+		messageTimeout:         from.messageTimeout,
+		maxAckPending:          from.maxAckPending,
+		stopBudget:             from.stopBudget,
+		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
+		createDurable:          from.createDurable,
+	}
+	to.callWait.Store(from.callWait.Load())
+	to.drainWait.Store(from.drainWait.Load())
+	to.stopArmed.Store(from.stopArmed.Load())
+	to.beforeRelease.Store(from.beforeRelease.Load())
+	return to
+}
 
 // TestMain sets the package's default -parallel, drops the databases the package's tests clone
 // (storetest.Main) and removes the NATS server they share (testnats.Main).
@@ -266,32 +319,35 @@ func pathBaseForTest(workflowPath string) string {
 	return workflowPath
 }
 
-// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test: the shipped
-// cap of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what
-// a test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty. It caps a count, not an interval, so it stays a variable a test sets.
+// capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
+// it (tuningFor) to deliveries: the shipped cap of thirty, at headWriteRedeliverAfter apiece, is
+// nearly five minutes of wall clock, and what a test of the cap measures is that there is one at
+// all, which two deliveries show as well as thirty. It caps a count, not an interval, so it stays a
+// value a test sets rather than a span a fake clock passes.
 func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
-	was := headWriteMaxDeliveries
-	headWriteMaxDeliveries = deliveries
-	t.Cleanup(func() { headWriteMaxDeliveries = was })
+	tuningFor(t).headWriteMaxDeliveries = deliveries
 }
 
-// messageTimeoutPastTheRun is the message timeout (heldDurable.messageTimeout) ackWaitPastTheRun
+// messageTimeoutPastTheRun is the message timeout (intakeTuning.messageTimeout) ackWaitPastTheRun
 // gives an intake: six hours.
 const messageTimeoutPastTheRun = 6 * time.Hour
 
-// ackWaitPastTheRun gives in the message timeout messageTimeoutPastTheRun before its Run, and
-// returns it. intakeAckWait derives the durable's ack wait from it, so the durable the intake
-// creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
+// ackWaitPastTheRun gives in's tuning the message timeout messageTimeoutPastTheRun before its Run,
+// and returns in. The tuning's ack wait derives from it (intakeTuning.ackWait), so the durable the
+// intake creates (deliveryConsumerConfig, a take-over's takeOverConfig) waits a day for an
 // acknowledgement, and the intake's handler deadline (Intake.deliver) is six hours out. A row
 // whose message must reach a process by a hand-back or a take-over's recreate at the ack floor
 // gives it to every intake it runs, since each take-over creates the durable with the taker's own
 // config: the server's own redelivery once the ack wait expires then never comes inside the run,
 // so a wait the row leaves unbounded fails on a broken hand-back rather than passing on that
-// redelivery. It sets a field of in alone, so no other intake reads it.
+// redelivery. Every intake its test builds shares that tuning (tuningFor), so it writes only a
+// tuning that does not hold the timeout yet: a row that gives it to a second intake while its
+// first runs reads, and does not write, what the first's Run reads.
 func ackWaitPastTheRun(in *Intake) *Intake {
-	in.messageTimeout = messageTimeoutPastTheRun
+	if in.tuning.messageTimeout != messageTimeoutPastTheRun {
+		in.tuning.messageTimeout = messageTimeoutPastTheRun
+	}
 	return in
 }
 
@@ -375,7 +431,7 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 }
 
 // awaitDurableBoundAt waits for the durable to be push-bound with maxAckPending in-flight slots,
-// the bound of the intake that created it (Intake.maxAckPending). Its one bound is the shared
+// the bound of the intake that created it (intakeTuning.maxAckPending). Its one bound is the shared
 // wait's (waitFor): a bind that is merely slow on a loaded machine still passes, and one that
 // never comes fails the row naming the durable's last state.
 func awaitDurableBoundAt(t *testing.T, natsClient *bus.Client, maxAckPending int) {

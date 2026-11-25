@@ -10,6 +10,7 @@ import "testing"
 // and each room may track no more than its own readers plus the relay's bound of live clients per
 // process: 2 * maxAwarenessClientsPerRoom.
 func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)

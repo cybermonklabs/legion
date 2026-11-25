@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // windowContext is a context whose caller holds one of the pool's connections
@@ -17,7 +18,7 @@ import (
 func windowContext(t *testing.T) (context.Context, func()) {
 	t.Helper()
 	ctx, release := store.HoldsConnection(context.Background())
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return ctx, release
 }
 
@@ -55,7 +56,7 @@ func TestHTTPClientChecksEachRequestItSends(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	caught := &RecordedFailures{TB: t}
 	client := HTTPClient(caught)
 	ctx, _ := windowContext(t)

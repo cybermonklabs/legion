@@ -28,6 +28,7 @@ import (
 // the id ("no changes produced"), 70 times in 200 beside whole runs of the package under 32 busy
 // loops, and once the answer's write met a deadlock ("deadlock detected").
 func TestAnApprovedVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := seededRegionDocument(t, stagedAhead)
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 

@@ -96,6 +96,7 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}
 	// queuedBehind returns once the comment's backend waits behind the route change, and fails the
 	// row when the comment answers first: it never read the route under its lock after the move.
+	// Its one bound is the test binary's deadline (storetest.WaitForQueuedBehind).
 	queuedBehind := func(change pgx.Tx, callPID uint32, answered <-chan *httptest.ResponseRecorder, what string) {
 		t.Helper()
 		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered); early {

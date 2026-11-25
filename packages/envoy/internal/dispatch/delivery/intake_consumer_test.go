@@ -63,14 +63,14 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	if err != nil {
 		t.Fatalf("pre-create the durable an earlier release left: %v", err)
 	}
-	// This release's ack wait: production's flow control, which newIntake gives the intake below.
-	ackWait := intakeAckWait(intakeMaxAckPending, intakeMessageTimeout)
+	// This release's ack wait: production's tuning, which the intake below is built with (tuningFor).
+	ackWait := tuningFor(t).ackWait()
 	if created.Config.MaxAckPending == intakeMaxAckPending || created.Config.AckWait == ackWait {
 		t.Fatalf("the pre-created durable already carries this release's flow control (%s/%d), so the test proves nothing",
 			created.Config.AckWait, created.Config.MaxAckPending)
 	}
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	// bind replaces this durable (it carries a filter-subject set), deleting it and creating its
@@ -100,27 +100,27 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	// The bound this release holds: what NATS may have outstanding has to be acknowledgeable
 	// inside the ack wait, handled one at a time under intakeMessageTimeout.
 	if worst := time.Duration(intakeMaxAckPending) * intakeMessageTimeout; worst >= ackWait {
-		t.Fatalf("intakeMaxAckPending*intakeMessageTimeout = %s, want less than intakeAckWait (%s)", worst, ackWait)
+		t.Fatalf("intakeMaxAckPending*intakeMessageTimeout = %s, want less than the ack wait, intakeTuning.ackWait (%s)", worst, ackWait)
 	}
 }
 
 // TestAnIntakeCreatesItsDurableWithItsOwnFlowControl holds that the flow control an intake is
 // built with, and not production's, is what the durable it creates carries: its in-flight bound
-// (Intake.maxAckPending) and the ack wait derived from its message timeout
-// (heldDurable.messageTimeout, intakeAckWait). A row that gives its intakes a timeout past the run
-// (ackWaitPastTheRun), or more slots, rests on it.
+// (intakeTuning.maxAckPending) and the ack wait derived from its message timeout
+// (intakeTuning.messageTimeout, intakeTuning.ackWait). A row that gives its intakes a timeout past
+// the run (ackWaitPastTheRun), or more slots, rests on it.
 func TestAnIntakeCreatesItsDurableWithItsOwnFlowControl(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
 	const slots = intakeMaxAckPending + 1
-	intake := ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
-	intake.maxAckPending = slots
+	tuningFor(t).maxAckPending = slots
+	intake := ackWaitPastTheRun(newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	runIntake(t, intake)
 
 	awaitDurableBoundAt(t, natsClient, slots)
 	info := deliveryConsumerInfo(t, natsClient)
-	if want := intakeAckWait(slots, messageTimeoutPastTheRun); info.Config.AckWait != want || info.Config.MaxAckPending != slots {
+	if want := time.Duration(slots)*messageTimeoutPastTheRun + time.Minute; info.Config.AckWait != want || info.Config.MaxAckPending != slots {
 		t.Fatalf("the durable the intake created has ack_wait/max_ack_pending %s/%d, want %s/%d: the intake's own message timeout (%s) and in-flight bound",
 			info.Config.AckWait, info.Config.MaxAckPending, want, slots, messageTimeoutPastTheRun)
 	}
@@ -262,7 +262,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubjects: oldSet,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(intakeMaxAckPending, intakeMessageTimeout),
+		AckWait:        tuningFor(t).ackWait(),
 		MaxAckPending:  intakeMaxAckPending,
 	})
 	if err != nil {
@@ -299,7 +299,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(intakeMaxAckPending, intakeMessageTimeout),
+		AckWait:        tuningFor(t).ackWait(),
 		MaxAckPending:  intakeMaxAckPending,
 	})
 	if err != nil {
@@ -377,6 +377,7 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want 
 // replacement delivers exactly the messages the old durable had not acknowledged -- none of the
 // acknowledged ones come back, and none of the unacknowledged ones are skipped.
 func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	natsClient := intakeTestClient(t)
@@ -445,7 +446,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 		mu.Unlock()
 		mustEncode(t, w, smallRun(id, time.Now().UTC()))
 	})
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	awaitRuns(t, ctx, pool, natsClient, unacknowledged)
@@ -510,7 +511,7 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -556,6 +557,7 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 // intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the ack
 // wait to be redelivered.
 func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -574,7 +576,7 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 		publishWorkflowEnvelope(t, natsClient, "acme", "widgets", settings.DeployWorkflowPath, int64(5000+i))
 	}
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	runIntake(t, intake)
 
 	awaitRuns(t, ctx, pool, natsClient, backlog)
@@ -743,7 +745,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	t.Cleanup(releaseLease)
 	testwait.Receive(t, fmt.Sprintf("the other caller to take the %s lease", consumerLease(bus.DispatchDeliveryDurable)), taken)
 
-	runIntake(t, newIntake(natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	// Each attempt the intake makes while the lease is held elsewhere ends in the lease skipped,
 	// which duty logs every time: three of them are the first attempt and the two after it, a
 	// durableBindInterval apart, and none of them may have changed the durable.
@@ -773,7 +775,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 		t.Fatalf("the other caller never held the %s lease, so the take-over was free", consumerLease(bus.DispatchDeliveryDurable))
 	}
 	takenOver := awaitPushBound(t, natsClient, "the intake did not take the durable over once the lease was free")
-	if want := intakeAckWait(intakeMaxAckPending, intakeMessageTimeout); takenOver.Config.DeliverSubject == before.Config.DeliverSubject || takenOver.Config.MaxAckPending != intakeMaxAckPending || takenOver.Config.AckWait != want {
+	if want := tuningFor(t).ackWait(); takenOver.Config.DeliverSubject == before.Config.DeliverSubject || takenOver.Config.MaxAckPending != intakeMaxAckPending || takenOver.Config.AckWait != want {
 		t.Fatalf("the take-over left deliver subject %s ack_wait %s max_ack_pending %d, want a fresh subject and %s/%d",
 			takenOver.Config.DeliverSubject, takenOver.Config.AckWait, takenOver.Config.MaxAckPending, want, intakeMaxAckPending)
 	}
@@ -834,15 +836,16 @@ var consumerGenerations = map[int]map[string]consumerGenerationRow{
 
 // Each durable this build creates has exactly the config pinned for its generation, and carries
 // that generation: a change to the config without a new generation and a new row fails here. The
-// delivery durable's config is the one an intake newIntake builds asks for, with the flow control
-// newIntake gives it, as production builds it.
+// delivery durable's config is the one an intake newIntake builds asks for, timed by production's
+// tuning (newIntakeTuning), as StartIntakes builds it.
 func TestTheConsumerConfigEqualsItsGenerationsPinnedRow(t *testing.T) {
 	t.Parallel()
 	rows, ok := consumerGenerations[consumerConfigGeneration]
 	if !ok {
 		t.Fatalf("generation %d has no pinned rows; add them with the configs it ships", consumerConfigGeneration)
 	}
-	for _, config := range []natsgo.ConsumerConfig{newIntake(nil, nil, nil, nil, nil, nil, nil).config(), jobConsumerConfig()} {
+	delivery := newIntake(newIntakeTuning(), nil, nil, nil, nil, nil, nil, nil)
+	for _, config := range []natsgo.ConsumerConfig{delivery.config(delivery.tuning), jobConsumerConfig(delivery.tuning)} {
 		row, ok := rows[config.Durable]
 		if !ok {
 			t.Errorf("generation %d has no pinned row for %s", consumerConfigGeneration, config.Durable)

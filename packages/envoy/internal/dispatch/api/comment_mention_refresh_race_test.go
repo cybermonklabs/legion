@@ -367,7 +367,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			a1 := postMentionOfS1(t, handler, issue.Key, "first")
 			key := mentionKey{comment: a1, target: "session:s1", attempt: 1}
 			if tc.between {
-				testwait.Receive(t, "A-1's park to reach the sender's lock after its try", gate.arrived)
+				testwait.Receive(t, "A-1's park reaching the sender's lock after its try", gate.arrived)
 				sender.refreshHeldClaims(ctx)
 				recorded, unsure := recordedClaim(sender, key)
 				t.Logf("as park waits for the lock, the refresh leaves the sender recording %v (unsure %t), the row carrying %v",
@@ -536,6 +536,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 				_, holds := sender.held[key]
 				return !holds
 			})
+
 			states := attemptStates(t, database, "comment_deliveries", "comment_id", comment)
 			bodies := state.bodiesTo("s1")
 			mu.Lock()
@@ -618,6 +619,14 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 				rereadNone,
 				func(context.Context, []mentionClaim) error { return nil },
 			)
+			// However the subtest ends, a failed wait included, the sender's lifetime ends and its
+			// goroutines are joined before the next subtest starts: its claim keeper would otherwise
+			// outlive the subtest. The stop and the join below run first on the passing path, so
+			// the tries are read once nothing can add one; a second stop and join do nothing.
+			t.Cleanup(func() {
+				stop()
+				testwait.Returns(t, "the mention sender's lane and claim refresh to return once its lifetime ended", sender.wait)
+			})
 			sender.mu.Lock()
 			sender.heldWarnAfter = time.Nanosecond
 			sender.clock = senderClock

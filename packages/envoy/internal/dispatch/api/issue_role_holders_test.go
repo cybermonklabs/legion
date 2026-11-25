@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -132,11 +131,14 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	if len(first.Holders) != 1 || first.Holders[0].RecordedAt.IsZero() {
 		t.Fatalf("the first publish answered %#v, want tester ses-a with its time", first)
 	}
-	// Each write is its own transaction, so a write that sets now() again sets a later time once
-	// the database's clock has passed the first one's, which is read off that clock.
-	testwait.Until(t, "the database's clock to pass the first publish's time", func() (time.Time, bool) {
-		now := databaseNow(t, database.Pool)
-		return now, now.After(first.Holders[0].RecordedAt)
+	// Each write is its own transaction, so a write that sets now() again sets a later time once the
+	// database's clock reads past the first one's: the wait ends on that clock.
+	testwait.Eventually(t, "the database's clock to read past the first publish's time", func() bool {
+		var past bool
+		if err := database.Pool.QueryRow(context.Background(), `select clock_timestamp() > $1`, first.Holders[0].RecordedAt).Scan(&past); err != nil {
+			t.Fatalf("read the database's clock against the first publish's time: %v", err)
+		}
+		return past
 	})
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {

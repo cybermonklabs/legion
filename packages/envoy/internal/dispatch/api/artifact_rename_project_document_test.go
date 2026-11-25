@@ -47,7 +47,7 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 			"anchor": map[string]any{"artifact": document.Slug, "quote": quote}, "actor": sessionActor(),
 		})
 	}()
-	testwait.Until(t, "the comment to wait on a lock the correction's transaction holds", func() (int, bool) {
+	testwait.Until(t, "the comment to wait on a lock the correction's transaction holds (the waiting sessions)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), fixture.database, "%")
 		if err != nil {
 			t.Fatal(err)

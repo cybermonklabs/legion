@@ -222,10 +222,10 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, wh
 }
 
 // awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
-// settlement.
+// settlement. Its one bound is the test binary's deadline (testwait.Until).
 func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the copy's latest version to hold %s with nothing owed", want), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the copy's latest version to hold %s with nothing owed (owed, then the version)", want), func() (string, bool) {
 		var markdown string
 		var pending int
 		if err := database.Pool.QueryRow(ctx, `

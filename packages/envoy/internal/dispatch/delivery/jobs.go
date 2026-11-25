@@ -83,14 +83,15 @@ const (
 
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads and stopping by c (heldDurable.clock), checking each job event against
-// settings, and holding its durable and taking it over under a hold and a lease it takes on leases.
-func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, c intakeClock, settings *SettingsCache) *JobIntake {
+// settings, and holding its durable and taking it over under a hold and a lease it takes on leases,
+// timed by tuning.
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, c intakeClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},
 		reads: make(chan struct{}, reconcilePartialConcurrency),
 	}
-	j.heldDurable = newHeldDurable(natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
+	j.heldDurable = newHeldDurable(tuning, natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
 	j.clock = c
 	return j
 }
@@ -117,8 +118,8 @@ func (j *JobIntake) Run(ctx context.Context) {
 // name and filter, starting at new messages, since a job event older than the process says nothing
 // the run's end event and the reconcile do not. A take-over recreates it at its ack floor
 // (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
-// deliveryConsumerConfig gives.
-func jobConsumerConfig() natsgo.ConsumerConfig {
+// deliveryConsumerConfig gives, so it takes none of the intake's tuning.
+func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchJobDurable,
 		DeliverSubject: natsgo.NewInbox(),
@@ -155,7 +156,7 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	// The acknowledgement waits for NATS at most bus.ConnLockWait (callNATS): a stop waits for this
 	// handler. One NATS has not taken by then goes on without it, and a failure is logged, as
 	// before: the event's read below does not depend on it.
-	callNATS("acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
+	callNATS(d.tuning, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
 		slog.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
@@ -223,7 +224,7 @@ func (j *JobIntake) schedule(key runKey, production Production) {
 // fire ends a run's burst and reads its jobs once a read slot is free (reads). An event that
 // arrives during the read starts the next burst; two reads of one run that overlap are safe, since
 // a read never undoes a later one (UpsertRunJobs). The read's deadline, the intake's message
-// timeout (heldDurable.messageTimeout) on its clock, starts once it has its slot.
+// timeout (intakeTuning.messageTimeout) on its clock, starts once it has its slot.
 func (j *JobIntake) fire(key runKey, run *pendingRun) {
 	j.mu.Lock()
 	if j.pending[key] != run {
@@ -238,7 +239,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := j.messageDeadline.WithTimeout(j.clock, j.ctx, j.messageTimeout)
+	ctx, cancel := j.messageDeadline.WithTimeout(j.clock, j.ctx, j.tuning.messageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }

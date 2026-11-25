@@ -425,7 +425,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
+	intake := newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	process.intake = intake
 	if before != nil {
 		before(process)
@@ -514,16 +514,14 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 
 	const inFlight = 100
 	const queued = 4
-	// One message in the holder's handler and four behind it on its key: each process's intake
-	// has a slot for each of the five, and a message timeout past the run.
+	// One message in the holder's handler and four behind it on its key: the row's tuning, which
+	// every intake it builds shares (tuningFor), has a slot for each of the five, set before the
+	// first intake starts, and each process's intake a message timeout past the run.
 	const slots = 1 + queued
-	withSlots := func(p *intakeProcess) {
-		ackWaitPastTheRun(p.intake)
-		p.intake.maxAckPending = slots
-	}
-	holder := startIntakeProcessWith(t, pool, natsURL, func(number int) bool { return number == inFlight }, withSlots)
+	tuningFor(t).maxAckPending = slots
+	holder := startIntakeProcessWith(t, pool, natsURL, func(number int) bool { return number == inFlight }, processAckWaitPastTheRun)
 	awaitDurableBoundAt(t, publisher, slots)
-	standby := startIntakeProcessWith(t, pool, natsURL, nil, withSlots)
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, processAckWaitPastTheRun)
 
 	publishMergedPullRequest(t, publisher, inFlight)
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
@@ -936,6 +934,7 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 // subject it had; the standby's take-over moved the durable to another, so the holder is handed
 // nothing, and each later message is handled by exactly one process.
 func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1012,7 +1011,6 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 // moment the server announces its creation finds it bound, even with the taking process's link to
 // the server slow.
 func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
-	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1071,6 +1069,7 @@ const intakeConsumerLease = "delivery-consumer-" + bus.DispatchDeliveryDurable
 // and once that build lets go, the standby's take-over recreates the durable with the newer build's
 // settings, not its own.
 func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1159,6 +1158,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 // nothing, and changes nothing, until that process lets go. Then it takes the durable over on a
 // deliver subject of its own.
 func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1170,7 +1170,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 		DeliverSubject: natsgo.NewInbox(),
 		FilterSubject:  githubIntakeSubject,
 		AckPolicy:      natsgo.AckExplicitPolicy,
-		AckWait:        intakeAckWait(intakeMaxAckPending, intakeMessageTimeout),
+		AckWait:        tuningFor(t).ackWait(),
 		MaxAckPending:  intakeMaxAckPending,
 	}
 	before, err := publisher.JS().AddConsumer(bus.Stream, &previous)
@@ -1245,20 +1245,20 @@ func fetchesOf(process *intakeProcess, numbers []int) map[int]int {
 
 // failCreatesWhile makes the take-over's create of the durable fail while failing reports true,
 // as a JetStream API that times out, or a crash between the delete and the create, leaves the
-// durable deleted and not created. It counts every create attempt, and restores the real create
-// when the test ends, after every intake the test starts has stopped.
+// durable deleted and not created: in the intakes the test starts after it, which take the test's
+// tuning (tuningFor). It counts every create attempt.
 func failCreatesWhile(t *testing.T, failing func() bool) *atomic.Int32 {
 	t.Helper()
 	attempts := &atomic.Int32{}
-	create := createDurable
-	createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
+	tuning := tuningFor(t)
+	create := tuning.createDurable
+	tuning.createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
 		attempts.Add(1)
 		if failing() {
 			return nil, errors.New("the test fails the create: JetStream API timed out")
 		}
 		return create(js, config, opts...)
 	}
-	t.Cleanup(func() { createDurable = create })
 	return attempts
 }
 
@@ -1454,6 +1454,7 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t 
 // restarted process runs one, creates the durable at the old floor: none of the acknowledged
 // messages come back, and none of the others are skipped.
 func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -1532,7 +1533,7 @@ func (p *previousBuild) pass() {
 				DeliverSubject: natsgo.NewInbox(),
 				FilterSubject:  githubIntakeSubject,
 				AckPolicy:      natsgo.AckExplicitPolicy,
-				AckWait:        intakeAckWait(intakeMaxAckPending, intakeMessageTimeout),
+				AckWait:        newIntakeTuning().ackWait(),
 				MaxAckPending:  intakeMaxAckPending,
 			}
 			if _, err := p.client.JS().AddConsumer(bus.Stream, &previous); err == nil {
@@ -1594,6 +1595,7 @@ func (p *previousBuild) stop() {
 // process reconciles through the whole of it. None of the acknowledged messages come back, none of
 // the others are skipped, and that process finds the durable there afterwards.
 func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

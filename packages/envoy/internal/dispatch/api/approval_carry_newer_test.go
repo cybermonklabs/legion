@@ -133,7 +133,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	}()
 	t.Cleanup(func() {
 		stop()
-		testwait.Receive(t, "the settlement resumption to return once stopped", resumed)
+		testwait.Receive(t, "the settlement resumption's return once stopped", resumed)
 	})
 	waitForArtifactVersion(t, newer, issue.PrimaryArtifactID, 2)
 	requireCarriedReview(t, newer, issue.PrimaryArtifactID, 2, 1, nil)

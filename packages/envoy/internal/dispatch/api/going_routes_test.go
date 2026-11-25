@@ -142,7 +142,8 @@ func (rig goingRoutesRig) streamUnder(t *testing.T, id, token string) *httptest.
 }
 
 // awaitTerminal waits for the run to have stored its ending and answers every frame it holds,
-// rendered "<sequence> <name> <data>" as going_test.go renders them.
+// rendered "<sequence> <name> <data>" as going_test.go renders them. Its one bound is the test
+// binary's deadline less testwait's margin; a run that never ends fails naming the frames it held.
 func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
 	stored := testwait.Until(t, "the run "+id+" to store its ending", func() ([]goingEvent, bool) {
@@ -481,7 +482,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		defer close(served)
 		rig.handler.ServeHTTP(sink, request)
 	}()
-	testwait.Receive(t, "the stream to write its headers", sink.flushed)
+	testwait.Receive(t, "the stream's headers (its first flush)", sink.flushed)
 
 	ending, err := rig.database.Pool.Begin(ctx)
 	if err != nil {
@@ -511,7 +512,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		t.Fatalf("commit the ending: %v", err)
 	}
 
-	testwait.Receive(t, "the stream to end once its run's ending committed", served)
+	testwait.Receive(t, "the stream's end once its run's ending committed", served)
 	want := "id: 3\nevent: " + contracts.GoingEventEnd + "\ndata: {\"items\":0,\"words\":2}\n\n"
 	if got := sink.text(); got != want {
 		t.Fatalf("the stream wrote %q, want the ending %q: the frame a run ended on reaches the reader waiting for it", got, want)

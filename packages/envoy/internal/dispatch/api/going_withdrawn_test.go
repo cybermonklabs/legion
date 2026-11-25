@@ -275,10 +275,10 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 
 	deleteThreadComment(t, rig.handler, comment.ID, "alice")
 	release()
-	if err := testwait.Receive(t, "the rest of the answer to be stored once its release ran", answerer.stored); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err := testwait.Receive(t, "the rest of the answer, stored once its release came", answerer.stored); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("storing the rest of the answer answered %v, want it stored or refused as an ended run's", err)
 	}
-	testwait.Receive(t, "the open stream to end after the delete", served)
+	testwait.Receive(t, "the end of the open stream after the delete", served)
 
 	ending, err := rig.server.readGoingTerminalEvent(ctx, run.ID)
 	if err != nil {

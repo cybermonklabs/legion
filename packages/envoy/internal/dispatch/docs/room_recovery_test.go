@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -120,6 +121,7 @@ func (s *failRoomDuringLoadStore) failDuringLoad(room string) {
 // failed, and every later write to the document answers 503 until the server restarts
 // (LEGION-282).
 func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	persist := &failRoomDuringLoadStore{
@@ -128,7 +130,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: stagedAhead})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	persist.service.Store(service)
 	seedServiceText(t, service, artifactID, "before")
 	persist.armed.Store(true)
@@ -176,7 +178,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		failed:         make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: stagedAhead})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	persist.service.Store(service)
 	seedServiceText(t, service, artifactID, "before")
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -209,7 +211,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	persist.loading, persist.hold = make(chan struct{}), make(chan struct{})
 	var released sync.Once
 	release := func() { released.Do(func() { close(persist.hold) }) }
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	persist.armed.Store(true)
 	go func() { _ = service.warmLiveDocument(context.Background(), artifactID) }()
 	testwait.Receive(t, "warmLiveDocument to reach the held load", persist.loading)
@@ -288,6 +290,7 @@ func publishWaitsForALoadingRoom() bool {
 // alone, so the ask blocks the dropped settlement would have indexed stayed out of the open
 // asks until someone edited the document. The replacement settles once instead.
 func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = stagedAhead
 	seedServiceText(t, service, artifactID,
@@ -325,6 +328,7 @@ func indexedAsks(t *testing.T, service *Service, artifactID string) int {
 }
 
 func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	for name, create := range map[string]func(*testing.T, *store.Store, string) string{
 		"issue document":   createDocument,
 		"project document": createProjectDocument,
@@ -372,6 +376,7 @@ func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 // document's locks: the transaction holding them may be waiting on a lock this one holds. Once
 // the room has recovered, a write runs as ever.
 func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -437,6 +442,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 // the mark waits, as every document read outside a transaction does, and answers once the room
 // has recovered.
 func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedFoldableText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -485,6 +491,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 }
 
 func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -522,6 +529,7 @@ func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) 
 // that holds off every other writer and the settlement is on the failed room. The write fails,
 // and its transaction rolls back.
 func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -562,6 +570,7 @@ func TestARoomFailingDuringAJoinedWriteFailsTheWrite(t *testing.T) {
 // no lock either transaction holds, and the second write then either runs on the reloaded room
 // or, had it reached the failed room first, fails fast. It never waits for good.
 func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := lockOrderService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -650,6 +659,7 @@ func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Stor
 // ids into the room, so a room that fails in that window fails the settlement rather than
 // holding it until an eviction that waits for its lock. The reloaded room settles as ever.
 func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -744,6 +754,7 @@ func (s *failingBrowserAppendStore) AppendUpdateTx(ctx context.Context, tx pgx.T
 // versioning or publishing a document the room never held, and its transaction rolls back to the
 // durable document, which the reloaded room then serves.
 func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	store := &failingBrowserAppendStore{
@@ -752,7 +763,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 		release:        make(chan struct{}),
 	}
 	service := New(Deps{Store: database, Persistence: store, Events: events.NewBroker(), Settle: stagedAhead})
-	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
+	testcleanup.Add(t, func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	liveTree(t, service, artifactID)
 

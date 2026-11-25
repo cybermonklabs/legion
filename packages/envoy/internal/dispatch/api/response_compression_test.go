@@ -349,7 +349,7 @@ func TestAHandlerThatHijacksReachesTheConnection(t *testing.T) {
 	}))
 	defer server.Close()
 
-	conn, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
+	conn, response, err := dialLive(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http"), http.Header{"Accept-Encoding": {"gzip"}})
 	if err != nil {
 		t.Fatalf("upgrade through the compression layer: %v", err)
 	}

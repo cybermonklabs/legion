@@ -29,6 +29,7 @@ const issuerDownAudience = "dispatch"
 // "Required configuration": it retries after one second, doubling to thirty) is held on a fake by
 // internal/oidc's TestTheBackgroundDiscoveryRetriesOnItsScheduleUntilTheIssuerAnswers.
 func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	signInIssuer := oidctest.New(t)
 	signInIssuer.EnableCodeFlow(signInIssuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)

@@ -477,7 +477,10 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply(t *testing.T) {
 			t.Fatalf("the reply answered %d %s without queuing at the root the dismiss holds", reply.Code, reply.Body.String())
 		default:
 		}
-		waiters := storetest.LockWaiters(t, held.tx)
+		waiters, err := storetest.LockWaiters(context.Background(), held.tx)
+		if err != nil {
+			t.Fatalf("count the backends queued behind the gate row: %v", err)
+		}
 		return fmt.Sprintf("%d backends queued behind the gate row", waiters), waiters >= 2
 	})
 	held.release()
@@ -569,7 +572,10 @@ func TestADismissHoldingTheAgentRootGivesTheThreadBackOnAnOlderReply(t *testing.
 			t.Fatalf("the reply's write ended (%v) without queuing at the root the dismiss holds", err)
 		default:
 		}
-		waiters := storetest.LockWaiters(t, held.tx)
+		waiters, err := storetest.LockWaiters(context.Background(), held.tx)
+		if err != nil {
+			t.Fatalf("count the backends queued behind the gate row: %v", err)
+		}
 		return fmt.Sprintf("%d backends queued behind the gate row", waiters), waiters >= 2
 	})
 	held.release()

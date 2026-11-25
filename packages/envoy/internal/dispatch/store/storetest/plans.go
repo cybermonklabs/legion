@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -49,7 +50,7 @@ func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 		t.Fatalf("open a pool reading with a %s: %v", plan, err)
 	}
 	planned := store.NewPool(opened)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		testwait.Returns(t, "every connection of the pool reading with a "+string(plan)+" to come back, so the pool closes", planned.Close)
 	})
 	return planned

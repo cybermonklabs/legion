@@ -29,12 +29,6 @@ func lossWatchers(durable *heldDurable) int {
 	return int(durable.lossWatchers.Load())
 }
 
-// heldDurableConfig is the config a durable the row builds by hand creates, with production's flow
-// control and a deliver subject of its own on each call, as the intake's (Intake.config).
-func heldDurableConfig() natsgo.ConsumerConfig {
-	return deliveryConsumerConfig(intakeMaxAckPending, intakeMessageTimeout)
-}
-
 // Taking the durable again under one live hold leaves no loss watcher running per attempt.
 //
 // The intake subscribes again under the hold it holds after a create that fails, and each subscribe
@@ -62,16 +56,15 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			var creates atomic.Int32
-			create := createDurable
-			createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
+			tuning := tuningFor(t)
+			create := tuning.createDurable
+			tuning.createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error) {
 				creates.Add(1)
 				if tc.refuse {
 					return nil, fmt.Errorf("the test's grant refuses the create: %w", bus.ErrPublishDenied)
 				}
 				return create(js, config, opts...)
 			}
-			// Registered before the holder starts, so it runs after the holder has stopped.
-			t.Cleanup(func() { createDurable = create })
 			// The stream the durable is on; the holder creates no stream of its own.
 			publisher := intakeTestClient(t)
 			holder := startIntakeProcess(t, pool, testnats.URL(t), nil)
@@ -171,8 +164,9 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	// The stop's hand-backs go out only once its drain has answered; the stop's calls wait for NATS
 	// with no bound of the row's, and the hook puts the wait back as the hand-back's publish begins
 	// (stopWithAHeldHandBack).
-	wait := callNATSWait.Swap(math.MaxInt64)
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	tuning := tuningFor(t)
+	wait := tuning.callWait.Swap(math.MaxInt64)
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var stalling sync.Once
 	filled := make(chan error, 1)
@@ -348,7 +342,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	}
 	t.Cleanup(client.Close)
 	handed := make(chan *natsgo.Msg, 1)
-	durable := newHeldDurable(client, deliveryTestLeases(t, pool), heldDurableConfig, intakeKey,
+	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), deliveryConsumerConfig, intakeKey,
 		func(_ *intakeDelivery, message intakeMessage) {
 			select {
 			case handed <- message.msg:
@@ -358,7 +352,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
-	first := durable.config()
+	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
 	}
@@ -401,7 +395,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	requireHandBackStillOnTheHolder(t, relay)
 
 	durable.StopDelivering(cancelled())
-	second := durable.config()
+	second := durable.config(durable.tuning)
 	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
 	}
@@ -462,7 +456,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	letKeyingGo := make(chan struct{})
 	releaseKeying := sync.OnceFunc(func() { close(letKeyingGo) })
 	t.Cleanup(releaseKeying)
-	durable := newHeldDurable(client, deliveryTestLeases(t, pool), heldDurableConfig,
+	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), deliveryConsumerConfig,
 		func(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 			entered.Do(func() { close(keying) })
 			<-letKeyingGo
@@ -471,7 +465,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
-	first := durable.config()
+	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
 	}
@@ -534,7 +528,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	default:
 	}
 
-	second := durable.config()
+	second := durable.config(durable.tuning)
 	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
 	}
@@ -590,7 +584,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	}
 	t.Cleanup(client.Close)
 	handed := make(chan *natsgo.Msg, 1)
-	durable := newHeldDurable(client, deliveryTestLeases(t, pool), heldDurableConfig, intakeKey,
+	durable := newHeldDurable(tuningFor(t), client, deliveryTestLeases(t, pool), deliveryConsumerConfig, intakeKey,
 		func(_ *intakeDelivery, message intakeMessage) {
 			select {
 			case handed <- message.msg:
@@ -600,7 +594,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
-	first := durable.config()
+	first := durable.config(durable.tuning)
 	if _, err := durable.subscribe(first.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's first delivery at %s: %v", first.DeliverSubject, err)
 	}
@@ -638,7 +632,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	}
 	relay.AwaitParked(t)
 	durable.StopDelivering(cancelled())
-	second := durable.config()
+	second := durable.config(durable.tuning)
 	if _, err := durable.subscribe(second.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder's second delivery at %s: %v", second.DeliverSubject, err)
 	}

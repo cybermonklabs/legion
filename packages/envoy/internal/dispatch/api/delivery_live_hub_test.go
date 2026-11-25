@@ -323,7 +323,8 @@ func (r *hubRig) requireNothingSent(t *testing.T, conn *fakeLiveConn, after stri
 // the views taken before the "events seeded" note can hold none of those marks and find a hub
 // that owes nothing while the apply is still to come. deliveryHub.catchUpNow runs on that same
 // goroutine and returns once it has, so everything the intake had taken in when intakeOwes read
-// it - that apply among them - has run before the views are read.
+// it - that apply among them - has run before the views are read. The wait's one bound is the
+// test binary's deadline.
 func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the hub to owe nothing for the delivery changes through %d", latest), func() (string, bool) {
@@ -1411,6 +1412,13 @@ func TestAParentsComponentChangeReachesPagesHoldingItsChildren(t *testing.T) {
 // TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead: a view's first read finishes before an
 // issue it shows is retitled, and the retitle's event reaches the hub while that recompute still
 // holds no issue of the view's. The view is recomputed once more and its page gets the new title.
+//
+// The relay's feed stands before the view subscribes. The feed starts at the event log's newest id
+// as the relay's start read finds it (firstRelayCursor), and that read runs on a goroutine of the
+// hub's own (seedEvents), which nothing orders before the test's next write: a start read that a
+// loaded machine schedules after the retitle starts the feed at the retitle, which then never
+// arrives on it, and the view's second recompute is the feed's (applyFeed marks every view dirty)
+// rather than the one the event heard during the read asks for (recheckHeardLocked).
 func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	t.Parallel()
 	reading := make(chan struct{})
@@ -1421,8 +1429,8 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 		observe := hub.observe
 		hub.observe = func(note deliveryHubNote) {
 			observe(note)
-			if note.what == "recompute read" && held.CompareAndSwap(false, true) {
-				// Hold the view's first recompute between its read and its answer.
+			if note.what == "recompute read" && strings.HasPrefix(note.view, deliveryLiveTimeline) && held.CompareAndSwap(false, true) {
+				// Hold the timeline view's first recompute between its read and its answer.
 				close(reading)
 				<-release
 			}
@@ -1433,6 +1441,13 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
+	// A measures view starts the generation, and settle waits for its feed ("events seeded") and
+	// for the hub to owe nothing, so the retitle below stands above the feed's head.
+	warm := newFakeLiveConn()
+	rig.hub.Subscribe(warm, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
+	warm.snapshot(t, "m")
+	rig.settle(t)
+
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))
 	testwait.Receive(t, "the view's first recompute to finish its read", reading)
@@ -1459,6 +1474,9 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	if got := read.IssueTitles[key]; got != "Ship widgets" {
 		t.Fatalf("the snapshot, read before the retitle, titles %s %q, want %q", key, got, "Ship widgets")
 	}
+	// The hub tells a sub the verdict it knows right after its first answer (Subscribe), which
+	// the measures view's read set before this view subscribed.
+	conn.freshness(t, "the verdict after the timeline's first snapshot")
 	delta := conn.delta(t, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {
 		t.Fatalf("the delta's issue_titles = %v, want %s retitled", got, key)
@@ -1995,25 +2013,30 @@ func pidsOf(conns []*pgx.Conn) []int32 {
 }
 
 // waitListening waits for one of the connections dials recorded to hold a LISTEN: its backend's last
-// statement was the listener's LISTEN (pglisten.Listener). The idle ping a listener sends after
-// pglisten.DefaultListenIdle does not count, since a connection that never listened sends it too; a
-// caller waits within seconds of the dial, well inside that idle period.
+// statement was the listener's LISTEN, or the idle ping the listener sends after it
+// (pglisten.Listener). The ping replaces the LISTEN as the last statement one listen idle period
+// after it, so a wait that reads the LISTEN alone reads nothing once a wait before it, such as one
+// behind a held event horizon, has outlasted that period. The ping still says the LISTEN stands:
+// the listener pings a connection only once its LISTEN has succeeded there, and a recorded
+// connection runs no other statement before it (store.Pool.Listener hands the listener a new
+// connection, hijacked from a pool that keeps none idle, so the pool never pings it). The wait
+// ends on that backend's LISTEN, and its one bound is the test binary's deadline.
 func waitListening(t *testing.T, database *store.Store, what string, dials *listenerDials) {
 	t.Helper()
-	testwait.Eventually(t, what, func() bool {
+	testwait.Until(t, what+" (how many of its backends hold one)", func() (int, bool) {
 		pids := dials.pids()
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from pg_stat_activity where pid = any($1) and query like 'listen %'`, pids,
+			`select count(*) from pg_stat_activity where pid = any($1) and (query like 'listen %' or query = '-- ping')`, pids,
 		).Scan(&count); err != nil {
 			t.Fatalf("count the backends of %s: %v", what, err)
 		}
-		return count > 0
+		return count, count > 0
 	})
 }
 
 // waitReturned waits for every goroutine running counts to have returned, failing the test with
-// what when the run's own deadline comes first (testwait.Eventually).
+// what when the test binary's deadline comes first (testwait.Receive).
 func waitReturned(t *testing.T, what string, running *sync.WaitGroup) {
 	t.Helper()
 	returned := make(chan struct{})
@@ -2021,14 +2044,7 @@ func waitReturned(t *testing.T, what string, running *sync.WaitGroup) {
 		running.Wait()
 		close(returned)
 	}()
-	testwait.Eventually(t, what, func() bool {
-		select {
-		case <-returned:
-			return true
-		default:
-			return false
-		}
-	})
+	testwait.Receive(t, what, returned)
 }
 
 // TestAHubWithNoViewReadsNothingAndHoldsNoListener: the hub runs only while a page holds a view.
@@ -2289,7 +2305,8 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	// A delivery change the snapshot did not hold may have marked the view dirty, and on this
 	// clock, standing still, its recompute is due only once the clock moves. Moving it by less than
 	// the two seconds the oldest pull request has left runs that recompute before the measurement,
-	// and its delta, if any, is applied to the page's copy here.
+	// and its delta, if any, is applied to the page's copy here. The row waits for that recompute to
+	// have ended with nothing else owed (settle): the move made every mark the setup left due.
 	held := snapshot.Body
 	clock.Advance(2 * viewQuiet)
 	rig.settle(t)

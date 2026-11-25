@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -73,7 +74,9 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 		}, wantEnvelope: true, wantQueued: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			url := "http://127.0.0.1:1"
+			// A listener that is not there: a port the test holds and nothing listens on, so a
+			// dial to it is refused and no other program can answer it (testport.Refused).
+			url := "http://" + testport.Refused(t)
 			if tc.answer != nil {
 				listener := httptest.NewServer(tc.answer)
 				t.Cleanup(listener.Close)
@@ -122,7 +125,10 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+		// The client's window runs on a fake clock no one moves: the listener answers at once, and a
+		// loaded machine that carries that answer slowly must not turn it into a receipt timeout.
+		clock := clocktest.New(time.Now())
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(clock))}, clock: clock}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

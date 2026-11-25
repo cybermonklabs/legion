@@ -578,7 +578,7 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 			got[0].Error == nil || !strings.HasPrefix(*got[0].Error, "envoy listener: ") {
 			t.Fatalf("timeout delivery = %#v", got)
 		}
-		testwait.Receive(t, "the listener request's cancel once Dispatch's window ran out", cancelled)
+		testwait.Receive(t, "the cancel of the listener request once Dispatch's timeout ended it", cancelled)
 	})
 }
 
@@ -1592,7 +1592,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder
 	}()
-	testwait.Receive(t, "the send to reach the listener", held)
+	testwait.Receive(t, "the send's arrival at the listener that holds it", held)
 	select {
 	case recorder := <-answered:
 		t.Fatalf("the send should not have completed while its listener holds it: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1638,7 +1638,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	// The stalled sender is answered at last. Its claim is no longer the row's, so it records
 	// nothing and answers with the attempt as the retry settled it.
 	letGo()
-	late := testwait.Receive(t, "the stalled sender's answer", answered)
+	late := testwait.Receive(t, "the stalled sender's answer once its listener let it go", answered)
 	if late.Code != http.StatusCreated {
 		t.Fatalf("the stalled sender: status=%d body=%s", late.Code, late.Body.String())
 	}

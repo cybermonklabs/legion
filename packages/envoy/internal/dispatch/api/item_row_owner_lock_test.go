@@ -246,7 +246,9 @@ func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testin
 // file's, or the route table's (route_owner_lock_test.go): it holds write's owner lock in a
 // transaction of its own, runs the writer, and requires it to wait for that lock having written
 // nothing, then gives the lock back (running the row's meanwhile first, where it has one) and
-// requires the writer to finish and write what it meant to. writer names it for the failures.
+// requires the writer to finish and write what it meant to. writer names it for the failures. The
+// wait for the writer's answer once the lock is back has one bound, the test binary's deadline
+// (testwait.Receive): a writer a loaded machine merely slows still answers.
 func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrite) {
 	t.Helper()
 	ctx := context.Background()
@@ -284,7 +286,7 @@ func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrit
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	testwait.Receive(t, writer+" to answer once the owner lock was released", answered)
+	testwait.Receive(t, writer+"'s answer once the owner lock was released", answered)
 	write.wrote(t)
 }
 

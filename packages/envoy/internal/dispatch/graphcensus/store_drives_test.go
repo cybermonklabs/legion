@@ -278,7 +278,11 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited before it queued behind the hold on %s; it wrote:\n%s", table, process.Output.String())
 			default:
 			}
-			queue := seedQueue{waiters: storetest.LockWaiters(t, holder), output: process.Output}
+			waiters, err := storetest.LockWaiters(ctx, holder)
+			if err != nil {
+				t.Fatalf("count the backends queued behind the hold on %s: %v", table, err)
+			}
+			queue := seedQueue{waiters: waiters, output: process.Output}
 			return queue, queue.waiters >= 1
 		})
 		var waited string

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -738,6 +739,7 @@ func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) 
 	}
 	r := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	handle, err := bus.WrapKeyValue(conn, kv)
 	if err != nil {
 		t.Fatalf("wrap the KV bucket: %v", err)

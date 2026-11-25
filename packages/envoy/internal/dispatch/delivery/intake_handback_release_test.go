@@ -171,8 +171,9 @@ func stopWithAHeldHandBack(t *testing.T, holdClock *clocktest.Fake) heldHandBack
 	// and the row has no publish to hold. So the stop's calls wait for NATS with no bound of the
 	// row's, and the row puts the wait back as the hand-back's publish begins, so the held write
 	// still outlives it.
-	wait := callNATSWait.Swap(math.MaxInt64)
-	restoreWait := sync.OnceFunc(func() { callNATSWait.Store(wait) })
+	tuning := tuningFor(t)
+	wait := tuning.callWait.Swap(math.MaxInt64)
+	restoreWait := sync.OnceFunc(func() { tuning.callWait.Store(wait) })
 	t.Cleanup(restoreWait)
 	var holding sync.Once
 	held := make(chan struct{})
@@ -629,8 +630,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			close(finalizing)
 			<-releaseFinalizer
 		}
-		finalizerBeforeRelease.Store(&hook)
-		t.Cleanup(func() { finalizerBeforeRelease.Store(nil) })
+		row.holder.intake.tuning.beforeRelease.Store(&hook)
 		var runs sync.WaitGroup
 		closed := make(chan struct{})
 		go func() {

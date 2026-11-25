@@ -311,7 +311,7 @@ func TestClosedIssueRebuildRefusesBeforeChangingTheDocument(t *testing.T) {
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close issue: status=%d body=%s", closed.Code, closed.Body.String())
 	}
-	testwait.Eventually(t, "the closed issue's document room to leave residency", func() bool {
+	testwait.Eventually(t, "the closed issue's document room to leave residency after the close", func() bool {
 		return !slices.Contains(documentService.ResidentRooms(), artifact.ID)
 	})
 	broken.failNextLoad(artifact.ID)

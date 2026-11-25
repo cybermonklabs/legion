@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -58,10 +59,11 @@ func (k *fakeLiveKind) start(ctx context.Context, stream liveStreamer, sub strin
 	return running, nil
 }
 
-// next is the next subscription the kind starts.
+// next is the next subscription the kind starts. Its one bound is the test binary's deadline
+// (testwait.Receive).
 func (k *fakeLiveKind) next(t *testing.T, what string) *fakeLiveSubscription {
 	t.Helper()
-	return testwait.Receive(t, what, k.started)
+	return testwait.Receive(t, "a subscription started: "+what, k.started)
 }
 
 // none fails when the kind has started a subscription the test has not taken. The socket's read
@@ -99,10 +101,10 @@ func (f *fakeLiveSubscription) stop() {
 }
 
 // ended waits for the subscription's goroutine to return, and answers what SendWait answered that
-// ended its sending.
+// ended its sending. Its one bound is the test binary's deadline (testwait.Receive).
 func (f *fakeLiveSubscription) ended(t *testing.T) error {
 	t.Helper()
-	testwait.Receive(t, "the end of subscription "+strconv.Quote(f.sub), f.done)
+	testwait.Receive(t, fmt.Sprintf("subscription %q to stop running", f.sub), f.done)
 	return f.err
 }
 
@@ -188,7 +190,10 @@ func TestARepeatedSubReplacesAnotherKind(t *testing.T) {
 	t.Parallel()
 	events := newFakeLiveKind(-1, 512)
 	held := &heldWrites{}
-	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+	// The page reads nothing until the writer is let go, so it answers no ping until then: a
+	// heartbeat staged a day ahead (stagedAhead) keeps the pong deadline from ending the socket
+	// however long that takes.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 
 	// The writer is held inside its first write of x's events, as a page that reads nothing holds
@@ -357,6 +362,8 @@ func (writer *idleWriterHold) beforePick(socket *liveSocket, takesStream bool) {
 
 func (writer *idleWriterHold) holdNext() { writer.armed.Store(true) }
 
+// waitHeld waits until the writer is held at a look that found nothing waiting. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func (writer *idleWriterHold) waitHeld(t *testing.T) {
 	t.Helper()
 	testwait.Receive(t, "the writer held at a look that found nothing waiting", writer.held)
@@ -439,9 +446,11 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 	t.Parallel()
 	const frames = 400
 	events := newFakeLiveKind(frames, 512)
-	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
+	// The page answers no ping while it reads nothing: a heartbeat staged a day ahead (stagedAhead)
+	// keeps the pong deadline from ending the socket however long the steps before its read take.
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
 		func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(t), asUser("alice"))
+	client := rig.open(t, smallReadDialer(), asUser("alice"))
 	client.send(t, liveSubscribe("slow", eventsView(), ""))
 	running := events.next(t, "the slow events subscription")
 	socket := rig.sockets(t, 1)[0]
@@ -476,7 +485,9 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 	t.Run("the page unsubscribes", func(t *testing.T) {
 		events := newFakeLiveKind(-1, 512)
 		held := &heldWrites{}
-		rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
+		// The page never reads, so it answers no ping: a heartbeat staged a day ahead (stagedAhead)
+		// keeps the pong deadline from ending the socket however long the steps take.
+		rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: stagedAhead, liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}}, held.listen)
 		client := rig.open(t, gws.DefaultDialer, asUser("alice"))
 		held.hold(t)
 		client.send(t, liveSubscribe("x", eventsView(), ""))
@@ -631,7 +642,7 @@ func TestASubscriptionsContextEndsWhenItsSocketEnds(t *testing.T) {
 				rig.served.liveSockets.wait()
 				close(returned)
 			}()
-			testwait.Receive(t, "the socket's handler's return once the socket ended (its subscription's context ends, so its stop returns)", returned)
+			testwait.Receive(t, "the socket's handler to return once the socket ended: its subscription's context ends, so its stop returns", returned)
 		})
 	}
 }

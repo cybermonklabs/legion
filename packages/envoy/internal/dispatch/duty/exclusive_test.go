@@ -315,8 +315,10 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	// and the gate returns within milliseconds while duty_passes is still held.
 	testwait.Quiet(t, "the gate's answer while its period read waits on duty_passes", answered, 500*time.Millisecond,
 		"a read the cancel ends shows only as the gate answering: pgx sets its socket's deadline on a goroutine of its own, so no state shows the read about to end, the gate does real Postgres I/O, which synctest cannot hold, and no later action's effect orders against the cancel's")
-	if waiting := storetest.LockWaiters(t, holder); waiting < 1 {
-		t.Fatal("the gate's period read stopped waiting on duty_passes at the cancel")
+	// Still waiting at the cancel is one reading, not a wait: a read that stopped waiting and was
+	// replaced by another waiter must not pass.
+	if waiting, err := storetest.LockWaiters(ctx, holder); err != nil || waiting < 1 {
+		t.Fatalf("the gate's period read stopped waiting on duty_passes at the cancel (%d waiting, read error %v)", waiting, err)
 	}
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release duty_passes: %v", err)

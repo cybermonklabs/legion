@@ -70,7 +70,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
-	intake := newIntake(client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	// The run loop's checks of the durable and the hold's loss run on the hold's clock, a fake the
 	// row moves: the check after the callback comes when the row brings it.
 	checks := clocktest.New(time.Now())

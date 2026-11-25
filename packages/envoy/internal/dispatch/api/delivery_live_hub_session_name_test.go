@@ -83,7 +83,6 @@ func TestTheLiveHubKeepsASessionsNameWhenAnEventCarriesNoTitle(t *testing.T) {
 	rig.waitForEvent(t, start, "the titled write on the hub's feed", func(note deliveryHubNote) bool {
 		return note.what == "event" && note.eventID == titled.ID
 	})
-
 	delta := conn.delta(t, "t")
 	if got := liveMapValues(t, delta, "session_titles"); got[named] != "Release sender" {
 		t.Fatalf("the delta's session_titles = %v, want %s under the title it stamped", got, named)

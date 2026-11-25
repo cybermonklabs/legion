@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -159,7 +160,7 @@ func TestANotifiedCatchUpOfARoomStillLoadingRecordsTheHeadOnceTheRoomIsPublished
 	reached := make(chan struct{})
 	release := make(chan struct{})
 	letLoad := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(letLoad)
+	testcleanup.Add(t, letLoad)
 	var holding atomic.Bool
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
@@ -177,7 +178,7 @@ func TestANotifiedCatchUpOfARoomStillLoadingRecordsTheHeadOnceTheRoomIsPublished
 	catchUps.mu.Unlock()
 	held := make(chan struct{})
 	releaseLane := sync.OnceFunc(func() { close(held) })
-	t.Cleanup(releaseLane)
+	testcleanup.Add(t, releaseLane)
 	laneHeld := make(chan struct{})
 	lane.push(func(context.Context) {
 		close(laneHeld)
@@ -254,7 +255,7 @@ func holdLoadPastANotification(t *testing.T) heldLoad {
 	reached := make(chan struct{})
 	release := make(chan struct{})
 	letLoad := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(letLoad)
+	testcleanup.Add(t, letLoad)
 	var holding atomic.Bool
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if room == artifactID && holding.CompareAndSwap(false, true) {
@@ -469,7 +470,7 @@ func holdOwnWrite(t *testing.T, service *Service, database *store.Store, artifac
 	if err != nil {
 		t.Fatalf("begin the write: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	version, err := service.persistence.(*PgVersioned).AppendUpdateTx(ctx, tx, artifactID, paragraphUpdate(), true)
 	if err != nil {
 		t.Fatalf("append the write's update: %v", err)

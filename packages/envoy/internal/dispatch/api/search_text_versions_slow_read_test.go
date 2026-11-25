@@ -130,7 +130,10 @@ func keywordArmRound(t *testing.T, bound context.Context, server keywordServer, 
 	held = make(chan *httptest.ResponseRecorder, 1)
 	go func() { held <- dispatchRequest(t, server.handler, http.MethodGet, answers, nil, "alice") }()
 	testwait.Until(t, rounds.what("the answers read to wait on message_deliveries"), func() (int, bool) {
-		queued := storetest.LockWaiters(t, holder)
+		queued, err := storetest.LockWaiters(testwait.Context(t), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
 		return queued, queued >= 1
 	})
 	testwait.Until(t, rounds.what("the answers read held by the lock to turn slow"), func() (string, bool) {

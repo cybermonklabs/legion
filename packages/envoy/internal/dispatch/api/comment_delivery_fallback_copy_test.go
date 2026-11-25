@@ -438,29 +438,30 @@ func fallbackCopiesOf(t *testing.T, database *store.Store, commentID string) []h
 
 // awaitFallbackCopies waits until the comment has a fallback row for every destination in want
 // and each of them reads settled, and answers the rows then. want is the copies the outbox is to
-// hold; settled says whether to wait for a pass to decide them.
+// hold; settled says whether to wait for a pass to decide them. Its one bound is the test
+// binary's deadline (testwait.Until).
 func awaitFallbackCopies(
 	t *testing.T, database *store.Store, commentID string, want []string, settled bool,
 ) []heldCopy {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("the fallback copies of %s to be one per %v, settled=%v", commentID, want, settled),
-		func() ([]heldCopy, bool) {
-			copies := fallbackCopiesOf(t, database, commentID)
-			destinations := make([]string, 0, len(copies))
-			decided := true
-			for _, row := range copies {
-				destinations = append(destinations, row.destination)
-				decided = decided && row.settled == settled
-			}
-			return copies, slices.Equal(destinations, want) && decided
-		})
+	return testwait.Until(t, fmt.Sprintf("the fallback copies of %s to be one per %v, settled=%v", commentID, want, settled), func() ([]heldCopy, bool) {
+		copies := fallbackCopiesOf(t, database, commentID)
+		destinations := make([]string, 0, len(copies))
+		decided := true
+		for _, row := range copies {
+			destinations = append(destinations, row.destination)
+			decided = decided && row.settled == settled
+		}
+		return copies, slices.Equal(destinations, want) && decided
+	})
 }
 
 // awaitPublishedCommentCreated waits until the outbox has published the comment.created event of
-// commentID, and answers the destinations it reached.
+// commentID, and answers the destinations it reached. Its one bound is the test binary's deadline
+// (testwait.Until).
 func awaitPublishedCommentCreated(t *testing.T, database *store.Store, commentID string) []string {
 	t.Helper()
-	return testwait.Until(t, "the outbox to publish the comment.created of "+commentID, func() ([]string, bool) {
+	return testwait.Until(t, "the outbox to publish the comment.created of "+commentID+" (the destinations it reached)", func() ([]string, bool) {
 		var destinations []string
 		var publishedAt *time.Time
 		if err := database.Pool.QueryRow(context.Background(), `

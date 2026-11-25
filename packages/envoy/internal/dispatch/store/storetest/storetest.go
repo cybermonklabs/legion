@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -75,7 +76,7 @@ func openClone(t testing.TB, databaseURL string) *store.Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		testwait.Returns(t, "every connection of the test's database pool to come back, so the pool closes", database.Pool.Close)
 	})
 	return database
@@ -140,7 +141,7 @@ func HoldClusterTransactionID(t testing.TB) (release func()) {
 			_ = conn.Close(context.Background())
 		})
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	return release
 }
 
@@ -156,7 +157,7 @@ func HoldTransactionIDWithoutAnEvent(t testing.TB, database *store.Store) {
 	if err != nil {
 		t.Fatalf("begin the transaction that writes no event: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	for _, statement := range []string{
 		`select pg_current_xact_id()`,
 		`create temporary table no_event (id int) on commit drop`,

@@ -85,6 +85,19 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}, func() string {
 		return "the intakes' durables are not both push-bound: " + consumers()
 	})
+	// StartIntakes times both intakes by production's tuning (newIntakeTuning), which the delivery
+	// durable it created carries: an ack wait of maxAckPending message timeouts plus a minute, and
+	// that maxAckPending. A tuning of a test's, or none, gives the durable other values.
+	delivery, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+	if err != nil {
+		t.Fatalf("read the delivery durable: %v", err)
+	}
+	if got, want := delivery.Config.AckWait, time.Duration(intakeMaxAckPending)*intakeMessageTimeout+time.Minute; got != want {
+		t.Errorf("the delivery durable StartIntakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
+	}
+	if got := delivery.Config.MaxAckPending; got != intakeMaxAckPending {
+		t.Errorf("the delivery durable StartIntakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
+	}
 
 	// A pull request the intake handles records the event's time (deliver), and a job of a tracked
 	// deploy run has the job intake read the run's jobs from GitHub once the burst goes quiet.
@@ -220,12 +233,14 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
 // moves (startIntakes): each arms its stop deadline intakeStopBudget from ctx's end, and once the
 // fake reaches it the stop gives the held handler up (its WARN line says so) and returns. Every
-// intake of the row takes a message timeout past the run (startIntakes, ackWaitPastTheRun), so
+// intake of the row takes a message timeout past the run (its tuning, ackWaitPastTheRun), so
 // only the hand-back brings the message to the next process inside the run, and the GitHub
 // client's own bound is the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the
 // stop gives the held fetch up.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	logs := captureLogs(t)
+	tuning := tuningFor(t)
+	tuning.messageTimeout = messageTimeoutPastTheRun
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -236,9 +251,9 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	runCtx, cancel := context.WithCancel(ctx)
-	stop, err := startIntakes(runCtx, func(string) (*bus.Client, error) {
+	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), stopClock, messageTimeoutPastTheRun)
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), stopClock)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -287,7 +302,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, ackWaitPastTheRun(newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())))
+	runIntake(t, ackWaitPastTheRun(newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())))
 	awaitAcknowledged(t, publisher)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -362,7 +377,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
 	jobsDone := make(chan struct{})
-	jobs := newJobIntake(shared, pool, leases, github, clock.Real(), loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), shared, pool, leases, github, clock.Real(), loadedSettingsCache(t, ctx, pool))
 	go func() {
 		defer close(jobsDone)
 		jobs.Run(jobsCtx)
@@ -376,7 +391,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	runIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	var refusal map[string]any
 	waitFor(t, func() bool {
 		for _, record := range logs() {

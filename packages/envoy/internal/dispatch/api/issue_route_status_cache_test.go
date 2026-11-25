@@ -107,10 +107,11 @@ func heldRosterListener(t *testing.T) (url string, calls *atomic.Int32, release 
 	return listener.URL, calls, release
 }
 
-// awaitCalls waits until the listener has seen want calls.
+// awaitCalls waits until the listener has seen want calls. Its one bound is the test binary's
+// deadline (testwait.Until), and its failure names the calls the listener last saw.
 func awaitCalls(t *testing.T, calls *atomic.Int32, want int32) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the listener to see %d calls", want), func() (int32, bool) {
+	testwait.Until(t, fmt.Sprintf("the listener to see %d calls (the calls it saw)", want), func() (int32, bool) {
 		seen := calls.Load()
 		return seen, seen >= want
 	})
@@ -281,25 +282,33 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	// request has reached the listener: moved sooner, it ends the fetch before the call is made.
 	awaitCalls(t, calls, 1)
 	clock.Set(started.Add(routeRosterTimeout))
-	if roster := testwait.Receive(t, "the read to answer once the fetch's bound ran out", answer); roster.answered {
+	roster := testwait.Receive(t, "the read to answer once the fetch's bound ran out", answer)
+	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
+	}
+	// The fetch's own deadline ended the call, not the listener client's window: the error of a
+	// call that deadline ended says "context deadline exceeded", and one the window ended says
+	// "Client.Timeout exceeded" (net/http's setRequestCancel).
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(roster.err.Error(), "Client.Timeout exceeded") {
+		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window", roster.err, routeRosterTimeout, context.DeadlineExceeded)
 	}
 	first := calls.Load()
 	if first != 1 {
 		t.Fatalf("the first read made %d listener calls, want 1", first)
 	}
+	sent, _ := storedRoster(t, served.deps.Store)
 	// The second read runs inside the shared wait: a read that asked the listener again would wait
 	// on a fetch the held listener never answers, bounded on the fake that stands still, so made on
 	// the test goroutine it would hang the test binary to Go's alarm rather than fail naming it.
-	var roster routeRoster
+	var second routeRoster
 	testwait.Returns(t, "a read inside the silence window to answer from the stored silence without asking the listener", func() {
-		roster = readRoster(t, served, context.Background())
+		second = readRoster(t, served, context.Background())
 	})
-	if roster.answered {
+	if second.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
-	if got := calls.Load(); got != first {
-		t.Fatalf("a read inside the silence window asked the listener again: %d calls, want %d", got, first)
+	if again, _ := storedRoster(t, served.deps.Store); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window asked the listener again: the stored answer was sent at %s, after the first read's silence sent at %s", again, sent)
 	}
 }
 
@@ -362,14 +371,22 @@ func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 	if roster := readRoster(t, served, context.Background()); roster.answered {
 		t.Fatal("a read inside the silence window answered a roster")
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("a read inside the silence window that began when the fetch's bound ran out made %d listener calls in all, want 1", got)
+	// The listener sees at most the first read's call, which a loaded machine can deliver late or
+	// not at all, so the count is held to one or fewer; the stored answer, still the first read's
+	// silence, says the read made no fetch of its own whether its call would have arrived or not.
+	if got := calls.Load(); got > 1 {
+		t.Fatalf("two reads, the second inside the silence window, made %d listener calls in all, want at most the first read's 1", got)
+	}
+	if again, _ := storedRoster(t, database); !again.Equal(sent) {
+		t.Fatalf("a read inside the silence window asked the listener again: the stored answer was sent at %s, after the first read's silence sent at %s", again, sent)
 	}
 }
 
 // A shutdown ends a fetch in flight: it runs on the server's lifetime, so a read waiting on a
 // listener that hangs returns unknown once the lifetime ends. The server's clock stands still,
-// so neither the fetch's bound nor the client's window can end that call instead.
+// so neither the fetch's bound nor the client's window can end that call instead. What ended the
+// fetch is in the answer's error: the lifetime's cancel, where the fetch's bound or the client's
+// window would each read as a deadline.
 func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	t.Parallel()
 	lifetime, shutdown := context.WithCancel(t.Context())
@@ -379,8 +396,12 @@ func TestAShutdownEndsAFetchInFlight(t *testing.T) {
 	go func() { answer <- readRoster(t, served, context.Background()) }()
 	awaitCalls(t, calls, 1)
 	shutdown()
-	if roster := testwait.Receive(t, "the read waiting on a listener that hangs to return after the shutdown", answer); roster.answered {
+	roster := testwait.Receive(t, "the answer of a read waiting on a listener that hangs, once the shutdown began", answer)
+	if roster.answered {
 		t.Fatal("a read answered a roster after the shutdown")
+	}
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.Canceled.Error()) {
+		t.Fatalf("the read's fetch ended with %v, want the shutdown's %v: a fetch the shutdown did not end ran out of a bound instead", roster.err, context.Canceled)
 	}
 }
 
@@ -456,9 +477,18 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	cancelLeader()
 	cancelJoiner()
 	for name, answer := range map[string]<-chan routeRoster{"the read that started the fetch": leader, "a read that joined it": joiner} {
-		if roster := testwait.Receive(t, name+" to return once its request ended", answer); roster.answered {
+		if roster := testwait.Receive(t, "the answer of "+name+" once its request ended", answer); roster.answered {
 			t.Fatalf("%s answered a roster though the listener has not answered yet", name)
 		}
+	}
+	// Each returned while the shared fetch was still in flight, held at the listener until
+	// release: a read that waited for the fetch rather than for its own request could return only
+	// once the fetch had ended.
+	served.rosters.mu.Lock()
+	inFlight := served.rosters.fetch != nil
+	served.rosters.mu.Unlock()
+	if !inFlight {
+		t.Fatal("the reads whose requests ended returned only once the shared fetch had ended, not when their requests did")
 	}
 	// The read whose request is still open is still waiting: it has not been handed an answer,
 	// and the listener has not been asked again.
@@ -469,7 +499,7 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	}
 
 	release()
-	if got := sreReach(testwait.Receive(t, "the read that waited to be handed the fetch's answer", patient)); got != "live ses-sre" {
+	if got := sreReach(testwait.Receive(t, "the answer of the read that waited, once the listener answered", patient)); got != "live ses-sre" {
 		t.Fatalf("the read that waited read %s, want live ses-sre", got)
 	}
 	if got := sreReach(readRoster(t, served, context.Background())); got != "live ses-sre" {

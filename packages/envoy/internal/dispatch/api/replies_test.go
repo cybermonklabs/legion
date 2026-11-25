@@ -412,8 +412,9 @@ func TestMarkThreadReadRefusesWhatItCannotStore(t *testing.T) {
 // raceRounds is how many times each race below runs its two writes at once.
 const raceRounds = 50
 
-// race starts both writes together and waits for both through the shared wait: a deadlock
-// between them fails the test there, naming the round.
+// race starts both writes together and waits for both. Its one bound is the test binary's
+// deadline (testwait.Receive): a deadlock never ends and fails the test by name, and two writes
+// a loaded machine runs slowly pass.
 func race(t *testing.T, round int, first, second func() *httptest.ResponseRecorder) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
 	t.Helper()
 	return startRace(round, first, second)(t)

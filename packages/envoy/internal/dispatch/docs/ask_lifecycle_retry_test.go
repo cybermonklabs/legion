@@ -72,6 +72,7 @@ func passRetryPause(t *testing.T, fake *clocktest.Fake, attempt int) {
 // moves only past the pause after the first attempt, once that pause alone is armed: the budget
 // is far from spent when the second attempt starts, however long the first took.
 func TestSettlingAnIssuesDocumentsRetriesASettlementThatStoppedShort(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	service, artifactID := newSettleRetryService(t, fake)
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
@@ -111,6 +112,7 @@ func TestSettlingAnIssuesDocumentsRetriesASettlementThatStoppedShort(t *testing.
 // the test moves it past each pause once that pause alone is armed, issueSettleRetryPause on, and
 // the call returns with the clock far short of the budget, having armed nothing else it waits on.
 func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	service, artifactID := newSettleRetryService(t, fake)
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")

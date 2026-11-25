@@ -339,10 +339,11 @@ func postMentionedCommentInBackground(
 	return answered
 }
 
-// awaitSend waits for the next send to arrive and returns the session it is for.
+// awaitSend waits for the next send to arrive and returns the session it is for. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
-	return testwait.Receive(t, "the next mention send to reach the listener", l.arrived)
+	return testwait.Receive(t, "a mention send to reach the listener", l.arrived)
 }
 
 func (l *mentionListener) sent() []mentionListenerSend {

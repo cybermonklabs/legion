@@ -357,10 +357,12 @@ func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*
 	return f
 }
 
-// connectPlainSocket keeps the room resident, so the test reads it without the database.
+// connectPlainSocket keeps the room resident, so the test reads it without the database. Its dial
+// ends on the server's answer to the upgrade, bounded only by the test binary's deadline
+// (dialLive).
 func (f *heldWriteFixture) connectPlainSocket(t *testing.T) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(f.wsURL, f.headers)
+	connection, response, err := dialLive(t, gws.DefaultDialer, f.wsURL, f.headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -379,7 +381,7 @@ func (f *heldWriteFixture) connectPeer(t *testing.T) *syncedPeer {
 
 // startFailingEdit posts an edit replacing "before" with "after" that fails after its live
 // write. Cleanup opens every gate and waits for the request, so a failed assertion cannot leave
-// its transaction open.
+// its transaction open; that wait's one bound is the test binary's deadline (testwait.Receive).
 func (f *heldWriteFixture) startFailingEdit(t *testing.T) <-chan *httptest.ResponseRecorder {
 	t.Helper()
 	responses := make(chan *httptest.ResponseRecorder, 1)
@@ -393,7 +395,7 @@ func (f *heldWriteFixture) startFailingEdit(t *testing.T) <-chan *httptest.Respo
 	t.Cleanup(func() {
 		closeTestGate(f.failure.releaseBeforeApply)
 		closeTestGate(f.failure.release)
-		testwait.Receive(t, "the transactional edit's return once the test gates were released", done)
+		testwait.Receive(t, "the transactional edit's exit once the test gates were released", done)
 	})
 	return responses
 }
@@ -434,10 +436,11 @@ func (f *heldWriteFixture) waitForLiveText(t *testing.T, want string) {
 	waitForLiveText(t, f.docs, f.issue.PrimaryArtifactID, want)
 }
 
-// waitForLiveText waits until the live document's text holds want.
+// waitForLiveText waits until the live document's text holds want. Its one bound is the test
+// binary's deadline (testwait.Until), whose failure prints the text last read.
 func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, want string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the live document to show %q", want), func() (string, bool) {
+	testwait.Until(t, "the live document to show "+strconv.Quote(want)+" (the text last read)", func() (string, bool) {
 		text, err := documentService.Text(context.Background(), artifactID)
 		if err != nil {
 			t.Fatalf("read live document: %v", err)
@@ -528,10 +531,12 @@ func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 	}
 }
 
-// assertDurableText renders the document the store would load, update by update.
+// assertDurableText waits until the document the store would load, rendered update by update, is
+// want. Its one bound is the test binary's deadline (testwait.Until), whose failure prints
+// the durable text last read.
 func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the durable document to read %q", want), func() (string, bool) {
+	testwait.Until(t, "the durable document to be "+strconv.Quote(want)+" (the durable text last read)", func() (string, bool) {
 		got := f.durableText(t)
 		return got, got == want
 	})
@@ -563,10 +568,10 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 }
 
 // waitForLockWaiter returns once a session of this database waits on a lock: a request queued
-// behind the held transaction.
+// behind the held transaction. Its one bound is the test binary's deadline (testwait.Until).
 func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
-	testwait.Eventually(t, "a request queued behind the held transaction", func() bool {
+	testwait.Until(t, "a request queued behind the held transaction (the sessions of this database last read waiting on a lock)", func() (int, bool) {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
@@ -574,7 +579,7 @@ func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		return waiting > 0
+		return waiting, waiting > 0
 	})
 }
 
@@ -662,9 +667,11 @@ func drainDocumentUpdates(store *recordingVersionedStore) {
 	}
 }
 
+// waitForDocumentUpdate waits for the next update to reach persistence. Its one bound is the test
+// binary's deadline (testwait.Receive).
 func waitForDocumentUpdate(t *testing.T, store *recordingVersionedStore) {
 	t.Helper()
-	testwait.Receive(t, "the document mutation to reach persistence", store.updates)
+	testwait.Receive(t, "a document mutation to reach persistence", store.updates)
 }
 
 // postApplyFailureDocs fails a document write after the real write returned, holding it first
@@ -748,12 +755,16 @@ func closeTestGate(gate chan struct{}) {
 	}
 }
 
+// waitForBeforeApply waits for a document mutation to reach the pre-apply gate. Its one bound is
+// the test binary's deadline (testwait.Receive).
 func waitForBeforeApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
-	testwait.Receive(t, "the document mutation to reach its pre-apply gate", docs.beforeApply)
+	testwait.Receive(t, "a document mutation to reach the pre-apply gate", docs.beforeApply)
 }
 
+// waitForPostApply waits for a document mutation's real write to return, before its forced
+// failure. Its one bound is the test binary's deadline (testwait.Receive).
 func waitForPostApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
-	testwait.Receive(t, "the document mutation to complete", docs.applied)
+	testwait.Receive(t, "a document mutation's write to complete", docs.applied)
 }

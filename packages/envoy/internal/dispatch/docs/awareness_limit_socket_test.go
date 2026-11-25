@@ -15,6 +15,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/encoding"
 
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -41,6 +42,7 @@ func socketReadDeadline(t *testing.T) time.Time {
 // hijacked buffered reader instead, so the reader is reset onto the filter
 // (awarenessLimitWriter.Hijack) - without that the frame reaches ygo and the socket stays open.
 func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgrade(t *testing.T) {
+	t.Parallel()
 	// 600 bytes claiming a document name of 100,000: the message names no document, let alone a
 	// type, within the maxDocumentMessageHeader bytes the filter reads for them.
 	unnameable := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
@@ -66,7 +68,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			if err != nil {
 				t.Fatalf("connect a socket to document %s: response=%#v err=%v", artifactID, response, err)
 			}
-			t.Cleanup(func() { _ = socket.Close() })
+			testcleanup.Add(t, func() { _ = socket.Close() })
 
 			if err := socket.WriteMessage(gws.BinaryMessage, message.first); err != nil {
 				t.Fatalf("send a first message that names no document: %v", err)
@@ -119,6 +121,7 @@ func (w *hijackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // read before the connection's own, so the frame is filtered like any other rather than lost
 // when the reader is reset onto the filter (awarenessLimitWriter.Hijack).
 func TestADocumentSocketsFrameSentBeforeTheUpgradesAnswerIsFiltered(t *testing.T) {
+	t.Parallel()
 	const invented = 10
 	writer := &hijackedWriter{
 		conn:     &scriptedSocket{frames: bytes.NewReader(nil)},

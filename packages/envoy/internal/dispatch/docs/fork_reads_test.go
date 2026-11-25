@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -285,6 +286,7 @@ func requireForkReads(t *testing.T, what string, got, want forkReads) {
 // rendering, a mark already written is no change and keeps both, and a document outside the
 // schema answers its own refusal, which a read of it answers too.
 func TestForkReadsAMarkQuoteAnswersItsAnchorAndAVersionAfterItReusesItsRendering(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
 	checks := checkRenderings(service)
 	topLevel := map[string]bool{}
@@ -571,6 +573,7 @@ func runForkSteps(t *testing.T, service *Service, artifactID string, checks *ren
 // whose fork stands where its one read left it, so every rendering after that commit is still
 // reused. Each version records the state its own transaction wrote.
 func TestForkReadsEveryReuseOfAWritesRenderingDescribesItsFork(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newForkReadsRoom(t)
 	checks := checkRenderings(service)
 	markQuote := func(kind MarkKind, id, quote string) forkStep {
@@ -775,13 +778,13 @@ func TestForkReadsAWritesRenderingDescribesItsForkAtTheCommitThatHandsItToTheRoo
 	if err := service.ArmLiveWritePause(artifactID, PauseAfterCommit); err != nil {
 		t.Fatalf("arm the pause after the commit: %v", err)
 	}
-	t.Cleanup(func() { _, _ = service.ReleaseLiveWritePause(artifactID, PauseAfterCommit) })
+	testcleanup.Add(t, func() { _, _ = service.ReleaseLiveWritePause(artifactID, PauseAfterCommit) })
 	var markErr error
 	operated, commit, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	// The write waits on commit in its open transaction until the row lets it go; a row that fails
 	// before the release lets it go in its cleanup, which runs before the service's Shutdown.
 	letCommit := sync.OnceFunc(func() { close(commit) })
-	t.Cleanup(letCommit)
+	testcleanup.Add(t, letCommit)
 	go func() {
 		done <- joinedWrite(service, func(ctx context.Context) error {
 			_, markErr = service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s-stored", By: reuseAlice}, "Step 44 one is taken first", nil)

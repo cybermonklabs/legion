@@ -342,7 +342,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 	answers := make(chan *httptest.ResponseRecorder, 2)
 	go addLabel("alpha", answers)
 	go addLabel("bravo", answers)
-	testwait.Until(t, "both PATCHes to wait on the issue's owner lock", func() (int, bool) {
+	testwait.Until(t, "two PATCHes to wait on the issue's owner lock (the waiters)", func() (int, bool) {
 		select {
 		case response := <-answers:
 			t.Fatalf("a PATCH answered %d %s while another transaction held the issue's owner lock", response.Code, response.Body.String())
@@ -453,10 +453,16 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 		}()
 		awaitEntered(t, "the replacement of the quote", gate.firstEntered, responses)
-		ctx := testwait.Context(t)
-		if _, err := database.Pool.Exec(ctx, `
+		// The update takes no lock the accept holds in its read phase. It runs on a goroutine of its
+		// own, so that the wait for it ends on its answer, bounded by the test binary's deadline.
+		decided := make(chan error, 1)
+		go func() {
+			_, err := database.Pool.Exec(t.Context(), `
 			update comments set suggestion = jsonb_set(suggestion, '{accepted}', 'false'::jsonb) where id = $1
-		`, commentID); err != nil {
+		`, commentID)
+			decided <- err
+		}()
+		if err := testwait.Receive(t, "the update that decides the suggestion behind the accept", decided); err != nil {
 			t.Fatalf("decide the suggestion behind the accept: %v", err)
 		}
 		// The accept's read phase wrote nothing, so this is the database as it stood before it.

@@ -89,10 +89,11 @@ func claimHandler(t *testing.T, live *liveRegistry) (http.Handler, *store.Store,
 	return handler, database, deps
 }
 
-// awaitLookup waits for the listener lookup a gated test is expecting.
+// awaitLookup waits for the listener lookup a gated test is expecting. Its one bound is the test
+// binary's deadline (testwait.Receive).
 func awaitLookup(t *testing.T, lookups <-chan int, want int) {
 	t.Helper()
-	if got := testwait.Receive(t, fmt.Sprintf("the request to take listener lookup %d", want), lookups); got != want {
+	if got := testwait.Receive(t, fmt.Sprintf("the request's listener lookup %d", want), lookups); got != want {
 		t.Fatalf("listener lookup %d, want lookup %d", got, want)
 	}
 }
@@ -1083,7 +1084,9 @@ func TestClaimJudgedAgainstNobodyNeverTakesALiveHoldersClaim(t *testing.T) {
 // The request runs through a handler of its own whose store holds one connection
 // (oneConnectionHandler), so the wait watches the backend of the request under test. A count of
 // the backends behind the lock would also take the issue's document settlement, which takes the
-// same owner lock, for the request, and the test would go on before the request had queued.
+// same owner lock, for the request, and the test would go on before the request had queued. Each
+// of its waits ends on its fact, bounded only by the test binary's deadline
+// (storetest.WaitForQueuedBehind, testwait.Receive).
 func whileTheRowIsHeld(
 	t *testing.T, database *store.Store, deps Deps, key string, holder string,
 	request func(http.Handler) *httptest.ResponseRecorder,
@@ -1115,7 +1118,7 @@ func whileTheRowIsHeld(
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the holder change: %v", err)
 	}
-	return testwait.Receive(t, "the request to answer once the owner lock was free", answered)
+	return testwait.Receive(t, "the request's answer once the issue's owner lock was free", answered)
 }
 
 // A claim and a release begin their transaction before they take the issue's row, so a write that

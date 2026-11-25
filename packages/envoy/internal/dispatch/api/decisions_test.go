@@ -591,7 +591,8 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 }
 
 // waitForOpenQuestions reads the view until it holds want open questions: settlement indexes a
-// spec's ask blocks, and until it has the issue holds none.
+// spec's ask blocks, and until it has the issue holds none. Its one bound is the test binary's
+// deadline (testwait.Until), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
 	type read struct {

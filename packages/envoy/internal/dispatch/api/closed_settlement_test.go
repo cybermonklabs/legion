@@ -123,7 +123,8 @@ func documentOwesSettlement(t *testing.T, database *store.Store, document string
 }
 
 // awaitSettledVersionHolding waits until document owes no settlement and its latest version holds
-// part, and answers that version's markdown.
+// part, and answers that version's markdown. Its one bound is the test binary's deadline
+// (testwait.Until), and its failure prints the latest version it read.
 func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *store.Store, document, part string) string {
 	t.Helper()
 	return testwait.Until(t, fmt.Sprintf("document %s to settle a version holding %q", document, part), func() (string, bool) {

@@ -50,7 +50,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) 
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
-		// Its sockets' event feeds are waited on as the first process's are (eventFeedFrame).
+		// Its horizon warns as the first process's does (newRegisteredTestServer).
 		HorizonStallAfter: horizontest.StallWarning,
 		HorizonWarnEvery:  horizontest.StallWarning,
 	})
@@ -238,7 +238,8 @@ func relayBackends(t *testing.T, database *store.Store, dials *listenerDials) []
 // waitRelayStopped waits for every goroutine of the relay's generations to return, and so for every
 // listener connection it dialed to close (a listener's Run returns only once it has closed its
 // connection), failing the test naming a connection still open, and then for each of those
-// connections' backends to exit.
+// connections' backends to exit. The backends' wait reads pg_stat_activity; its one bound is the
+// test binary's deadline (testwait.Until), and its failure names the backends still connected.
 func waitRelayStopped(t *testing.T, database *store.Store, relay *eventStreamRelay, dials *listenerDials, when string) {
 	t.Helper()
 	waitReturned(t, "every goroutine of the relay to return "+when, &relay.running)
@@ -248,8 +249,9 @@ func waitRelayStopped(t *testing.T, database *store.Store, relay *eventStreamRel
 			t.Fatalf("the relay's listener connection to backend %d is still open %s", conn.PgConn().PID(), when)
 		}
 	}
-	testwait.Eventually(t, "every backend of the relay's listener connections to exit "+when, func() bool {
-		return len(relayBackends(t, database, dials)) == 0
+	testwait.Until(t, "every backend of the relay's listener connections to exit "+when+" (the backends still connected)", func() ([]int32, bool) {
+		connected := relayBackends(t, database, dials)
+		return connected, len(connected) == 0
 	})
 }
 

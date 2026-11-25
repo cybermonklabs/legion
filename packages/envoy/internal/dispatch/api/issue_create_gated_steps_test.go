@@ -20,7 +20,7 @@ import (
 // ran and before its caller reads on: the transaction that sent it keeps every lock the statement
 // took while the test starts the request it is to meet. reached closes when the statement is held;
 // release lets it go, and the test's end lets it go whatever happened: ended is t.Context's, which
-// is cancelled before the test's cleanups run, so a row that failed while the statement was held
+// is cancelled before the test's cleanups run, so a test that failed while the statement was held
 // never leaves the server's shutdown waiting on it.
 type heldStatement struct {
 	match   string
@@ -107,7 +107,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			"actor":   sessionActor(),
 		})
 	}()
-	testwait.Until(t, "the create to wait on a lock the publish's transaction holds", func() (int, bool) {
+	testwait.Until(t, "the create to wait on a lock the publish's transaction holds (the sessions waiting on a lock)", func() (int, bool) {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
 		if err != nil {
 			t.Fatal(err)

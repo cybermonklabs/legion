@@ -12,12 +12,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every condition unusedLocked names keeps an otherwise detached document state until that holder
 // ends. Removing any clause would let a later operation on that document create a second state.
 func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		hold    func(*Service, *roomState)
@@ -90,6 +92,7 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 // A transaction's writer slot pins its state, so another transaction sees the slot and waits rather
 // than taking a fresh state and a second writer slot for the same document.
 func TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone(t *testing.T) {
+	t.Parallel()
 	service, _ := newRoomReleaseService(t)
 	const id = "00000000-0000-4000-8000-000000000516"
 	first, err := service.openLiveWrite(context.Background(), &Ledger{}, id)
@@ -125,6 +128,7 @@ func TestLiveWriterKeepsOneWriterSlotAfterItsRoomHasGone(t *testing.T) {
 // exit compaction also looks the state up, so calling the registered hook directly keeps this test
 // about the hook rather than that incidental backstop.
 func TestOnUnloadDocumentReleasesAnOtherwiseUnusedState(t *testing.T) {
+	t.Parallel()
 	service, _ := newRoomReleaseService(t)
 	const id = "00000000-0000-4000-8000-000000000517"
 	_ = service.room(id) // the test accessor deliberately leaves an otherwise unused state behind.
@@ -141,6 +145,7 @@ func TestOnUnloadDocumentReleasesAnOtherwiseUnusedState(t *testing.T) {
 // A room ygo has published but not finished loading is still live: releaseIfUnusedLocked must see
 // it in Rooms even before GetDoc can return it. Otherwise the load would attach to a forgotten state.
 func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	load := service.srv.OnLoadDocument
 	entered := make(chan struct{})
@@ -148,7 +153,7 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 	// A failure below still lets the held load go: registered after newTestService's shutdown, this
 	// cleanup runs first, so the load never stays parked in the hook while the shutdown waits.
 	letLoad := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(letLoad)
+	testcleanup.Add(t, letLoad)
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
 		if err := load(ctx, room, doc); err != nil {
 			return err

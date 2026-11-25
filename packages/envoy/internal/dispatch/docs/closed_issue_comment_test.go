@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -98,7 +99,7 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	letSettle := func() { release.Do(func() { close(proceed) }) }
 	// Registered after the service's shutdown, so it runs before it: a test that fails while the
 	// settlement is held still lets it finish.
-	t.Cleanup(letSettle)
+	testcleanup.Add(t, letSettle)
 	service.beforeSettleStart = func(string) {
 		if hold.CompareAndSwap(true, false) {
 			close(started)
@@ -181,6 +182,7 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 // store holds, the room's own update is left for the append that closes the room for its issue
 // (refuseClosedIssueAppend), and the comment is written.
 func TestAnAnchoredCommentOnAClosedIssueIsWrittenWhileItsRoomHoldsAnUnstoredUpdate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before the close")
 	service, held := closedIssueRoomService(t, database, artifactID)
@@ -233,6 +235,7 @@ func TestAnAnchoredCommentOnAClosedIssueIsWrittenWhileItsRoomHoldsAnUnstoredUpda
 // version is taken from the stored document instead (closedIssueCommentVersion), as a version of
 // a room behind the head is, and stores nothing of the room.
 func TestAnAnchoredCommentOnAClosedIssuePinsAStoredVersionWhileItsRoomHoldsAnUnstoredUpdate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before the close")
 	service, held := closedIssueRoomService(t, database, artifactID)
@@ -363,6 +366,7 @@ func storedVersions(t *testing.T, database *store.Store, artifactID string) int 
 // room holds is no anchor: ErrAnchorMissing, which the API answers 409 ANCHOR_MISSING and the
 // browser's margin recovers from, and no version is written behind it.
 func TestAMarkOnlyAClosedIssuesRoomHoldsIsNoAnchor(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before the close")
 	service, held := closedIssueRoomService(t, database, artifactID)
@@ -420,6 +424,7 @@ func TestAMarkOnlyAClosedIssuesRoomHoldsIsNoAnchor(t *testing.T) {
 // anchor is read is the same case a moment earlier: VerifyMark's wait ends in one last read, of
 // the store it lands in.
 func TestAMarkAClosedIssuesRoomTookInsideTheMarginStillAnchors(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before the close")
 	service, held := closedIssueRoomService(t, database, artifactID)
@@ -469,12 +474,12 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   stagedAhead,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
-	t.Cleanup(held.let)
+	testcleanup.Add(t, held.let)
 	return service, held
 }
 

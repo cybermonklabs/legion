@@ -295,12 +295,12 @@ func TestSearchReadsOnlyTheLatestDocumentVersion(t *testing.T) {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
 
-	testwait.Eventually(t, "the second artifact version", func() bool {
+	testwait.Until(t, "the edit's second version of the document (the versions last counted)", func() (int, bool) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)
 		}
-		return versions >= 2
+		return versions, versions >= 2
 	})
 
 	// The issue carries its primary document's words too (20261105145242), so neither it nor the
