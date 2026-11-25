@@ -60,7 +60,11 @@
 # the change edits it, a frozen file or an entry file when the change edits a fixture or a
 # record). A read that fails refuses the change and names itself: a check that passes when it
 # cannot read proves nothing. So L is read from released-contracts.json at the head, and a head
-# without it, or whose file is not a non-empty JSON array of integers, is refused by name.
+# without it, or whose file is not a non-empty JSON array of integers, is refused by name. A git
+# call that fails is refused naming git's exit and a file under RUNNER_TEMP (TMPDIR, else /tmp,
+# outside Actions) that keeps git's words, never their text: a fetch from origin, and the read of
+# a blob a checkout without blobs fetches, print what answered in origin's place, which holds the
+# credential the checkout presents to it.
 #
 # What it does not check: whether a change owes an entry (the shape gate and the review say so),
 # and whether a row of a frozen table names an entry (`TestNoFrozenRowNamesAnEntry` refuses that).
@@ -81,6 +85,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -146,9 +151,25 @@ def refuse(path: str, message: str) -> None:
     refusals.append((path, message))
 
 
+def kept(text: str) -> str:
+    """A file of its own under RUNNER_TEMP (TMPDIR, else /tmp) that holds text, git's words, which
+    this check does not print, and that nothing removes: the refusal names it. In CI the runner
+    removes RUNNER_TEMP at the job's end."""
+    where = os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp"
+    try:
+        handle, path = tempfile.mkstemp(prefix="check-daemon-api-contract.", dir=where)
+        with os.fdopen(handle, "w", encoding="utf-8", errors="replace") as out:
+            out.write(text)
+    except OSError as error:
+        return f"no file, as it could not be kept ({type(error).__name__})"
+    return path
+
+
 def git(args: list[str], what: str, where: str, ok: tuple[int, ...] = (0,)) -> bytes:
-    """git's output, or a refusal naming what could not be read. GIT_TERMINAL_PROMPT=0, so a fetch
-    that needs credentials fails by name rather than waiting on a prompt no one answers."""
+    """git's output, or a refusal naming what could not be read, git's exit and the file that keeps
+    git's words (kept), never their text: a fetch, or a blob read that fetches, prints what
+    answered in origin's place. GIT_TERMINAL_PROMPT=0, so a fetch that needs credentials fails by
+    name rather than waiting on a prompt no one answers."""
     try:
         done = subprocess.run(
             ["git", *args], capture_output=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}
@@ -157,11 +178,8 @@ def git(args: list[str], what: str, where: str, ok: tuple[int, ...] = (0,)) -> b
         fatal(where, f"could not read {what}: git could not be run ({one_line(error)})")
     if done.returncode not in ok:
         said = done.stderr.decode("utf-8", "replace") or done.stdout.decode("utf-8", "replace")
-        fatal(
-            where,
-            f"could not read {what}: git {' '.join(args[:3])} exited {done.returncode} "
-            f"({one_line(said)[:400] or 'no output'})",
-        )
+        told = f"git's words are in {kept(said)}" if said else "git said nothing"
+        fatal(where, f"could not read {what}: git {' '.join(args[:3])} exited {done.returncode}; {told}")
     return done.stdout
 
 

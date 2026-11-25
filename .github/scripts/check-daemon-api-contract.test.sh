@@ -563,6 +563,35 @@ check "a base origin does not hold: exits 1" "$(is "$status" 1)"
 check "a base origin does not hold: names the fetch that failed" \
   "$(contains "$out" 'could not read the base, the commit the queue built this group on (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): git fetch')"
 
+echo "case: a fetch from origin that fails, git's words holding the marker"
+# Whatever answers the fetch in origin's place writes git's words, and the credential the checkout
+# presents to origin can be among them, so the case puts the marker not-a-secret-token in them (in
+# origin's URL, which git's refusal quotes), and no run of eight of its characters (the run the
+# redaction rule's gate reads) may be in what the check prints. The twin: the file the refusal
+# names holds the marker.
+marker=not-a-secret-token
+prints_no_marker() {
+  local at
+  for ((at = 0; at + 8 <= ${#marker}; at++)); do
+    [[ "$1" == *"${marker:at:8}"* ]] && { echo false; return; }
+  done
+  echo true
+}
+root=$(repository group-fetch-words)
+commit "$root"
+into=$(checkout "$root" "$(git -C "$root" rev-parse HEAD)" group-fetch-words-checkout)
+git -C "$into" remote set-url origin "file://$work/origin-$marker-gone"
+printf '{"merge_group":{"base_sha":"%s"}}\n' cccccccccccccccccccccccccccccccccccccccc > "$into.json"
+mkdir -p "$work/kept"
+RUNNER_TEMP="$work/kept" run_event "$into" merge_group
+check "a fetch git's words refuse: exits 1" "$(is "$status" 1)"
+check "a fetch git's words refuse: prints no run of the marker" "$(prints_no_marker "$out")"
+check "a fetch git's words refuse: names the fetch, its exit and the file that keeps git's words" \
+  "$(contains "$out" "git fetch --no-tags --filter=blob:none exited [0-9][0-9]*; git's words are in $work/kept/")"
+kept_file=$(sed -n "s/^.*git's words are in \([^ ;)]*\).*\$/\1/p" <<<"$out" | tail -n 1)
+check "a fetch git's words refuse: twin, that file holds the marker" \
+  "$([ -n "$kept_file" ] && grep -q -F "$marker" -- "$kept_file" && echo true || echo false)"
+
 echo "case: a pull request's merge ref, the base branch moved on since GitHub built it"
 root=$(repository pull)
 base=$(git -C "$root" rev-parse base)
