@@ -2,7 +2,7 @@ package textcheck
 
 // This test reads the store's migrations through migrations.All: its import puts their embed
 // in the go list closure of the text-check run, which needs no row, so the guide is its one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:496 reads it under ../../../.. for phaseEntryList (shippedText)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for phaseEntryList
 
 import (
 	"errors"

@@ -40,9 +40,9 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
 - Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
-- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read that list first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
-- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
+- Name an issue's priority: `--advance <id>`; the priorities page (`/priorities?tab=none`) and `dispatch priorities` list what advances no priority.
 
 ## Issue status is yours to move
 

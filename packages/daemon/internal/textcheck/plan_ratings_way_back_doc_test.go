@@ -4,7 +4,7 @@ package textcheck
 // store's migrations as the one above does, and internal/store's plan_ratings_way_back_test.go,
 // which runs that migration's way back, reads no text outside its package, so the guide is this
 // one's one row.
-//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:496 reads it under ../../../.. for TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide (assertIsTheGuidesBlock, way_back_doc_test.go:172, through wayBackBlockOfTheGuide, :188) and its own :55 (entryLinkIn of shippedText)
+//ci:reads docs/kubernetes.md `packages/daemon/internal/textcheck/waiting_line_texts_test.go#shippedText` reads it under ../../../.. for TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide (`packages/daemon/internal/textcheck/way_back_doc_test.go#assertIsTheGuidesBlock`, through `packages/daemon/internal/textcheck/way_back_doc_test.go#wayBackBlockOfTheGuide`) and TestThePlanRecordMigrationsEntryLinksItsWayBack (entryLinkIn of shippedText)
 
 import "testing"
 

@@ -285,15 +285,16 @@ func (unlistedAnswer) Error() string {
 }
 func (unlistedAnswer) UnlistedCarry() bool { return true }
 
-// lostAnswerStore commits a release and then answers an error, as a commit whose answer the
-// claim-write deadline or a dropped connection cut off does.
+// lostAnswerStore commits a release and then answers it as a write the claim-write bound cut
+// after the database was handed it (cutAfterTheBegin), as a commit whose answer the deadline cut
+// off is: the one answer write would make a call again for.
 type lostAnswerStore struct{ Store }
 
 func (s lostAnswerStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
 	if _, err := s.Store.ReleaseHolds(ctx, c, holds); err != nil {
 		return nil, err
 	}
-	return nil, errors.New("the commit's answer was lost")
+	return nil, cutAfterTheBegin
 }
 
 // A release whose commit's answer is lost freed its names all the same, so it drops them from the
@@ -301,7 +302,9 @@ func (s lostAnswerStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold
 // would let the claim register it again without asking the store, after another claim took it.
 // Here the freed name is the base name of an earlier file of the current session, which does not
 // contain the id; with the answer lost, the claim's next registration of that file is still
-// refused, as it is with the answer delivered.
+// refused, as it is with the answer delivered. And the lost answer is a cut write would make again
+// for, yet the release is made once and answered as the cut: it is the exception to the retry
+// (Machine.write), since a second try would free nothing and answer the names freed as none.
 //
 // The control (the pull request records the run): ReleaseNames returning on the error before it
 // drops the names: "the re-registration of /state/sessions/implementer.jsonl, whose name
@@ -317,15 +320,30 @@ func TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
+			var counted *countingStore
 			if lost {
-				h.deps.Store = lostAnswerStore{h.store}
+				counted = &countingStore{Store: h.store}
+				h.deps.Store = lostAnswerStore{counted}
 				h.start(h.store.load(h.token))
 			}
 			h.reach(StateReady)
 			h.must(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: second,
 				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
-			if _, err := h.m.ReleaseNames(h.ctx); (err != nil) != lost {
+			attempted := 0
+			if lost {
+				attempted = counted.mark()
+			}
+			_, err := h.m.ReleaseNames(h.ctx)
+			if (err != nil) != lost {
 				t.Fatalf("the release = %v, want an error only when its answer is lost", err)
+			}
+			if lost {
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("the release whose answer the bound cut = %v, want the cut", err)
+				}
+				if asked := counted.writes()[attempted:]; !slices.Equal(asked, []string{"ReleaseHolds"}) {
+					t.Fatalf("the release asked for %v, want one ReleaseHolds: a second try would answer the names freed as none", asked)
+				}
 			}
 			if holder, held := h.store.holdOf(earlier); held {
 				t.Fatalf("%s is still held for %s after the release committed", earlier.Name, holder)
@@ -333,7 +351,7 @@ func TestAReleaseWhoseAnswerIsLostLeavesNoFreedNameCached(t *testing.T) {
 			if holders, err := h.store.HoldSessions(h.ctx, "", other, []Hold{earlier}); err != nil || len(holders) != 1 || holders[0] != other {
 				t.Fatalf("another claim's hold of the freed %s = %v, %v; want it %s's", earlier.Name, holders, err, other)
 			}
-			err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+			err = h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 				CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
 			if refusal := (claim.Refusal{}); !errors.As(err, &refusal) {
 				t.Fatalf("the re-registration of %s, whose name %s now holds, = %v, want the hold's refusal", sessionFile, other, err)

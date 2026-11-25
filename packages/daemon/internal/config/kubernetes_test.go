@@ -1,6 +1,6 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml operatorRoutePod reads it under ../../../.. (:1803) for the tests of the operator route's placeholders
+//ci:reads deploy/kubernetes/operator-route/pod.yml `packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod` reads it under ../../../.. for the tests of the operator route's placeholders
 
 import (
 	"fmt"
