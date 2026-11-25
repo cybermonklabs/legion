@@ -39,8 +39,8 @@ const mintAgainBefore = 5 * time.Minute
 
 // grantValues is one grant's real values on this pod, read once and then held until a name's
 // own reread drops it (DropName), the policy version the read ran under stops being the live
-// one, or a minted value comes within mintAgainBefore of its expiry; and, for a minted
-// capability's grant, the whole entry is dropped once the grant has ended (valuesFor).
+// one, or a minted value comes within mintAgainBefore of its expiry; and the whole entry is
+// dropped once the grant's end has passed, by the one rule valuesFor's doc states.
 type grantValues struct {
 	// read is the read itself: two connections of one grant arriving together take it in turn,
 	// and the second reads what the first answered rather than running the release checks
@@ -149,13 +149,18 @@ func (g *grantValues) drop(name string) {
 // names, a policy version that has moved since the read, or a minted value coming within
 // mintAgainBefore of its expiry.
 //
-// The map holds one entry per grant this pod serves, and each grant ends at the end its connection
-// carries (grantValues.ends), which nothing extends: a grant released from a stored secret ends at
-// its grant's expiry, and a minted capability's, which come one per use - the approve capability's
-// one per review - at the end it was made with. So the read that adds a grant's entry first drops
-// the entry of every grant whose end this pod's clock has reached, and the map holds the grants
-// still live and those that ended since this pod last added a grant, never one per use since the
-// pod started. The drop reads nothing: a later request of a grant it dropped is refused by the
+// The map holds one entry per grant this pod serves, and this is the one rule of when an entry
+// leaves it whole. A grant whose connection carries an end (grantValues.ends, its Expires) ends
+// there, and nothing extends it: a grant released from a stored secret at its grant's expiry, and
+// a minted capability's, which come one per use - the approve capability's one per review - at the
+// end it was made with. So the read that adds a grant's entry first drops the entry of every grant
+// whose end this pod's clock has reached, and the map never holds one entry per use since the pod
+// started. A grant with no end (a grant that lasts until its session ends) keeps its entry until
+// the pod is rolled, which every deployment and every change to the profiles file does, and a
+// grant ended early, by a revoke or an ended enrollment, keeps its entry until its end passes.
+// Holding such an entry is safe: what ends a grant's reach is the connection check, which refuses
+// a placeholder whose grant has ended whatever this map still holds, so no request is handed the
+// entry. The drop reads nothing: a later request of a grant it dropped is refused by the
 // connection check, and one in flight keeps the values it was handed. A pod whose clock runs ahead
 // of the database's drops an entry a little early, which costs the grant's next request one more
 // read.

@@ -1258,10 +1258,13 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 // TestAnEndedStoredGrantsValuesAreDropped: a grant released from a stored secret ends at the end
 // its connection carries, as a minted capability's does, and nothing extends it, so the read that
 // adds a new grant's entry drops the entry of a stored grant whose end the pod's clock has reached,
-// and keeps the live one's (TestAnEndedMintedGrantsValuesAreDropped is the minted half).
+// keeps every live grant's entry, the older ones' too, and reads nothing to do it
+// (TestAnEndedMintedGrantsValuesAreDropped is the minted half, with the same script).
 func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
 	r := newRig(t, Options{Now: clock.read})
+	// Three stored grants, each with a placeholder and an end of its own: the first ends a
+	// quarter of an hour in, the other two an hour after it.
 	type storedGrant struct {
 		id, placeholder string
 		ends            time.Time
@@ -1269,6 +1272,7 @@ func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 	grants := []storedGrant{
 		{"grant-00000011", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
 		{"grant-00000012", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+		{"grant-00000013", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
 	}
 	for _, g := range grants {
 		connection := testConnection()
@@ -1290,20 +1294,32 @@ func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
 		_, held := r.proxy.values[g.id]
 		return held
 	}
-	first, second := grants[0], grants[1]
+	first, second, third := grants[0], grants[1], grants[2]
 
 	call(first)
 	if !holds(first) {
 		t.Fatalf("the pod holds no values of grant %s after its call; the row cannot see a drop", first.id)
 	}
+	// Before the first grant's end, a new grant's read leaves the first grant's values held.
+	clock.set(first.ends.Add(-time.Minute))
+	call(second)
+	if !holds(first) || !holds(second) {
+		t.Fatalf("held: first %v, second %v; want both, since neither grant has ended", holds(first), holds(second))
+	}
+	// At its end the broker answers the first grant's placeholder as no live grant, and the next
+	// new grant's read drops the first grant's values and keeps the live ones, the older second
+	// grant's among them.
 	clock.set(first.ends)
 	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
-	call(second)
+	call(third)
 	if holds(first) {
 		t.Errorf("the pod still holds the values of stored grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
 	}
-	if !holds(second) {
-		t.Errorf("the pod holds no values of grant %s, which has not ended", second.id)
+	if !holds(second) || !holds(third) {
+		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
+	}
+	if reads := r.grants.valueReads(first.id); reads != 1 {
+		t.Errorf("the values of grant %s were read %d times; want once, for its call", first.id, reads)
 	}
 }
 
