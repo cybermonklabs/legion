@@ -1002,6 +1002,9 @@ type stepClaimant struct {
 	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
 	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
 	inTurn bool
+	// alone is the delivery of each task the pane worked in a turn of its own (workAlone), oldest
+	// first.
+	alone []string
 	// setModel is the launch's set model, which each read of its totals reports. It is
 	// stepRecordsModel at creation, and serve reads it under mu.
 	setModel string
@@ -1188,7 +1191,47 @@ func (c *stepClaimant) workAlone(reply func(shimwire.Frame), prompt shimwire.Pro
 	reply(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
 	reply(shimwire.AgentEnd{})
 	reply(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	c.alone = append(c.alone, prompt.DeliveryID)
 	return true
+}
+
+// workedAlone is how many tasks the pane has worked in turns of their own (workAlone).
+func (c *stepClaimant) workedAlone() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.alone)
+}
+
+// awaitAlone waits for the pane to have worked n tasks in turns of their own (workAlone). It also
+// waits for the daemon to have applied, for each of them, the fact that the agent took it. That
+// fact reads the calls of its issue's agents on a goroutine of its own
+// (workflowRuntime.taskConfirmed). So a read a test holds after awaitAlone is the read of a later
+// fact, never of one of these.
+func (c *stepClaimant) awaitAlone(n int) {
+	c.r.t.Helper()
+	var worked []string
+	var unapplied string
+	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
+		c.mu.Lock()
+		worked = slices.Clone(c.alone)
+		c.mu.Unlock()
+		unapplied = ""
+		for _, delivery := range worked {
+			if applied, _ := c.r.confirmations.read(c.token, delivery); applied == 0 {
+				unapplied = delivery
+				return false
+			}
+		}
+		return len(worked) >= n
+	}) {
+		c.r.t.Fatalf("%s worked %d tasks alone within %s, want %d, and the daemon applied the fact of each but %q",
+			c.token, len(worked), stepRecordsWait, n, unapplied)
+	}
+	for _, delivery := range worked {
+		if _, err := c.r.confirmations.read(c.token, delivery); err != nil {
+			c.r.t.Fatalf("the fact that %s took delivery %s failed: %v", c.token, delivery, err)
+		}
+	}
 }
 
 // send writes one frame to the daemon that runs now. An agent_start begins the walk's turn on the

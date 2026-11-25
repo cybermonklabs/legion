@@ -359,11 +359,12 @@ func TestAStepRecordAddsTheCallsOfTwoLaunches(t *testing.T) {
 // The read a step's start uses is the newest the daemon holds of the launch. Two children of the
 // root stand in reviewing, each on its own pull request, and the tree's architect owns both.
 //
-// A person approves the first, whose acceptance starts. The approval of the second reads the
-// architect and is held before its transaction. Meanwhile the architect answers twice and signs the
-// first off, and that sign-off's newer read is stored. The second acceptance then starts from the
-// stored read, so it counts only the call of its own sign-off. Had it started from the held fact's
-// own read, it would count three.
+// A person approves the first, whose acceptance starts. Its acceptance hands the architect a task,
+// whose confirmation reads the architect too, so the walk waits for that fact first. The approval
+// of the second then reads the architect and is held before its transaction. Meanwhile the
+// architect answers twice and signs the first off, and that sign-off's newer read is stored. The
+// second acceptance then starts from the stored read, so it counts only the call of its own
+// sign-off. Had it started from the held fact's own read, it would count three.
 func TestAStoredReadNewerThanTheFactsReadIsTheOneUsed(t *testing.T) {
 	t.Parallel()
 	t.Run("a sign-off's newer read starts the acceptance whose fact read before it", func(t *testing.T) {
@@ -371,8 +372,10 @@ func TestAStoredReadNewerThanTheFactsReadIsTheOneUsed(t *testing.T) {
 		first := r.seedChildOn(r.number+1, "Amber lantern polish")
 		second := r.seedChildOn(r.number+2, "Cobalt kettle repair")
 		architect := r.worker(claim.RoleArchitect)
+		worked := architect.workedAlone()
 		r.publishReview(r.number+1, "APPROVED")
 		r.waitPhaseOf(first, phase.Accepting)
+		architect.awaitAlone(worked + 1)
 		reached, release := make(chan struct{}), make(chan struct{})
 		let := sync.OnceFunc(func() { close(release) })
 		t.Cleanup(let)
