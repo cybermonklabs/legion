@@ -1233,22 +1233,27 @@ test("the Spec view draws statements alone, each parent once, and no check once"
     ).toBe(statement(8));
     await page.keyboard.type(`${PRESSED_WORD} `);
     await page.keyboard.press("Escape");
-    const reloaded = watchApiRequests(page);
-    /** The words the page draws for statement 8 after a reload, once it draws that statement. */
-    const wordsAfterReload = async (): Promise<string> => {
-      await page.reload();
-      await expect(
-        nodeRow(page, statement(8)),
-        "the Spec view draws no statement 8 after a reload"
-      ).toHaveCount(1);
-      return (await rowWords(nodeRow(page, statement(8)).first()).innerText()).replace(/\s+/g, " ");
-    };
+    // The coverage read holds the statement's stored words, so the page is reloaded once they
+    // hold the typed word, and draws them from that load.
     await expect
-      .poll(wordsAfterReload, {
-        message: "the words typed in a statement do not read back after a reload",
-        timeout: 30_000,
-      })
+      .poll(
+        async () =>
+          (await getIssueCoverage(seeded.key)).requirements?.find(
+            (one) => one.block_id === requirementBlockId(8)
+          )?.text ?? "",
+        { message: "the words typed in a statement are not stored", timeout: 30_000 }
+      )
       .toContain(PRESSED_WORD);
+    const reloaded = watchApiRequests(page);
+    await page.reload();
+    await expect(
+      nodeRow(page, statement(8)),
+      "the Spec view draws no statement 8 after a reload"
+    ).toHaveCount(1);
+    await expect(
+      rowWords(nodeRow(page, statement(8)).first()),
+      "the words typed in a statement do not read back after a reload"
+    ).toContainText(PRESSED_WORD);
     await expectLoadSettled(reloaded);
 
     // Each statement a check serves carries the number of its checks, as the coverage read

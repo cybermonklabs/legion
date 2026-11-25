@@ -19,8 +19,8 @@ import { onScreen } from "./issue-page-i";
  *   slot (the Contents pane and the Outline sheet), and as the Spec view's first group.
  * - **The two rows under them**, one `button[data-brief-row="plan" | "verification"]` each, named
  *   by its label alone, with what it counts in `[data-brief-counts]`: the Plan control's count and
- *   noun, or the number of checks and, for each state that holds one,
- *   `[data-brief-state="<state>"]` with its shape, count and word.
+ *   noun, or the number of checks and its noun `[data-brief-total]` and, for each state that
+ *   holds one, `[data-brief-state="<state>"]` with its shape, count and word.
  * - **The Contents list**, one `[data-contents-entry="<node id>"]` per entry, its line
  *   `[data-contents-line]`, and above it the toggle named `CONTROL_LABELS.focus_branch`.
  * - **The Spec view** `[data-spec-body]`: its legend `[data-spec-legend]` of four
@@ -183,7 +183,7 @@ export function checksDrawn(row: Locator): Promise<ChecksDrawn> {
       state: part.getAttribute("data-brief-state"),
       word: part.querySelector("[data-page-chrome]")?.textContent?.trim() ?? "",
     })),
-    total: (element.querySelector("[data-author-text]")?.parentElement?.textContent ?? "").trim(),
+    total: (element.querySelector("[data-brief-total]")?.textContent ?? "").trim(),
   }));
 }
 

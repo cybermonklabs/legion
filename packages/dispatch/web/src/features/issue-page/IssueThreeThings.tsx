@@ -33,7 +33,7 @@ import {
   VERIFICATION_WORDS,
 } from "./page-words";
 import { filterSignals, type PresetSignal, presetView } from "./presets";
-import { CAP } from "./verification-filter/VerificationFilterBody";
+import { CAP, queryTyped } from "./verification-filter/VerificationFilterBody";
 
 /** Each sentence's label, in the order the summary holds them (R8). */
 const LABELS = [
@@ -82,7 +82,7 @@ export function briefCounts(
   query: string
 ): BriefCounts | undefined {
   const { namesHeld, readsHeld, root } = reads;
-  const filtered = query.trim() !== "";
+  const filtered = queryTyped(query);
   if (!readsHeld || (filtered && !namesHeld)) return undefined;
   const inState = new Map<NodeState, number>();
   const seen = new Set<string>();
@@ -170,9 +170,6 @@ export function IssueThreeThings({
     [nameOf, tree]
   );
   const spec = look === "spec";
-  // The ids a row's name and its counts are read by; one prefix for each drawn head, since two
-  // issue pages in one document would otherwise write the same ids.
-  const ids = useId();
   return (
     <section
       className={`flex min-w-0 shrink-0 flex-col ${
@@ -215,14 +212,12 @@ export function IssueThreeThings({
         <BriefRow
           detail={counts === undefined ? undefined : <PlanCount plan={counts.plan} />}
           filter="plan"
-          id={`${ids}-plan`}
           issueKey={issueKey}
           label={CONTROL_LABELS.in_short_how}
         />
         <BriefRow
           detail={counts === undefined ? undefined : <CheckCounts checks={counts.checks} />}
           filter="verification"
-          id={`${ids}-verification`}
           issueKey={issueKey}
           label={CONTROL_LABELS.in_short_shown}
         />
@@ -241,17 +236,16 @@ export function IssueThreeThings({
 function BriefRow({
   detail,
   filter,
-  id,
   issueKey,
   label,
 }: {
   /** What stands under the label, or undefined while the counts may not be drawn. */
   detail: ReactNode | undefined;
   filter: "plan" | "verification";
-  id: string;
   issueKey: string;
   label: string;
 }): ReactNode {
+  const id = useId();
   const navigate = useNavigate();
   return (
     <button
@@ -312,12 +306,8 @@ function CheckCounts({ checks }: { checks: BriefCounts["checks"] }): ReactNode {
   if (checks === undefined) return <span {...pageChrome}>{EMPTY_STATE_LINES.verification}</span>;
   return (
     <span className="flex flex-wrap items-center gap-x-3.5 gap-y-0.5">
-      <span>
-        <span {...authorText}>{checks.count}</span>
-        <span {...pageChrome}>
-          {" "}
-          {checks.count === 1 ? VERIFICATION_WORDS.check_one : VERIFICATION_WORDS.check_many}
-        </span>
+      <span data-brief-total="">
+        <ChecksNumber count={checks.count} />
       </span>
       {checks.states.map(({ count, state }) => (
         <span className="inline-flex items-center gap-[5px]" data-brief-state={state} key={state}>
@@ -330,6 +320,20 @@ function CheckCounts({ checks }: { checks: BriefCounts["checks"] }): ReactNode {
         </span>
       ))}
     </span>
+  );
+}
+
+/** A number of checks and its noun ("6 checks", "1 check"): the second row's total, and a
+ *  statement's count of checks in the Spec view (`SpecFilterBody.tsx`'s `CheckCount`). */
+export function ChecksNumber({ count }: { count: number }): ReactNode {
+  return (
+    <>
+      <span {...authorText}>{count}</span>
+      <span {...pageChrome}>
+        {" "}
+        {count === 1 ? VERIFICATION_WORDS.check_one : VERIFICATION_WORDS.check_many}
+      </span>
+    </>
   );
 }
 

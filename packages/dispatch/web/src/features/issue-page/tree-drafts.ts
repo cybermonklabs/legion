@@ -1478,10 +1478,10 @@ function servePlacements(
     heldDocuments.add(slug);
     for (const block of document.blocks) heldBlocks.add(blockNodeId(slug, block.id));
   }
-  // Whether `reference` names a target of this issue that is no statement: a node of another
-  // kind, or nothing at all in a document whose blocks the page holds.
-  const namesNoStatement = (reference: string): boolean => {
-    const id = context.nodeIdOf(reference);
+  // Whether `reference`, which names the node `id` where this issue addresses it, names a target
+  // of this issue that is no statement: a node of another kind, or nothing at all in a document
+  // whose blocks the page holds.
+  const namesNoStatement = (reference: string, id: string | undefined): boolean => {
     if (id === undefined) return false;
     const target = drafts.get(id);
     if (target !== undefined) return target.statement !== true;
@@ -1493,11 +1493,14 @@ function servePlacements(
   for (const draft of drafts.values()) {
     if (draft.type !== "check" && draft.type !== "plan_task") continue;
     const cited = draft.pointers.serves ?? [];
-    const serves = cited
-      .map(context.nodeIdOf)
-      .filter((id): id is string => id !== undefined && drafts.get(id)?.statement === true);
+    const named = cited.map(context.nodeIdOf);
+    const serves = named.filter(
+      (id): id is string => id !== undefined && drafts.get(id)?.statement === true
+    );
     if (serves.length > 0) draft.parents = serves;
-    if (cited.some(namesNoStatement)) draft.gaps = [...draft.gaps, "serves_not_requirement"];
+    if (cited.some((reference, at) => namesNoStatement(reference, named[at]))) {
+      draft.gaps = [...draft.gaps, "serves_not_requirement"];
+    }
     if (
       draft.type === "check" &&
       draft.state !== undefined &&

@@ -46,7 +46,7 @@ import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
-import { type BriefCounts, IssueThreeThings } from "../IssueThreeThings";
+import { type BriefCounts, ChecksNumber, IssueThreeThings } from "../IssueThreeThings";
 import {
   focusedNodeOf,
   holdInPlaceOf,
@@ -409,13 +409,13 @@ export function SpecFilterBody({
   // R7 under a press, as the outline holds it (`usePressFocus`). A press focuses what it lands
   // on as it goes down, before it ends, so whatever the focus draws would come and go under the
   // pointer while the press is held: a cell taking the focus would draw a person's whole answer,
-  // and the cell the focus left would take its own away, so what stood under the pointer moved
-  // off it and the press ended on something else, following no link. A statement cut at six
-  // lines did so before its words were drawn whole (review 5928280634 on pull request 4234). So
-  // the focus a press gives a statement or a cell - any focus inside it, a link's included - is
-  // taken once the press is over, and only while that statement or cell still holds the focus; a
-  // key's move takes it at once. Each item is the statement's or the cell's element, which says
-  // whether it still holds the focus, with what taking the focus does for it.
+  // and the cell the focus left would take its own away, so what stood under the pointer would
+  // move off it and the press would end on something else, following no link (review 5928280634
+  // on pull request 4234). So the focus a press gives a statement or a cell - any focus inside
+  // it, a link's included - is taken once the press is over, and only while that statement or
+  // cell still holds the focus; a key's move takes it at once. Each item is the statement's or
+  // the cell's element, which says whether it still holds the focus, with what taking the focus
+  // does for it.
   const press = usePressFocus<{ readonly item: HTMLElement; readonly take: () => void }>(
     ({ take }) => take(),
     ({ item }) => item.contains(document.activeElement)
@@ -1216,10 +1216,6 @@ function DecisionCell({
 }): ReactNode {
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(words, focused);
-  // The links of an agent's words, and every link that arrives in them later, leave the tab
-  // order, as `CutWords` took them out while it drew those words: the tree is one tab stop, and
-  // `f` reaches a link of the cell once the focus is on it.
-  useOutOfTabOrder(words, true);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
   return (
@@ -1541,11 +1537,7 @@ function CheckCount({ count, to }: { count: number; to: string }): ReactNode {
       tabIndex={-1}
       to={to}
     >
-      <span {...authorText}>{count}</span>
-      <span {...pageChrome}>
-        {" "}
-        {count === 1 ? VERIFICATION_WORDS.check_one : VERIFICATION_WORDS.check_many}
-      </span>
+      <ChecksNumber count={count} />
     </Link>
   );
 }

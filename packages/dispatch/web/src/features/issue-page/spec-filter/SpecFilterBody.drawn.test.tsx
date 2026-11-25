@@ -735,8 +735,9 @@ test("a decision with no author draws none, and says Author unknown with the foc
 
 // R5 and the tester's F20: an agent's words that cite
 // a statement and quote a typed block draw the statement by its name, never its address, and
-// none of the block's source lines: whole in the cell through `RowText`, and as one line of plain
-// words on the because line.
+// none of the block's source lines: whole in the cell through `RowText`, its link out of the tab
+// order as every control inside a row is (R9), and as one line of plain words on the because
+// line.
 test("an agent's decision draws its words with each reference named, in its cell and on its because line", async () => {
   const cited = statementRef("r4");
   const name = "Every statement is drawn whole";
@@ -777,6 +778,14 @@ test("an agent's decision draws its words with each reference named, in its cell
       expect(
         view.container.querySelector("[data-spec-cell] a[data-row-reference]")?.textContent
       ).toBe(name)
+    );
+    await waitFor(() =>
+      expect(
+        view.container
+          .querySelector("[data-spec-cell] a[data-row-reference]")
+          ?.getAttribute("tabindex"),
+        "the cell's link is in the tab order"
+      ).toBe("-1")
     );
     for (const selector of ["[data-spec-cell]", "[data-spec-because]"]) {
       const drawn = view.container.querySelector(selector)?.textContent ?? "";
@@ -895,8 +904,9 @@ test("a statement changed after its tie says Changed since", () => {
 });
 
 // R5: an agent's decision's words are drawn whole in its cell, with no limit of lines, with the
-// focus on the cell or without it. The words are laid out 9,600 px tall, which a cut at six lines
-// would hold back behind "more · N words"; the cell draws every line of them and no such control.
+// focus on the cell or without it. The words are laid out 9,600 px tall, past the six lines at
+// which the outline cuts an agent's words behind "more · N words" (`useClamp`); the cell draws
+// every line of them and no such control.
 test("an agent's decision draws its words whole in its cell at any length, with the focus or without it", async () => {
   const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
   const text = `Draw every statement whole. ${words}`;
@@ -1301,8 +1311,8 @@ test("a statement's words are drawn as its author wrote them", () => {
 
 // R6: a statement's words are whole, with no limit of lines, with the focus or without it, and
 // the chips it carries stay after its last word, as a row of the outline draws its trail. The
-// words are laid out 9,600 px tall, which a cut at six lines would hold back behind "more · N
-// words" with a fade, its chips moved beside that control; the row draws every line, no such
+// words are laid out 9,600 px tall, past the six lines at which the outline cuts an agent's
+// words behind "more · N words" with a fade (`useClamp`); the row draws every line, no such
 // control and no fade, and its trail stays the last child of its words' box.
 test("a statement's words are drawn whole at any length, with no more control, with the focus or without it", async () => {
   const words = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
@@ -1932,13 +1942,12 @@ function layOut(height: number): () => void {
 }
 
 // Review 5928280634 on pull request 4234 (thread 4592007127): a press focuses what it lands on as
-// it goes down, and a statement taking the focus for a link inside it drew itself differently
-// under the pointer - its words whole where they were cut, before a statement's words were drawn
-// whole at every length - while the statement that had the focus lost its look, so the link
-// moved off the pointer and the press followed nothing. The focus a press gives a statement is
-// taken once the press is over, as the outline takes a row's (`IssueTree.tsx`'s `focusRow`).
-// happy-dom lays nothing out, so this reads the order: nothing the body draws changes while the
-// press is held, and then the pressed statement takes the focus.
+// it goes down, so a statement that took the focus for a link inside it at once would draw itself
+// focused under the pointer while the statement that had the focus lost its look, and the press
+// could end on something else and follow nothing. The focus a press gives a statement is taken
+// once the press is over, as the outline takes a row's (`IssueTree.tsx`'s `focusRow`). happy-dom
+// lays nothing out, so this reads the order: nothing the body draws changes while the press is
+// held, and then the pressed statement takes the focus.
 test("a press on a link inside a statement leaves every statement as drawn until it ends, and then the statement takes the focus", async () => {
   const user = userEvent.setup();
   const linked = "**R2.** Read [the guide](https://example.com/guide) first.";

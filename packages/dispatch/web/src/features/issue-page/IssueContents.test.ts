@@ -106,7 +106,7 @@ const counted = node("CORE-1", "issue", [
   ]),
 ]);
 
-test("the list holds the questions and qualifying threads nested in tree order, and no issue", () => {
+test("the list holds each question and each thread the reader began, nested, and no issue", () => {
   expect(shape(contentsOf(nested, "alice"))).toEqual([
     "ask-1: ask-2, comment-mine",
     "message-mine",

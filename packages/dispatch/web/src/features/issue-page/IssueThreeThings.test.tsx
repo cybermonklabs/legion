@@ -455,7 +455,7 @@ test("the checks are counted once each, by state, adding up to the number of che
   );
   try {
     const row = rowFor("verification");
-    const total = row.querySelector("[data-author-text]")?.parentElement?.textContent;
+    const total = row.querySelector("[data-brief-total]")?.textContent;
     expect(total).toBe(`4 ${VERIFICATION_WORDS.check_many}`);
     expect(filterSignals(root, "").verification.count, "the control counts other checks").toBe(4);
     const drawn = [...row.querySelectorAll<HTMLElement>("[data-brief-state]")];
