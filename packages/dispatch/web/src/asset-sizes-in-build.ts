@@ -109,7 +109,7 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * the commit or merge each names; the two older entry sizes are the readings of 2026-10-29 and
  * 2026-11-11 named above. The Mermaid worker and the ECharts chunk read the same at `53286717`
  * on 2026-11-23, seven days after `61e5c402` (`web/vite.config.ts`, beside
- * `chunkSizeWarningLimit`, which keeps only the entry's size now and no history).
+ * `chunkSizeWarningLimit`, which keeps no size of the entry and names this file for it).
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

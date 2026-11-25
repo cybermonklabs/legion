@@ -205,12 +205,11 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The entry - the one `assets/index-*.js` that dist/index.html names - reads 492,868 bytes,
-    // measured with `bun run build:web` and a 39-character `DISPATCH_BUILD` on 2026-11-25; the
-    // build id is in the entry, so CI's 40-character commit writes one byte more.
-    // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps the history of
-    // its size - each reading, and each move that took code out of the entry - and
-    // `bun run check:asset-sizes` reads it again.
+    // The entry - the one `assets/index-*.js` that dist/index.html names - has a budget of
+    // 500,000 bytes, which `web/src/asset-sizes-in-build.ts` holds. That file also keeps the
+    // history of the entry's size: each reading, and each move that took code out of the entry.
+    // `bun run check:asset-sizes` prints the entry's size for a build, and the `dispatch-ui` job
+    // runs it on each pull request that changes the dashboard.
     // The build splits out of the entry what no first paint draws, so every page parses less
     // before it draws anything (dispatch://INFRA-1109): the Inbox and its peek, the ask card, the
     // search bar, the Create issue dialog, the shortcut sheet, the reference-preview layer, the
