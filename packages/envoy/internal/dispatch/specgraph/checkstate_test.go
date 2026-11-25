@@ -634,6 +634,15 @@ func TestCheckState(t *testing.T) {
 			change: passReadAnotherSubject(checkStateGraphProgram, true), want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "ci_fault"}},
 		{name: "control: with no refusal, a pass of a program check of the graph at another transaction counts nowhere, and the job that ended at c2 reads ci_fault",
 			change: passReadAnotherSubject(checkStateGraphProgram, false), want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "ci_fault"}},
+		// The same of a failing example of a program check of the code: it counts never at a
+		// subject at its own commit, which CI tested (step 7), so at the fault's own commit, with the
+		// tree and the ties of c1, CI's refusal at c1 takes out no failing example that counts there,
+		// and the run of the job that ended there with no result that counts reads ci_fault (R9),
+		// with the refusal as without it.
+		{name: "R48, a refusal at c1 at the fault's own commit, where c1's caught failing example counts nowhere: the job that ended there reads ci_fault",
+			change: atTheFaultsOwnCommit(true), want: CheckState{State: "unknown", Reason: "ci_fault"}},
+		{name: "control: with no refusal, c1's caught failing example counts nowhere at the fault's own commit, and the job that ended there reads ci_fault",
+			change: atTheFaultsOwnCommit(false), want: CheckState{State: "unknown", Reason: "ci_fault"}},
 		// An agent or a query of the code counts its runs at their own commit alone, and its failing
 		// examples also at another commit, by C's rule for files (countsAtACommit): a refusal at c1
 		// takes out its caught failing example at c2, where it counts. With its pass at c1, no run
@@ -780,6 +789,21 @@ func TestCheckState(t *testing.T) {
 				t.Errorf("deriveChecks:\n got %+v\nwant %+v", states[i], want)
 			}
 		})
+	}
+}
+
+// atTheFaultsOwnCommit is the change of a row of TestCheckState: subject the commit of c1's caught
+// failing example, which CI tested, with the tree and the ties of c1, where the fault was planted,
+// so that the example counts nowhere there; no run of C at the subject; a run of C's job that ended
+// there with no result; and, with refused, CI's refusal of C at c1.
+func atTheFaultsOwnCommit(refused bool) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.commit(c.Results[1].Commit, "c1")
+		c.Subject.Commit = c.Results[1].Commit
+		c.JobRuns = []JobRun{{Job: "go-checks", Leg: "", Commit: c.Subject.Commit, Ended: true}}
+		if refused {
+			c.Uncited = map[string]map[string]string{"c1": {c.check: "test-not-in-code"}}
+		}
 	}
 }
 
