@@ -452,10 +452,11 @@ BROKER_CLIENT_SRC = "packages/cipher-client/**"
 # The shared test fixtures every other Bun package's tests import.
 TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
-# The test job's run of the live proofs' libraries, cited by its whole run: text. It leaves out
-# scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint), so the
-# natsfloor build that file starts is no read of this job.
-E2E_LIB_TESTS = "bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
+# The test job's run of the live proofs' libraries, cited by its whole run: text: the root
+# package.json's test:e2e-lib (bun test --timeout 200000 scripts/e2e/lib), which every runner uses.
+# It leaves out scripts/e2e/lib/nats-image.test.ts, whose one run is lint's (no filter gates lint),
+# so the natsfloor build that file starts is no read of this job.
+E2E_LIB_TESTS = "bun run test:e2e-lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts"
 
 
 def envoy_client_dep(why):
