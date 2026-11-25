@@ -214,7 +214,10 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 // at - an ask of that head that has not landed, on a pull request that is open - and whether it is.
 // A close keeps the record's ask (closed), but a closed pull request gets no push and no landing,
 // so nothing it holds is owed and no worker waits for it; a reopen drops the ask
-// (pullRequestOpened). Every reader of the ask reads this one rule, so none checks the state apart.
+// (pullRequestOpened). Every reader of the record's ask reads this one rule. Two checks of the
+// state stand apart, on purpose, since neither reads the record's ask: mergeForward's guards the
+// writing of a new ask, so a closed pull request is asked nothing, and leftMergeForwardAt's ends
+// every queued row of a pull request that is not open, the landed and the review among them.
 func openAsk(pr record.PullRequest) (record.MergeForward, bool) {
 	asked := pr.MergeForward
 	if pr.State != record.PullRequestOpen || asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {

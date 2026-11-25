@@ -20,12 +20,12 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but three: a pull request opened, reopened, synchronized, pushed to, closed or merged, a CI
-// settlement, a mergeability read and the end of its second read (conflictConfirmDone), a review,
-// a merge forward's ask (mergeForward), its withdrawal (withdrawUnowed), its landing
-// (mergeForwardLanded) and its clearing (clearMergeForward) - and a write site added later would
-// otherwise have to remember the mark. Routing them through one function is what makes forgetting
-// it hard rather than easy.
+// it but three, named below. It is written where a pull request is opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
+// its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
+// withdrawal (withdrawUnowed), its landing (mergeForwardLanded) and its clearing
+// (clearMergeForward) - and a write site added later would otherwise have to remember the mark.
+// Routing them through one function is what makes forgetting it hard rather than easy.
 //
 // The three exceptions write the row through the store themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built

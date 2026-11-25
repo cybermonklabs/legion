@@ -23,8 +23,9 @@ body: |-
   it stored it for another session: a copy Envoy stored for the session of an earlier launch, whose
   stop has not yet reached Envoy, tells the new launch nothing, so the row waits until the new
   session holds the role. The record's ask keeps the launch a row of it was last delivered to
-  (`sentLaunch`), recorded only at that row's delivered end, so it never names a launch nothing
-  told: a row that ends undelivered leaves the launch it was sent at to be told again. An ask on a
+  (`sentLaunch`), recorded only at that row's delivered end. A delivery where Envoy names no
+  holder is credited to the launch the row was sent at. A row that ends undelivered leaves the
+  launch it was sent at to be told again. An ask on a
   closed pull request is owed to nobody: no worker waits for it, and the completion fence tells
   none to wait for a landing that cannot come. A failed claim's notice tells the owning
   architect. One case can be told two times: a launch that resumes the session of an earlier
