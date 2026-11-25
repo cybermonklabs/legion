@@ -16,7 +16,7 @@
 -- accept and kept with the take. A no-number report that puts the take back sets turn_started false
 -- again (supervise's putBack), so the credit stops counting until the take's own turn starts; a
 -- take-back ends the copy; a finish by a clean report naming the take's number, or by the end frame
--- below supervise.TaskTakeContract, marks carried_ran, whose write folds the copy into
+-- below api.TaskTakeContract(), marks carried_ran, whose write folds the copy into
 -- design_news_told (the claim store's settleDesignNews), unchanged. Every other part of the function
 -- is 20261119203047's, so record.Postgres.TreeTold and every reader of what an audience took weigh
 -- the same answer as before, less the credit of a take whose turn has not started.

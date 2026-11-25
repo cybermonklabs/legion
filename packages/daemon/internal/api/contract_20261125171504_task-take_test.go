@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 	"time"
@@ -77,10 +78,7 @@ func taskTakeStates(t *testing.T) []State {
 			PendingCause: supervise.CauseNeverReconnected}
 	}
 	architect := failed("ses_architect_TAKE-1")
-	issues := make(map[string]Issue, len(state.Issues)+1)
-	for key, issue := range state.Issues {
-		issues[key] = issue
-	}
+	issues := maps.Clone(state.Issues)
 	issues["TAKE-1"] = Issue{Key: "TAKE-1", Generation: 1, Phase: phase.Implementing, Status: "in_progress", Tree: "TAKE-1",
 		Architect: &architect,
 		Workers:   map[claim.Role]PhaseView{claim.RoleImplementer: {Claim: failed("ses_implementer_TAKE-1"), Rounds: 1}}}

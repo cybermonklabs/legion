@@ -195,17 +195,25 @@ func (m *Machine) pauseHeldTry(ctx context.Context, l launchTry, pause int64) er
 // wake, in one of three ways:
 //
 //   - A claim in a turn — the stall backstop's case — is held to the deadline of now and stopped
-//     mid-turn, its task taken back interrupted (holdSuspension, suspendAtTimeout).
-//   - A claim no turn runs in whose take's turn ended with its report still to come (takePhase,
-//     waitReport) is held for that report, as the pause's own stop held over a turn is at that
-//     turn's end (suspend, holdForReport; row 39j of dispatch://INFRA-2811's plan), bounded by
-//     R5's second wait (Timeouts.TurnStart) from now rather than by a deadline of now, and by
-//     nothing where that bound is not set, as the pause's own stop is. The report finishes the
-//     task once and the suspension runs then (settleThenAfterTurn); with no report by the bound
-//     the task is taken back with the note of a cut turn and the suspension runs
-//     (suspendAtTimeout, reportBoundOver, reportMissed). Stopped at once, the process would take
-//     with it the report the wait is for, the task would be taken back as a cut turn though its
-//     turn ran whole, and the resume would run it again.
+//     mid-turn, its task taken back interrupted (holdSuspension, suspendAtTimeout). A claim being
+//     compacted with no turn under the compaction is held to now and stopped mid-compaction too,
+//     unless its take's turn ended with its report still to come (below).
+//   - A claim no turn runs in whose take's turn ended with its report still to come
+//     (reportWaitNow, waitReport) is held for that report (row 39j of dispatch://INFRA-2811's
+//     plan), bounded by R5's second wait (Timeouts.TurnStart) from now rather than by a deadline
+//     of now, and by nothing where that bound is not set, as the pause's own stop is. An idle
+//     claim's stop is held as the pause's own stop held over a turn is at that turn's end
+//     (suspend, holdForReport). A compaction with no turn under it is no turn (inTurn), so the
+//     stop of a claim being compacted after its take's turn is held too, with the same bound
+//     (holdSuspension). The report finishes the task once, and the suspension runs once the
+//     report and any compaction are over: at the report's finish (settleThenAfterTurn), or at
+//     the compaction's end where the report came while the compaction ran. That end
+//     (runHeldAtEnd) runs the stop once the report has settled the take, and otherwise gives the
+//     claim back in the state the compaction took it from, the suspension still held for the
+//     report. With no report by the bound the task is taken back with the note of a cut turn and
+//     the suspension runs (suspendAtTimeout, reportBoundOver, reportMissed). Stopped at once, the
+//     process would take with it the report the wait is for, the task would be taken back as a
+//     cut turn though its turn ran whole, and the resume would run it again.
 //   - Any other claim is stopped at once: one that records no process (holdSuspendUntilReady),
 //     and one whose process is registered, ready or idle (suspend) or still booting, since the
 //     launch the gate holds was to replace that process and a hold until ready would protect a
@@ -260,15 +268,17 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 }
 
 // pauseStopDeadline is the deadline of the gate's own stop (pauseStopDue). Over a claim no turn
-// runs in whose take's turn ended with its report still to come (takePhase, waitReport), which
-// that stop is held for (suspend, holdForReport), it is R5's second bound (Timeouts.TurnStart)
-// from now, as the wait for that report is bounded (reportBounded), and none where that bound is
-// not set, so the report can finish the task before the suspension runs. Over any other claim it
-// is now, so a claim in a turn is stopped mid-turn at once, and every other claim is stopped at
-// once as well.
+// runs in whose take's turn ended with its report still to come (reportWaitNow, waitReport), it
+// is R5's second bound (Timeouts.TurnStart) from now, as the wait for that report is bounded
+// (reportBounded), and none where that bound is not set, so the report can finish the task before
+// the suspension runs. That stop is held for the report. An idle claim's is held by suspend
+// (holdForReport). A compaction with no turn under it is no turn (inTurn), so the stop of a claim
+// being compacted is held by holdSuspension, and at the compaction's end it stays held while the
+// report is still to come (runHeldAtEnd). Over any other claim it is now, so a claim in a turn is
+// stopped mid-turn at once, and every other claim is stopped at once as well.
 func (m *Machine) pauseStopDeadline() time.Time {
 	now := m.deps.Clock.Now()
-	if m.busy() || m.takePhase() != waitReport {
+	if m.reportWaitNow() != waitReport {
 		return now
 	}
 	if m.deps.Timeouts.TurnStart <= 0 {

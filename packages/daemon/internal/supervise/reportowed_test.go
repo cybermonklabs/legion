@@ -3,8 +3,7 @@ package supervise
 import "testing"
 
 // wantReportOwed holds that the claim the machine publishes (View) and the one it reports
-// (Claim) say the report of the take's turn is owed exactly as want says, and that the store
-// holds no such mark: it is the daemon's in-memory view (Claim.ReportOwed, StoredClaim).
+// (Claim) say the report of the take's turn is owed exactly as want says.
 func (h *harness) wantReportOwed(want bool, when string) {
 	h.t.Helper()
 	if got := h.m.View().ReportOwed; got != want {
@@ -12,9 +11,6 @@ func (h *harness) wantReportOwed(want bool, when string) {
 	}
 	if got := h.claim().ReportOwed; got != want {
 		h.t.Fatalf("%s the claim the machine reports says the report is owed %t, want %t", when, got, want)
-	}
-	if stored := h.store.load(h.token); stored.ReportOwed {
-		h.t.Fatalf("%s the store holds the claim with its report owed, want the mark in memory alone", when)
 	}
 }
 

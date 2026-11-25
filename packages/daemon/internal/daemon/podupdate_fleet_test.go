@@ -830,8 +830,10 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // pushes its work before it is replaced, and it cannot push without the daemon it already speaks
 // to (api's staleClaim). With no round open the same claim is refused the stale-caller 409 — the
 // negative control — and the round is what turns that refusal into the 200 a completion needs.
-// This daemon's contract is the one that takes tasks, so the worker on another contract whose
-// plugin takes them is one ahead of it.
+// The worker whose plugin takes tasks registers on the contract after this daemon's own
+// (api.DaemonAPIVersion() + 1), which is another contract and at or above api.TaskTakeContract()
+// whatever entry a later build adds. While this daemon's own contract is the take contract, no
+// contract below it takes tasks.
 //
 // A worker whose plugin takes no task, on a contract below api.TaskTakeContract(), is refused
 // inside the round as outside it: on its old contract it takes none of its tasks, so the

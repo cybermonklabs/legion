@@ -624,8 +624,9 @@ wait`, with the attempt and the wait, and its end `supervise: the wait after a p
 over; the task is given again`. Such a turn is no launch failure: the worker reports it refused
 with the error beside it, its `supervise: a turn ended` line reads `refused=false` and
 `providerError=true`. A run of refused turns fails no claim, however long: the line's `refusedRun`
-counts it, and the daemon answers each report with that count, for the worker's own log. A turn
-with a provider error whose report names no task, or a number no take of the claim holds — a
+counts it, up to `launch_failure_limit`, and the daemon answers each report with that count, for
+the worker's own log.
+A turn with a provider error whose report names no task, or a number no take of the claim holds — a
 reminder's, a card's or a background result's turn — reaches no wait. The text of the next accepted
 take tells the agent the turn stopped, names the HTTP status the provider answered when it
 answered one, and carries none of the provider's own words. A content filter is given again

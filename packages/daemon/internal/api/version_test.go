@@ -142,9 +142,6 @@ func TestTheOwnerPlanContractIsTheContractThatAddedThePlan(t *testing.T) {
 // entry moves DaemonAPIVersion() and none of these.
 func TestTaskTakeContractIsTheContractThatIntroducedTheTake(t *testing.T) {
 	take := TaskTakeContract()
-	if take != entryNumber(taskTakeContract) {
-		t.Fatalf("TaskTakeContract() = %d, want the task-take entry's number %d", take, entryNumber(taskTakeContract))
-	}
 	if !slices.ContainsFunc(NumberedEntries(), func(entry NumberedEntry) bool {
 		return entry.ID == taskTakeContract && entry.Number == take
 	}) {

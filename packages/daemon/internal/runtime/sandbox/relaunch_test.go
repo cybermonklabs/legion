@@ -27,6 +27,7 @@ import (
 	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -2137,7 +2138,7 @@ func loggedSandboxMachine(
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
 		PluginContract:   24,
-		TaskTakeContract: testTakeContract,
+		TaskTakeContract: api.TaskTakeContract(),
 		RefreshGate:      supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
@@ -2145,12 +2146,6 @@ func loggedSandboxMachine(
 	}
 	return machine, store, specs
 }
-
-// testTakeContract is the take contract this package's machines are handed
-// (supervise.Deps.TaskTakeContract): any number above 275, internal/api's LastNumberedContract,
-// will do, since only api's registry knows the number a build gives the task-take entry, and
-// every build gives it one above 275.
-const testTakeContract = 276
 
 type sandboxMachineSpecs struct {
 	spec runtime.SpawnSpec
