@@ -48,9 +48,15 @@ const SessionExclusiveVariable = "OMP_SESSION_EXCLUSIVE"
 const SessionExclusiveValue = "1"
 
 // launchSecrets are every secret the daemon hands a launch in its spec (daemon.launchSecrets: the
-// Envoy bearer and the pane NATS nkey seed, each when the daemon has one), which a runtime gives
-// the agent as a file of the launch's own behind a `<NAME>_FILE` pointer it sets per launch.
-var launchSecrets = []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}
+// Envoy bearer, the deployment's private-name rule file and the pane NATS nkey seed, each when the
+// daemon has one), which a runtime gives the agent as a file of the launch's own behind a
+// `<NAME>_FILE` pointer it sets per launch. Each is refused here whether or not this daemon has
+// it: a pane_env value would otherwise stand in for the secret of a daemon that named none, and
+// be refused at every launch the day the daemon names one. LEGION_PRIVATE_NAME_RULES is
+// leakguard.RulesSecret, written out so that this package does not import the leak guard and the
+// rule engine behind it for one name; internal/daemon's
+// TestEveryLaunchSecretsPointerIsRefusedAsAPaneVariable holds the two spellings together.
+var launchSecrets = []string{"ENVOY_TOKEN", "LEGION_PRIVATE_NAME_RULES", "NATS_NKEY_SEED"}
 
 // urlPassword is a URL whose userinfo carries a password, `scheme://user:password@`, anywhere in
 // a value: a database URL, a NATS URL with credentials, one of a comma-separated list of either.
