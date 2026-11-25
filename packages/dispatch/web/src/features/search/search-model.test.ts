@@ -101,9 +101,34 @@ test("a hit that is the issue itself shows its title once: the marked snippet wh
     expect(hitIsItsIssue(result(`${kind}-1`, owner, kind))).toBe(false);
   }
   // The snippet is the whole title: it shows, with its marks.
-  expect(issueHitTitle(issue, "API: rate limit headers")).toBeUndefined();
-  // The headline started at the first word that matched: the whole title shows instead.
-  expect(issueHitTitle(issue, "rate limit headers")).toBe("API: rate limit headers");
+  expect(issueHitTitle(issue, [{ mark: false, text: "API: rate limit headers" }])).toBeUndefined();
+  // The headline cut the title to the window around the match: the whole title shows instead,
+  // the word the window marked marked at its place in it (visual review n2, 13-filing-line).
+  expect(
+    issueHitTitle(issue, [
+      { mark: false, text: "rate limit " },
+      { mark: true, text: "headers" },
+    ])
+  ).toEqual([
+    { mark: false, text: "API: rate limit " },
+    { mark: true, text: "headers" },
+  ]);
+  // A window with spaces at its ends still stands in the title by its words.
+  expect(
+    issueHitTitle(issue, [
+      { mark: false, text: " rate " },
+      { mark: true, text: "limit" },
+      { mark: false, text: " headers " },
+    ])
+  ).toEqual([
+    { mark: false, text: "API: rate " },
+    { mark: true, text: "limit" },
+    { mark: false, text: " headers" },
+  ]);
+  // A window the title does not hold as written marks nothing.
+  expect(issueHitTitle(issue, [{ mark: true, text: "rate-limit" }])).toEqual([
+    { mark: false, text: "API: rate limit headers" },
+  ]);
 });
 
 // Rule 1: no marker text (review N2, 13-filing-line). A snippet is a window of a body, and a

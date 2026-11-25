@@ -452,7 +452,7 @@ test("a snippet begins and ends with … where the server says its window cut th
   }
 });
 
-test("an issue hit whose snippet starts past the title's first words shows the whole title, once", async () => {
+test("an issue hit whose snippet starts past the title's first words shows the whole title, once, with the word that matched marked", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   // The server's headline of "API: rate limit headers" for `headers` starts at "rate".
@@ -481,6 +481,8 @@ test("an issue hit whose snippet starts past the title's first words shows the w
     expect(option).toHaveTextContent("LEGION-30");
     expect(option).toHaveTextContent("API: rate limit headers");
     expect(option.textContent?.match(/rate limit headers/gu)).toHaveLength(1);
+    const marked = option.querySelectorAll("mark[data-search-highlight]");
+    expect(Array.from(marked, (mark) => mark.textContent)).toEqual(["headers"]);
   } finally {
     search.mockRestore();
     view.unmount();

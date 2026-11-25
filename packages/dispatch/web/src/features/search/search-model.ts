@@ -80,16 +80,59 @@ export function hitIsItsIssue(result: SearchResult): boolean {
   return result.kind === "issue" && result.owner.kind === "issue";
 }
 
+/** A run of a title a hit shows: its words, and whether the search matched them. */
+export interface TitleRun {
+  readonly text: string;
+  readonly mark: boolean;
+}
+
 /**
  * The title a hit that is the issue itself shows in place of its snippet, or `undefined` where
  * the snippet is the whole title and shows instead, with the words that matched marked.
- * `snippetText` is the snippet's text without its marks. The server's headline returns a short
- * title whole, but it can start at the first word that matched ("rate limit headers" of "API:
- * rate limit headers"), and the row then shows the whole title, unmarked.
+ * `segments` is the snippet as runs of text, each marked where the search matched it
+ * (`snippetSegments`). The server's headline returns a short title whole, but it can cut it to the
+ * window around the words that matched ("rate limit headers" of "API: rate limit headers"), and
+ * the row then shows the whole title, with the words the window marked marked at their place in
+ * it, as a title the headline returned whole shows them. A window that stands nowhere in the title
+ * as written marks nothing.
  */
-export function issueHitTitle(result: SearchResult, snippetText: string): string | undefined {
+export function issueHitTitle(
+  result: SearchResult,
+  segments: readonly TitleRun[]
+): readonly TitleRun[] | undefined {
   const title = result.owner.title ?? "";
-  return snippetText.trim() === title.trim() ? undefined : title;
+  const windowText = segments.map((segment) => segment.text).join("");
+  if (windowText.trim() === title.trim()) return undefined;
+  // The window's words, the spaces at its two ends aside, which the headline may add or drop.
+  const words = trimmedRuns(segments);
+  const core = words.map((run) => run.text).join("");
+  const at = core === "" ? -1 : title.indexOf(core);
+  if (at < 0) return [{ mark: false, text: title }];
+  const runs: TitleRun[] = [{ mark: false, text: title.slice(0, at) }, ...words];
+  runs.push({ mark: false, text: title.slice(at + core.length) });
+  // Neighbouring runs of one kind are one run, so the title is its fewest pieces.
+  const joined: TitleRun[] = [];
+  for (const run of runs) {
+    const previous = joined.at(-1);
+    if (run.text === "") continue;
+    if (previous?.mark === run.mark) {
+      joined[joined.length - 1] = { mark: run.mark, text: previous.text + run.text };
+    } else {
+      joined.push(run);
+    }
+  }
+  return joined;
+}
+
+/** `runs` without the whitespace at the start of the first and the end of the last. */
+function trimmedRuns(runs: readonly TitleRun[]): TitleRun[] {
+  const trimmed = runs.map((run) => ({ ...run }));
+  const first = trimmed[0];
+  if (first !== undefined) trimmed[0] = { ...first, text: first.text.trimStart() };
+  const lastAt = trimmed.length - 1;
+  const last = trimmed[lastAt];
+  if (last !== undefined) trimmed[lastAt] = { ...last, text: last.text.trimEnd() };
+  return trimmed.filter((run) => run.text !== "");
 }
 
 /** One piece of a directive's syntax in a text: the characters from `start` to `end` come out,

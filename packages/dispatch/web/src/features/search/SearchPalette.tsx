@@ -409,10 +409,10 @@ function ResultOption({
   // The server reads a hit's snippet for display and marks the words that matched in the tree
   // it sends (`snippet_tree`), which a hit that is the issue itself draws as its title. The
   // sentinels the server leaves in `snippet` itself come out for the literal text a title falls
-  // back to where no tree reached it.
-  const source = snippetSegments(result.snippet)
-    .map((segment) => segment.text)
-    .join("");
+  // back to where no tree reached it, and mark the matched words of a whole title its headline
+  // cut (`issueHitTitle`).
+  const segments = snippetSegments(result.snippet);
+  const source = segments.map((segment) => segment.text).join("");
   // The route table carries the kind as a plain string; a kind this build has no icon for draws
   // none, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
@@ -423,7 +423,7 @@ function ResultOption({
   // owner itself.
   const document = result.owner.kind === "issue" ? result.artifact?.name : undefined;
   const itself = hitIsItsIssue(result);
-  const title = itself ? issueHitTitle(result, source) : undefined;
+  const title = itself ? issueHitTitle(result, segments) : undefined;
   const words = muted ? textMutedOnSelectedCard : textPrimaryOnSurface;
   const highlight = `rounded px-0.5 ${searchHitBg} ${searchHitText}`;
   // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
@@ -456,7 +456,22 @@ function ResultOption({
       />
     );
   } else {
-    named = <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>{title}</span>;
+    // The whole title, its matched words marked as the snippet's tree marks them: a `mark` the
+    // highlight's own attribute names (`HIGHLIGHT_SELECTOR`, MarkdownPreview).
+    named = (
+      <span className={`min-w-0 flex-1 truncate text-sm ${words}`}>
+        {title.map((run, index) =>
+          run.mark ? (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a run is its place in the title, which never reorders.
+            <mark className={highlight} data-search-highlight="" key={index}>
+              {run.text}
+            </mark>
+          ) : (
+            run.text
+          )
+        )}
+      </span>
+    );
   }
 
   return (
