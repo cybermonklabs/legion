@@ -1,14 +1,18 @@
 /** The priorities page over one recorded answer of the priorities read: the tab of priority work
  *  in backlog or icebox with the row of an issue that states a live priority and stands in
  *  backlog, the priorities table sorted by the column an older link names and drawn by the layout
- *  a reader's browser kept under that column's former id, and the list's layout kept under the
- *  key it had before. Each reads what the browser draws from that fixed answer and what it keeps
- *  in its own storage, and none of it is a claim about what the server decides, so the row runs
- *  against a recording rather than against a harness (packages/dispatch/README.md, "The stubbed
- *  layer"). Each load after the first starts from a storage seeded as the release before left it:
- *  each table moves its layout on its first render (`moveTableStore` and `renameStoredColumns`,
- *  `web/src/features/project/issues-table-storage.ts`), and the priorities table reads the
- *  address's column id the same way (`PRIORITY_FORMER_IDS`). */
+ *  a reader's browser kept under that column's former id, the list's layout kept under the key it
+ *  had before, and the rows the priorities table shows at a filter on that column under its
+ *  former id and under its id now, beside a second live priority under which no issue stands.
+ *  Each reads what the browser draws from that fixed answer and what it keeps in its own storage,
+ *  and none of it is a claim about what the server decides, so the row runs against a recording
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). Each load
+ *  after the first starts from a storage seeded as the release before left it: each table moves
+ *  its layout on its first render (`moveTableStore` and `renameStoredColumns`,
+ *  `web/src/features/project/issues-table-storage.ts`), and the priorities table reads an
+ *  address's column id the same way (`PRIORITY_FORMER_IDS`), and no filter at all for a count
+ *  column, which has none (`readTableView`,
+ *  `web/src/features/priorities/priority-table-view.ts`). */
 import { expect, type Page } from "@playwright/test";
 
 import { createIssue, createPriority, createProject, patchIssue } from "./api";
@@ -63,9 +67,12 @@ async function loadWithStorage(page: Page, target: string, layouts: Record<strin
 const test = stubbed(async () => {
   await createProject({ key: "CORE", name: "Core" });
   const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  // A second live priority, under which no issue stands: its backlog count is 0, so a filter on
+  // that count at the count the first priority's row holds would leave its row out.
+  const second = await createPriority({ owner: "alice", title: "Retire the old dashboard" });
   const issue = await createIssue({ project: "CORE", title: "Daemon rollout to the fleet" });
   await patchIssue(issue.key, { advances: [priority.id], status: "backlog" });
-  return { issue: issue.key, priority: priority.title, title: issue.title };
+  return { issue: issue.key, priority: priority.title, second: second.title, title: issue.title };
 });
 
 test("the priorities page lists priority work in backlog or icebox and moves the layouts a reader kept @pr", async ({
@@ -128,11 +135,18 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   expect(backlog.visibility.project).toBe(false);
 
   // The third load, from a layout that hid the backlog column under its former id, at an older
-  // link's filter on that column: the column stays hidden, under its id now. A count has no
-  // filter (`hasFilter`), so the filter, read as the column's, filters nothing, as one under its
-  // id now does: the priority's row stands under a count its row holds and under one it does not.
+  // link's filter on that column at the count the first priority's row holds: the column stays
+  // hidden, under its id now. The fourth, from the same layout, at the same count under the
+  // column's id now: the column hidden there too. A count has no filter (`hasFilter`), so each
+  // filter, read as the column's, filters nothing: both loads show the same rows, and they are
+  // every row the table holds, the second priority's, whose count is 0, among them.
+  const heldCount = 1;
   const priorityRow = priorities.getByRole("row", { name: new RegExp(scene.priority) });
-  await loadWithStorage(page, `/priorities?p.f.${FORMER_COLUMN_ID}=1`, {
+  const rowNames = () =>
+    priorities
+      .locator("[data-issue-row]")
+      .evaluateAll((rows) => rows.map((drawn) => drawn.getAttribute("aria-label") ?? ""));
+  await loadWithStorage(page, `/priorities?p.f.${FORMER_COLUMN_ID}=${heldCount}`, {
     [PRIORITIES_KEY]: formerHiddenLayout,
   });
   await expect(priorityRow).toBeVisible();
@@ -140,8 +154,20 @@ test("the priorities page lists priority work in backlog or icebox and moves the
   await expect
     .poll(async () => (await stored(PRIORITIES_KEY))?.visibility)
     .toEqual({ closed: false, backlog: false });
-  await loadWithStorage(page, `/priorities?p.f.${FORMER_COLUMN_ID}=7`, {
+  const underFormerId = await rowNames();
+  await loadWithStorage(page, `/priorities?p.f.backlog=${heldCount}`, {
     [PRIORITIES_KEY]: formerHiddenLayout,
   });
   await expect(priorityRow).toBeVisible();
+  await expect(backlogHeader).toHaveCount(0);
+  const underId = await rowNames();
+
+  // The rows the table shows with no filter, read in a fresh load of the same layout at the
+  // address with no filter at all, so the filter is all that differs from the two loads above.
+  await loadWithStorage(page, "/priorities", { [PRIORITIES_KEY]: formerHiddenLayout });
+  await expect(priorityRow).toBeVisible();
+  const unfiltered = await rowNames();
+  expect(underId).toEqual(underFormerId);
+  expect(underId).toEqual([`#1 ${scene.priority}`, `#2 ${scene.second}`]);
+  expect(unfiltered).toEqual(underId);
 });

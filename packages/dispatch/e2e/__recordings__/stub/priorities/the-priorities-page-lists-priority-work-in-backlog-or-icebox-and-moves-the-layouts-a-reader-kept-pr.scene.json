@@ -1,5 +1,6 @@
 {
   "issue": "CORE-1",
   "priority": "Ship the daemon everywhere",
+  "second": "Retire the old dashboard",
   "title": "Daemon rollout to the fleet"
 }
