@@ -54,6 +54,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   meInbox: (client) => client.meInbox("inbox"),
   credentialPending: (client) => client.credentialPending(),
   createProject: (client) => client.createProject({ key: "DSP", name: "Dispatch" } as never),
