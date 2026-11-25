@@ -119,8 +119,18 @@ type localRuntime struct {
 	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
 	// proof whose panes call a real model, which reaches the pane's process and nothing else.
 	environment []string
-	conns       runtime.Conns
-	stream      string
+	// claimEnvironment is what a proof gives one claim's pane after environment, nil for none: a
+	// Claude Code pane's own model endpoint, which no other pane of the proof shares.
+	claimEnvironment func(claim.Token) []string
+	// standsIn says whether the proof stands in for a claim's agent itself, nil for none. Such a
+	// launch writes the claim's boot-token file as every launch does, and its process is a
+	// placeholder (standInCommand) that runs no agent and no shim: the proof dials the worker
+	// stream with the boot token Launches names and registers over the daemon's routes, as the
+	// package's fake-runtime walks do. The placeholder gives the runtime a process to observe,
+	// stop and reap as it does a pane's.
+	standsIn func(claim.Token) bool
+	conns    runtime.Conns
+	stream   string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -366,7 +376,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = append(r.paneEnvironment(variables, workDir), pairs...)
+	cmd.Env = append(r.paneEnvironment(spec.Claim, variables, workDir), pairs...)
 	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
 	if spec.ResumeSessionFile != "" {
 		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
@@ -409,8 +419,14 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	return pane.locator, nil
 }
 
+// standInCommand is the placeholder process of a claim the proof stands in for (standsIn): it
+// runs no agent and no shim, and lasts longer than any proof, so the runtime observes, stops and
+// reaps it as it does a pane's process, and the claim's stop ends it.
+var standInCommand = []string{"sleep", "86400"}
+
 // agentCommand is the child one spawn runs, and the environment pairs that harness carries beyond
-// what a pane is told: the shim around the agent either way, as a pane runs it.
+// what a pane is told: the shim around the agent either way, as a pane runs it, or the
+// placeholder of a claim the proof stands in for (standInCommand).
 //
 // On Oh My Pi the shim's argv names the Oh My Pi this runtime was given, which needs no shell. On
 // Claude Code the inner command is the one `internal/runtime/tmux`'s own launcher builds
@@ -421,6 +437,9 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 // runtime has no tmux for: each value is a pair of the child's own environment, after the ones a
 // pane is told, as tmux puts them after the operator's.
 func (r *localRuntime) agentCommand(spec runtime.SpawnSpec, bootToken runtime.SecretFile, promptFile string) (argv, pairs []string, err error) {
+	if r.standsIn != nil && r.standsIn(spec.Claim) {
+		return slices.Clone(standInCommand), nil, nil
+	}
 	if runtime.Of(spec.Backend) != runtime.BackendClaude {
 		argv = []string{
 			r.legion, "worker-shim",
@@ -461,10 +480,11 @@ func (r *localRuntime) workDir(issue string) string {
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
 // daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
-// itself (environment). Nothing of the test process's own environment rides through: this test
-// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
-// and a pane that inherited them would register with the wrong daemon.
-func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
+// itself (environment) and token's pane alone (claimEnvironment). Nothing of the test process's
+// own environment rides through: this test runs inside a Legion pod, whose environment names that
+// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
+// wrong daemon.
+func (r *localRuntime) paneEnvironment(token claim.Token, variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
 		"HOME=" + r.home,
@@ -473,7 +493,11 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(append(env, r.environment...), variables...)
+	env = append(env, r.environment...)
+	if r.claimEnvironment != nil {
+		env = append(env, r.claimEnvironment(token)...)
+	}
+	return append(env, variables...)
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {
