@@ -528,7 +528,7 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 			r.environ = append(r.environ, entry)
 		}
 	}
-	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
+	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion()))
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)

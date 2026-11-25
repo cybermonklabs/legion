@@ -1413,8 +1413,12 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
-	// comment it answers belongs to.
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID); err != nil {
+	// comment it answers belongs to, in that one's project.
+	replyProject, replyParties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
+		return plan, err
+	}
+	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
 		return plan, err
 	}
 	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
@@ -1791,9 +1795,9 @@ func (s *server) answerCommentDelivery(w http.ResponseWriter, r *http.Request, i
 
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
-// store addresses it. itemID is empty for a thing this child gives no node, which a message is
-// (the child that moves the inbox, the messages and the read state owns messages and their
-// deliveries).
+// store addresses it. itemID is empty for a thing whose delivery this store records no tuple of
+// yet, which a message is: a message is a node of its project, but the change that records its
+// deliveries is a later one.
 type answeredDelivery struct {
 	session  string
 	was      string
@@ -1818,8 +1822,9 @@ type answeredDelivery struct {
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
 // An attempt the listener had already taken carries its own comment.delivery receipt, and the
 // outbox's record of that receipt states the tuple (outbox's mentionReached); stating it again
-// under this event would write one delivery as two. A thing this child gives no node carries no
-// tuple at all, and a session past the bound is no far end the store can key.
+// under this event would write one delivery as two. A thing whose delivery this store records no
+// tuple of yet carries no tuple at all, and a session past the bound is no far end the store can
+// key.
 //
 // It is queued after the write that records who answered (graphstore.QueueAuthored), which takes
 // the author's person node and their session node in one statement in ascending (kind, id). The

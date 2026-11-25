@@ -20,14 +20,14 @@ related_issues:
 Extends docs/solutions/legion/a-contract-bumps-sweep-includes-test-expectations-spelling-the-bare-number-replace-them-with-the-packages-derived-constant-LEGION-636.md.
 
 That document is right for an expectation that should track the current contract (`this daemon
-requires <n>`): write it as the derived constant, and the next bump changes nothing. This rule is
+requires <n>`): write it as the derived value, and the next entry changes nothing. This rule is
 about the other class, the one where the derived spelling hides the defect it exists to catch.
 
 - When a constant must equal **the exact number at which a capability appeared**, and not merely
   sit below the current version, assert **equality against a hand-written literal** in the one
   test where both packages are importable. A bound (`<=`, `>=`) is satisfied by the right value
-  and by the wrong one alike, so a forward merge that renumbers the version leaves the constant
-  behind under a green suite.
+  and by the wrong one alike, so a constant left at the wrong number passes a green suite, as one
+  did when a forward merge moved the contract it named (below).
 - Keep the bound as a **second** assertion in the same test. It catches the other direction,
   which is a different failure.
 - A test whose purpose is to catch a wrong constant spells its numbers **absolutely**. A relative
@@ -37,12 +37,12 @@ about the other class, the one where the derived spelling hides the defect it ex
   a comment at both ends, so a later reader does not relax the pin to unblock a merge.
 - Treat an edit to that literal as a contract change, not a test fix.
 
-Renumbering is the normal case in this repository, not an accident: `api/version.go` records
-contracts renumbered after a release took the number first. Any constant derived from a released
-serial — a daemon contract, a plugin manifest's `daemonApiVersion`, a wire schema version — needs
-this pin. Which number to take after a collision is
-docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md;
-this is the half about the constants derived from it.
+The pin is for a numbered entry, whose number is released and frozen at 275 or below: a constant
+derived from a released serial — a numbered contract, a wire schema version — equals that serial
+exactly. A constant of a contract entry added since dispatch://INFRA-1569 is the entry's id, and
+code compares through the entry's number (`entryNumber(<x>Contract)`), which is its place in
+`main`'s merge order and stands in no source line. A test cannot pin that number to a literal: it
+compares one entry's number with another's, or bounds it by `DaemonAPIVersion()`.
 
 ## Evidence (INFRA-484, sjawhar/legion#2538)
 
