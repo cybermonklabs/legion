@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -501,7 +502,7 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
-	timed, cancel := context.WithTimeout(ctx, requestTimeout)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&requestTimeout))
 	defer cancel()
 	status, body, err := operator{base: daemonURL}.do(timed, http.MethodGet, "/legion/v1/state", nil)
 	if err != nil {

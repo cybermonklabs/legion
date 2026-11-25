@@ -43,8 +43,9 @@ jobs:
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
       - run: bun install --frozen-lockfile
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
       - name: Lint Claude Envoy plugin
-        run: bun run lint
+        run: bun run lint --diagnostic-level=warn --max-diagnostics=none
         working-directory: packages/claude-envoy
       - name: Typecheck Claude Envoy plugin
         run: bun run typecheck
