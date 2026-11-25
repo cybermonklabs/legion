@@ -11,10 +11,12 @@
  * files of those rows do not change: they read today's page.
  */
 
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import type { Artifact, ArtifactUploadResponse } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
@@ -30,6 +32,7 @@ import {
   PRESET_ORDER,
   PULL_REQUEST_STATE_WORDS,
   STATE_LINES,
+  sentenceCase,
   UNASKED_SOURCES,
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
@@ -44,6 +47,7 @@ import {
   createIssue,
   createIssueArtifact,
   createMessage,
+  createNamedVersion,
   createProject,
   dashboardOrigin,
   documentBase,
@@ -86,6 +90,7 @@ import {
 } from "./issue-layout-seed";
 import { asPlanner, PLANNER_TITLE, PROJECT, plannerActor } from "./issue-layout-seed-support";
 import {
+  checkBlockId,
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
   requirementBlockId,
@@ -116,6 +121,7 @@ import {
   drawnRows,
   expectIssuePageDrawn,
   expectOpeningLanded,
+  focusRow,
   focusThePage,
   nodeRow,
   nodeRows,
@@ -133,8 +139,10 @@ import {
   childRows,
   childrenSection,
   expectActivePreset,
+  FALLBACK_LINES,
   focusedNodeId,
   focusInside,
+  GONE_COMMENT,
   nodeBodies,
   onScreen,
   openEveryDeeperBranch,
@@ -144,7 +152,13 @@ import {
   treeActiveDescendant,
 } from "./issue-page-i";
 import { drawnContentsEntries, scrollAtRest, wordAtCaret } from "./issue-page-j";
-import { historyEntries, historyItem, historyPanel, stepsSection } from "./issue-page-m";
+import {
+  focusedNodeFacts,
+  historyEntries,
+  historyItem,
+  historyPanel,
+  stepsSection,
+} from "./issue-page-m";
 import {
   type AddressContent,
   type AddressSeed,
@@ -152,13 +166,19 @@ import {
   assertInventoryCarried,
   assertNoSidewaysScroll,
   chromeTexts,
+  documentLink,
+  documentRow,
   documentsList,
+  documentsRows,
   drawsPart,
+  expectActiveControl,
   expectDocumentConnected,
+  expectFocusLandedOnce,
   filterBox,
   filterControl,
   filterRowLooks,
   filterRowReading,
+  firstDocumentLink,
   type HeaderSize,
   headerLimit,
   headerSize,
@@ -166,11 +186,12 @@ import {
   INVENTORY_RENAMES,
   type InventoryEntry,
   identityBlock,
+  logFocusMoves,
   nodeMenuButton,
-  nodeMenuItems,
   OLD_PAGE_ADDRESSES,
   offered,
   offThePalette,
+  openDocuments,
   openedArtifact,
   openedEditor,
   openFilterBox,
@@ -185,10 +206,13 @@ import {
   REFLOW_STATES,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
+  showMoreControl,
   specAddress,
   stateName,
   undividedTexts,
+  uploadInDocuments,
   uploadInput,
+  VIEWS_FOCUS,
   versionControl,
   versionControlButton,
   versionPicker,
@@ -463,36 +487,66 @@ test("the count of what waits on the reader opens the first thing that waits @ph
 });
 
 // Ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md, "The filter row": one line at
-// every width. From 761 px up the node menu, the filter by words, Keys and - with a filter on -
-// the version control are small controls at its right end, each drawn as Keys is, and the words
-// box opens from its control; at 760 px and below the row is the one control and Outline, and
-// those three are in the Outline sheet, with a document open too. Each control and the open box
+// every width, from 320 px to 1920 px. In the row Documents stands after Decisions, and in the one
+// control below 1280 px; the two small controls, the version control (with a view on or a document
+// open) and the filter by words, stand at its right end before Keys from 1024 px, each drawn as
+// Keys is, and the words box opens from its control. Below 1024 px, with a view on, they stand in
+// the Outline sheet the Outline control opens; on Documents, and with a document open, the page
+// draws no sheet and the version control stands at the row's end. Each control and the open box
 // is at least 24 px tall, the row is drawn in the page's colours alone, and `t a` and `t f` open
-// the menu and the box with the focus in them (part N's R4).
+// Documents' list with the focus on its first row and the box with the caret in it (part N's R4).
 test("the filter row is one line at every width @phone", async ({ browser }) => {
-  // Measured in the issue pod, alone: 49.5 s on chromium, which reads six widths, and 22.6 s on
-  // iphone, which reads one; the bound is three times the longer, for a slow leg.
+  // Measured in the issue pod, alone: 47.0 s on chromium, which reads nine widths of three
+  // controls, and 13.4 s on iphone, which reads one; the bound is about three times the longer,
+  // for a slow leg.
   test.setTimeout(150_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
-    const small = [CONTROL_LABELS.other_nodes, CONTROL_LABELS.filter, CONTROL_LABELS.keys];
-    for (const width of desktopProject ? [1440, 1279, 1025, 1024, 761, 390] : [390]) {
-      for (const preset of ["conversation", "spec"] as const) {
+    const names = PRESET_ORDER.map((one) => PRESET_NAMES[one]);
+    const specName =
+      ((await getIssue(seeded.key)).artifacts ?? []).find((one) => one.id === seeded.specArtifactId)
+        ?.name ?? "";
+    for (const width of desktopProject
+      ? [1920, 1440, 1279, 1025, 1024, 1000, 761, 390, 320]
+      : [390]) {
+      for (const preset of ["conversation", "spec", "documents"] as const) {
         await page.setViewportSize(viewportAt(width));
         await gotoIssue(page, presetPath(seeded.key, preset));
-        await expectIssuePageDrawn(page);
-        await expectActivePreset(page, PRESET_NAMES[preset]);
-        const at = `at ${width} px with ${preset === "spec" ? "the Spec filter" : "no filter"} on`;
-        // `expectActivePreset` above waited for the view's controls, which stand inside the
+        if (preset !== "documents") await expectIssuePageDrawn(page);
+        await expectActiveControl(page, preset);
+        const on =
+          preset === "documents"
+            ? PRESET_NAMES.documents
+            : preset === "spec"
+              ? "the Spec filter"
+              : "no filter";
+        const at = `at ${width} px with ${on} on`;
+        const version = preset === "spec" ? [CONTROL_LABELS.version] : [];
+        const filter = preset === "documents" ? [] : [CONTROL_LABELS.filter];
+        const keys = width > 760 ? [CONTROL_LABELS.keys] : [];
+        // Below 1024 px a view's two small controls stand in the Outline sheet; Documents draws no
+        // outline and so no sheet.
+        const inSheet = width < 1024 && preset !== "documents";
+        if (width >= 1024 && preset === "spec") {
+          await expect(versionControlButton(page), `no version control ${at}`).toBeVisible();
+        }
+        if (inSheet && preset === "spec") {
+          // The sheet opens from the Outline control, which stands in the row below 1024 px: a row
+          // that draws none leaves the version control nowhere.
+          await expect(
+            outlineControl(page),
+            `the version control is not in the Outline sheet at ${width} px`
+          ).toBeVisible();
+        }
+        // `expectActiveControl` above waited for the view's controls, which stand inside the
         // filter row, so the row is drawn and one read finds it.
         const row = await filterRowReading(page);
         if (row === null) throw new Error(`the page draws no filter row ${at}`);
         console.log(`filter row ${at}: ${JSON.stringify(row)}`);
-        expect(row.lines, `the filter row is not one line ${at}: ${row.controls.join(" | ")}`).toBe(
-          1
-        );
+        const wrapped = `the filter row is not one line ${at}: ${row.controls.join(" | ")}`;
+        expect(row.lines, wrapped).toBe(1);
         expect(row.overflow, `the filter row runs past its own edge ${at}`).toBeLessThanOrEqual(1);
-        // 35 px for the row of five, drawn from 1280 px, and 8 px above and below the 34 px one
+        // 35 px for the row of six, drawn from 1280 px, and 8 px above and below the 34 px one
         // control below that.
         expect(row.height, `the filter row is taller than the picture's ${at}`).toBeLessThanOrEqual(
           width >= 1280 ? 36 : 51
@@ -510,14 +564,18 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
           `the filter row draws a colour that is no page colour ${at}`
         ).toEqual([]);
         await assertPageFits(page);
-        const version = preset === "spec" ? [CONTROL_LABELS.version] : [];
-        if (width > 760) {
-          expect(row.controls.slice(-(3 + version.length)), `the small controls ${at}`).toEqual([
-            ...version,
-            ...small,
-          ]);
-          // Each is drawn as the prototype draws Keys: a 1 px border in #ECEAE7, a 7 px radius,
-          // 12 px text of weight 500 on a 20 px line, in #57534E.
+        // Documents stands after Decisions: among the six controls from 1280 px, and in the one
+        // control's menu below that; then, in the row's order, what the sheet leaves in it.
+        const head = width >= 1280 ? names : [expect.any(String)];
+        const rest = inSheet ? [CONTROL_LABELS.outline] : [...version, ...filter];
+        expect(row.controls, `the filter row's controls are not the picture's ${at}`).toEqual([
+          ...head,
+          ...rest,
+          ...keys,
+        ]);
+        if (width >= 1024 && keys.length > 0) {
+          // Each small control is drawn as the prototype draws Keys: a 1 px border in #ECEAE7, a
+          // 7 px radius, 12 px text of weight 500 on a 20 px line, in #57534E.
           const looks = await filterRowLooks(page);
           expect(looks[CONTROL_LABELS.keys], `Keys is not the prototype's ${at}`).toMatchObject({
             border: "1px solid rgb(236, 234, 231)",
@@ -525,29 +583,50 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
             font: "12px 500 20px",
             radius: "7px",
           });
-          for (const name of [...version, CONTROL_LABELS.other_nodes, CONTROL_LABELS.filter]) {
+          for (const name of [...version, ...filter]) {
             expect(looks[name], `${name} is not drawn as Keys is ${at}`).toEqual(
               looks[CONTROL_LABELS.keys]
             );
           }
+        }
+        if (width < 1280 && preset === "conversation") {
+          // Documents is an entry of the one control, after Decisions.
+          await presetChooser(page).click();
+          const items = openMenu(page).getByRole("menuitemradio");
+          await expect(items, `the one control's menu is not the six views ${at}`).toHaveCount(
+            names.length
+          );
+          for (const [index, name] of names.entries()) {
+            await expect(
+              items.nth(index),
+              `the one control's entry ${index + 1} is not ${name} ${at}`
+            ).toHaveAccessibleName(new RegExp(`^${name}( |$)`, "u"));
+          }
+          await page.keyboard.press("Escape");
+          await expect(openMenu(page)).toHaveCount(0);
+        }
+        if (preset === "documents") {
+          await expect(filterControl(page), `Documents draws a Filter ${at}`).toHaveCount(0);
+          await expect(filterBox(page), `Documents draws the words box ${at}`).toHaveCount(0);
+          await expect(outlineControl(page), `Documents draws a sheet ${at}`).toHaveCount(0);
           continue;
         }
-        // On a phone the row holds the one control and Outline alone, and the sheet the rest.
-        expect(row.controls.length, `the row draws more than its two controls ${at}`).toBe(2);
-        expect(row.controls.at(-1)).toBe(CONTROL_LABELS.outline);
+        if (!inSheet) continue;
+        // Below 1024 px the version control of the view and the filter by words stand in the
+        // sheet, drawn open; the box is at least 24 px tall.
         await outlineControl(page).click();
         const sheet = outlineSheet(page);
         await expect(sheet).toBeVisible();
         await expect(
-          sheet.getByRole("button", { exact: true, name: CONTROL_LABELS.other_nodes })
-        ).toBeVisible();
+          sheet.getByTestId("issue-version-control"),
+          `the version control is not in the Outline sheet at ${width} px`
+        ).toHaveCount(version.length);
         const box = sheet.getByRole("searchbox", { name: CONTROL_LABELS.filter });
-        await expect(box).toBeVisible();
+        await expect(box, `the Outline sheet holds no words box ${at}`).toBeVisible();
         expect(
           (await box.boundingBox())?.height ?? 0,
           `the words box in the Outline sheet is under 24 px tall ${at}`
         ).toBeGreaterThanOrEqual(24);
-        await expect(sheet.getByTestId("issue-version-control")).toHaveCount(version.length);
         await page.keyboard.press("Escape");
         await expect(sheet).toHaveCount(0);
       }
@@ -556,7 +635,7 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
     // The dark scheme draws the row in its own page colours.
     await page.setViewportSize(viewportAt(DESKTOP.width));
     await gotoIssue(page, presetPath(seeded.key, "spec"));
-    await expectActivePreset(page, PRESET_NAMES.spec);
+    await expectActiveControl(page, "spec");
     await page.emulateMedia({ colorScheme: "dark" });
     // A control eases its colour over 150 ms after the scheme changes (`styles.css`).
     await expect
@@ -566,35 +645,35 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
       .toEqual([]);
     await page.emulateMedia({ colorScheme: "light" });
 
-    // With a document open, at 760 px and below, the row is the one control and Outline, and the
-    // sheet holds the document's version control, the node menu and the words box (R4).
-    await page.setViewportSize(viewportAt(IPHONE_13.width));
-    await gotoIssue(page, await specAddress(seeded.key));
-    await expect(openedEditor(page), "the spec's address opens no editor").toBeVisible();
-    // The page draws the view row before the document under it, whose editor the wait above saw.
-    const documentRow = await filterRowReading(page);
-    expect(
-      documentRow === null ? [] : documentRow.controls,
-      "the row draws other than the one control and Outline with a document open at 390 px"
-    ).toEqual([expect.any(String), CONTROL_LABELS.outline]);
-    await outlineControl(page).click();
-    const withDocument = outlineSheet(page);
-    await expect(withDocument).toBeVisible();
-    await expect(
-      withDocument.getByTestId("issue-version-control"),
-      "the Outline sheet holds no version control of the open document"
-    ).toHaveCount(1);
-    await expect(
-      withDocument.getByRole("button", { exact: true, name: CONTROL_LABELS.other_nodes })
-    ).toBeVisible();
-    await expect(
-      withDocument.getByRole("searchbox", { name: CONTROL_LABELS.filter })
-    ).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(withDocument).toHaveCount(0);
+    // With a document open from Documents' list, at 1000 px and at 390 px the page draws no
+    // Outline sheet, and the version control stands at the row's end, where it opens.
+    for (const width of desktopProject ? [1000, IPHONE_13.width] : [IPHONE_13.width]) {
+      const at = `with a document open at ${width} px`;
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, presetPath(seeded.key, "documents"));
+      await documentLink(page, specName).click();
+      await expect(openedEditor(page), `the spec does not open from Documents ${at}`).toBeVisible();
+      await expect
+        .poll(async () => (await filterRowReading(page))?.controls, {
+          message: `the row does not hold the one control and the version control ${at}`,
+        })
+        .toEqual([
+          expect.any(String),
+          CONTROL_LABELS.version,
+          ...(width > 760 ? [CONTROL_LABELS.keys] : []),
+        ]);
+      await expect(outlineControl(page), `an Outline sheet is drawn ${at}`).toHaveCount(0);
+      await openVersionControl(page);
+      await expect(versionControl(page), `the version control does not open ${at}`).toBeVisible();
+      await expect(
+        filterControl(page),
+        `a document Documents opened draws a Filter ${at}`
+      ).toHaveCount(0);
+    }
 
-    // `t a` opens the node menu with the focus on its first item, and `t f` the words box with
-    // the caret in it, at 1440 px and, where the three stand in the Outline sheet, at 390 px.
+    // `t a` opens Documents' list with the focus on its first row, and `t f` there turns
+    // Conversation on with the caret in the words box, at 1440 px and, where the box stands in the
+    // Outline sheet, at 390 px.
     for (const width of desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${seeded.key}`);
@@ -602,18 +681,19 @@ test("the filter row is one line at every width @phone", async ({ browser }) => 
       await expectOpeningLanded(page);
       await page.keyboard.press("t");
       await page.keyboard.press("a");
-      await expect(page, `t a does not open the node menu's address at ${width} px`).toHaveURL(
-        new RegExp(`/issues/${seeded.key}/artifacts$`)
+      await expect(page, `t a does not open Documents' address at ${width} px`).toHaveURL(
+        new RegExp(`/issues/${seeded.key}/documents$`)
       );
       await expect(
-        openMenu(page).getByRole("menuitem").first(),
-        `t a does not put the focus on the node menu's first item at ${width} px`
+        firstDocumentLink(page),
+        `t a does not put the focus on Documents' first row at ${width} px`
       ).toBeFocused();
-      await gotoIssue(page, `/issues/${seeded.key}`);
-      await expectIssuePageDrawn(page);
-      await expectOpeningLanded(page);
       await page.keyboard.press("t");
       await page.keyboard.press("f");
+      await expect(
+        tree(page),
+        `t f on Documents does not turn Conversation on at ${width} px`
+      ).toBeVisible();
       await expect(
         filterBox(page),
         `t f does not put the caret in the words box at ${width} px`
@@ -827,24 +907,42 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
  *  `e2e/issue-layout-seed-text.ts`). */
 const VERIFICATION_PROSE = "How the issue page is proved.";
 
-// c-nodes. The seeded issue is today's model, an issue the conversion has not reached, so its
-// spec, plan and verification documents are listed in the menu as every other document is.
-test("documents open from the node menu and are never rows of the outline @phone", async ({
+/** The newest version of `artifact`: the one its row of Documents' list names. */
+function newestVersion(artifact: Artifact): NonNullable<Artifact["versions"]>[number] | undefined {
+  return [...(artifact.versions ?? [])].sort((one, other) => other.number - one.number)[0];
+}
+
+/** How many rows of a list the page draws at a time, and how many documents the row seeds so that
+ *  Documents' list has a second page of its own (root R40). */
+const LIST_PAGE = 20;
+const DOCUMENTS_SEEDED = 25;
+
+// c-documents (1), R2, R3, R4 and R16: a document is opened from Documents' list, and no menu, no
+// row of the outline and no view draws one. The seeded issue is today's model, an issue the
+// conversion has not reached, so its spec, plan and verification documents are listed as every
+// other document is; a converted issue's query nodes are owed until dispatch://INFRA-1253 is on
+// `main`.
+test("documents open from Documents and are never rows of the outline @phone", async ({
   browser,
 }) => {
-  // Measured in the issue pod, alone: 53.8 s on chromium and 50.4 s on iphone, for the five
-  // presets at two widths, the menu's documents and an upload; the bound is three times that.
-  test.setTimeout(180_000);
+  // Measured in the issue pod, alone: 41.5 s on chromium and 40.6 s on iphone, for the views and
+  // Documents' list at two widths, a document opened and left four ways, 25 versions and 25
+  // documents seeded and read; the bound is three times that, for a slow leg.
+  test.setTimeout(150_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
     const slugs = new Set(artifacts.map((artifact) => artifact.slug));
+    const verification = artifacts.find((one) => one.id === seeded.verificationArtifactId);
+    if (verification === undefined) throw new Error(`${seeded.key} holds no Verification document`);
+    const documentsAddress = new RegExp(`/issues/${seeded.key}/documents$`);
+    const verificationAddress = new RegExp(`/issues/${seeded.key}/artifacts/${verification.slug}$`);
 
     // No document and no file is a row of the outline, and no document's text and no editor
     // is drawn, with no filter and with each on, at 1440 px with every branch open and at
     // 390 px.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
-      for (const preset of PRESET_ORDER) {
+      for (const preset of PRESET_ORDER.filter((one) => one !== "documents")) {
         const where = `the ${PRESET_NAMES[preset]} preset at ${size.width} px`;
         await gotoIssue(page, presetPath(seeded.key, preset));
         await expectIssuePageDrawn(page);
@@ -861,123 +959,167 @@ test("documents open from the node menu and are never rows of the outline @phone
       }
     }
 
-    // The node menu lists every document and artifact of the issue - its spec, plan,
-    // verification and decisions documents among them - with the upload and New document.
-    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectIssuePageDrawn(page);
-    expect(
-      await nodeMenuButton(page).count(),
-      "the page draws no node menu beside the presets"
-    ).toBe(1);
-    await nodeMenuButton(page).click();
-    expect(await openMenu(page).count(), "the node menu opens nothing").toBe(1);
-    await expect(
-      openMenu(page)
-        .getByRole("button", { name: /^Copy reference/ })
-        .first()
-    ).toBeVisible();
-    const items = (await nodeMenuItems(page).allInnerTexts()).map((text) =>
-      text.replace(/\s+/g, " ").trim()
-    );
-    for (const artifact of artifacts) {
-      expect(
-        items.some((text) => text.includes(artifact.name)),
-        `the node menu does not list ${artifact.name}: ${JSON.stringify(items)}`
-      ).toBe(true);
-    }
-    for (const id of [
-      seeded.specArtifactId,
-      seeded.planArtifactId,
-      seeded.verificationArtifactId,
-    ]) {
-      const name = artifacts.find((artifact) => artifact.id === id)?.name ?? id;
-      expect(
-        items.some((text) => text.includes(name)),
-        `the node menu does not list the issue's role document ${name}`
-      ).toBe(true);
-    }
-    for (const name of [CONTROL_LABELS.upload, CONTROL_LABELS.new_document]) {
-      expect(
-        await openMenu(page).getByRole("menuitem", { name }).count(),
-        `the node menu holds no ${name}`
-      ).toBe(1);
+    // Documents is the control of the view row that lists every document and file of the issue,
+    // each with its version and its last change, and draws no outline beside the list, no three
+    // sentences, no children's section, no Contents pane and no Filter. No menu of the page lists
+    // a document, nor draws the node menu that held them. A document the list opens is drawn in
+    // place of the list, with its head, its versions and its references; Back to Documents and
+    // Escape return to the list, with the focus on the document's row.
+    for (const size of [DESKTOP, PHONE]) {
+      const where = `at ${size.width} px`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+      await expect(nodeMenuButton(page), `the page draws a node menu ${where}`).toHaveCount(0);
+      await openIssueActions(page);
+      for (const artifact of artifacts) {
+        await expect(
+          page.getByRole("menuitem").filter({ hasText: artifact.name }),
+          `a menu of the page lists ${artifact.name} ${where}`
+        ).toHaveCount(0);
+      }
+      await openDocuments(page);
+      await expectActiveControl(page, "documents");
+      await expect(page, `Documents does not open its address ${where}`).toHaveURL(
+        documentsAddress
+      );
+      for (const artifact of artifacts) {
+        const row = documentRow(page, artifact.name);
+        const missing = `Documents' list draws no row of ${artifact.name} ${where}`;
+        await expect(row, missing).toHaveCount(1);
+        const latest = newestVersion(artifact);
+        const day = latest === undefined ? "" : shortDay(latest.created_at);
+        const named = `${FILE_WORDS.version} ${latest?.number}${day === "" ? "" : ` · ${day}`}`;
+        await expect(
+          row,
+          `${artifact.name}'s row does not name its version and its last change ${where}`
+        ).toContainText(named);
+      }
+      for (const name of [CONTROL_LABELS.upload, CONTROL_LABELS.new_document]) {
+        const control = documentsList(page).getByRole("button", { exact: true, name });
+        await expect(control, `Documents' list draws no ${name} ${where}`).toHaveCount(1);
+      }
+      for (const [what, drawn] of [
+        ["the issue's three sentences", page.getByTestId("issue-three-things")],
+        ["the children's section", childrenSection(page)],
+        ["the Contents pane", contentsPane(page)],
+        ["the outline", tree(page)],
+        ["an Outline sheet", outlineControl(page)],
+        ["a Filter", filterControl(page)],
+        ["the words box", filterBox(page)],
+      ] as const) {
+        await expect(drawn, `Documents' list draws ${what} ${where}`).toHaveCount(0);
+      }
+
+      // The Verification document opened from the list: its text, its editor and its versions,
+      // under its head, which names the version it shows, who wrote it and its day.
+      await documentLink(page, verification.name).click();
+      await expect(page, `the list's item does not open the document ${where}`).toHaveURL(
+        verificationAddress
+      );
+      await expect(
+        page.getByText(VERIFICATION_PROSE),
+        `the document opened from Documents draws none of its own text ${where}`
+      ).toBeVisible();
+      await expect(
+        openedEditor(page),
+        `the opened document draws no editor ${where}`
+      ).toBeVisible();
+      for (const [what, drawn] of [
+        ["the outline", tree(page)],
+        ["the children's section", childrenSection(page)],
+        ["the Contents pane", contentsPane(page)],
+        ["the list it was opened from", documentsList(page)],
+      ] as const) {
+        await expect(drawn, `${what} is still drawn beside the document ${where}`).toHaveCount(0);
+      }
+      await expect(
+        versionPicker(page),
+        `the version control beside the filters does not read the opened document ${where}`
+      ).toHaveCount(1);
+      await expect(
+        openedArtifact(page).getByRole("region", { name: /^Versions for / }),
+        `the opened document draws no versions ${where}`
+      ).toHaveCount(1);
+      const newest = [...((await getArtifact(seeded.verificationArtifactId)).versions ?? [])].sort(
+        (one, other) => other.number - one.number
+      )[0];
+      if (newest === undefined)
+        throw new Error("the seeded Verification document holds no version");
+      await expect(openedArtifact(page).getByTestId("artifact-header")).toContainText(
+        verification.name
+      );
+      const authors = (newest.authors ?? []).length > 0 ? ".+ · " : "";
+      await expect(
+        openedArtifact(page).getByTestId("opened-artifact-version"),
+        `the head does not name the version it shows, who wrote it and its day ${where}`
+      ).toHaveText(
+        new RegExp(
+          `^${FILE_WORDS.version} ${newest.number} · ${authors}${shortDay(newest.created_at)}$`,
+          "u"
+        )
+      );
+      await expect(
+        page.getByRole("button", { exact: true, name: CONTROL_LABELS.close_document }),
+        `the opened document draws today's way back to the conversation ${where}`
+      ).toHaveCount(0);
+      const back = CONTROL_LABELS.back_to_documents;
+      await page.getByRole("button", { exact: true, name: back }).click();
+      await expect(
+        documentsList(page),
+        `${back} does not return to the list ${where}`
+      ).toBeVisible();
+      await expect(page).toHaveURL(documentsAddress);
+      await expect(
+        documentLink(page, verification.name),
+        `${back} leaves the focus off the document's row ${where}`
+      ).toBeFocused();
+      const backLeft = `${back} leaves the document drawn ${where}`;
+      await expect(openedArtifact(page), backLeft).toHaveCount(0);
+      // Escape from a document the list opened returns to the list as well.
+      await documentLink(page, verification.name).click();
+      await expect(openedEditor(page), `the document did not open again ${where}`).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(
+        documentsList(page),
+        `Escape did not return to Documents' list ${where}`
+      ).toBeVisible();
+      await expect(page).toHaveURL(documentsAddress);
+      await expect(
+        documentLink(page, verification.name),
+        `Escape leaves the focus off the document's row ${where}`
+      ).toBeFocused();
+      const escapeLeft = `Escape leaves the document drawn ${where}`;
+      await expect(openedArtifact(page), escapeLeft).toHaveCount(0);
     }
 
-    // A document opened from the menu is drawn in the main column in place of the outline, at
-    // its own address, with its own text, its editor and its versions, under its head; its
-    // control back to the conversation and Escape each return to the outline.
-    const verification = artifacts.find((one) => one.id === seeded.verificationArtifactId);
-    await openMenu(page)
-      .getByRole("button", { exact: true, name: verification?.name ?? "" })
-      .click();
-    await expect(page, "the node menu's item does not open the document's address").toHaveURL(
-      new RegExp(`/issues/${seeded.key}/artifacts/${verification?.slug ?? ""}$`)
-    );
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+
+    // Escape on the list returns to the view the reader came from, and, after a cold load of the
+    // list, to Conversation.
+    await gotoIssue(page, presetPath(seeded.key, "spec"));
+    await expectIssuePageDrawn(page);
+    await openDocuments(page);
+    await page.keyboard.press("Escape");
     await expect(
-      page.getByText(VERIFICATION_PROSE),
-      "the document opened from the node menu draws none of its own text"
-    ).toBeVisible();
-    await expect(openedEditor(page), "the opened document draws no editor").toBeVisible();
-    expect(await tree(page).count(), "the outline is still drawn beside the document").toBe(0);
-    expect(
-      await childrenSection(page).count(),
-      "the children section is still drawn beside the document"
-    ).toBe(0);
-    await expect(
-      versionPicker(page),
-      "the version control beside the filters does not read the opened document"
-    ).toHaveCount(1);
-    await expect(
-      openedArtifact(page).getByRole("region", { name: /^Versions for / }),
-      "the opened document draws no versions"
-    ).toHaveCount(1);
-    // Its head, as the prototype's `openDoc` draws it (R2): its name, then the version it shows
-    // with who wrote that version and its day, and the control back to the conversation.
-    const newest = [...((await getArtifact(seeded.verificationArtifactId)).versions ?? [])].sort(
-      (one, other) => other.number - one.number
-    )[0];
-    if (newest === undefined) throw new Error("the seeded Verification document holds no version");
-    await expect(openedArtifact(page).getByTestId("artifact-header")).toContainText(
-      verification?.name ?? ""
-    );
-    await expect(
-      openedArtifact(page).getByTestId("opened-artifact-version"),
-      "the head does not name the version it shows, who wrote it and its day"
-    ).toHaveText(
-      new RegExp(
-        `^${FILE_WORDS.version} ${newest.number} · ${(newest.authors ?? []).length > 0 ? ".+ · " : ""}${shortDay(newest.created_at)}$`,
-        "u"
-      )
-    );
-    const back = issuePage(page).getByRole("button", {
-      exact: true,
-      name: CONTROL_LABELS.close_document,
-    });
-    await expect(back, "the opened document draws no way back to the conversation").toBeVisible();
-    await back.click();
+      page,
+      "Escape on Documents' list does not return to the view it came from"
+    ).toHaveURL(new RegExp(`/issues/${seeded.key}/spec$`));
+    await expectActiveControl(page, "spec");
+    await gotoIssue(page, presetPath(seeded.key, "documents"));
+    await expect(documentsList(page)).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(
       tree(page),
-      `${CONTROL_LABELS.close_document} does not return to the outline`
+      "Escape on Documents' list after a cold load does not return to Conversation"
     ).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
-    expect(
-      await openedArtifact(page).count(),
-      `${CONTROL_LABELS.close_document} leaves the document drawn`
-    ).toBe(0);
-    await nodeMenuButton(page).click();
-    await openMenu(page)
-      .getByRole("button", { exact: true, name: verification?.name ?? "" })
-      .click();
-    await expect(openedEditor(page), "the document did not open again").toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(tree(page), "Escape does not return to the outline").toBeVisible();
-    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
-    expect(await openedArtifact(page).count(), "Escape leaves the document drawn").toBe(0);
+    await expectActiveControl(page, "conversation");
 
     // The block that cites a document carries a chip in its words that opens it, named by the
     // page's word for a document: a document's name is its file name, which no chip draws
-    // (part G's R4).
+    // (part G's R4). Escape from the document the chip opened returns to the chip's row, with
+    // the focus on the chip.
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     await unfoldEveryBranch(page);
     const citing = nodeRow(page, blockNodeId(specSlug, seeded.documents.citingBlock)).first();
@@ -997,22 +1139,131 @@ test("documents open from the node menu and are never rows of the outline @phone
       page.getByText("The measurements behind the first requirement.", { exact: true }),
       "the chip opened no text of the document it names"
     ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(
+      page,
+      "Escape from a document a chip opened does not return to the outline"
+    ).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    await expect(
+      chip,
+      "Escape from a document a chip opened leaves the focus off the chip"
+    ).toBeFocused();
 
-    // The upload uploads a file.
-    await nodeMenuButton(page).click();
-    await openMenu(page).getByRole("menuitem", { name: CONTROL_LABELS.upload }).click();
-    await uploadInput(page)
-      .first()
-      .setInputFiles({
-        buffer: Buffer.from("# Uploaded\n\nFrom the node menu.\n"),
-        mimeType: "text/markdown",
-        name: "uploaded.md",
-      });
-    // The pick is staged, with its Summary, Upload and Cancel; Upload sends it.
-    await page.getByRole("button", { exact: true, name: CONTROL_LABELS.upload }).click();
+    // Upload, in Documents' list, uploads a file.
+    await openDocuments(page);
+    await uploadInDocuments(page, {
+      buffer: Buffer.from("# Uploaded\n\nFrom Documents' list.\n"),
+      mimeType: "text/markdown",
+      name: "uploaded.md",
+    });
     await expect
       .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("uploaded.md");
+    await expect(
+      documentRow(page, "uploaded.md"),
+      "the list draws no row of the upload"
+    ).toHaveCount(1);
+
+    // A document's versions, every one of them named or not, drawn 20 at a time with no control
+    // that hides any; and what it references and what references it, drawn open (R2). The notes
+    // hold more than 20 versions, one of them named, the newest not.
+    const cited = artifacts.find((one) => one.slug === seeded.documents.cited);
+    if (cited === undefined) throw new Error(`${seeded.key} holds no ${seeded.documents.cited}`);
+    // The notes link a document of another issue, which is what the page's list of what the
+    // issue's documents reference holds.
+    const foreign = await createIssueArtifact(seeded.parentKey, {
+      content: "# Foreign\n\nA document of the parent issue.\n",
+      name: "foreign.md",
+    });
+    const revise = (revision: number) =>
+      editArtifact(cited.id, {
+        ops: [
+          {
+            after: "end",
+            markdown:
+              revision === 1
+                ? `Revision 1, which reads dispatch://${seeded.parentKey}/artifact/${foreign.artifact.slug}.`
+                : `Revision ${revision}.`,
+            op: "insert",
+          },
+        ],
+      });
+    for (let revision = 1; revision <= 12; revision += 1) await revise(revision);
+    await createNamedVersion(cited.id, "The twelfth revision");
+    for (let revision = 13; revision <= 25; revision += 1) await revise(revision);
+    const versions = (await getArtifact(cited.id)).versions ?? [];
+    const manyVersions = "the seed holds no more versions of the notes than a page draws";
+    expect(versions.length, manyVersions).toBeGreaterThan(LIST_PAGE);
+    expect(
+      versions.filter((one) => one.named),
+      "the seed names no version of the notes"
+    ).not.toEqual([]);
+    const newestOfNotes = newestVersion({ ...cited, versions });
+    expect(newestOfNotes?.named, "the newest version of the notes is named").toBe(false);
+    await expect
+      .poll(
+        async () =>
+          (
+            (await (await page.request.get(`/api/v1/issues/${seeded.key}/references`)).json())
+              .members ?? []
+          ).length,
+        { message: "the issue's references hold no document of another issue" }
+      )
+      .toBeGreaterThan(0);
+    await gotoIssue(page, presetPath(seeded.key, "documents"));
+    await documentLink(page, cited.name).click();
+    const versionList = openedArtifact(page).getByRole("region", {
+      name: `${FILE_WORDS.versions_for} ${cited.name}`,
+    });
+    const newestDownload = `${CONTROL_LABELS.download_version} ${newestOfNotes?.number}`;
+    await expect(
+      versionList.getByRole("link", { exact: true, name: newestDownload }),
+      `an unnamed version is not drawn: version ${newestOfNotes?.number}`
+    ).toBeVisible();
+    await expect(
+      openedArtifact(page).getByRole("button", { name: "Show all versions" }),
+      "the opened document draws a control that hides versions"
+    ).toHaveCount(0);
+    await expect(
+      versionList.getByRole("listitem"),
+      "the versions are not drawn 20 at a time"
+    ).toHaveCount(LIST_PAGE);
+    await expect(showMoreControl(versionList)).toHaveText(
+      `${CONTROL_LABELS.show_more} (${versions.length - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`
+    );
+    await showMoreControl(versionList).click();
+    await expect(
+      versionList.getByRole("listitem"),
+      "Show more does not draw the versions left"
+    ).toHaveCount(versions.length);
+    await expect(showMoreControl(versionList)).toHaveCount(0);
+    const downloads = new RegExp(`^${CONTROL_LABELS.download_version} \\d+$`, "u");
+    const drawn = (await versionList.getByRole("link", { name: downloads }).allInnerTexts()).map(
+      (text) => Number(text.replace(/\D+/gu, ""))
+    );
+    expect(
+      versions.map((one) => one.number).filter((number) => !drawn.includes(number)),
+      "an unnamed version is not drawn: these versions are missing from the list"
+    ).toEqual([]);
+    // What references the document and what the issue's documents reference are drawn open,
+    // under their own headings, with no control that opens either.
+    const referencedBy = openedArtifact(page).getByRole("region", {
+      name: PROPERTY_LABELS.referenced_by,
+    });
+    await expect(referencedBy, "the opened document draws no 'Referenced by'").toBeVisible();
+    await expect(
+      referencedBy.getByRole("listitem").first(),
+      "the opened document's 'Referenced by' is drawn shut"
+    ).toBeVisible();
+    await expect(
+      openedArtifact(page).getByRole("button", { name: PROPERTY_LABELS.referenced_by }),
+      "'Referenced by' has a control that opens it"
+    ).toHaveCount(0);
+    const references = openedArtifact(page).getByRole("region", { name: "References" });
+    await expect(
+      references.getByRole("listitem").first(),
+      "what the issue's documents reference is drawn shut"
+    ).toBeVisible();
 
     // An artifact's version history and a version's download are reachable from the artifact
     // itself: its own address draws its versions, each with its download, and the version
@@ -1025,18 +1276,9 @@ test("documents open from the node menu and are never rows of the outline @phone
       page.getByRole("combobox", { exact: true, name: CONTROL_LABELS.version }),
       "the document's versions are not reachable"
     ).toHaveCount(1);
-    // The panel shuts by its own control, as a reader shuts it, before the document's own list
-    // is opened under it.
+    // The panel shuts by its own control, as a reader shuts it.
     await versionControlButton(page).click();
     await expect(versionControl(page)).toBeHidden();
-    // The version list is folded at rest; its control opens it, with each version's download.
-    await openedArtifact(page).getByRole("button", { name: "Show all versions" }).click();
-    await expect(
-      openedArtifact(page)
-        .getByRole("link", { name: /^Download version \d+$/ })
-        .first(),
-      "no version's download is reachable from the artifact"
-    ).toBeVisible();
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.image}`);
     await expect(issuePage(page)).toHaveCount(1);
     await expect(
@@ -1044,10 +1286,10 @@ test("documents open from the node menu and are never rows of the outline @phone
       "the image draws no picture at its own address"
     ).toBeVisible();
 
-    // Nothing is named Artifacts: on the issue's own address, the node menu's, and a
-    // document's.
+    // Nothing is named Artifacts: on the issue's own address, Documents', and a document's.
     for (const address of [
       `/issues/${seeded.key}`,
+      `/issues/${seeded.key}/documents`,
       `/issues/${seeded.key}/artifacts`,
       `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`,
     ]) {
@@ -1108,6 +1350,31 @@ test("documents open from the node menu and are never rows of the outline @phone
         .count(),
       "the version control beside the filters carries an approval control"
     ).toBe(0);
+
+    // Documents' list draws 20 rows at a time, with a control that says how many are left, on
+    // a seed of 25 documents. Its control draws the next 20.
+    const held = (await getIssue(seeded.key)).artifacts?.length ?? 0;
+    for (let extra = held; extra < DOCUMENTS_SEEDED; extra += 1) {
+      await createIssueArtifact(seeded.key, {
+        content: `# Extra ${extra}\n\nA document the seed adds.\n`,
+        name: `extra-${extra}.md`,
+      });
+    }
+    const seededCount = (await getIssue(seeded.key)).artifacts?.length;
+    expect(seededCount, "the seed does not hold 25 documents").toBe(DOCUMENTS_SEEDED);
+    await gotoIssue(page, presetPath(seeded.key, "documents"));
+    await expect(
+      documentsRows(page),
+      "Documents' list does not draw 20 rows and the count of the rest on 25 documents"
+    ).toHaveCount(LIST_PAGE);
+    await expect(showMoreControl(documentsList(page))).toHaveText(
+      `${CONTROL_LABELS.show_more} (${DOCUMENTS_SEEDED - LIST_PAGE} ${CONTROL_LABELS.show_more_left})`
+    );
+    await showMoreControl(documentsList(page)).click();
+    await expect(documentsRows(page), "the control does not draw the next 20").toHaveCount(
+      DOCUMENTS_SEEDED
+    );
+    await expect(showMoreControl(documentsList(page))).toHaveCount(0);
   });
 });
 
@@ -2553,6 +2820,106 @@ test("an address naming a question the issue does not hold says so in the page's
     const said = (await page.locator("main").innerText()).replace(/\s+/g, " ");
     expect(said, "the page says 'an question'").not.toMatch(/\ban question\b/iu);
     expect(said, "the page calls the question an ask").not.toMatch(/\bask\b/iu);
+  });
+});
+
+// Decision 413 (R6, c-addresses (6)): an address moves the focus once, onto where it lands. Each
+// of the three rows keeps a log of every element the focus moves to from the first moment the
+// document exists (`logFocusMoves`, an init script) and fails on any move before the last,
+// naming the element that took the focus first. A view's tab stop and the outline's opening on
+// its first row take the focus before a read the address waits for has answered, which is what
+// the rows catch.
+
+/** The row of node `id`, which is how a view and the outline both mark one. */
+function rowSelector(id: string): string {
+  return `[data-node-row][data-node-id="${id}"]`;
+}
+
+/** Opens `path` and fails unless the focus moves once, onto `lands`. */
+async function expectAddressLandsOnce(
+  page: Page,
+  traffic: ApiRequests,
+  path: string,
+  lands: Locator,
+  what: string
+): Promise<void> {
+  await gotoIssue(page, path);
+  await expectFocusLandedOnce(page, traffic, lands, what);
+}
+
+test("an address lands the focus once on a node the view draws", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    await logFocusMoves(page);
+    const traffic = watchApiRequests(page);
+    // The second statement and the second check: the views' tab stops start on the first.
+    const requirement = requirementBlockId(2);
+    const check = checkBlockId(2);
+    await expectAddressLandsOnce(
+      page,
+      traffic,
+      `${presetPath(seeded.key, "spec")}#b-${requirement}`,
+      page.locator(`[data-spec-body] ${rowSelector(blockNodeId(specSlug, requirement))}`),
+      `the address of ${requirement} under ${PRESET_NAMES.spec}`
+    );
+    await expectAddressLandsOnce(
+      page,
+      traffic,
+      `${presetPath(seeded.key, "verification")}#b-${check}`,
+      page.locator(`[data-verification-body] ${rowSelector(blockNodeId(verificationSlug, check))}`),
+      `the address of ${check} under ${PRESET_NAMES.verification}`
+    );
+  });
+});
+
+test("an address lands the focus once on a node beside the view", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+    await logFocusMoves(page);
+    const traffic = watchApiRequests(page);
+    // A plan task is no row of the Verification view, and a comment none of the Plan view: each
+    // tells the stage so, which draws the outline in its place. The Spec view draws every node
+    // an address names, so none stands beside it.
+    const task = blockNodeId(planSlug, planTaskBlockId(1));
+    await expectAddressLandsOnce(
+      page,
+      traffic,
+      `${presetPath(seeded.key, "verification")}#b-${planTaskBlockId(1)}`,
+      page.locator(`[data-issue-body] ${rowSelector(task)}`),
+      `the address of ${planTaskBlockId(1)} under ${PRESET_NAMES.verification}`
+    );
+    const [thread = ""] = seeded.comments.threads;
+    await expectAddressLandsOnce(
+      page,
+      traffic,
+      `${presetPath(seeded.key, "plan")}?comment=${thread}`,
+      page.locator(`[data-issue-body] ${rowSelector(thread)}`),
+      `the address of a comment under ${PRESET_NAMES.plan}`
+    );
+  });
+});
+
+test("an address lands the focus once on a gone node", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await logFocusMoves(page);
+    const traffic = watchApiRequests(page);
+    // The page's line that the comment is not found takes the focus, once its own read answers.
+    for (const preset of ["spec", "verification"] as const) {
+      await expectAddressLandsOnce(
+        page,
+        traffic,
+        `${presetPath(seeded.key, preset)}?comment=${GONE_COMMENT}`,
+        issuePage(page).getByRole("heading", {
+          exact: true,
+          name: FALLBACK_LINES.comment(seeded.key).heading,
+        }),
+        `the address of a gone comment under ${PRESET_NAMES[preset]}`
+      );
+    }
   });
 });
 
@@ -5665,4 +6032,206 @@ test("the header links the issue's pull request @phone", async ({ browser }) => 
       expectLinkAddsNothing(reading, bare, width, worst);
     });
   });
+});
+
+/** Waits until the focus is on a row other than `from` (none, the first time), and Details' "The row
+ *  you are on" names that row's node and its kind, and answers the row's node. A key that moved
+ *  nothing, or a move Details did not follow, fails with `where`. */
+async function expectDetailsFollowsRow(
+  page: Page,
+  from: string | null,
+  where: string
+): Promise<string> {
+  const seen: { row: string | null } = { row: null };
+  await expect
+    .poll(
+      async () => {
+        seen.row = await focusedNodeId(page);
+        const named = await focusedNodeFacts(page).getAttribute("data-focused-node");
+        if (seen.row === null) return "the focus is on no row";
+        if (seen.row === from) return `the focus did not leave ${from}`;
+        return seen.row === named
+          ? "follows"
+          : `the focus is on ${seen.row} and Details names ${named}`;
+      },
+      { message: where }
+    )
+    .toBe("follows");
+  const at = seen.row ?? "";
+  // The Verification view's first row is the issue's own summary, which carries no kind of node:
+  // the focused row is then the issue itself, whose facts name its title after "Issue:".
+  const type = await page
+    .locator(`[data-node-row][data-node-id="${at}"]`)
+    .first()
+    .getAttribute("data-node-type");
+  const kind = NODE_TYPE_NAMES[(type ?? "issue") as keyof typeof NODE_TYPE_NAMES];
+  expect(
+    kind,
+    `${where}: the row of ${at} is of kind ${type}, which the page has no word for`
+  ).toBeDefined();
+  const named = `${CONTROL_LABELS.node_kind}:\\s*${sentenceCase(kind ?? "")}`;
+  await expect(
+    focusedNodeFacts(page),
+    `${where}: Details does not name the kind of ${at}`
+  ).toContainText(new RegExp(`(?:${named}|${sentenceCase(NODE_TYPE_NAMES.issue)}:)`, "u"));
+  return at;
+}
+
+// R14 (INV-4, `VIEWS_FOCUS`): under every view the row that holds the focus is part F's focused
+// node, as the outline's row is, so Details' facts of 'The row you are on' follow `j` and `k`, and
+// Escape or `t c` leaves that node focused in the outline. Details draws a node's kind and
+// whether it stands, and the issue's own title: no first line of a node, so the node and its kind
+// are what the row reads.
+test("Details follows the focused row of every view", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    for (const preset of VIEWS_FOCUS) {
+      for (const leave of ["Escape", "t c"] as const) {
+        const view = `the ${PRESET_NAMES[preset]} view, left by ${leave}`;
+        await gotoIssue(page, presetPath(seeded.key, preset));
+        await expectActiveControl(page, preset);
+        await expect
+          .poll(() => nodeRows(page).count(), { message: `${view} draws too few rows` })
+          .toBeGreaterThan(3);
+        await openDetails(page);
+        await page.locator('[data-node-row][tabindex="0"]').first().focus();
+        let at = await expectDetailsFollowsRow(page, null, `${view}, on its first row`);
+        for (const key of ["j", "j", "k"]) {
+          await page.keyboard.press(key);
+          at = await expectDetailsFollowsRow(page, at, `${view}, after ${key}`);
+        }
+        if (leave === "Escape") {
+          // Details, open beside the view, takes the first Escape as it takes its own; the view
+          // is turned off by the next.
+          await page.keyboard.press("Escape");
+          await expect(marginShell(page), `Escape from ${view} leaves Details open`).toBeHidden();
+          await page.keyboard.press("Escape");
+        } else {
+          await page.keyboard.press("t");
+          await page.keyboard.press("c");
+        }
+        await expect(
+          page.locator(`[data-issue-body] [data-node-row][data-node-id="${at}"]`).first(),
+          `${leave} from ${view} leaves no row of ${at} focused in the outline`
+        ).toBeFocused();
+      }
+    }
+  });
+});
+
+// R16 (decision 259): a Rebuild that succeeds draws the rebuilt document, takes the Rebuild offer
+// away, and puts the focus on the opened document's heading, never on the page's body. The
+// document's stored history cannot load for the page until its rebuild lands: its text read
+// answers the unloadable refusal and its rebuild answers as a rebuilt one would, since the
+// server refuses to rebuild a document that loads.
+test("a Rebuild by keyboard keeps the focus in the opened document", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const issue = await getIssue(seeded.key);
+    const notes = (issue.artifacts ?? []).find((one) => one.slug === seeded.documents.cited);
+    if (notes === undefined) throw new Error(`${seeded.key} holds no ${seeded.documents.cited}`);
+    const unloadable = {
+      code: "DOCUMENT_UNLOADABLE",
+      error:
+        "the document's stored history cannot load. A rebuild from the latest saved version discards every edit made after that version. A person decides whether to rebuild the document",
+    };
+    const history = { loads: false };
+    await page.route(`**/api/v1/artifacts/${notes.id}/text*`, (route) =>
+      history.loads
+        ? route.continue()
+        : route.fulfill({
+            body: JSON.stringify(unloadable),
+            contentType: "application/json",
+            status: 409,
+          })
+    );
+    await page.route(`**/api/v1/artifacts/${notes.id}/rebuild`, (route) => {
+      history.loads = true;
+      return route.fulfill({
+        body: JSON.stringify({
+          head: 1,
+          removed_checkpoints: 0,
+          removed_snapshots: 0,
+          source_version: 1,
+        }),
+        contentType: "application/json",
+        status: 200,
+      });
+    });
+    const rebuild = page.getByRole("button", { name: "Rebuild from the latest version" });
+    for (const size of [DESKTOP, PHONE]) {
+      const where = `at ${size.width} px`;
+      history.loads = false;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, presetPath(seeded.key, "documents"));
+      await expect(
+        documentLink(page, notes.name),
+        `Documents' list draws no ${notes.name}`
+      ).toBeVisible();
+      await documentLink(page, notes.name).click();
+      await expect(rebuild, `no Rebuild is offered ${where}`).toBeVisible();
+      // The rebuild asks the reader to confirm, and the reader does.
+      page.once("dialog", (dialog) => dialog.accept());
+      await rebuild.focus();
+      await page.keyboard.press("Enter");
+      await expect(rebuild, `the Rebuild offer stays ${where}`).toHaveCount(0);
+      await expect(openedEditor(page), `the rebuilt document is not drawn ${where}`).toContainText(
+        "The measurements behind the first requirement."
+      );
+      await expect(
+        openedArtifact(page).getByRole("heading", { exact: true, level: 2, name: notes.name }),
+        `the focus is not on the opened document's heading ${where}`
+      ).toBeFocused();
+      await expect(
+        page.locator("body"),
+        `the focus is on the page's body ${where}`
+      ).not.toBeFocused();
+    }
+  });
+});
+
+// Decision 396 (3): from an act of a focused row, Copy reference, Ctrl+K and then Escape give the
+// focus back to the row that held the act, which went with the focus when the palette took it.
+test("a dialog opened from a row's act gives the focus back to the row", async ({ browser }) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    const [thread = ""] = seeded.comments.threads;
+    const row = await focusRow(page, thread);
+    const copy = row.locator("[data-row-copy]");
+    await expect(copy, "the focused row draws no Copy reference").toBeVisible();
+    await copy.focus();
+    await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("dialog"), "Ctrl+K opens no dialog").toBeVisible();
+    await expect(copy, "the act stayed drawn once the row lost the focus").toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog"), "Escape leaves the dialog open").toHaveCount(0);
+    await expect(
+      row,
+      "the dialog's close left the focus off the row that held the act"
+    ).toBeFocused();
+  });
+});
+
+/** Where part T's view read stands (decision 477): a version of a converted issue's view is read
+ *  through it, so the row below is built where this file is, and owed where it is not. */
+const hasTreeRead = existsSync(
+  resolve(
+    dirname(fileURLToPath(import.meta.url)),
+    "../web/src/features/issue-page/tree-read/tree-read.ts"
+  )
+);
+
+// R3 on a converted issue (decisions 463 and 466 (2), g22): owed on part T while this branch holds
+// no `tree-read/tree-read.ts`, which the version of the view is read through. It imports nothing
+// of part T's. Where T is on the branch the row is to be built, and it fails until it is.
+test("on a converted issue a version of the view opens as that version stood @phone", async () => {
+  test.skip(
+    !hasTreeRead,
+    "owed on part T (dispatch://INFRA-4062): branch holds no tree-read/tree-read.ts"
+  );
+  throw new Error(
+    "part T's tree-read/tree-read.ts is on this branch: build this row (g22, decision 477)"
+  );
 });

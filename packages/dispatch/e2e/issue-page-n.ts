@@ -25,12 +25,15 @@ import {
   openMenu,
   outlineControl,
   outlineSheet,
+  presetChooser,
+  presetToolbar,
 } from "./issue-page";
 import { expectIssuePageDrawn, nodeRows } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
 import { expandedState, settledState } from "./settled";
+import { type ApiRequests, expectLoadSettled } from "./traffic";
 import { assertPageFits } from "./unclipped";
 
 /** The address that opens an issue's spec with its editor: the spec's own address,
@@ -138,6 +141,92 @@ export function zoomCrumbs(page: Page): Locator {
 export function documentsList(page: Page): Locator {
   return page.locator(SELECTORS.documentsList);
 }
+
+/** Every drawn row of Documents' list, in order (up to 20 per page). */
+export function documentsRows(page: Page): Locator {
+  return documentsList(page).getByRole("listitem");
+}
+
+/** The link in Documents' list that opens the document or file named `name`. */
+export function documentLink(page: Page, name: string): Locator {
+  return documentsList(page).getByRole("link", { exact: true, name });
+}
+
+/** The link that opens the first document of Documents' list, which `t a` puts the focus on:
+ *  each row's other links are its download. */
+export function firstDocumentLink(page: Page): Locator {
+  return documentsList(page).locator("[data-document-open]").first();
+}
+
+/** The row in Documents' list for the document or file named `name`. */
+export function documentRow(page: Page, name: string): Locator {
+  return documentsRows(page).filter({
+    has: page.getByRole("link", { exact: true, name }),
+  });
+}
+
+/** Opens Documents' list from the view row, at any width, and waits until the list is drawn. */
+export async function openDocuments(page: Page): Promise<void> {
+  await pickPreset(page, PRESET_NAMES.documents);
+  await expect(documentsList(page), "Documents' list did not open").toBeVisible();
+}
+
+/** Stages `file` in Documents' list, optionally writes `summary` into its Summary box, and
+ *  presses Upload to send it (part N's R2). The staged row is today's `ArtifactUploadRow`, which
+ *  names its box "Summary (optional)". */
+export async function uploadInDocuments(
+  page: Page,
+  file: Parameters<Locator["setInputFiles"]>[0],
+  summary?: string
+): Promise<void> {
+  await uploadInput(page).first().setInputFiles(file);
+  if (summary !== undefined) {
+    await documentsList(page).getByRole("textbox", { name: "Summary (optional)" }).fill(summary);
+  }
+  await documentsList(page)
+    .getByRole("button", { exact: true, name: CONTROL_LABELS.upload })
+    .click();
+}
+
+/** The control under a list that draws its next 20 entries: "Show more (5 left)". The list
+ *  names how many entries are left (root R40). */
+export function showMoreControl(scope: Locator): Locator {
+  return scope.getByRole("button", {
+    name: new RegExp(
+      `^${CONTROL_LABELS.show_more} \\(\\d+ ${CONTROL_LABELS.show_more_left}\\)$`,
+      "u"
+    ),
+  });
+}
+
+/** Fails unless the view row's control `preset` is active, whichever shape the row draws at this
+ *  width: the toolbar's pressed toggle from 1280 px up, or the one control below it. Unlike
+ *  `issue-page-i.ts`'s `expectActivePreset`, this accepts a control that draws no count, such as
+ *  Conversation or Documents (part N's R4). */
+export async function expectActiveControl(page: Page, preset: Preset): Promise<void> {
+  const name = PRESET_NAMES[preset];
+  // The toolbar is the row of toggles; the one control's own name can be a view's alone, as
+  // Conversation's and Documents' are, so a button by that name does not tell the shapes apart.
+  const shape = await settledState("the view row's shape", [
+    ["toolbar", presetToolbar(page)],
+    ["one control", presetChooser(page)],
+  ]);
+  if (shape === "toolbar") {
+    await expect(
+      presetToolbar(page).getByRole("button", { exact: true, name }),
+      `${name} is not active in the view row`
+    ).toHaveAttribute("aria-pressed", "true");
+    return;
+  }
+  await expect(
+    presetChooser(page),
+    `${name} is not active in the one control`
+  ).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`, "u"));
+}
+
+/** INV-4 (part N's R14): the four views whose focused row is part F's focused node, so Details'
+ *  "The row you are on" follows each move in their trees and returns to that node in the outline. */
+export const VIEWS_FOCUS = ["spec", "verification", "plan", "decisions"] as const;
 
 /** The hidden file input the upload opens, which is how a test hands it a file. */
 export function uploadInput(page: Page): Locator {
@@ -1732,4 +1821,76 @@ export function headerSize(page: Page): Promise<HeaderSize | null> {
       ),
     };
   }, SELECTORS);
+}
+// ---------------------------------------------------------------------------------------------
+// Decision 413: an address moves the focus once (part N's R6, `c-addresses` (6)).
+// ---------------------------------------------------------------------------------------------
+
+/** The page's own name for the list the focus log is kept in, so no row reads a global by its
+ *  spelling. */
+const FOCUS_LOG = "__issuePageFocusMoves";
+
+/**
+ * Starts a log of every element the focus moves to, in each document `page` loads from now on,
+ * from the first moment the document exists: an init script runs before the page's own, so a move
+ * made while the page loads is in the log as a later one is. It names each element by the row of
+ * the outline or of a view that holds it, or else by its tag and its words. Call it before the load
+ * it is to log.
+ */
+export async function logFocusMoves(page: Page): Promise<void> {
+  await page.addInitScript((name) => {
+    const moves: string[] = [];
+    Object.defineProperty(window, name, { value: moves });
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        const element = event.target;
+        if (!(element instanceof Element)) return;
+        const row = element.closest<HTMLElement>("[data-node-row]");
+        const view = element.closest(
+          "[data-spec-body], [data-verification-body], [data-plan-body]"
+        );
+        if (row === null) {
+          const words = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+          moves.push(`${element.tagName.toLowerCase()} "${words}"`);
+          return;
+        }
+        const viewName = [...(view?.attributes ?? [])].find((one) => one.name.endsWith("-body"));
+        const place = view === null ? "the outline's" : `the ${viewName?.name.slice(5, -5)} view's`;
+        moves.push(`${place} row of ${row.dataset.nodeId ?? "no node"}`);
+      },
+      true
+    );
+  }, FOCUS_LOG);
+}
+
+/**
+ * Fails unless, from the load of the address on, the focus moved once and onto `landed`, which
+ * holds it, and fails on any earlier move by naming the element that took the focus before the
+ * last. The log is read once the page's reads are quiet (`traffic`) and two frames after, so a take
+ * that comes with a late read or a frame later is in it. `what` names the address.
+ */
+export async function expectFocusLandedOnce(
+  page: Page,
+  traffic: ApiRequests,
+  landed: Locator,
+  what: string
+): Promise<void> {
+  await expect(landed, `${what}: the focus did not land where the address names`).toBeFocused();
+  await expectLoadSettled(traffic);
+  await page.evaluate(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    return promise;
+  });
+  const moves = await page.evaluate(
+    (name) => [...((window as unknown as Record<string, readonly string[]>)[name] ?? [])],
+    FOCUS_LOG
+  );
+  const before = moves.slice(0, -1);
+  expect(
+    before,
+    `${what}: the focus went to ${before.join(", then to ")} before it landed on ${moves.at(-1)}`
+  ).toEqual([]);
+  expect(moves, `${what}: the focus moved to nothing`).toHaveLength(1);
 }
