@@ -77,6 +77,7 @@ var storeWriteCallSites = map[string]string{
 	// whose foreign key names it. No lock-step test drives these sites: api's
 	// TestMentionsAreTuplesAndEveryAttemptIsANode runs each one's real code and reads what it
 	// states of its attempt.
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#openCommentDeliveryAttempt":      "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#recordCommentDeliveryResolution": "api#TestMentionsAreTuplesAndEveryAttemptIsANode",
 	"api/comment_delivery.go#standDown":                       "api#TestMentionsAreTuplesAndEveryAttemptIsANode",

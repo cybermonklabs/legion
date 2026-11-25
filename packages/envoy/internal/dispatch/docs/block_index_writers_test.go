@@ -833,6 +833,7 @@ var indexPasses = map[string]string{
 	"api/comment_delivery.go#standDown":                       "the attempt whose claim the sender gives back",
 	"api/comment_delivery.go#supersedeCommentDelivery":        "the attempt a later one superseded",
 	"api/comment_delivery.go#recordCommentDeliveryResolution": "the resolution the sender recorded on its attempt",
+	"api/comment_delivery.go#holdCommentDeliveryClaim":        "the claim the sender renews after the copy rule",
 	"api/comment_mention_claims.go#refreshMentionClaims":      "the claims the mention sender wrote again",
 	"api/comment_mention_claims.go#releaseMentionClaims":      "the claims the mention sender gave back",
 	"api/comment_mention_claims.go#claimQueuedMention":        "the claim a keyed repeat takes",

@@ -463,7 +463,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
 		Sites: comment("api/comment_create.go#createCommentFor", "api/comment_create.go#queueCommentRow",
 			"api/comment_create.go#queueCommentCreated", "api/comment_delivery.go#take",
-			"api/comment_delivery.go#recordCommentDeliveryResolution"),
+			"api/comment_delivery.go#recordCommentDeliveryResolution", "api/comment_delivery.go#holdCommentDeliveryClaim"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},
@@ -532,7 +532,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// settle settles the attempt the lane stood down from failed, as superseded.
 		Name: "api/comment_delivery.go#supersedeCommentDelivery, by the Retry that overtook a lane", Database: r.database,
 		Sites: []string{"api/comment_delivery.go#supersedeCommentDelivery", "api/comment_delivery.go#recordCommentDeliveryResolution",
-			"api/comment_delivery.go#completeCommentDelivery"},
+			"api/comment_delivery.go#holdCommentDeliveryClaim", "api/comment_delivery.go#completeCommentDelivery"},
 		Drive: func(t *testing.T) {
 			openLookups()
 			select {
