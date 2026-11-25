@@ -17,43 +17,76 @@ import (
 // with the claim 119 s old, 1 s inside claimWindow, past which another process's scan may take the
 // rows and embed them again; and a place with no bound of its own (Bedrock) ran on past it. The
 // call's own error is the context's deadline marked an outage, so it moves the pace as no answered
-// call does. Both the paced call cmd/dispatch makes and an unpaced one are bounded. The rows run on
-// a synctest fake clock, where the call's minute takes no real time.
+// call does. Both the paced call cmd/dispatch makes and an unpaced one are bounded. A call the pace
+// holds 48 s from a fresh claim is renewed as the wait ends: the wait renews nothing, since its
+// renewal falls due at renewClaimInterval (60 s), and unrenewed the call ended with the claim 108 s
+// old, past claimWindow less callSlack. The rows run on a synctest fake clock, where the call's
+// minute takes no real time.
 func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
+	paced := func(e embed.Embedder) Deps { return Deps{Embedder: e}.Paced() }
 	for _, tc := range []struct {
 		name string
 		deps func(embed.Embedder) Deps
+		// age is how old the claim is when the call is made; held is how long the pace holds it.
+		age, held time.Duration
 	}{
-		{"paced", func(e embed.Embedder) Deps { return Deps{Embedder: e}.Paced() }},
-		{"unpaced", func(e embed.Embedder) Deps { return Deps{Embedder: e} }},
+		{"paced", paced, 59 * time.Second, 0},
+		{"unpaced", func(e embed.Embedder) Deps { return Deps{Embedder: e} }, 59 * time.Second, 0},
+		{"paced, held 48 s by the pace from a fresh claim", paced, 0, 48 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				deps := tc.deps(silentEmbedder{})
+				ctx := context.Background()
+				silent := &silentEmbedder{}
+				deps := tc.deps(silent)
+				if tc.held > 0 {
+					silent.answer = 1 // the call that takes the pace's token
+					requirePaceHolds(t, deps, tc.held)
+				}
 				started := time.Now()
-				renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-59*time.Second))
+				renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-tc.age))
 				claimed := []time.Time{renewal.last}
 				renewal.extend = func(context.Context, []pendingRow) error {
 					claimed = append(claimed, time.Now())
 					return nil
 				}
-				_, err := deps.embedDocuments(context.Background(), []string{"slow"}, renewal)
+				_, err := deps.embedDocuments(ctx, []string{"slow"}, renewal)
 				ended := time.Now()
 				if !errors.Is(err, context.DeadlineExceeded) || !embed.IsOutage(err) || embed.IsThrottled(err) {
 					t.Errorf("the call ended with %v (outage %v, throttled %v), want the context's deadline as an outage", err, embed.IsOutage(err), embed.IsThrottled(err))
 				}
-				if ran := ended.Sub(started); ran != callBound {
-					t.Errorf("the call ran %v, want the queue's bound, %v", ran, callBound)
+				if ran := ended.Sub(started); ran != tc.held+callBound {
+					t.Errorf("the call ran %v, want the pace's hold and the queue's bound, %v", ran, tc.held+callBound)
 				}
 				last := claimed[len(claimed)-1]
-				if !last.Equal(started) {
-					t.Errorf("the claim was last renewed at %v, want before the call started; renewals at %v", last.Sub(started), offsets(claimed, started))
+				if sent := started.Add(tc.held); !last.Equal(sent) {
+					t.Errorf("the claim was last renewed at %v, want as the call went out, at %v; renewals at %v", last.Sub(started), tc.held, offsets(claimed, started))
 				}
 				if age := ended.Sub(last); age > claimWindow-callSlack {
 					t.Errorf("the call ended with its claim %v old, past claimWindow less callSlack (%v)", age, claimWindow-callSlack)
 				}
 			})
 		})
+	}
+}
+
+// requirePaceHolds makes deps' pace hold its next call held: a first call takes the pace's one
+// token at once, and the pace is backed off to held, as failing canaries back it off. held must
+// lie between claimWindow less callSlack less callBound, past which a call that runs to callBound
+// needs its own renewal, and renewClaimInterval, at which the wait would renew the claim itself.
+func requirePaceHolds(t *testing.T, deps Deps, held time.Duration) {
+	t.Helper()
+	if held <= claimWindow-callSlack-callBound || held >= renewClaimInterval {
+		t.Fatalf("a hold of %v tests no call's renewal: want one past %v and short of renewClaimInterval (%v)", held, claimWindow-callSlack-callBound, renewClaimInterval)
+	}
+	if _, err := deps.embedDocuments(context.Background(), []string{"first"}, nil); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	for deps.pace.Interval() < held {
+		deps.pace.BackOff()
+	}
+	if got := deps.pace.Interval(); got != held {
+		t.Fatalf("the pace holds a call %v, want %v", got, held)
 	}
 }
 
@@ -88,10 +121,18 @@ func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
 	}
 }
 
-// silentEmbedder never answers: its call ends only when its context does, or after 10 minutes.
-type silentEmbedder struct{ bedrockShaped }
+// silentEmbedder answers its first answer calls at once and never answers after: such a call ends
+// only when its context does, or after 10 minutes.
+type silentEmbedder struct {
+	bedrockShaped
+	answer int
+}
 
-func (silentEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
+func (e *silentEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
+	if e.answer > 0 {
+		e.answer--
+		return fakeVectors(len(texts)), nil
+	}
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()

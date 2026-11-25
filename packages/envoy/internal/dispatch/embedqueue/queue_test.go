@@ -1342,6 +1342,87 @@ func TestProcessBatchActuallyCallsRenewalAndReservesTokens(t *testing.T) {
 	}
 }
 
+// claimLeftEmbedder embeds every call, and at the first reads how long the claim on ids has left in
+// the database's own clock: the earliest next_attempt_at less now().
+type claimLeftEmbedder struct {
+	bedrockShaped
+	database *store.Store
+	ids      []string
+	calls    int
+	left     time.Duration
+	err      error
+}
+
+func (e *claimLeftEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
+	e.calls++
+	if e.calls == 1 {
+		var seconds float64
+		e.err = e.database.Pool.QueryRow(ctx, `
+			select extract(epoch from min(next_attempt_at) - now())::float8 from embeddings
+			where kind = 'issue' and id = any($1::text[])`, e.ids,
+		).Scan(&seconds)
+		e.left = time.Duration(seconds * float64(time.Second))
+	}
+	return fakeVectors(len(texts)), nil
+}
+
+// The claim scanPending makes is dated before the scan's statement (ProcessBatch reads claimed
+// first), so a scan slow to return leaves the claim reading no younger than it is. The database
+// dates the claim by its now(), the statement's start; here the statement then waits scanHeld on a
+// lock the test holds, which a trigger on the claim's column takes. scanHeld is past
+// renewClaimInterval, so the claim is due when the first call goes out and is renewed first: the
+// call sees nearly claimWindow left. Dated after the scan, the claim read scanHeld younger, was not
+// renewed, and the call went out with at most claimWindow less scanHeld left. Five seconds leave
+// each side seconds of margin on a loaded host: the renewal must reach the call within half of
+// scanHeld, and a claim dated after the scan is renewed only if renewClaimInterval, a second short
+// of scanHeld, passes between the scan and the call.
+func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
+	database := storetest.Open(t)
+	ids := []string{"SCAN-1", "SCAN-2"}
+	for i, id := range ids {
+		seedIssue(t, database, "SCAN", id, fmt.Sprintf("Title %d", i))
+	}
+	const scanHeld = 5 * time.Second
+	shortenForTest(t, &renewClaimInterval, scanHeld-time.Second)
+	mustExec(t, database.Pool, `create function hold_claim() returns trigger language plpgsql as $$
+		begin perform pg_advisory_xact_lock(1); return new; end $$`)
+	mustExec(t, database.Pool, `create trigger hold_claim before update of next_attempt_at on embeddings
+		for each row execute function hold_claim()`)
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	mustExec(t, holder, `select pg_advisory_xact_lock(1)`)
+
+	embedder := &claimLeftEmbedder{database: database, ids: ids}
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, _, err := ProcessBatch(ctx, Deps{Store: database, Embedder: embedder})
+		done <- err
+	}()
+	waiting := storetest.WaitForLockWaiters(t, holder, 1, 30*time.Second)
+	if waiting >= 1 {
+		time.Sleep(scanHeld)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Errorf("release the scan: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("ProcessBatch: %v", err)
+	}
+	if waiting < 1 {
+		t.Fatal("the scan never waited on the held lock: the interleaving did not happen")
+	}
+	if embedder.calls == 0 || embedder.err != nil {
+		t.Fatalf("%d calls; reading the claim in the first: %v", embedder.calls, embedder.err)
+	}
+	if floor := claimWindow - scanHeld/2; embedder.left < floor {
+		t.Errorf("the first call went out with %v left on its claim, want at least %v: a claim dated after its scan reads %v younger than it is, and is not renewed before the call", embedder.left, floor, scanHeld)
+	}
+}
+
 // TestMergeBisectResultsCopiesIntoFreshSlicesNotTheSharedBackingArray is the second of Rev's two
 // named test gaps: reverting mergeBisectResults back to append(left.X, right.X...) left the
 // whole suite green, because no test manufactured the exact shape that corrupts - a result built
