@@ -52,8 +52,8 @@ func changedByRunInto(t *testing.T, database *store.Store, run string) []string 
 }
 
 // changedByRunOutOf is each changed_by_run alice reads out of the node kind/id, its ?from= as
-// GET /api/v1/references reads it (refs.Edges), as the `<kind>/<id>` it ends at, sorted, as
-// runDocumentRig.outOfDocument reads a document's.
+// GET /api/v1/references reads it (refs.Edges), as the `<kind>/<id>` it ends at, sorted;
+// runDocumentRig.outOfDocument reads a document's through it.
 func changedByRunOutOf(t *testing.T, database *store.Store, kind, id string) []string {
 	t.Helper()
 	edges, err := refs.Edges(context.Background(), database.Pool, runDocumentAuthor, refs.Query{Direction: "out", Kind: kind, ID: id})

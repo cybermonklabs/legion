@@ -7,7 +7,6 @@ import type {
 } from "../../../api/types";
 import { isBlockItemKind } from "../../refs/block-reference";
 import { wordsOf } from "../../refs/tree-fragment";
-import { drawnLine, firstLineOf } from "../issue-tree";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "../row-references";
 
 /**
@@ -48,12 +47,6 @@ export interface ReferenceRow {
    *  `serves`, `needs`, `answers`, `mentions` and the rest. The component draws the page's
    *  word for it, never this token. */
   readonly kind: string;
-  /** The first line of the citing item's words, where it is a comment, a message or a question
-   *  of the focused node's own issue and the page holds its words (`issueItemWords`), as every
-   *  place that draws one line for a node draws it (`firstLineOf`, `drawnLine`), with each
-   *  reference it writes named (`itemLine`); `""` for every other node, which the component
-   *  names by its word. Never the read's own text. */
-  readonly line: string;
   /** What kind of node cites, as the graph names it: `block`, `comment`, `ask`, `message`,
    *  `artifact`, `issue`, `component`, `session`. A comment, a message or a question whose block
    *  holds the mention reads as that item. The component draws the page's word for it where the
@@ -68,6 +61,11 @@ export interface ReferenceRow {
    *  component draws where the citing node is not of the focused node's own issue (the old
    *  panel's "Comment · LAY-9"); `undefined` where the read names neither. */
   readonly source: string | undefined;
+  /** What the row draws of the citing item's words, where it is a comment, a message or a
+   *  question of the focused node's own issue and the page holds its words (`issueItemWords`):
+   *  every one of them, with no cut, and each reference they write named (`namedWords`); `""`
+   *  for every other node, which the component names by its word. Never the read's own text. */
+  readonly words: string;
 }
 
 /** The reads of an issue that hold its comments, messages and questions, as the outline reads
@@ -133,10 +131,10 @@ function blockItem(node: GraphEdge["node"]): NonNullable<GraphEdge["node"]["pare
  * edge either way, so the list stays in the order the read answered.
  *
  * `itemWords` holds the words of the comments, messages and questions of the focused node's own
- * issue by their ids (`issueItemWords`). A citing item among them carries the first line of its
- * words (`itemLine`), its references named from `names`, the page's one batched read of what its
- * references point at, by reference (`reference-names.tsx`); every other node, and an item whose
- * words the page does not hold yet, carries none.
+ * issue by their ids (`issueItemWords`). A citing item among them carries all of its words, with
+ * no cut (`namedWords`), its references named from `names`, the page's one batched read of what
+ * its references point at, by reference (`reference-names.tsx`); every other node, and an item
+ * whose words the page does not hold yet, carries none.
  */
 export function referenceRows(
   itemWords: ReadonlyMap<string, string>,
@@ -144,7 +142,7 @@ export function referenceRows(
   names: ReadonlyMap<string, string> = NO_NAMES
 ): ReferenceRow[] {
   const rows = new Map<string, ReferenceRow>();
-  // The issues the page's names know, which a citing item's line tells its references by: read
+  // The issues the page's names know, which a citing item's words tell their references by: read
   // once for the whole list.
   const issues = knownIssueKeys(names);
   for (const edge of edges) {
@@ -159,42 +157,38 @@ export function referenceRows(
       at: held?.at ?? edge.created_at,
       key,
       kind: edge.kind,
-      line: words === undefined ? "" : itemLine(words, names, issues),
       nodeKind,
       ref: item?.ref ?? edge.node.ref,
       source: edge.node.issue_key ?? edge.node.project,
+      words: words === undefined ? "" : namedWords(words, names, issues),
     });
   }
   return [...rows.values()];
 }
 
 /**
- * The one line a citing item is named by: the first line of its words, cut where every one line
- * of a node is cut (`firstLineOf`, `drawnLine`), with each reference it writes named as the
- * outline's row names it (`rowReferenceWords`): an issue by its key and its title, anything else
- * by its target's words. The server's reading of a bare `dispatch://` reference is a link whose
- * words are the address itself, so the words write it as typed; a line holding a reference the
- * read has not named is `""`, and the row is named by its word, since an address is no name.
- * `issues` is `knownIssueKeys(names)`.
+ * The words a citing item is named by: all of them, with no cut, since a row of a node's
+ * references is no place the page may shorten, its runs of white space one space each, with each
+ * reference they write named as the outline's row names it (`rowReferenceWords`): an issue by its
+ * key and its title, anything else by its target's words. The server's reading of a bare
+ * `dispatch://` reference is a link whose words are the address itself, so the words write it as
+ * typed; words holding a reference the read has not named are `""`, and the row is named by its
+ * word, since an address is no name. `issues` is `knownIssueKeys(names)`.
  */
-function itemLine(
+function namedWords(
   words: string,
   names: ReadonlyMap<string, string>,
   issues: readonly string[]
 ): string {
-  const first = firstLineOf(words);
-  let line = "";
+  const whole = words.replace(/\s+/gu, " ").trim();
+  let written = "";
   let at = 0;
-  for (const one of rowReferences(first.line, issues)) {
+  for (const one of rowReferences(whole, issues)) {
     if ((names.get(one.reference) ?? "").trim() === "") return "";
     const named = rowReferenceWords(one, names);
-    line += first.line.slice(at, one.start);
-    line += named.key === undefined ? named.words : `${named.key} ${named.words}`;
+    written += whole.slice(at, one.start);
+    written += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     at = one.end;
   }
-  return drawnLine({
-    cut: first.cut,
-    line: `${line}${first.line.slice(at)}`,
-    sentence: first.sentence,
-  });
+  return `${written}${whole.slice(at)}`;
 }

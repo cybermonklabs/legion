@@ -2,12 +2,15 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { GraphEdge, GraphReferences } from "../../api/types";
+import { useListPages } from "../issue-page/details-leaves";
+import { SHOW_MORE, showMoreName } from "../issue-page/show-more-fixture";
 import type { BlockItemKind } from "./block-reference";
-import { ReferencedBy } from "./ReferencedBy";
+import { type ExtraReferenceRow, ReferencedBy } from "./ReferencedBy";
 
 const createdAt = "2026-10-20T10:00:00Z";
 
@@ -667,4 +670,89 @@ test("an extra row draws its excerpt whole, with no Show more", async () => {
   expect(excerpt).toHaveTextContent(words, { normalizeWhitespace: false });
   expect(excerpt).not.toHaveClass("line-clamp-3");
   expect(within(extraList).queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+});
+
+/** `ReferencedBy` as Details draws it (`page`), in the pages Details holds its rows in
+ *  (`useListPages`), with rows the host adds after the list's own. */
+function PagedPanel({ extraRows }: { extraRows: readonly ExtraReferenceRow[] }): ReactNode {
+  const pages = useListPages();
+  return <ReferencedBy extraRows={extraRows} page pages={pages} reference="dispatch://CORE-1" />;
+}
+
+// With `page` and `pages` the host's rows join the list's one sequence after its own: the first
+// page draws the list's own rows and then the host's, up to 20 rows in all, one Show more under
+// them all counts what is left of both, and its press draws the rest, with the focus on the first
+// row it drew - here a row of the host's, whose link takes it.
+test("extra rows stand in the list's pages of 20 after its own rows, under one control", async () => {
+  const user = userEvent.setup();
+  const node = {
+    ...graphNodeFields(),
+    id: "CORE-1",
+    issue_key: "CORE-1",
+    kind: "issue",
+    ref: "dispatch://CORE-1",
+  } satisfies GraphReferences["node"];
+  // 18 comments of OPS-1, each a source of its own with one row.
+  const edges = Array.from({ length: 18 }, (_, index) =>
+    itemBlockEdge(
+      "comment",
+      `11111111-1111-4111-8111-${String(index + 1).padStart(12, "0")}`,
+      "b1",
+      `Comment ${index + 1} cites dispatch://CORE-1.`
+    )
+  );
+  const extraRows = [1, 2, 3, 4, 5].map((n) => ({
+    edge: "extra edge",
+    href: `/somewhere/r${n}`,
+    key: `r${n}`,
+    kind: `Extra kind ${n}`,
+  }));
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({ edges, node });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PagedPanel extraRows={extraRows} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("Comment 1 cites dispatch://CORE-1.");
+  // Each row of the list, its own and the host's, is a row of a card (`rowAt`).
+  const rowsSelector = ":scope > ul > li > ul > li";
+  expect(panel.querySelectorAll(rowsSelector), "the first page does not draw 20 rows").toHaveLength(
+    20
+  );
+  const extraList = panel.querySelector<HTMLElement>("[data-extra-references]");
+  if (extraList === null) throw new Error("the first page draws no row of the host's");
+  expect(
+    within(extraList)
+      .getAllByRole("link")
+      .map((link) => link.textContent),
+    "the first page does not draw the host's rows after the list's own, up to 20 rows in all"
+  ).toEqual(["Extra kind 1", "Extra kind 2"]);
+  const more = within(panel).getAllByRole("button", { name: SHOW_MORE });
+  expect(more, "the list does not draw one Show more under all its rows").toHaveLength(1);
+  expect(more[0]?.textContent, "Show more does not count the rows of both left").toBe(
+    showMoreName(3)
+  );
+
+  await user.click(more[0] as HTMLElement);
+  expect(
+    panel.querySelectorAll(rowsSelector),
+    "Show more did not draw the rest of the rows"
+  ).toHaveLength(23);
+  expect(
+    within(extraList).getByRole("link", { name: "Extra kind 3" }),
+    "Show more did not move the focus to the link of the first row it drew"
+  ).toHaveFocus();
+  expect(
+    within(panel).queryByRole("button", { name: SHOW_MORE }),
+    "Show more stayed once every row was drawn"
+  ).not.toBeInTheDocument();
 });

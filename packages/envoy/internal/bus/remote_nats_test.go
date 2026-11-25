@@ -78,6 +78,7 @@ func TestConnectOwningStreamRefusesANATSServerThatIsNotThisMachines(t *testing.T
 // process on the same bus, and a viewer's relay dialling production by accident is the thing
 // being stopped.
 func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 
@@ -102,6 +103,7 @@ func TestDialRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
 // the override, and it is read off the URL: nothing dials while the run has not said it means
 // another machine's NATS.
 func TestConnectRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	remote := remoteLookingURL(t, uri)
 

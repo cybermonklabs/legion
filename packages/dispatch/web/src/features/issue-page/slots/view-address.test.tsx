@@ -151,11 +151,12 @@ function answerVerificationReads(): void {
   spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
 }
 
-/** The task's step in the Plan view's chart, and the outline's rows of the task, the statement
- *  and the second thread's head. */
+/** The task's step in the Plan view's chart, and the outline's rows of the task, the statement,
+ *  the check and the second thread's head. */
 const TASK_STEP = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
 const TASK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
 const STATEMENT_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
+const CHECK_ROW = `[data-issue-body] [data-node-row][data-node-id="${blockNodeId(VERIFICATION_SLUG, CHECK)}"]`;
 const COMMENT_ROW = '[data-issue-body] [data-node-row][data-node-id="head-b"]';
 
 // Under a statement the Verification view draws that statement's checks alone
@@ -321,7 +322,9 @@ test("a fragment the browser changes under one key, from a block the tree holds 
 // The outline lands on the address's node until the reader's first act since they followed the
 // address, which a watch of the following's own stops (`ReaderActsWatch`). A fragment the browser
 // changes under the one key "default", after the reader pressed a key, is a following of its own,
-// with a watch of its own, so the outline lands on the new node as it landed on the first.
+// with a watch of its own, so the outline lands on the new node as it landed on the first: the
+// check, which Conversation draws under the statement it serves. A plan task is no row of
+// Conversation (R9); the case below reads where its fragment goes.
 test("after the reader pressed a key, a fragment the browser changes under one key lands on its row of the outline", async () => {
   answerVerificationReads();
   const conversation = presetPath(KEY, "conversation");
@@ -334,8 +337,18 @@ test("after the reader pressed a key, a fragment the browser changes under one k
       new KeyboardEvent("keydown", { bubbles: true, key: "Shift" })
     );
   });
-  view.follow(`${conversation}#b-${PLAN_TASK}`);
-  await rowTakesFocus(view, TASK_ROW, "the task's fragment under the same key, after a key");
+  view.follow(`${conversation}#b-${CHECK}`);
+  await rowTakesFocus(view, CHECK_ROW, "the check's fragment under the same key, after a key");
+});
+
+// R9: an address that names a node Conversation draws no row of opens the filter of its kind at
+// that node: a plan task's fragment on Conversation's own address opens Plan, whose address it
+// replaces, and the Plan view lands on the task's step.
+test("a plan task named on Conversation's address opens Plan, with the focus on the task's step", async () => {
+  answerVerificationReads();
+  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "conversation" });
+  await rowTakesFocus(view, TASK_STEP, "the task's fragment on Conversation's address");
+  expect(view.container.querySelector("[data-issue-body]")).toBeNull();
 });
 
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps

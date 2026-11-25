@@ -19,6 +19,7 @@ import (
 // "in process", or with the next send refused by a full stream. The control is a keep whose every
 // send is answered as the first was, which ends with the unacknowledged error last.
 func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.T) {
+	t.Parallel()
 	unanswered := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
 	for _, row := range []struct {
 		name  string

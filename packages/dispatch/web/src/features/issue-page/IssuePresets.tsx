@@ -428,7 +428,8 @@ function step(
  * it asks something of the reader, in the prototype's `.sig` (12 px, the quiet grey; the failed
  * red for what failed and the decision violet for what waits for review, each with its word, so
  * the colour repeats what the word says). The count is the author's number and carries
- * `data-preset-count`, which the checks read it by.
+ * `data-preset-count`, which the checks read it by; it carries "+" while the read it is read
+ * from holds nodes no page read yet holds (`PresetSignal.more`, R15).
  */
 function Signal({
   id,
@@ -444,6 +445,7 @@ function Signal({
     <span className={`text-xs leading-4 font-medium ${pageQuietText}`} id={id}>
       <span data-preset-count={preset} {...authorText}>
         {signal.count}
+        {signal.more === true ? "+" : ""}
       </span>
       {unit === undefined ? null : <span {...pageChrome}> {FILTER_SIGNAL_WORDS[unit]}</span>}
       {flag === undefined ? null : (

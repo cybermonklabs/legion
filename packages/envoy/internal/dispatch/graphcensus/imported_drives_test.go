@@ -316,7 +316,8 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // of an ask alice opens and a comment of alice's each written for a run she asked, a lens with a
 // finding, a finding, a risk and a constraint, a pointer appended and one retargeted, and the
 // lens's state. The comment path's drives name the sites the path runs in turn (comment): the path
-// itself, which writes the comment's node and its tuples under its event, and who wrote it.
+// itself, which writes the comment's node before its row (queueCommentRow) and its tuples under its
+// event (queueCommentCreated), and who wrote it.
 //
 // The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
 // order: a run of the command bar alice asks, a run an older pod recorded that a pass of the
@@ -391,8 +392,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted),
 	}, {
-		Name: "api/comment_create.go#queueCommentCreated, on an issue", Database: r.database,
-		Sites: comment("api/comment_create.go#queueCommentCreated", "api/comment_create.go#queueCommentRow"),
+		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
+		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)
@@ -408,8 +409,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
-		Name: "api/comment_create.go#queueCommentCreated, anchored to a document, mentioning a session", Database: r.database,
-		Sites: comment("api/comment_create.go#queueCommentCreated", "api/comment_create.go#queueCommentRow"),
+		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
+		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
 				"body": "Does this ship, @" + heldSession + "?", "mentions": []map[string]any{{"target": "session:" + heldSession}},

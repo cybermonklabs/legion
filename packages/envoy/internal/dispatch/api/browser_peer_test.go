@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // servedSockets lets a test wait until the document server is done with one of its
@@ -139,29 +139,36 @@ func (p *syncedPeer) connection() *docstest.Peer {
 // to the peer before barrier sees it, so the peer then holds everything the room sent before that
 // answer. The document check covers a sync step 2 that was already on its way when barrier
 // drained: another peer's that the room relays can arrive after the request and predate an update
-// this peer sent just before it.
+// this peer sent just before it. Its one bound is the test binary's deadline (testwait.Until).
 func (p *syncedPeer) barrier(t *testing.T) {
 	t.Helper()
 	conn := p.connection()
 	for len(conn.Answers) > 0 {
 		<-conn.Answers
 	}
-	deadline := time.After(5 * time.Second)
-	for {
-		if err := conn.AskForDocument(); err != nil {
-			t.Fatalf("send browser peer sync step 1: %v", err)
+	// asking is whether a request is still to be sent: at first, and again after each answer that
+	// does not hold the peer's document. stale counts those answers, which the failure prints.
+	asking, stale := true, 0
+	testwait.Until(t, "the room to answer with a state holding everything the browser peer sent (answers that did not)", func() (int, bool) {
+		if asking {
+			if err := conn.AskForDocument(); err != nil {
+				t.Fatalf("send browser peer sync step 1: %v", err)
+			}
+			asking = false
 		}
 		select {
 		case state := <-conn.Answers:
 			if p.roomHolds(t, state) {
-				return
+				return stale, true
 			}
+			stale++
+			asking = true
 		case <-conn.Ended:
 			t.Fatal("browser peer connection closed before the room answered its sync")
-		case <-deadline:
-			t.Fatal("the room never answered with a state holding everything the browser peer sent")
+		default:
 		}
-	}
+		return stale, false
+	})
 }
 
 // roomHolds reports whether state, the content of a sync step 2, holds everything in the peer's
@@ -190,17 +197,14 @@ func (p *syncedPeer) reconnect(t *testing.T) {
 
 // closeAndWait closes the peer's connection and returns once the document server has let it go,
 // which is after the room's eviction and last-peer settlement when the peer was the room's last.
+// Its one bound is the test binary's deadline (testwait.Receive).
 func (p *syncedPeer) closeAndWait(t *testing.T) {
 	t.Helper()
 	p.mu.Lock()
 	socketID := p.socketID
 	p.mu.Unlock()
 	p.close()
-	select {
-	case <-p.sockets.done(socketID):
-	case <-time.After(30 * time.Second):
-		t.Fatal("the document server did not let go of the browser peer's closed connection")
-	}
+	testwait.Receive(t, "the document server to let go of the browser peer's closed connection", p.sockets.done(socketID))
 }
 
 func (p *syncedPeer) close() {

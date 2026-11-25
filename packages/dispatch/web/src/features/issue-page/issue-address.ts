@@ -1,7 +1,8 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, type IssueRoute, parseNodeReference } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -32,8 +33,8 @@ export type AddressTarget =
    *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
    *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
    *  the focus on, wherever the item is anchored (R20), or, for a comment or message agents
-   *  wrote outside every thread a person wrote in, an entry of the panel's history
-   *  (`agentsOnlyItem`). */
+   *  or a person wrote that is a turn of a thread the history holds (`agents-only.ts`), an entry
+   *  of the panel's history (`agentsOnlyItem`). */
   | { readonly kind: "item"; readonly id: string }
   /** The issue's children, by the issue's own key: the children's own address (`/children`,
    *  `t h`) names the first row of their group in the outline, which the page unfolds the path
@@ -91,6 +92,20 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
  *  filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
+}
+
+/** The address that opens `preset` at `node`: the view's own address with the `#b-` fragment of
+ *  the block the node's reference names, which the view lands on as on any block its address
+ *  names (`issueAddress`). Undefined for a node whose reference names no block of an issue. */
+export function presetNodePath(
+  preset: Preset,
+  node: Pick<TreeNode, "reference">
+): string | undefined {
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  if (route === undefined || !("key" in route) || !("block" in route)) return undefined;
+  return route.block === undefined
+    ? undefined
+    : `${presetPath(route.key, preset)}${blockFragment(route.block.id)}`;
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */
@@ -204,16 +219,19 @@ export function issueAddress(
 }
 
 /**
- * The id `target` names where it is a comment or a message an agent wrote outside every thread
- * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
- * for every other target, and while the reads that tell are not in (`agents-only.ts`). `asks`
- * is the asks read, which tells a reply under a question the outline draws from one under an
- * approval request, which it does not; a caller that has not read the asks passes `undefined`,
- * and a reply under any ask is then the outline's.
+ * The id `target` names where it is a turn of a thread the panel's history holds, which the page
+ * opens in that history rather than in the outline: a message of a thread the Legion daemon
+ * began, a person's reply in it included, or a comment of a thread tied to no text that no person
+ * wrote in (`agents-only.ts`). Undefined for every other target, and while the reads that tell
+ * are not in. `asks` is the asks read, which tells a reply under a question the outline draws
+ * from one under an approval request, which it does not; a caller that has not read the asks
+ * passes `undefined`, and a reply under any ask is then the outline's.
  */
 export function agentsOnlyItem(
   target: AddressTarget | undefined,
-  comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
+  comments:
+    | readonly Pick<Comment, "anchor" | "ask_id" | "author" | "id" | "reply_to">[]
+    | undefined,
   messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
 ): string | undefined {

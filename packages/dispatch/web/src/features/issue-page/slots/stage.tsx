@@ -44,9 +44,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * (`useFollowing`: the location's key with the address) and none after it, so a view may say it
  * again on any render once its reads have settled. Where its tree draws no node - an item the
  * issue holds none of, an item of another issue, an id written short, an item whose read failed,
- * a turn of a thread only agents wrote in, a block no node carries - the stage draws the body in
- * the view's place for the rest of that following, which lands as the outline does; a new
- * following asks the view again.
+ * a turn of a thread the history holds (`agents-only.ts`), a block no node carries - the stage
+ * draws the body in the view's place for the rest of that following, which lands as the outline
+ * does; a new following asks the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn

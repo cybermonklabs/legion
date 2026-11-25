@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useRef } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
 import {
@@ -11,9 +11,11 @@ import {
   pageStateText,
   pageStatusProgressText,
 } from "../../theme/classes";
-import { useCatchUp } from "../steps/StepsTab";
+import { standsFailed } from "../refs/reference-target";
+import { Identifier, Time, useCatchUp } from "../steps/StepsTab";
 import { type StepRow, stepTasks } from "../steps/steps-model";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, retryRead, useRetryHandOff } from "./details-error";
+import { groupsDrawn, useListPages } from "./details-leaves";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -32,115 +34,51 @@ function None(): ReactNode {
   );
 }
 
-/** A run's start and end are read against each other, down the runs, so each is the instant
- *  itself (`Nov 16 8:00 AM`), as the Steps tab draws it, rather than a distance from now. The
- *  date and the time each stay whole, so a narrow column puts the time under the date and never
- *  splits either; the year shows when it is not this one, and the whole date and time is the
- *  title. */
-const day = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-
-function Time({ at }: { at: string | null }): ReactNode {
-  if (at === null) return <None />;
-  const date = new Date(at);
-  if (Number.isNaN(date.getTime())) return <time {...authorText}>{at}</time>;
-  const dayFormat = date.getFullYear() === new Date().getFullYear() ? day : dayOfAnotherYear;
-  return (
-    <time dateTime={at} title={date.toLocaleString()} {...authorText}>
-      <span className="whitespace-nowrap">{dayFormat.format(date)}</span>{" "}
-      <span className="whitespace-nowrap">{timeOfDay.format(date)}</span>
-    </time>
-  );
-}
-
-/** A part of an id that cannot stand on a line alone: a number (`2`, `3570`, `6.1`) or one
- *  character. It stays with the part before it, so `core-2` and `gpt-6.1` never break. */
-const CLINGS = /^(?:[\d.]+|.)$/u;
-
-/** One `/`-free piece of an id: its hyphen-joined parts in groups, a group being a part and every
- *  clinging part after it. The hyphen between two groups is where a line may break; inside a
- *  group it may not. Each group is keyed by its first part's place in the piece. */
-function HyphenGroups({ piece }: { piece: string }): ReactNode {
-  const groups: { at: number; parts: string[] }[] = [];
-  for (const [at, part] of piece.split("-").entries()) {
-    const last = groups.at(-1);
-    if (last !== undefined && CLINGS.test(part)) last.parts.push(part);
-    else groups.push({ at, parts: [part] });
-  }
-  return groups.map(({ at, parts }, index) => (
-    <Fragment key={at}>
-      {index === 0 ? null : "-"}
-      {parts.length === 1 ? parts[0] : <span className="whitespace-nowrap">{parts.join("-")}</span>}
-    </Fragment>
-  ));
-}
-
-/** An agent token or a model id, the Steps tab's rule for one: a token breaks at its hyphens,
- *  and a model id (`anthropic/claude-opus-5`) is also offered a break after each slash, so
- *  neither runs past the width Details gives it; a number or a single letter keeps to the part
- *  before it, so no line holds it alone. */
-function Identifier({ value }: { value: string }): ReactNode {
-  if (value === "") return <None />;
-  const pieces = value.split("/");
-  return (
+/** An agent token or a model id in the type every id of a run is drawn in, broken as the Steps
+ *  tab breaks it (`Identifier`), or None for one the record does not hold. */
+function IdentifierValue({ value }: { value: string }): ReactNode {
+  return value === "" ? (
+    <None />
+  ) : (
     <span className="font-mono" {...authorText}>
-      {/* Each piece is keyed by the text up to and including it, which no other piece shares. */}
-      {pieces.map((piece, index) => {
-        const through = pieces.slice(0, index + 1).join("/");
-        return (
-          <Fragment key={through}>
-            {index === 0 ? null : (
-              <>
-                <wbr />/
-              </>
-            )}
-            <HyphenGroups piece={piece} />
-          </Fragment>
-        );
-      })}
+      <Identifier value={value} />
     </span>
   );
 }
 
-/** How the run ended, or that it runs, in the colour Details' other states are drawn in: a run
- *  that runs in the in-progress blue, one that passed in the passed green, one that failed in
- *  the failed red. A result this build has no word for shows the server's own. A state
- *  `StepEnd` adds fails to compile until it is drawn here. */
+/** When a run started or ended, as the Steps tab writes it (`Time`), or None for a time the
+ *  record does not hold. */
+function TimeValue({ at }: { at: string | null }): ReactNode {
+  return at === null ? (
+    <None />
+  ) : (
+    <span {...authorText}>
+      <Time at={at} />
+    </span>
+  );
+}
+
+/** The colour each result Details has a word for is drawn in, as Details' other states are
+ *  drawn: a run that runs in the in-progress blue, one that passed in the passed green, one that
+ *  failed in the failed red, and one that stopped in the ink every value of a run is drawn in
+ *  (`Field`). Each is a state of `StepEnd` but `other`, so a state `StepEnd` adds fails to
+ *  compile until it has a colour here. */
+const RESULT_COLOURS: Record<Exclude<StepRow["state"], "other">, string> = {
+  failed: pageStateText.failed,
+  passed: pageStateText.passed,
+  running: pageStatusProgressText,
+  stopped: "",
+};
+
+/** How the run ended, or that it runs, in its colour (`RESULT_COLOURS`). A result this build has
+ *  no word for shows the server's own. */
 function Result({ row }: { row: StepRow }): ReactNode {
-  switch (row.state) {
-    case "running":
-      return (
-        <span className={`font-medium ${pageStatusProgressText}`} {...pageChrome}>
-          {RESULTS.running}
-        </span>
-      );
-    case "passed":
-      return (
-        <span className={`font-medium ${pageStateText.passed}`} {...pageChrome}>
-          {RESULTS.passed}
-        </span>
-      );
-    case "failed":
-      return (
-        <span className={`font-medium ${pageStateText.failed}`} {...pageChrome}>
-          {RESULTS.failed}
-        </span>
-      );
-    case "stopped":
-      return (
-        <span className="font-medium" {...pageChrome}>
-          {RESULTS.stopped}
-        </span>
-      );
-    case "other":
-      return <span {...authorText}>{row.result}</span>;
-  }
-  return row satisfies never;
+  if (row.state === "other") return <span {...authorText}>{row.result}</span>;
+  return (
+    <span className={`font-medium ${RESULT_COLOURS[row.state]}`} {...pageChrome}>
+      {RESULTS[row.state]}
+    </span>
+  );
 }
 
 /** One labelled value of a run: its label in the quiet grey, as Details labels its rows, and the
@@ -166,8 +104,10 @@ function Field({
 }
 
 /** One run of one step, as a list of labelled values rather than a row of a table, so each
- *  value has the width of Details to wrap in. A failed or stopped run that sent its task back
- *  names where it sent it (`StepEnd.returnedTo`). */
+ *  value has the width of Details to wrap in. Its agent, model, start and end are drawn as the
+ *  Steps tab draws them (`Identifier`, `Time`), as text the page did not author, and one the
+ *  record does not hold reads None. A failed or stopped run that sent its task back names where
+ *  it sent it (`StepEnd.returnedTo`). */
 function Run({ row }: { row: StepRow }): ReactNode {
   return (
     <li
@@ -187,10 +127,10 @@ function Run({ row }: { row: StepRow }): ReactNode {
           {row.type === "" ? <None /> : <span {...authorText}>{row.type}</span>}
         </Field>
         <Field field="agent" label={FIELDS.agent}>
-          <Identifier value={row.agent} />
+          <IdentifierValue value={row.agent} />
         </Field>
         <Field field="model" label={FIELDS.model}>
-          <Identifier value={row.model} />
+          <IdentifierValue value={row.model} />
         </Field>
         <Field field="attempt" label={FIELDS.attempt}>
           <span className="tabular-nums" {...authorText}>
@@ -198,10 +138,10 @@ function Run({ row }: { row: StepRow }): ReactNode {
           </span>
         </Field>
         <Field field="started" label={FIELDS.started}>
-          <Time at={row.started} />
+          <TimeValue at={row.started} />
         </Field>
         <Field field="ended" label={FIELDS.ended}>
-          <Time at={row.ended} />
+          <TimeValue at={row.ended} />
         </Field>
         <Field field="result" label={FIELDS.result}>
           <Result row={row} />
@@ -222,7 +162,9 @@ function Run({ row }: { row: StepRow }): ReactNode {
  * The steps Legion ran on the issue (`GET /issues/{key}/steps`), under the history in Details,
  * where today's page has a Steps tab: headed by how many runs it lists, then one group per task
  * in the order of each task's first step (`stepTasks`), each run of the task in the order the
- * server read them, with its step, role, type, agent, model, attempt, start, end and result.
+ * server read them, with its step, role, type, agent, model, attempt, start, end and result. The
+ * runs are one list across their tasks, drawn 20 at a time with Show more under them
+ * (`useListPages`), and the heading counts every run.
  *
  * It reads through the Steps tab's own catch-up (`useCatchUp` in `features/steps/StepsTab.tsx`)
  * while Details is open (`open`), and through its Retry, and in no other way, so a load that
@@ -235,27 +177,21 @@ function Run({ row }: { row: StepRow }): ReactNode {
  * and the scheduler, which takes only a read begun after the one asked for as its answer, would
  * send the catch-up's as a second request - and has no retry policy: the catch-up's next read
  * asks again for a read that failed, where the app's retries would go on after Details shuts.
- * What a read answered stays drawn when a later read fails, with the failure and its Retry above
- * it; the failure is drawn alone only while no read has answered. Retry joins a read already out
- * (`cancelRefetch: false`) and, once a read lands and takes the line with it, hands the focus it
- * held to the heading rather than to the page.
+ * What a read answered stays drawn when a later read fails, and no failure is said over it; the
+ * failure and its Retry are drawn only while no read has answered. Retry joins a read already out
+ * (`retryRead`) and, once a read lands and takes the line with it, hands the focus it held to the
+ * heading rather than to the page.
  */
 export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boolean }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
   useCatchUp(issueKey, open);
   const heading = useRef<HTMLHeadingElement>(null);
-  const retried = useRef<Element | null>(null);
-  useLayoutEffect(() => {
-    if (retried.current === null || retried.current.isConnected) return;
-    retried.current = null;
-    if (document.activeElement === null || document.activeElement === document.body) {
-      heading.current?.focus({ preventScroll: true });
-    }
-  });
-  // The line stays while the read its Retry sent is out, even where no read has answered: a
-  // fetch of a read that holds no answer puts it back to pending as it starts, which would take
-  // the line, and its Retry with the focus, away at the press.
-  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  const section = useRef<HTMLElement>(null);
+  const pages = useListPages();
+  const retry = useRetryHandOff(() => heading.current);
+  // The failure line stands under the heading, in place of the loading line, while the read
+  // stands failed (`standsFailed`).
+  const failed = standsFailed(query);
   const tasks = query.data === undefined ? undefined : stepTasks(query.data);
   const runs = tasks?.reduce((count, task) => count + task.rows.length, 0);
   return (
@@ -263,6 +199,7 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
       aria-label={CONTROL_LABELS.steps}
       className="flex min-w-0 flex-col gap-1.5"
       data-testid="issue-steps"
+      ref={section}
     >
       <h2
         className={`text-sm font-semibold outline-none ${pageInkText}`}
@@ -284,10 +221,8 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           error={query.error}
           failure={query.errorUpdateCount}
           message={ANSWER_LINES.steps_unreadable}
-          onRetry={() => {
-            retried.current = document.activeElement;
-            void query.refetch({ cancelRefetch: false });
-          }}
+          onRetry={retryRead(query)}
+          {...retry}
           retrying={query.isFetching}
         />
       ) : null}
@@ -302,23 +237,34 @@ export function DetailsSteps({ issueKey, open }: { issueKey: string; open: boole
           <None />
         </p>
       ) : (
-        tasks.map(({ rows, task }) => (
-          <section
-            aria-label={`${CONTROL_LABELS.steps_task} ${task}`}
-            className="flex min-w-0 flex-col gap-1.5"
-            data-step-task={task}
-            key={task}
-          >
-            <h3 className={`text-xs leading-[18px] font-semibold ${pageMutedText}`} {...pageChrome}>
-              {CONTROL_LABELS.steps_task} <span {...authorText}>{task}</span>
-            </h3>
-            <ol className="flex min-w-0 flex-col gap-1.5">
-              {rows.map((row) => (
-                <Run key={row.id} row={row} />
-              ))}
-            </ol>
-          </section>
-        ))
+        <>
+          {groupsDrawn(tasks, ({ rows }) => rows, pages.drawn).map(
+            ({ entries, group: { task } }) => (
+              <section
+                aria-label={`${CONTROL_LABELS.steps_task} ${task}`}
+                className="flex min-w-0 flex-col gap-1.5"
+                data-step-task={task}
+                key={task}
+              >
+                <h3
+                  className={`text-xs leading-[18px] font-semibold ${pageMutedText}`}
+                  {...pageChrome}
+                >
+                  {CONTROL_LABELS.steps_task} <span {...authorText}>{task}</span>
+                </h3>
+                <ol className="flex min-w-0 flex-col gap-1.5">
+                  {entries.map((row) => (
+                    <Run key={row.id} row={row} />
+                  ))}
+                </ol>
+              </section>
+            )
+          )}
+          {pages.more(
+            runs ?? 0,
+            (index) => section.current?.querySelectorAll("[data-step-run]")[index]
+          )}
+        </>
       )}
     </section>
   );

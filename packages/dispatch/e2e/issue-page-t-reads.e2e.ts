@@ -1,3 +1,6 @@
+/** the rows count the tree and view reads the page sends the server and draw each filter from
+ *  the view it answers */
+
 import { PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { seedWholeIssue } from "./issue-layout-seed";

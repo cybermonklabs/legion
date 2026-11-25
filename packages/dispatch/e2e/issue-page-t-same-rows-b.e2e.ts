@@ -1,3 +1,6 @@
+/** the rows draw the tree read the server answers for each seeded issue, compared with the
+ *  recorded rows */
+
 import {
   DECISION_SEEDS,
   expectSameRows,

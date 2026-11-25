@@ -65,8 +65,8 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { FOLD_AFTER } from "./details-leaves";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import {
   DETAILS_OPENER_ATTRIBUTE,
   DETAILS_ROW_ATTRIBUTE,
@@ -103,6 +103,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { architecture, offPageColours } from "./shared-controls-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
 import { treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import { issueTreeQuery, subscribeTreeFreshness, type TreeAnswer } from "./tree-read/tree-read";
@@ -186,6 +187,18 @@ function advancesRefusal(): ApiError {
 /** The keys CORE-2, CORE-3 and on, `count` of them. */
 function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
+}
+
+/** How many entries each list of Details draws at first, and how many more each press of its
+ *  Show more draws: 20. It is written here rather than read from the page, so a page that draws
+ *  any other number of entries fails the cases below. */
+const PAGE = 20;
+
+/** The row of Details' Files and documents, whose label carries the count of its entries. */
+function filesRow(): HTMLElement {
+  const row = screen.getByTestId("issue-files").closest(".grid");
+  if (!(row instanceof HTMLElement)) throw new Error("Details draws no Files and documents row");
+  return row;
 }
 
 /** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
@@ -312,48 +325,25 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
- *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network-guard.ts`). */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
-  const reads = [
-    spyOn(api, "whoAmI").mockResolvedValue({ login: "alice" } as Awaited<
-      ReturnType<typeof api.whoAmI>
-    >),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-    // Details' People rows count the issue's subscribed agents on every load (`details-more.tsx`).
-    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
-    // Details' history reads the issue's log while Details is open (`IssueHistory.tsx`).
-    spyOn(api, "getIssueEvents").mockResolvedValue([]),
-    // Details' Steps reads the issue's step records while Details is open (`DetailsSteps.tsx`).
-    spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
-  ];
-  const pinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    comments: spyOn(api, "listComments").mockResolvedValue([]),
-    messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  };
+  const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
   );
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
-    pinReads,
+    pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
-      for (const spy of reads) spy.mockRestore();
-      for (const spy of Object.values(pinReads)) spy.mockRestore();
+      reads.restore();
       patchIssue.mockRestore();
     },
   };
@@ -1266,8 +1256,8 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// Only a list of unbounded length folds after its first ten. An issue waits on at most
-// `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
+// Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
+// most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
 test("the blockers never fold", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
@@ -1284,9 +1274,7 @@ test("the blockers never fold", async () => {
       "the Blocked by row folds the issues this one waits on"
     ).toEqual(blockers);
     expect(
-      within(row).queryByRole("button", {
-        name: (name) => name.startsWith(CONTROL_LABELS.show_all),
-      }),
+      within(row).queryByRole("button", { name: SHOW_MORE }),
       "the Blocked by row offers to show a list it already draws whole"
     ).not.toBeInTheDocument();
   } finally {
@@ -2811,47 +2799,170 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
   }
 });
 
-// A folded list's Show all goes with its press, so the focus goes on to the first entry it
-// opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
-test("Show all gives the focus to the first entry it opens", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  const withTwelve = withNotes(12);
-  getIssue.mockResolvedValue(withTwelve);
+/** How many entries each list of `MANY_ENTRIES` holds: two pages of 20 and five entries more. */
+const MANY = 2 * PAGE + 5;
+
+/** `count` names, `stem` and a number from 1, padded so that they sort as they are numbered. */
+function numbered(stem: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, index) => `${stem}${String(index + 1).padStart(2, "0")}`
+  );
+}
+
+/** The fixture's issue with `MANY` entries in each list of unbounded length its rows of Details
+ *  draw: its pull requests, its other links, its components (25 live and the rest retired, which
+ *  the row draws after them as one list), and its documents. */
+const MANY_ENTRIES: IssueDetails = {
+  ...withNotes(MANY - 1),
+  components: {
+    ids: numbered("panel-", 25),
+    inherited_from: null,
+    mode: "explicit",
+    reason: null,
+    unknown: numbered("retired-", MANY - 25),
+  },
+  external_links: [
+    ...numbered("", MANY).map((number) => ({
+      kind: "github_pr" as const,
+      url: `https://github.com/acme/web/pull/${number}`,
+    })),
+    ...numbered("", MANY).map((number) => ({
+      url: `https://github.com/acme/web/issues/${number}`,
+    })),
+  ],
+};
+
+/** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
+ *  Pinned lists as one list. */
+const MANY_PINS = [
+  ...numbered("00000000-0000-4000-8000-0000000000", PAGE + 5).map((id) =>
+    conversationItemId("comment", id)
+  ),
+  ...Array.from({ length: MANY - PAGE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
+];
+
+/** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
+ *  on it, each link's read of GitHub answered, and the project's architecture read; the call that
+ *  puts every read back. */
+function stubManyEntries(): () => void {
+  const { getIssue, getMyState, restore } = stubIssueApi();
+  getIssue.mockResolvedValue(MANY_ENTRIES);
+  getMyState.mockResolvedValue(pinnedState(...MANY_PINS));
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const waiting = keysFrom2(12);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
-    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-  });
+  const stubs = [
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: keysFrom2(MANY).map((key) => waitingEdge(key, `Waits for ${key}`)),
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    }),
+    // A reference with no head, so a pull request's read reads no checks after it.
+    spyOn(api, "githubRest").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ state: "open", title: "Ship the web app" }), {
+          headers: { "Content-Type": "application/json" },
+        })
+    ),
+    spyOn(api, "getArchitecture").mockResolvedValue(architecture),
+  ];
+  return () => {
+    for (const stub of stubs) stub.mockRestore();
+    restore();
+  };
+}
+
+/** The chips drawn of the box of chips with the test id `testId`: the components'. */
+function drawnChips(testId: string): HTMLElement[] {
+  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(":scope > span")].filter(
+    (chip) => !chip.hidden
+  );
+}
+
+/** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and
+ *  each entry it draws, in order. */
+interface PagedList {
+  readonly box: () => HTMLElement;
+  readonly entries: () => readonly Element[];
+}
+
+/** Each link a row of Details draws, by the row's name. */
+function linksOfRow(name: string): PagedList {
+  return {
+    box: () => detailsRow(name),
+    entries: () => within(detailsRow(name)).getAllByRole("link"),
+  };
+}
+
+/** Every list of unbounded length that Details' own rows and Pinned draw. */
+const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
+  ["Blocks", linksOfRow(PROPERTY_LABELS.blocks)],
+  ["Pull request", linksOfRow(PROPERTY_LABELS.pull_request)],
+  ["Links", linksOfRow(PROPERTY_LABELS.external_links)],
+  [
+    "Components, the retired ones after the live ones",
+    {
+      box: () => detailsRow(PROPERTY_LABELS.components),
+      entries: () => drawnChips("issue-components"),
+    },
+  ],
+  [
+    "Files and documents",
+    {
+      box: () => filesRow(),
+      entries: () => within(screen.getByTestId("issue-files")).getAllByRole("listitem"),
+    },
+  ],
+  [
+    "Pinned, the history's lines after the comments",
+    {
+      box: () => screen.getByRole("region", { name: CONTROL_LABELS.pinned }),
+      entries: () =>
+        within(screen.getByRole("region", { name: CONTROL_LABELS.pinned })).getAllByRole(
+          "listitem"
+        ),
+    },
+  ],
+];
+
+// Each list of unbounded length draws its first 20 entries and, under them, Show more, which says
+// how many entries are left. A press keeps the entries drawn, draws the next 20 and moves the focus
+// to the first of them, whether the control stays or goes, rather than let it fall to the page; the
+// control goes once every entry is drawn. A list drawn from two sources - a component and a
+// retired one, a pinned comment and a pinned line of the history - is one list, whose pages run
+// on from one source into the other and whose count is of both.
+test.each(
+  PAGED_LISTS
+)("%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end", async (_name, list) => {
+  const user = userEvent.setup();
+  const restoreReads = stubManyEntries();
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
-    const showFiles = await screen.findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${withTwelve.artifacts?.length ?? 0}`,
-    });
-    act(() => showFiles.focus());
-    await user.keyboard("{Enter}");
-    expect(
-      document.activeElement,
-      "Show all of Files and documents left the focus off the first entry it opened"
-    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+    await waitFor(() =>
+      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE)
+    );
+    const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE));
 
-    const blocks = detailsRow(PROPERTY_LABELS.blocks);
-    const showBlocks = await within(blocks).findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${waiting.length}`,
-    });
-    act(() => showBlocks.focus());
+    act(() => more.focus());
     await user.keyboard("{Enter}");
+    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(2 * PAGE);
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE));
     expect(
-      document.activeElement,
-      "Show all of Blocks left the focus off the first entry it opened"
-    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+      list.entries()[PAGE]?.contains(document.activeElement),
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+
+    act(() => more.focus());
+    await user.keyboard("{Enter}");
+    expect(list.entries()).toHaveLength(MANY);
+    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+    expect(
+      list.entries()[2 * PAGE]?.contains(document.activeElement),
+      "Show more went with the last entries and did not move the focus to the first it drew"
+    ).toBe(true);
   } finally {
     unmount();
-    getReferences.mockRestore();
-    restore();
+    restoreReads();
   }
 });
 
@@ -3043,6 +3154,82 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
   } finally {
     view.unmount();
     getIssueTree.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Details draws the list 20 rows at a time, the reader's runs after its own rows in the one
+// sequence (`ReferencedBy`'s `pages`, `extraRows`): the control counts every row of the list, its
+// own and the runs, and not the rows its first page draws, and Show more under them says how many
+// of both are left.
+test("N counts every row of the list and not the rows its pages draw", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  // 19 comments of CORE-2, each citing CORE-1: rows of the list's own.
+  const cited = Array.from({ length: 19 }, (_, index): GraphEdge => {
+    const id = `44444444-4444-4444-8444-${String(index + 1).padStart(12, "0")}`;
+    return {
+      created_at: "2026-11-16T10:00:00Z",
+      direction: "in",
+      excerpt: { text: `CORE-2's comment ${index + 1} cites CORE-1.` },
+      kind: "mentions",
+      node: graphNode({
+        id,
+        issue_key: "CORE-2",
+        kind: "comment",
+        project: "CORE",
+        ref: `dispatch://CORE-2/comment/${id}`,
+      }),
+      source_seq: 7,
+    };
+  });
+  // Three runs the reader asked, each of which changed the issue (`treeWithRun`).
+  const runs = [1, 2, 3].map((n) => `6b1d3f5a-8c2e-4a7b-9d0f-00000000000${n}`);
+  const tree = treeAnswer(
+    runs.map((run, index) =>
+      treeNode(run, "interaction", null, {
+        made_at: `2026-11-17T0${index}:00:00Z`,
+        role: "context",
+        text: `Question ${index + 1}`,
+        visibility: "author",
+      })
+    ),
+    runs.map((run) => treeTuple("changed_by_run", "CORE-1", run))
+  );
+  // The list reads what references the issue with no kind; Blocks reads one kind of it.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async (_to, options) =>
+    options === undefined ? { ...NOTHING_REFERENCES, edges: cited } : NOTHING_REFERENCES
+  );
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 19 });
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, detailsQueryClient(), tree);
+
+  try {
+    const control = await screen.findByRole("button", {
+      name: referencedByControlName(undefined),
+    });
+    await user.click(control);
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(22) }),
+      "Referenced by's control does not count every row of the list, its own and the runs"
+    ).toBe(control);
+    const list = screen.getByRole("region", { name: "Referenced by" });
+    expect(
+      list.querySelectorAll(":scope > ul > li > ul > li"),
+      "the list does not draw the 20 rows of its first page"
+    ).toHaveLength(20);
+    expect(
+      within(list).getAllByRole("link", {
+        name: sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction),
+      }),
+      "the first page does not draw the newest run after the list's 19 own rows"
+    ).toHaveLength(1);
+    expect(
+      within(list).getByRole("button", { name: SHOW_MORE }).textContent,
+      "Show more does not count the rows of both left"
+    ).toBe(showMoreName(2));
+  } finally {
+    unmount();
     getReferences.mockRestore();
     restore();
   }
@@ -7924,10 +8111,11 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
  * The elements of Details below, each of which a change made elsewhere takes off the page, or
  * disables, while it holds the focus, and which one case can drive through the query cache: a
  * pin, a blocker, a file or a priority taken away, a route moved, a claim made,
- * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
- * open menu or for its only one, the repository's None and its text drawn in each other's place,
- * the priority's line moved by another session's write, and the issue closed while the focus is
- * on a control of Development. None of these is a press of the reader's.
+ * released or taken again, a list's Show more as the list falls to the 20 entries it draws, a
+ * value set for an entry of Add's open menu or for its only one, the repository's None and its
+ * text drawn in each other's place, the priority's line moved by another session's write, and
+ * the issue closed while the focus is on a control of Development. None of these is a press of
+ * the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -7980,14 +8168,12 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Blocks' Show all, the issues that wait falling to ten",
+    "Blocks' Show more, the issues that wait falling to 20",
     {
-      after: { waiting: keysFrom2(FOLD_AFTER) },
-      before: { waiting: keysFrom2(FOLD_AFTER + 1) },
+      after: { waiting: keysFrom2(PAGE) },
+      before: { waiting: keysFrom2(PAGE + 1) },
       focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
-          name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
-        }),
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", { name: SHOW_MORE }),
     },
   ],
   [
@@ -8124,12 +8310,14 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Files' Show all, the files falling to ten",
+    "Files' Show more, the files falling to 20",
     {
-      after: { issue: withNotes(FOLD_AFTER - 1) },
-      before: { issue: withNotes(FOLD_AFTER) },
-      focused: () =>
-        screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
+      after: { issue: withNotes(PAGE - 1) },
+      before: { issue: withNotes(PAGE) },
+      focused: async () => {
+        await screen.findByTestId("issue-files");
+        return within(filesRow()).getByRole("button", { name: SHOW_MORE });
+      },
     },
   ],
   [

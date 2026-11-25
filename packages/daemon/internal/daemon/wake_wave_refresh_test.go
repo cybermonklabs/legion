@@ -63,15 +63,14 @@ const (
 	// ticker is: the sweep is what re-fills the gate, so a wave of fifteen minutes' refresh would
 	// otherwise take fifteen minutes of the test's own time.
 	//
-	// It is half a second rather than the tenth the rig next door uses, because the gate's
-	// correction rests on a sweep being long enough for the admissions of the pass before it to
-	// have reached the machines' published views: the floor it holds is the admissions granted
-	// since the previous correction, so a wake still unparked two corrections after it was
-	// admitted is counted by neither and the gate hands its credit out a second time (reading 6
-	// and decision P2 of dispatch://INFRA-2712/artifact/plan-md). On the shipped daemon that is
-	// a minute against the milliseconds a post takes; at a tenth of a second, over a hundred and
-	// thirty machines and the race detector, it is not, and the lane was measured holding the
-	// rate and one.
+	// It is half a second rather than the tenth the rig next door uses. It was set when the gate's
+	// correction floored its count at the admissions granted since the previous correction, so a
+	// wake still unparked two corrections after its admission was counted by neither, and at a
+	// tenth of a second the lane was measured holding the rate and one (reading 6 and decision P2
+	// of dispatch://INFRA-2712/artifact/plan-md). The gate now keeps every credit it granted until
+	// that credit comes back (supervise.RefreshGate.Correct), so that reason no longer stands; the
+	// half second is kept as the pace this row's measured runs used. Assertion 5 reads one sweep the
+	// test lets through (rt.gateSweeps), and no assertion here counts sweeps on the wall clock.
 	refreshWaveSweep = 500 * time.Millisecond
 	// refreshWaveRounds is the most rounds of the gate the drain of the fleet may take, a round
 	// being one sweep's worth of admissions run to their turns. The lane's own number is the
@@ -431,8 +430,9 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 //     after the moment it would run with no stale claim in the rig (baselineRootLaunches).
 //  4. The whole wave is refreshed within about the number of stale claims divided by the rate,
 //     counted in rounds of the gate (refreshWaveRounds, which states the margin and why).
-//  5. A credit the killed claim's own death relaunch took away is back within one sweep, with the
-//     wave still draining.
+//  5. A credit a suspension takes away, by dropping an admitted refresh wake, is back within one
+//     sweep, with the wave still draining: the one sweep after it admits another claim on it,
+//     though that sweep read its claims before the suspension.
 //  6. `claimsToRefresh` of the state body equals the stale set at every reading, leaves out the
 //     claim in a round and the claim no install reaches, and is zero when the wave has drained.
 //
@@ -511,7 +511,6 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 	var (
 		rounds, admitted, turnsEnded, turnEndsRefused int
 		killed, drained                               claim.Token
-		creditBackIn                                  int
 		refreshed                                     = map[claim.Token]bool{}
 	)
 	// A pass of this loop that finds the gate empty waits for the sweep that fills it and is no
@@ -633,13 +632,22 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 					len(after), killed, claimsOfWakes(after)[killed], len(waiting))
 			}
 
-			// The credit the dropped wake gives back, and the sweep that spends it on another
-			// claim: what this segment measures is the release inside the suspension's own
-			// decision followed by the next sweep's admission. The sweeps are counted from the
-			// moment the wake is seen gone rather than from the request that dropped it,
-			// because the sweep runs on the wall clock while the drop and the reading of it are
-			// the test's own round trips: what is being measured is that pass's own first acts
-			// (refreshStalePlugins), not how long this test took to see the wake go.
+			// The credit the dropped wake gives back, and the pass that spends it on another
+			// claim: the release inside the suspension's own decision, then one sweep's
+			// admission. The test holds the sweep (rt.gateSweeps) and lets exactly one through
+			// once the wake is seen gone, so what it reads is that one pass and nothing of the
+			// machine's load: the sweep's ticker is the wall clock's, and a count of sweeps
+			// between two readings of the state also counts how long the admitted claim's own
+			// decision ran and how long each reading took (dispatch://INFRA-3904).
+			//
+			// The sweep let through is the one that read its claims before the suspension, the
+			// hardest pass to get right: its snapshot still reads the suspended claim idle and
+			// stale, and the pass must read each claim as its machine holds it now
+			// (refreshStalePlugins), or it posts the credit to the suspended claim, whose machine
+			// gives it back only as it decides that post, and the pass refuses every claim after
+			// it.
+			sweeps := rt.gateSweeps()
+			sweeps.awaitSweep(t, "a sweep to read its claims and wait at its reconciliation")
 			status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(drained)+"/suspend", nil, true)
 			if status != http.StatusOK {
 				t.Fatalf("the suspend of %s, which holds an admitted refresh wake, = %d; body %s", drained, status, body)
@@ -647,15 +655,12 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 			testwait.Eventually(t, fmt.Sprintf("the refresh wake of %s to go with the process its suspension ended", drained), func() bool {
 				return !claimsOfWakes(refreshWakesWaiting(t, d))[drained]
 			})
-			sweptAt := len(rt.fake().CallsOf("ReconcileOrphans"))
-			testwait.Eventually(t, "the credit that suspension took away to come back and admit another claim", func() bool {
+			sweeps.letOne(t)
+			sweeps.awaitSweep(t, "the sweep let through to end its pass and the next sweep to wait at the gate")
+			testwait.Eventually(t, fmt.Sprintf("the credit the suspension of %s took away to come back at the one sweep after it and admit another claim", drained), func() bool {
 				return len(refreshWakesWaiting(t, d)) == testWakeRate
 			})
-			creditBackIn = len(rt.fake().CallsOf("ReconcileOrphans")) - sweptAt
-			if creditBackIn > 2 {
-				t.Fatalf("the credit the suspension of %s took away came back %d sweeps after the wake was seen gone, want the next sweep and no later than the one after it: the pass that follows the drop corrects the gate from the wakes the machines hold and admits another claim on it",
-					drained, creditBackIn)
-			}
+			sweeps.open()
 			if left := claimsLeftToRefresh(t, d, "the credit coming back"); left == 0 {
 				t.Fatal("the lane had nothing left to refresh when the credit came back, so this says nothing about a wave still draining")
 			}
@@ -731,8 +736,8 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 	// The four counts, recorded, and a zero of any of them failing: the stale claims the lane read
 	// at the boot, the roots whose first launch was measured, the turns that ended during the
 	// wave, and the claims refreshed.
-	t.Logf("check c-bound: %d stale claims at the boot, %d roots measured, %d turns ended during the wave, %d claims refreshed in %d rounds of the gate (%d admissions); the killed claim's credit came back in %d sweep(s), and the latest root launch ran %s behind the same launch with no stale claim, within the %s this case allows",
-		staleAtBoot, len(rootMoments), turnsEnded, len(refreshed), rounds, admitted, creditBackIn, worst, behind)
+	t.Logf("check c-bound: %d stale claims at the boot, %d roots measured, %d turns ended during the wave, %d claims refreshed in %d rounds of the gate (%d admissions); the credit the suspension of %s took away came back at the one sweep let through after it, and the latest root launch ran %s behind the same launch with no stale claim, within the %s this case allows",
+		staleAtBoot, len(rootMoments), turnsEnded, len(refreshed), rounds, admitted, drained, worst, behind)
 	for _, count := range []struct {
 		what string
 		got  int

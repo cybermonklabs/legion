@@ -22,7 +22,7 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { componentChipIds, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
@@ -54,13 +54,12 @@ import {
   UPRIGHT_BAR,
 } from "./details-icons";
 import {
-  FOLD_AFTER,
   IssueList,
   PropertySection,
   Row,
-  ShowAll,
   SMALL_GLYPH,
   STATUS_ROW_SHAPE,
+  useListPages,
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
@@ -191,9 +190,10 @@ export function IssueMarginCards({
  * picture page-v3-details-1440): every property the header does not hold, each a row of its
  * own - a label column with a shape for the property and its name, and the value beside it,
  * `None` where the issue has none - with every control the page had for it, and nothing
- * read-only. A field with no value is reachable from the one add control, and only a list of
- * unbounded length folds, after its first ten entries, behind a count that opens the rest. The
- * rows sit in three named sections the reader can collapse, kept for the next issue.
+ * read-only. A field with no value is reachable from the one add control, and a list of
+ * unbounded length draws its first 20 entries and, under them, Show more, which says how many
+ * are left and draws the next 20 (`useListPages`). The rows sit in three named sections the
+ * reader can collapse, kept for the next issue.
  *
  * Under the properties, the reader's pins as links to their rows. It holds no list of the
  * conversation: the outline is the conversation. The people, the facts of the focused row and
@@ -201,9 +201,9 @@ export function IssueMarginCards({
  *
  * A focus Details loses goes on only where the reader's own press took its element away: a save
  * of theirs that lands, a Retry whose request answers, an editor they close, an Unpin, a Show
- * all. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
+ * more. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
  * write hand the focus on in their row as they go (`useFocusHandOff`); an editor hands it on as
- * it closes, and an Unpin and a Show all move it at their press. A change the reader did not
+ * it closes, and an Unpin and a Show more move it at their press. A change the reader did not
  * make - another session's write, an event, a read that answers on its own, the issue closed
  * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
  * Details takes it; but one that reaches what the reader's press asked for while that press is
@@ -245,7 +245,17 @@ export function IssueMarginPanel({
 }): ReactNode {
   const sections = useMarginSections();
   const [referencesOpen, setReferencesOpen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(false);
+  // The pages of each list of unbounded length the panel's rows draw (`useListPages`), each with
+  // the box its entries are drawn in, where a press of its Show more finds the first entry it
+  // drew. The issues that wait on this one and the pins page their own lists.
+  const pullRequestPages = useListPages();
+  const pullRequestsValue = useRef<HTMLDivElement>(null);
+  const linkPages = useListPages();
+  const linksValue = useRef<HTMLDivElement>(null);
+  const componentPages = useListPages();
+  const componentsValue = useRef<HTMLDivElement>(null);
+  const referencePages = useListPages();
+  const filePages = useListPages();
   const filesList = useRef<HTMLUListElement>(null);
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
@@ -507,7 +517,8 @@ export function IssueMarginPanel({
   const labels = issue.labels ?? [];
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
-  const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
+  // The chips the Components row draws, as one list (`componentChipIds`).
+  const componentChips = componentChipIds(issue.components).length;
   const none = (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}
@@ -714,18 +725,36 @@ export function IssueMarginPanel({
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
-            while the reader can see them: Details open, and Development with it. */}
-        <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
+            while the reader can see them: Details open, and Development with it; and 20 at a
+            time, each one link, a child of the row's value. */}
+        <Row
+          glyph={RIGHT_OVER_LEFT_ARROWS}
+          label={PROPERTY_LABELS.pull_request}
+          valueRef={pullRequestsValue}
+        >
           {pullRequests.length === 0 ? none : null}
-          {readingDevelopment
-            ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
-            : null}
+          {readingDevelopment ? (
+            <>
+              {pullRequests.slice(0, pullRequestPages.drawn).map((link) => (
+                <GitHubLink key={link.url} link={link} />
+              ))}
+              {pullRequestPages.more(
+                pullRequests.length,
+                (index) => pullRequestsValue.current?.children[index]
+              )}
+            </>
+          ) : null}
         </Row>
         {otherLinks.length === 0 ? null : (
-          <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {readingDevelopment
-              ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
-              : null}
+          <Row glyph="↗" label={PROPERTY_LABELS.external_links} valueRef={linksValue}>
+            {readingDevelopment ? (
+              <>
+                {otherLinks.slice(0, linkPages.drawn).map((link) => (
+                  <GitHubLink key={link.url} link={link} />
+                ))}
+                {linkPages.more(otherLinks.length, (index) => linksValue.current?.children[index])}
+              </>
+            ) : null}
           </Row>
         )}
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
@@ -791,8 +820,17 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components}>
-          <IssueComponentsLine inRow issue={issue} />
+        {/* The issue's components, then its retired ones, as one list, 20 at a time: the chips
+            are the first children of the line's own box (`IssueComponentsLine`). */}
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentsValue}>
+          <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
+          {componentPages.more(
+            componentChips,
+            (index) =>
+              componentsValue.current?.querySelector('[data-testid="issue-components"]')?.children[
+                index
+              ]
+          )}
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
           <Row glyph={TICKED_BOX} label={PROPERTY_LABELS.tasks}>
@@ -878,14 +916,17 @@ export function IssueMarginPanel({
           </button>
           {/* The list reads what references the issue, and reads it again on each event about
               those references, so it is drawn only while the reader can see it: open, in an open
-              References of an open Details. A tree read that stands failed leaves the list's own
-              rows drawn, with its line under them, whose Retry reads the tree again. */}
+              References of an open Details. Its rows are drawn 20 at a time, as one list
+              whatever source they cite from (`pages`), the reader's runs after the list's own. A
+              tree read that stands failed leaves the list's own rows drawn, with its line under
+              them, whose Retry reads the tree again. */}
           {referencesOpen && readingReferences ? (
             <>
               <ReferencedBy
                 className="w-full"
                 extraRows={runs.rows}
                 page
+                pages={referencePages}
                 reference={issueReference}
                 {...referencesRetry}
                 toggle={{ id: referencesPanelId }}
@@ -902,8 +943,8 @@ export function IssueMarginPanel({
             </>
           ) : null}
         </Row>
-        {/* Every document and file of the issue, each opening its own address, folded after ten
-            behind a count that opens the rest. */}
+        {/* Every document and file of the issue, each opening its own address, 20 at a time;
+            the count in the row's label is of them all. */}
         <Row
           glyph={LINED_SQUARE}
           label={
@@ -917,7 +958,7 @@ export function IssueMarginPanel({
             none
           ) : (
             <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files" ref={filesList}>
-              {files.map((artifact) => (
+              {artifacts.slice(0, filePages.drawn).map((artifact) => (
                 <li key={artifact.id}>
                   <Link
                     className={`grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md p-1 text-sm ${pageInkText} ${pageRowHoverBg}`}
@@ -944,14 +985,7 @@ export function IssueMarginPanel({
               ))}
             </ul>
           )}
-          {artifacts.length > FOLD_AFTER && !filesOpen ? (
-            <ShowAll
-              className="pt-1.5"
-              count={artifacts.length}
-              list={filesList}
-              onShow={() => setFilesOpen(true)}
-            />
-          ) : null}
+          {filePages.more(artifacts.length, (index) => filesList.current?.children[index])}
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />

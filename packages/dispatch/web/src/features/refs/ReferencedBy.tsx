@@ -372,19 +372,33 @@ export function ReferencedBy({
   className,
   extraRows = [],
   page = false,
+  pages,
   reference,
   retried,
   retryRef,
   toggle,
 }: {
   className?: string;
-  /** Rows the host adds after the list's own. The list counts none of them as its own and draws
-   *  them only while it holds one; while one stands, it does not say that nothing references the
-   *  node. */
+  /** Rows the host adds after the list's own. The list's heading counts none of them, and the
+   *  list draws them only while it holds one; while one stands, it does not say that nothing
+   *  references the node. With `pages` they follow the list's own rows in its one sequence, so
+   *  they share its pages, its control and the count that control is handed. */
   extraRows?: readonly ExtraReferenceRow[];
   /** Whether the list is drawn in the new page's Details: in the page's colours, and without the
    *  issue's own asks, comments and messages, which that page's outline holds (`listedEdges`). */
   page?: boolean;
+  /** With `page`, the pages its rows are drawn in, which Details holds (`useListPages`): how
+   *  many rows the list draws, and the control under them that draws the next ones, which says
+   *  the page's words. The control is handed how many rows the whole list holds and the element
+   *  of each row by its place, which its press moves the focus to. Without it every row is
+   *  drawn. */
+  pages?: {
+    readonly drawn: number;
+    readonly more: (
+      count: number,
+      entry: (index: number) => Element | null | undefined
+    ) => ReactNode;
+  };
   reference: string;
   /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
    *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
@@ -411,6 +425,39 @@ export function ReferencedBy({
   const edges = listedEdges(query.data?.edges, reference, page);
   const groups = groupBySource(edges ?? []);
   const tokens = LIST_TOKENS[page ? "page" : "app"];
+  // With `page` and `pages`, the list's rows are one sequence, each source's rows in the order
+  // its card draws them, of which the list draws the first `pages.drawn`. Each source draws
+  // those of its rows that fit in what is left of that number (`rowsLeft`), in its place in the
+  // sequence, and counts every one of its rows in the list's (`rowCount`), the count the
+  // control under the list is handed. Another source of rows drawn after these takes and counts
+  // its rows the same way, and shares the list's pages, its control and its count. A card the
+  // cut falls in draws the rows before the cut, and a card after the cut is not drawn.
+  const paged = page ? pages : undefined;
+  let rowsLeft = paged?.drawn ?? Number.POSITIVE_INFINITY;
+  let rowCount = 0;
+  if (paged !== undefined) {
+    const drawnGroups = groups.flatMap((group) => {
+      rowCount += group.edges.length;
+      const drawnEdges = group.edges.slice(0, rowsLeft);
+      rowsLeft -= drawnEdges.length;
+      return drawnEdges.length === 0 ? [] : [{ ...group, edges: drawnEdges }];
+    });
+    groups.splice(0, groups.length, ...drawnGroups);
+  }
+  // The host's rows (`extraRows`) are such a source, after every source of the list's own: they
+  // take what is left of the rows the list draws, and count every one of theirs in the list's.
+  // Without `pages` every one of them is drawn.
+  rowCount += extraRows.length;
+  const drawnExtraRows = extraRows.slice(0, rowsLeft);
+  // Each row drawn in pages carries the list's own mark, by which the press of the control finds
+  // the first row it drew, by its place in the sequence: the row's card where the row is its
+  // card's first, whose link names the source, and else the row itself.
+  const rowsMark = useId();
+  const rowAt = (index: number) => {
+    const marked = `[data-reference-rows="${CSS.escape(rowsMark)}"]`;
+    const row = document.querySelectorAll(marked)[index];
+    return row?.parentElement?.firstElementChild === row ? row.parentElement?.parentElement : row;
+  };
   // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
   // every page.
   const retryInDetails:
@@ -501,6 +548,7 @@ export function ReferencedBy({
                   const deleted = postDeletion(edge.node);
                   return (
                     <li
+                      data-reference-rows={paged === undefined ? undefined : rowsMark}
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
                     >
                       <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
@@ -537,6 +585,12 @@ export function ReferencedBy({
                       </div>
                       {deleted !== null ? (
                         <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+                      ) : page && edge.excerpt !== undefined ? (
+                        <p
+                          className={`mt-1 whitespace-pre-wrap text-sm [overflow-wrap:anywhere] ${tokens.excerpt}`}
+                        >
+                          {edge.excerpt.text}
+                        </p>
                       ) : edge.excerpt === undefined ? null : (
                         <Excerpt text={edge.excerpt.text} tokens={tokens} />
                       )}
@@ -548,34 +602,42 @@ export function ReferencedBy({
           ))}
         </ul>
       )}
-      {extraRows.length === 0 ? null : (
+      {drawnExtraRows.length === 0 ? null : (
         <ul className="space-y-2" data-extra-references="">
-          {extraRows.map((row) => (
+          {drawnExtraRows.map((row) => (
             <li className={`rounded-lg border p-3 ${tokens.row}`} key={row.key}>
-              <div className={`text-xs font-medium ${tokens.line}`}>
-                <Link className={`dispatch-inline-link underline ${tokens.link}`} to={row.href}>
-                  {row.kind}
-                </Link>
-                {row.marks}
-              </div>
-              <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
-                <span>{row.edge}</span>
-                {row.at === undefined ? null : (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <Timestamp at={row.at} />
-                  </>
-                )}
-              </div>
-              {row.excerpt === undefined ? null : (
-                <p className={`mt-1 whitespace-pre-wrap text-sm ${tokens.excerpt}`}>
-                  {row.excerpt}
-                </p>
-              )}
+              {/* One row in a card of its own, as each source's rows are in its card, so the press
+                  of the control under the list finds it by the list's mark and moves the focus to
+                  the card's first link, the row's own (`rowAt`). */}
+              <ul>
+                <li data-reference-rows={paged === undefined ? undefined : rowsMark}>
+                  <div className={`text-xs font-medium ${tokens.line}`}>
+                    <Link className={`dispatch-inline-link underline ${tokens.link}`} to={row.href}>
+                      {row.kind}
+                    </Link>
+                    {row.marks}
+                  </div>
+                  <div className={`flex flex-wrap items-center gap-x-1 text-xs ${tokens.line}`}>
+                    <span>{row.edge}</span>
+                    {row.at === undefined ? null : (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <Timestamp at={row.at} />
+                      </>
+                    )}
+                  </div>
+                  {row.excerpt === undefined ? null : (
+                    <p className={`mt-1 whitespace-pre-wrap text-sm ${tokens.excerpt}`}>
+                      {row.excerpt}
+                    </p>
+                  )}
+                </li>
+              </ul>
             </li>
           ))}
         </ul>
       )}
+      {paged === undefined ? null : paged.more(rowCount, rowAt)}
     </section>
   );
 }

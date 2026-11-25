@@ -13,6 +13,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { activityDescription, dateKey, dayLabel } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildReferencePath,
@@ -29,15 +30,19 @@ import { plainWords } from "./tree-drafts";
  * first, by day.
  *
  * It holds the issue's status moves, its claims and releases, its handoffs, its documents added
- * and removed, every other event of the issue itself, and the comments and messages agents wrote
- * outside every thread a person wrote in, each thread with its text, its replies and their reply
- * controls (`agents-only.ts`). It leaves out each event of a row the outline draws - an ask
- * asked, answered, resolved, edited or handed on, a comment or a message the outline draws and
- * what happened to it, a result recorded against a check, a decision kept, a child's status move
- * - and a new version of a document, which is a version and no upload: a document's versions are
- * in its own toolbar. The upload of any other file or picture, its first version or a later one,
- * is an upload, and a run of uploads is one entry that opens each: one author's newest upload
- * and their uploads made at most a minute before it, with no other author's upload between them.
+ * and removed, every other event of the issue itself, and the threads the history holds
+ * (`agents-only.ts`) - each thread the Legion daemon began, whoever wrote in it, and each
+ * agents' post, a comment thread tied to no text that no person wrote in - each thread with its
+ * text, its replies and their reply controls.
+ * It holds no event that writes a post: a thread it holds is drawn from its comments and
+ * messages, and every other thread is the outline's. It leaves out each event of a row the
+ * outline draws - an ask asked, answered, resolved, edited or handed on, what happened to a
+ * comment or a message the outline draws, a result recorded against a check, a decision kept, a
+ * child's status move - and a new version of a document, which is a version and no upload: a
+ * document's versions are in its own toolbar. The upload of any other file or picture, its first
+ * version or a later one, is an upload, and a run of uploads is one entry that opens each: one
+ * author's newest upload and their uploads made at most a minute before it, with no other
+ * author's upload between them.
  *
  * Pure, so the panel and its unit tests read one model.
  */
@@ -45,22 +50,20 @@ export interface HistoryDay {
   readonly date: string;
   /** What the day is headed, in the page's words: Today, Yesterday, or the date written out. */
   readonly label: string;
-  /** Whether the day is the one the oldest event read so far was made in, or one before it,
-   *  while older pages of the log are still to be read (`HistoryInput.loadedFrom`): its earlier
-   *  events can be on a page not read yet, so how many entries it holds is not known until that
-   *  page lands. */
-  readonly partial: boolean;
-  readonly today: boolean;
   /** The day's entries, newest first, with the reader's read mark among them where it falls. */
   readonly entries: readonly HistoryEntry[];
 }
 
-/** One turn of a thread agents wrote among themselves. */
+/** One turn of a thread the history holds (`agents-only.ts`), with the marks of a post its author
+ *  corrected: when its author last edited it, and its deletion, which stands in place of its
+ *  words (`post-marks.ts`). */
 export interface HistoryTurn {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
   readonly bodyTree?: DisplayTree;
+  readonly deleted: PostDeletion | null;
+  readonly editedAt: string | null;
   readonly id: string;
   readonly kind: "comment" | "message";
 }
@@ -74,10 +77,10 @@ export type HistoryEntry =
       /** `main`'s line of the event, in the page's words where it names a delivery's agent, a
        *  status or a block (`historyLine`). */
       readonly description: AgentPart[];
-      /** The block the line names by its node's words, where it names one (`historyLine`):
-       *  those words are a part of `description` of their own, which the panel draws as a link
-       *  to the node. */
-      readonly block?: HistoryBlock;
+      /** The block the line names by its node's words, where it names one, and which part of
+       *  `description` those words are, a part of their own, which the panel draws as a link to
+       *  the node (`historyLine`). */
+      readonly block?: NamedBlock;
       readonly event: DispatchEvent;
       readonly seq: number;
     }
@@ -119,6 +122,13 @@ export interface HistoryBlock {
   readonly words: string;
 }
 
+/** A block a line of the history names by its node's words (`withBlock`): the block, and the
+ *  place in the line's `description` of the part that holds those words and nothing else. */
+export interface NamedBlock {
+  readonly block: HistoryBlock;
+  readonly part: number;
+}
+
 export interface HistoryInput {
   readonly artifacts: readonly Artifact[];
   /** The issue's asks, which tell a reply under a question, the outline's, from one under an
@@ -137,9 +147,7 @@ export interface HistoryInput {
   readonly lastReadSeq: number;
   /** When the oldest event the log has read so far was made, while older pages of the log are
    *  still to be read; undefined once the whole log is in. A thread that began before it is
-   *  left out until its page is read: its place among events not read yet is not known, and a
-   *  day drawn with that thread alone would count one entry where it holds many. The day it was
-   *  made in is partial (`HistoryDay.partial`). */
+   *  left out until its page is read: its place among events not read yet is not known. */
   readonly loadedFrom?: string;
   readonly messages: readonly MessageRead[] | undefined;
   /** Local YYYY-MM-DD. */
@@ -192,14 +200,28 @@ function nodeLine(text: string, holder: object, kind: string): string {
   return first.line === "" ? kind : drawnLine(first);
 }
 
-/** The event types of a row the outline draws, which the history leaves out. A comment's and a
- *  message's are left out where the outline draws that comment or message - one a person took
- *  part in - and for its creation always, since this list draws a thread agents wrote among
- *  themselves from the issue's comments and messages, each turn whole; what happened to such a
- *  thread after - a mention that could not be delivered, a resolution, an edit - is no node's,
- *  so it is a line here (`ofOutlineRow`). An ask's are left out for a question alone: an
- *  approval request is no row of the outline - the identity block draws its step
- *  (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
+/** The event types that write a post of a comment or message thread: its creation, an edit, a
+ *  delete, an answer, and a message taken as an agent's turn. None is a line of the history,
+ *  whichever thread it is of: a thread the history holds is drawn from its comments and
+ *  messages, each turn whole with its marks, and the outline draws every other thread. */
+const POST_WRITES: Readonly<Record<string, true>> = {
+  "comment.answered": true,
+  "comment.created": true,
+  "comment.deleted": true,
+  "comment.edited": true,
+  "message.accepted": true,
+  "message.answered": true,
+  "message.created": true,
+  "message.deleted": true,
+  "message.edited": true,
+};
+
+/** The event types of a row the outline draws, which the history leaves out. Every other event
+ *  of a comment or a message - a delivery, a resolution, a reopening, an anchor refresh - is left
+ *  out where the outline draws that comment or message, and is a line where it is a turn of a
+ *  thread the history holds, since no node draws it (`ofOutlineRow`). An ask's are left out for
+ *  a question alone: an approval request is no row of the outline - the identity block draws its
+ *  step (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
  *  followers added to it and removed. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "ask.anchor_refreshed": true,
@@ -214,16 +236,10 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "child.added": true,
   "child.status": true,
   "comment.anchor_refreshed": true,
-  "comment.answered": true,
-  "comment.created": true,
   "comment.delivery": true,
-  "comment.edited": true,
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
-  "message.accepted": true,
-  "message.answered": true,
-  "message.created": true,
   "message.delivery": true,
   "result.recorded": true,
   "result.retracted": true,
@@ -232,6 +248,10 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
 };
 
 type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
+
+/** A line of the history (`historyLine`): its parts, and the block it names by its node's words,
+ *  where it names one. */
+type HistoryLine = Pick<Extract<Dated, { kind: "event" }>, "block" | "description">;
 
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
@@ -255,7 +275,11 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         ? event.payload.status
         : undefined;
     const upload = uploadOf(event, artifacts);
-    if (ofOutlineRow(event, agentsOnly, approvals) || isDocumentVersion(event, artifacts)) {
+    if (
+      POST_WRITES[event.type] === true ||
+      ofOutlineRow(event, agentsOnly, approvals) ||
+      isDocumentVersion(event, artifacts)
+    ) {
       if (status !== undefined) previousStatus = status;
       continue;
     }
@@ -263,12 +287,10 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       uploads.push({ event, file: upload });
       continue;
     }
-    const block = namedBlock(event, input.blocks);
     entries.push({
       at: event.created_at,
       author: event.actor,
-      ...(block === undefined ? {} : { block }),
-      description: historyLine(event, previousStatus, input.blocks),
+      ...historyLine(event, previousStatus, input.blocks),
       event,
       id: `event:${event.id}`,
       kind: "event",
@@ -279,15 +301,14 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly, seqOf));
 
   // Newest first, by when each happened; one instant by the log's own order.
-  entries.sort((one, other) => compareTimestamps(other.at, one.at) || other.seq - one.seq);
+  entries.sort((one, other) => comparePlaces(other, one));
   const read = entries.some((entry) => entry.seq > 0 && entry.seq <= input.lastReadSeq);
   const unread = entries.some((entry) => entry.seq > input.lastReadSeq);
   let marked = !(read && unread);
   const days: { date: string; entries: HistoryEntry[] }[] = [];
   for (const entry of entries) {
     // The line that says what is new stands after the oldest unread entry, in that entry's own
-    // day: where the reader last read through an earlier day, it closes today's list, which is
-    // open, rather than heading a day the list folds.
+    // day, which it closes where the reader last read through an earlier day.
     if (!marked && entry.seq > 0 && entry.seq <= input.lastReadSeq) {
       days.at(-1)?.entries.push({ id: "unread", kind: "unread" });
       marked = true;
@@ -306,11 +327,6 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   const noon = new Date(`${input.today}T12:00:00`);
   noon.setDate(noon.getDate() - 1);
   const yesterday = dateKey(noon.toISOString());
-  // While older pages of the log remain, the day the oldest event read so far was made in holds
-  // the events of the pages read and none of the next one's - only a thread waits for its page
-  // (`threadsOf`) - so how many entries it holds is not known yet; nor is it for a day before it,
-  // which only an event dated earlier than its place in the log draws.
-  const cut = input.loadedFrom === undefined ? undefined : dateKey(input.loadedFrom);
   return days.map((day) => ({
     date: day.date,
     entries: day.entries,
@@ -320,9 +336,93 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
         : day.date === yesterday
           ? CONTROL_LABELS.history_yesterday
           : dayLabel(day.date, input.today),
-    partial: cut !== undefined && day.date <= cut,
-    today: day.date === input.today,
   }));
+}
+
+/** How many entries the history draws at first, and how many more each press of its control
+ *  draws: a thread with every turn of it is one entry, a run of uploads is one, and the line that
+ *  says what is new is none (`historyDownTo`). */
+export const HISTORY_PAGE = 20;
+
+/** Where an entry stands in the history, newest first: when it happened, and for one instant its
+ *  place in the log (`buildHistory`). The panel draws the history down to the place of the last
+ *  entry it draws, so an entry that arrives above that place is drawn and takes none of the
+ *  entries drawn out. */
+export interface HistoryPlace {
+  readonly at: string;
+  readonly seq: number;
+}
+
+/** How `one` stands to `other` in the history: above it (more than 0) where it is newer, at the
+ *  same place (0), or under it (less than 0). */
+export function comparePlaces(one: HistoryPlace, other: HistoryPlace): number {
+  return compareTimestamps(one.at, other.at) || one.seq - other.seq;
+}
+
+/** The entries of `days` in the order the history draws them, newest first, with no read mark. */
+function datedIn(days: readonly HistoryDay[]): Dated[] {
+  return days.flatMap((day) =>
+    day.entries.filter((entry): entry is Dated => entry.kind !== "unread")
+  );
+}
+
+function placeOf(entry: Dated): HistoryPlace {
+  return { at: entry.at, seq: entry.seq };
+}
+
+/**
+ * The place of the entry `count` entries under `from` in `days`, the entry at `from` not counted,
+ * or of the history's `count`th entry where `from` is undefined: of its last entry where fewer
+ * stand there, and `from` itself where none does. Undefined only where `days` holds no entry and
+ * `from` is undefined.
+ */
+export function placeUnder(
+  days: readonly HistoryDay[],
+  from: HistoryPlace | undefined,
+  count: number
+): HistoryPlace | undefined {
+  const under = datedIn(days).filter(
+    (entry) => from === undefined || comparePlaces(entry, from) < 0
+  );
+  const last = under.slice(0, count).at(-1);
+  return last === undefined ? from : placeOf(last);
+}
+
+/** The place of the entry of the thread that holds the turn `id`, its root or a reply, where
+ *  `days` holds that thread. */
+export function turnPlace(days: readonly HistoryDay[], id: string): HistoryPlace | undefined {
+  const entry = datedIn(days).find(
+    (one) =>
+      one.kind === "thread" && (one.root.id === id || one.replies.some((reply) => reply.id === id))
+  );
+  return entry === undefined ? undefined : placeOf(entry);
+}
+
+/**
+ * The history as the panel draws it down to `end`: each day with its entries that stand at `end`
+ * or above it, and with the line that says what is new where the entry under that line is drawn
+ * too; a day with none of its entries drawn is left out, and nothing is drawn where `end` is
+ * undefined. `left` is how many entries stand under `end`, which the panel's control draws next.
+ */
+export function historyDownTo(
+  days: readonly HistoryDay[],
+  end: HistoryPlace | undefined
+): { readonly days: readonly HistoryDay[]; readonly left: number } {
+  const dated = datedIn(days);
+  // The history is newest first, so the entries at `end` or above it are its first ones.
+  const under = end === undefined ? 0 : dated.findIndex((entry) => comparePlaces(entry, end) < 0);
+  const count = under === -1 ? dated.length : under;
+  let seen = 0;
+  const drawn: HistoryDay[] = [];
+  for (const day of days) {
+    const entries = day.entries.filter((entry) => {
+      if (entry.kind === "unread") return seen < count;
+      seen += 1;
+      return seen <= count;
+    });
+    if (entries.length > 0) drawn.push({ ...day, entries });
+  }
+  return { days: drawn, left: dated.length - count };
 }
 
 /**
@@ -370,10 +470,10 @@ function uploadRuns(
   return runs;
 }
 
-/** Each thread agents wrote among themselves, as one entry at its first turn: every one that
- *  began inside what the log has read (`HistoryInput.loadedFrom`). A comment under an ask names
- *  the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of an
- *  approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
+/** Each thread the history holds (`agents-only.ts`), as one entry at its first turn: every one
+ *  that began inside what the log has read (`HistoryInput.loadedFrom`). A comment under an ask
+ *  names the ask (`ask_id`), where the server's climb to a thread's head stops, so the thread of
+ *  an approval request is every comment naming it (`agents-only.ts`), whatever its `reply_to`
  *  says: one entry per ask, at its earliest comment, the rest its replies. */
 function threadsOf(
   input: HistoryInput,
@@ -419,9 +519,9 @@ function threadsOf(
   }
   // A thread stands at its first turn's time (`threadEntry`), so one whose first turn is older
   // than every event read so far is left out whole, its replies too however recent, until the
-  // page that reaches back to that turn is read: drawn before, it would stand among days the log
-  // has not read, and a day drawn with it alone would count one entry where it holds many. The
-  // address of one of its turns reads the log on until it is in (`IssueHistory.tsx`).
+  // page that reaches back to that turn is read: drawn before, it would stand among entries the
+  // log has not read. The address of one of its turns reads the log on until it is in
+  // (`IssueHistory.tsx`).
   const from = input.loadedFrom;
   return from === undefined
     ? threads
@@ -452,38 +552,46 @@ function threadEntry(
  * quotes, an approval request's question or the reason it was resolved with, by its plain words,
  * as the outline names an ask (`plainWords`), never the markup its author typed or a
  * bare `dispatch://` address, which reads as its short form; and a block it names by a UUID by
- * the words of the node that carries it, from `blocks`, never by that id (`withBlock`). Every
- * other text a line of the history holds is a name, a key or the server's own words, none of
- * which is markdown.
+ * the words of the node that carries it, from `blocks`, never by that id, with that block and
+ * the part of the line its words are (`withBlock`). Every other text a line of the history holds
+ * is a name, a key or the server's own words, none of which is markdown.
  */
 function historyLine(
   event: DispatchEvent,
   previousStatus: string | undefined,
   blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): AgentPart[] {
+): HistoryLine {
   const line = activityDescription(event, previousStatus);
   switch (event.type) {
     case "comment.delivery":
-      return withPart(
-        line,
-        event.payload.target,
-        recipient(event.payload.session_id, undefined, event.payload.target)
-      );
+      return {
+        description: withPart(
+          line,
+          event.payload.target,
+          recipient(event.payload.session_id, undefined, event.payload.target)
+        ),
+      };
     // Only a queued message's line names where it went.
     case "message.delivery":
-      return event.payload.state === "queued"
-        ? withPart(
-            line,
-            event.payload.target ?? `session:${event.payload.session_id}`,
-            recipient(event.payload.session_id, event.payload.title, event.payload.target)
-          )
-        : line;
+      return {
+        description:
+          event.payload.state === "queued"
+            ? withPart(
+                line,
+                event.payload.target ?? `session:${event.payload.session_id}`,
+                recipient(event.payload.session_id, event.payload.title, event.payload.target)
+              )
+            : line,
+      };
     // The line names a status only for a reopen, which `activityDescription` tells by the
     // status before it.
     case "issue.updated":
-      return previousStatus === "done" && event.payload.status !== "done"
-        ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
-        : line;
+      return {
+        description:
+          previousStatus === "done" && event.payload.status !== "done"
+            ? withPart(line, event.payload.status, issueStatusWord(event.payload.status))
+            : line,
+      };
     // Every ask event the history keeps is an approval request's (`ofOutlineRow`), whose
     // question is markdown its agent wrote, citing addresses.
     case "ask.opened":
@@ -492,9 +600,9 @@ function historyLine(
     case "ask.handed_back":
     case "ask.asked_of":
     case "ask.answered":
-      return withWords(line, event.payload.question);
+      return { description: withWords(line, event.payload.question) };
     case "ask.resolved":
-      return withWords(line, askResolutionReason(event.payload.resolution));
+      return { description: withWords(line, askResolutionReason(event.payload.resolution)) };
     // `main`'s line names a block by its id after its word for the block: a question's block is
     // a decision there, and a check's block a check.
     case "block.repaired":
@@ -507,7 +615,7 @@ function historyLine(
         blocks
       );
     default:
-      return line;
+      return { description: line };
   }
 }
 
@@ -517,14 +625,35 @@ function withPart(
   token: string | undefined,
   ...parts: AgentPart[]
 ): AgentPart[] {
-  if (token === undefined || token === "") return line;
-  return line.flatMap((piece) => {
-    if (typeof piece !== "string") return [piece];
-    const at = piece.lastIndexOf(token);
-    return at < 0
-      ? [piece]
-      : [piece.slice(0, at), ...parts, piece.slice(at + token.length)].filter((one) => one !== "");
-  });
+  return withPartAt(line, token, parts).line;
+}
+
+/** `line` with each reading of `token` in its text, the last of each part, drawn as `parts`
+ *  (`withPart`), and the place in that new line where the parts drawn for the first reading
+ *  begin, or -1 where `token` reads nowhere. An empty text, of `parts` or either side of a
+ *  reading, is drawn as no part. */
+function withPartAt(
+  line: AgentPart[],
+  token: string | undefined,
+  parts: readonly AgentPart[]
+): { readonly at: number; readonly line: AgentPart[] } {
+  if (token === undefined || token === "") return { at: -1, line };
+  const drawn: AgentPart[] = [];
+  let first = -1;
+  for (const piece of line) {
+    const at = typeof piece === "string" ? piece.lastIndexOf(token) : -1;
+    if (typeof piece !== "string" || at < 0) {
+      drawn.push(piece);
+      continue;
+    }
+    const before = piece.slice(0, at);
+    if (before !== "") drawn.push(before);
+    if (first < 0) first = drawn.length;
+    for (const part of [...parts, piece.slice(at + token.length)]) {
+      if (part !== "") drawn.push(part);
+    }
+  }
+  return { at: first, line: drawn };
 }
 
 /** `line` with the stored text `stored` it quotes drawn by its plain words (`plainWords`). */
@@ -537,35 +666,28 @@ function withWords(line: AgentPart[], stored: string | undefined): AgentPart[] {
 /** `line` with its mention of the block `id`, which is `noun`, `main`'s word for the block, then
  *  the id, in the page's words where the id is a UUID (`UUID_BLOCK_ID`): that word and the words
  *  of the node that carries the block, in quotes as `main` quotes a question, where a node of the
- *  issue carries it (`blocks`); the page's words for a block that is gone where none does; and
- *  that word alone after "a", as in "a block", while the blocks are not known, since whether the
- *  block is gone is not known then either. A block id that reads as words stays as `main`
- *  writes it. */
+ *  issue carries it (`blocks`), with that block and the part of the line its words are; the
+ *  page's words for a block that is gone where none does; and that word alone after "a", as in
+ *  "a block", while the blocks are not known, since whether the block is gone is not known then
+ *  either. A block id that reads as words stays as `main` writes it. */
 function withBlock(
   line: AgentPart[],
   noun: string,
   id: string,
   blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): AgentPart[] {
-  if (!UUID_BLOCK_ID.test(id)) return line;
+): HistoryLine {
+  if (!UUID_BLOCK_ID.test(id)) return { description: line };
   const mention = `${noun} ${id}`;
-  if (blocks === undefined) return withPart(line, mention, `a ${noun}`);
+  if (blocks === undefined) return { description: withPart(line, mention, `a ${noun}`) };
   const block = blocks.get(id);
-  return block === undefined
-    ? withPart(line, mention, CONTROL_LABELS.history_gone_block)
-    : withPart(line, mention, `${noun} “`, block.words, "”");
-}
-
-/** The block `event`'s line names by its node's words (`withBlock`): a block repaired, or one
- *  settlement found invalid, whose id is a UUID that a node of the issue carries. */
-function namedBlock(
-  event: DispatchEvent,
-  blocks: ReadonlyMap<string, HistoryBlock> | undefined
-): HistoryBlock | undefined {
-  if (blocks === undefined) return undefined;
-  if (event.type !== "block.repaired" && event.type !== "block.invalid") return undefined;
-  const id = event.payload.block_id;
-  return UUID_BLOCK_ID.test(id) ? blocks.get(id) : undefined;
+  if (block === undefined) {
+    return { description: withPart(line, mention, CONTROL_LABELS.history_gone_block) };
+  }
+  const named = withPartAt(line, mention, [`${noun} “`, block.words, "”"]);
+  // The words are the part after the word for the block and its opening quote.
+  return named.at < 0
+    ? { description: named.line }
+    : { block: { block, part: named.at + 1 }, description: named.line };
 }
 
 /** Who a delivery went to, as the page names an agent (`AgentName`): the session the attempt
@@ -592,6 +714,8 @@ function commentTurn(comment: Comment & Pick<CommentWithTrees, "body_tree">): Hi
     author: comment.author,
     body: comment.body,
     ...(comment.body_tree === undefined ? {} : { bodyTree: comment.body_tree }),
+    deleted: postDeletion(comment),
+    editedAt: comment.edited_at,
     id: comment.id,
     kind: "comment",
   };
@@ -603,26 +727,24 @@ function messageTurn(message: MessageRead["message"]): HistoryTurn {
     author: message.author,
     body: message.body,
     ...(message.body_tree === undefined ? {} : { bodyTree: message.body_tree }),
+    deleted: postDeletion(message),
+    editedAt: message.edited_at,
     id: message.id,
     kind: "message",
   };
 }
 
-/** The comment or message an event is about, where it is one of a comment's or a message's
- *  that the history draws for a thread agents wrote among themselves: every one but the
- *  creation, which the thread's own turn draws. */
+/** The comment or message an event of `OUTLINE_EVENTS` is about, where it is one of a comment's
+ *  or a message's: a delivery, a resolution, a reopening or an anchor refresh. */
 function turnOf(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "comment.delivery":
       return event.payload.comment_id;
-    case "message.accepted":
     case "message.delivery":
       return event.payload.message_id;
-    case "comment.answered":
-    case "comment.edited":
+    case "comment.anchor_refreshed":
     case "comment.reopened":
     case "comment.resolved":
-    case "message.answered":
       return event.payload.id;
     default:
       return undefined;
@@ -630,10 +752,10 @@ function turnOf(event: DispatchEvent): string | undefined {
 }
 
 /** Whether `event` is of a row the outline draws, and so no line of the history. What happened
- *  to a comment or a message of a thread agents wrote among themselves (`agentsOnly`) is no
- *  row's, and an approval request's events are the history's: an event that carries the ask
- *  says its kind, and a follower's, which names the ask alone, is an approval request's where
- *  the issue's asks hold that ask as one (`approvals`, by id). */
+ *  to a comment or a message of a thread the history holds (`agentsOnly`) is no row's, and an
+ *  approval request's events are the history's: an event that carries the ask says its kind,
+ *  and a follower's, which names the ask alone, is an approval request's where the issue's asks
+ *  hold that ask as one (`approvals`, by id). */
 function ofOutlineRow(
   event: DispatchEvent,
   agentsOnly: ReadonlySet<string>,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import type { LegionRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -13,6 +13,8 @@ import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
+import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 // The list says how long ago each one last wrote here and when each Legion agent started, and a
 // live agent's last heartbeat is dated now (`live` below). Each case runs at one fixed midday, so
@@ -113,6 +115,27 @@ function sessionsIn(container: HTMLElement): string[] {
   );
 }
 
+/** Fails a refresh of `list`'s read over the one collaborator it holds, `writer`, and then its
+ *  first read (`failRefreshOverHeld`). */
+function failRefreshThenFirstRead(list: {
+  readonly client: QueryClient;
+  readonly read: Mock<typeof api.getIssueCollaborators>;
+}): Promise<void> {
+  const key = ["issue", "CORE-1", "collaborators"];
+  return failRefreshOverHeld({
+    client: list.client,
+    failNextFetch: () =>
+      list.read.mockRejectedValueOnce(new Error("the collaborators' read failed")),
+    held: "the list",
+    queryKey: key,
+    refresh: () => list.client.invalidateQueries({ queryKey: key }),
+    stillDrawn: () =>
+      expect(
+        sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
+      ).toEqual(["writer"]),
+  });
+}
+
 // What the page makes of one answer in the order the server sends it (the contract's: the
 // registry's agents by role in workflow order and then newest first, the rest newest first):
 // Legion's agents split into a section per role, a replaced one naming its successor; then every
@@ -197,25 +220,14 @@ test("the collaborators say when Legion's record could not be read, and when nob
       sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
     ).toEqual(["writer"]);
 
-    // A read that fails once the list holds an answer keeps that answer: the failure and its
-    // Retry are drawn above the list it held.
-    unavailable.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() =>
-      unavailable.client.invalidateQueries({ queryKey: ["issue", "CORE-1", "collaborators"] })
-    );
-    const failure = await screen.findByRole("alert");
-    expect(failure.textContent).toBe(ANSWER_LINES.collaborators_unreadable);
-    const held = screen.queryByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    expect(
-      held === null ? [] : sessionsIn(held),
-      "a failed refetch blanked the held collaborators"
-    ).toEqual(["writer"]);
-    expect(
-      held === null ? 0 : failure.compareDocumentPosition(held) & Node.DOCUMENT_POSITION_FOLLOWING,
-      "the failure is not drawn above the list it held"
-    ).not.toBe(0);
-    // Its Retry goes with its line once the read lands, and the focus goes to the control that
+    // A read that fails once the list holds an answer keeps that answer and says no failure over
+    // it, and a read that holds no answer and failed says so with its Retry.
+    await failRefreshThenFirstRead(unavailable);
+    // That Retry goes with its line once the read lands, and the focus goes to the control that
     // opens the list rather than to the page.
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      ANSWER_LINES.collaborators_unreadable
+    );
     await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(document.activeElement, "the focus fell to the page with Retry").toBe(
@@ -240,10 +252,11 @@ test("the collaborators say when Legion's record could not be read, and when nob
   }
 });
 
-// With the list held, a failed read of it keeps its line and its Retry drawn while that Retry
-// reads it again, so the Retry is never disabled then: Chromium would drop its focus to the page
-// (`chromium-focus-fixup.ts`), and a read that failed again would leave it there.
-test("the collaborators' Retry pressed by keyboard over the list held keeps the focus when its read fails again", async () => {
+// A refresh that fails over the list held draws no line. A first read of the list that failed
+// keeps its line and its Retry drawn while that Retry reads it again, so the Retry is never
+// disabled then: Chromium would drop its focus to the page (`chromium-focus-fixup.ts`), and a read
+// that failed again would leave it there.
+test("a refresh that fails over the collaborators held draws no line, and their Retry pressed by keyboard keeps the focus when its read fails again", async () => {
   const list = renderCollaborators({
     agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
     issue_key: "CORE-1",
@@ -254,8 +267,7 @@ test("the collaborators' Retry pressed by keyboard over the list held keeps the 
   const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
     const again = Promise.withResolvers<IssueCollaborators>();
@@ -263,7 +275,7 @@ test("the collaborators' Retry pressed by keyboard over the list held keeps the 
 
     retry.focus();
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(4));
     expect(
       document.activeElement,
       "the collaborators' Retry left the focus on the page while it read"
@@ -277,9 +289,6 @@ test("the collaborators' Retry pressed by keyboard over the list held keeps the 
       document.activeElement,
       "the collaborators' Retry whose read failed again left the focus on the page"
     ).toBe(retry);
-    expect(
-      sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
-    ).toEqual(["writer"]);
   } finally {
     restoreFocus();
     list.restore();
@@ -290,7 +299,8 @@ test("the collaborators' Retry pressed by keyboard over the list held keeps the 
 // again was said on the same node in the same words, so a screen reader said nothing of it and
 // the reader could not tell the press did anything. Retry reads busy while its read is out,
 // enabled and holding the focus, and each failure is drawn afresh while Retry stays the same
-// button.
+// button. A refresh that fails over the list held draws no line, so the Retry is a first read's
+// that failed.
 test("the collaborators' Retry reads busy while its read is out, and a read that fails again is said again", async () => {
   const list = renderCollaborators({
     agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
@@ -299,11 +309,9 @@ test("the collaborators' Retry reads busy while its read is out, and a read that
     people: [],
   });
   const restoreFocus = emulateChromiumFocusFixup();
-  const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const failed = await screen.findByRole("alert");
     const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
     // The read the Retry sends is held out until the case fails it.
@@ -312,7 +320,7 @@ test("the collaborators' Retry reads busy while its read is out, and a read that
 
     act(() => retry.focus());
     await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(list.read).toHaveBeenCalledTimes(4));
     await waitFor(() =>
       expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
         "aria-busy",
@@ -345,9 +353,10 @@ test("the collaborators' Retry reads busy while its read is out, and a read that
   }
 });
 
-// A second press of Retry made before React draws the read the first one sent found the render's
-// `isFetching` still false, so it read the list again: a refetch of a read that holds an answer
-// ends the request that is out and sends another. A press while the read is out joins it.
+// A second press of Retry made before React draws the read the first one sent finds the render's
+// `isFetching` still false. A press while the read is out joins it, and sends no other read.
+// A refresh that fails over the list held draws no line, so the Retry is a first read's that
+// failed.
 test("two presses of the collaborators' Retry before a render send one read", async () => {
   const collaborators: IssueCollaborators = {
     agents: [otherAgent("writer", "2026-10-26T01:00:00Z")],
@@ -356,11 +365,9 @@ test("two presses of the collaborators' Retry before a render send one read", as
     people: [],
   };
   const list = renderCollaborators(collaborators);
-  const key = ["issue", "CORE-1", "collaborators"];
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_others });
-    list.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
-    await act(() => list.client.invalidateQueries({ queryKey: key }));
+    await failRefreshThenFirstRead(list);
     const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
     // Every read sent from here is held out until the case lets it land.
     const again = Promise.withResolvers<IssueCollaborators>();
@@ -374,12 +381,12 @@ test("two presses of the collaborators' Retry before a render send one read", as
     expect(
       list.read,
       "the second press ended the read the first one sent and sent another"
-    ).toHaveBeenCalledTimes(3);
+    ).toHaveBeenCalledTimes(4);
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
 
     await act(async () => again.resolve(collaborators));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
-    expect(list.read).toHaveBeenCalledTimes(3);
+    expect(list.read).toHaveBeenCalledTimes(4);
   } finally {
     list.restore();
   }
@@ -485,6 +492,61 @@ test("a collaborator's reasons are the page's words, never their tokens", async 
       reasonsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
     ).toEqual([words.posted]);
     expect(reasonsIn(people).flatMap((line) => line.split(", "))).not.toContain("posted");
+  } finally {
+    list.restore();
+  }
+});
+
+// Each of the three lists draws its first 20 collaborators and, under them, Show more, which says
+// how many are left. Legion's agents are one list across their roles, so the roles after its first
+// 20 agents are drawn only once a press draws them. A keyboard press draws the rest, moves the
+// focus to the first collaborator it drew, a person's row itself where it holds no link, and the
+// control goes.
+test("each list of collaborators draws 20 at a time, Legion's agents as one list across their roles, and Show more moves the focus to the first it drew", async () => {
+  const numbered = (stem: string, count: number) =>
+    Array.from({ length: count }, (_, index) => `${stem}-${index + 1}`);
+  const implementers = numbered("implementer", 15);
+  const reviewers = numbered("reviewer", 10);
+  const list = renderCollaborators({
+    agents: [
+      ...implementers.map((id) => legionAgent(id, "implementer", "2026-10-26T00:00:00Z")),
+      ...reviewers.map((id) => legionAgent(id, "reviewer", "2026-10-26T01:00:00Z")),
+      ...numbered("other", 25).map((id) => otherAgent(id, null)),
+    ],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: numbered("person", 25).map((login) => ({
+      kind: "user" as const,
+      last_at: null,
+      login,
+      reasons: ["posted" as const],
+    })),
+  });
+  try {
+    const legion = await screen.findByRole("region", { name: CONTROL_LABELS.collaborators_legion });
+    expect(
+      sessionsIn(legion),
+      "Legion's agents are not one list across their roles, cut after its first 20"
+    ).toEqual([...implementers, ...reviewers.slice(0, 5)]);
+    for (const name of [
+      CONTROL_LABELS.collaborators_legion,
+      CONTROL_LABELS.collaborators_others,
+      CONTROL_LABELS.collaborators_people,
+    ]) {
+      const group = screen.getByRole("region", { name });
+      const rows = () => within(group).getAllByRole("listitem");
+      expect(rows(), `${name} does not draw its first 20`).toHaveLength(20);
+      const more = within(group).getByRole("button", { name: SHOW_MORE });
+      expect(more.textContent).toBe(showMoreName(5));
+      act(() => more.focus());
+      await userEvent.keyboard("{Enter}");
+      expect(rows(), `${name}: Show more did not draw the rest`).toHaveLength(25);
+      expect(more.isConnected, `${name}: Show more stayed once every one was drawn`).toBe(false);
+      expect(
+        rows()[20]?.contains(document.activeElement),
+        `${name}: Show more did not move the focus to the first it drew`
+      ).toBe(true);
+    }
   } finally {
     list.restore();
   }

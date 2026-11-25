@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -8,13 +9,14 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
-import type { IssueDetails, IssueSteps } from "../../api/types";
+import type { IssueDetails, IssueSteps, StepRecord } from "../../api/types";
 import { stepRecord } from "../steps/step-record-fixture";
 import { stepTasks } from "../steps/steps-model";
 import { DetailsSteps } from "./DetailsSteps";
 import { DetailsHistory } from "./details-more";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { SHOW_MORE, showMoreName } from "./show-more-fixture";
 
 const KEY = "CORE-1";
 
@@ -290,14 +292,68 @@ test("an issue with no runs reads None under its heading", async () => {
   }
 });
 
+/** `count` passed runs of the task `task`, each its own record, `<task>-1` and on. */
+function runsOf(task: string, count: number): StepRecord[] {
+  return Array.from({ length: count }, (_, index) =>
+    stepRecord({ id: `${task}-${index + 1}`, task })
+  );
+}
+
+// The runs are one list across their tasks, drawn 20 at a time with Show more under them, which
+// says how many runs are left, and the heading counts every run, drawn or not: a task whose runs
+// are all past the cut is not drawn until a press draws them. A keyboard press draws the rest and
+// moves the focus to the first run it drew, which holds no control of its own, and the control
+// goes.
+test("the runs are drawn 20 at a time across their tasks, the heading counts them all, and Show more moves the focus to the first run it drew", async () => {
+  const steps = renderSteps(async () => ({
+    issue: KEY,
+    tasks: [
+      { steps: runsOf("docs", 15), task: "docs" },
+      { steps: runsOf("default", 10), task: "default" },
+      { steps: runsOf("release", 5), task: "release" },
+    ],
+  }));
+  const section = () => screen.getByRole("region", { name: CONTROL_LABELS.steps });
+  const drawnRuns = () =>
+    [...document.querySelectorAll("[data-step-run]")].map((drawn) =>
+      drawn.getAttribute("data-step-run")
+    );
+  try {
+    await headedWith(30);
+    expect(drawnRuns(), "the runs drawn are not the first 20 of every task's").toEqual(
+      [...runsOf("docs", 15), ...runsOf("default", 5)].map((record) => record.id)
+    );
+    expect(
+      within(section())
+        .getAllByRole("heading", { level: 3 })
+        .map((group) => group.textContent),
+      "a task none of whose runs is drawn is drawn"
+    ).toEqual([`${CONTROL_LABELS.steps_task} docs`, `${CONTROL_LABELS.steps_task} default`]);
+    const more = within(section()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(10));
+
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    expect(drawnRuns()).toHaveLength(30);
+    await headedWith(30);
+    expect(more.isConnected, "Show more stayed once every run was drawn").toBe(false);
+    expect(
+      document.activeElement,
+      "Show more did not move the focus to the first run it drew"
+    ).toBe(run("default-6"));
+  } finally {
+    steps.restore();
+  }
+});
+
 // A read Dispatch refused says so at once with its Retry, under the heading that has no count
 // yet. The section's read has no retry policy of its own, so nothing asks again before Retry or
 // the catch-up's next read, where the client's policy would ask twice within the second. Retry
 // reads again and draws the runs; the focus it held goes to the heading once the line goes, never
-// to the page. The catch-up's next read, 2 s after the opening, is refused too, and its failure
-// stands above the runs the read before it drew. On the fake clock each read is the one the case
-// names.
-test("a refused read says so with a Retry that reads again, and a later failure stands above the runs", async () => {
+// to the page. The catch-up's next read, 2 s after the opening, is refused too, and the runs the
+// read before it drew stay drawn with no failure said over them. On the fake clock each read is
+// the one the case names.
+test("a refused read says so with a Retry that reads again, and a later failure says nothing over the runs", async () => {
   await onNoonClock(async () => {
     const user = userOnFakeClock();
     let refusing = true;
@@ -333,13 +389,19 @@ test("a refused read says so with a Retry that reads again, and a later failure 
       refusing = true;
       await tick(1_000, 100);
       expect(steps.listSteps).toHaveBeenCalledTimes(3);
-      const later = screen.getByRole("alert");
-      expect(later.textContent).toBe(ANSWER_LINES.steps_unreadable);
+      expect(
+        screen.queryByRole("alert"),
+        "a later failure said a failure over the runs the read holds"
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+        "a later failure offered a Retry over the runs the read holds"
+      ).toBeNull();
       expect(heading().textContent).toBe(`${CONTROL_LABELS.steps} (5)`);
       expect(
-        later.compareDocumentPosition(run("docs-1")) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "the failure is not drawn above the runs"
-      ).toBeTruthy();
+        run("docs-1"),
+        "a later failure took away the runs the read holds"
+      ).toBeInTheDocument();
     } finally {
       steps.restore();
     }

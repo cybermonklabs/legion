@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, type Request } from "@playwright/test";
+import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
@@ -17,13 +17,14 @@ import { settledState } from "./settled";
  * The DOM a row reads, all of it inside Details (`[data-testid="desktop-margin-shell"]`):
  *
  * - **The history** `[data-testid="issue-history"]`, a `section` named "History"
- *   (`IssueHistory.tsx`). Each day is `[data-history-day="<YYYY-MM-DD>"]`, a day before today a
- *   `button` "<day> · <count>" with `aria-expanded` ("<day>" alone for the oldest day while older
- *   pages of the log are left, whose count is not known yet); each entry carries
- *   `data-history-entry` and `data-event-seq` (0 for a thread whose first turn's event is on a
- *   page not read yet); a turn of an agents' thread is `[data-history-item="<id>"]`, its Reply
- *   `[data-history-reply]` and its time the link `[data-history-time]`; an upload run is
- *   `[data-history-uploads="<n>"]`.
+ *   (`IssueHistory.tsx`). Each day is `[data-history-day="<YYYY-MM-DD>"]`, drawn open under its
+ *   line, a `p` that names the day; each entry carries `data-history-entry` and `data-event-seq`
+ *   (0 for a thread whose first turn's event is on a page not read yet); a turn of an agents'
+ *   thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and its time the link
+ *   `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`. Under the last entry
+ *   drawn stands one control, Show more, "Show more (<n> left)" while entries read are left to
+ *   draw, its count `[data-history-left]` and "<n>+" while an older page of the log is unread, and
+ *   "Show more" alone once every entry read is drawn and that page is left, which its press reads.
  * - **The facts** `[data-testid="focused-node-facts"]`, carrying `data-focused-node` with the
  *   focused node's id, or the issue's key with no node focused (`FocusedNodeFacts.tsx`); its
  *   deliveries are `[data-deliveries] li`, its controls `[data-focused-controls]`, and what
@@ -39,6 +40,72 @@ import { settledState } from "./settled";
 /** The issue's history, in Details. */
 export function historyPanel(page: Page): Locator {
   return page.getByTestId("issue-history");
+}
+
+/** The history's heading, "History", in Details. */
+export function historyHeading(page: Page): Locator {
+  return historyPanel(page).getByRole("heading", { exact: true, name: CONTROL_LABELS.history });
+}
+
+/** Escapes `words` for a regular expression, so the page's words match as written. */
+function literally(words: string): string {
+  return words.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+/** Show more's name, with or without its count of the entries left: "Show more (25 left)",
+ *  "Show more (3+ left)" or "Show more". */
+const SHOW_MORE = new RegExp(
+  `^${literally(CONTROL_LABELS.show_more)}(?: \\(\\d+\\+? ${literally(CONTROL_LABELS.show_more_left)}\\))?$`,
+  "u"
+);
+
+/** Show more's name with `count` entries of its list left to draw: "Show more (25 left)". */
+export function showMoreLeft(count: number): string {
+  return `${CONTROL_LABELS.show_more} (${count} ${CONTROL_LABELS.show_more_left})`;
+}
+
+/** The history's Show more, the one control under its last entry drawn, whatever its count says:
+ *  it draws the next entries read, or reads the log's next page where every entry read is drawn. */
+export function historyShowMore(page: Page): Locator {
+  return historyPanel(page).getByRole("button", { name: SHOW_MORE });
+}
+
+/** The history's Show more where it says no number: every entry read is drawn, and its press
+ *  reads the log's next page. */
+export function historyNextPage(page: Page): Locator {
+  return historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.show_more });
+}
+
+/** What the history's Show more says, read once the page shows one of them: `counted` where it
+ *  says how many entries read are left, `uncounted` where it says no number and its press reads
+ *  the log's next page, `reading` while that page is read, and `gone` where the history has drawn
+ *  entries and no control stands under them. */
+export function historyShowMoreState(
+  page: Page
+): Promise<"counted" | "gone" | "reading" | "uncounted"> {
+  const busy = 'button[aria-busy="true"]';
+  return settledState("the history's Show more", [
+    ["counted", historyShowMore(page).filter({ has: page.locator("[data-history-left]") })],
+    ["uncounted", historyNextPage(page)],
+    ["reading", historyPanel(page).locator(busy)],
+    [
+      "gone",
+      historyPanel(page)
+        .filter({ has: page.locator("[data-event-seq]") })
+        .filter({ hasNot: page.getByRole("button", { name: SHOW_MORE }) })
+        .filter({ hasNot: page.locator(busy) }),
+    ],
+  ]);
+}
+
+/** The answer to the history's read of a page of issue `key`'s log older than the first, the
+ *  read Show more sends where it says no number (`GET /api/v1/issues/<key>/events` with
+ *  `before`), waited for from the call on: a row calls it before the press that sends that read. */
+export function olderPageAnswered(page: Page, key: string): Promise<Response> {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+  });
 }
 
 /** One turn of an agents' thread in the history, by the comment's or the message's id. */
@@ -96,40 +163,27 @@ export function historyDayOf(page: Page, at: string): Promise<HistoryDayRead> {
 
 /**
  * Waits until the history draws `entry`, the entry of a seed made at `at`, found by its id
- * (`historyItem`, `[data-event-seq]`, ...). The history draws every day before the reader's
- * today folded to one line, and the page reads its today from the browser's clock at each render,
- * so a seed made before the reader's midnight and drawn after it is in a folded day: where the
- * page drew the seed's own day folded, that day is opened first. So no row assumes which day a
- * seed falls in.
+ * (`historyItem`, `[data-event-seq]`, ...), in the day the page files `at` under
+ * (`historyDayOf`). Every day is drawn open, and the page reads its today from the browser's
+ * clock at each render, so a seed made before the reader's midnight and drawn after it stands in
+ * a day before today: no row assumes which day a seed falls in.
  */
 export async function seededHistoryEntry(page: Page, entry: Locator, at: string): Promise<Locator> {
   const { date } = await historyDayOf(page, at);
-  return drawnInItsDay(
-    entry,
-    historyPanel(page).locator(`[data-history-day="${date}"]`),
-    `the history's entry ${entry.toString()}, of ${date}`
-  );
+  const what = `the history's entry ${entry.toString()}, of ${date}`;
+  await expect(entry, `${what} is not drawn`).toBeVisible();
+  await expect(
+    entry.locator("xpath=ancestor::li[@data-history-day][1]"),
+    `${what} is drawn in another day`
+  ).toHaveAttribute("data-history-day", date);
+  return entry;
 }
 
 /** Waits until the history draws its newest entry, whatever seed it is: the first entry of its
- *  first day, that day opened first where the page drew it folded (`seededHistoryEntry`). */
-export function newestHistoryEntry(page: Page): Promise<Locator> {
-  const day = historyPanel(page).locator("[data-history-day]").first();
-  return drawnInItsDay(day.locator("[data-event-seq]").first(), day, "the history's newest entry");
-}
-
-/** `entry` drawn, its `day` opened first where the page drew that day folded; `what` names the
- *  entry for the failure. */
-async function drawnInItsDay(entry: Locator, day: Locator, what: string): Promise<Locator> {
-  const line = day.locator(':scope > button[aria-expanded="false"]');
-  const shown = await settledState(what, [
-    ["drawn", entry],
-    ["folded", line],
-  ]);
-  // The day is opened for the row's own reading, so its line is pressed without taking the
-  // focus: a row that reads where the reader's focus is finds it where the row left it.
-  if (shown === "folded") await line.dispatchEvent("click");
-  await expect(entry, `${what} is not drawn`).toBeVisible();
+ *  first day. */
+export async function newestHistoryEntry(page: Page): Promise<Locator> {
+  const entry = historyEntries(page).first();
+  await expect(entry, "the history's newest entry is not drawn").toBeVisible();
   return entry;
 }
 
@@ -171,8 +225,9 @@ export async function focusedRowFacts(page: Page, id: string): Promise<Locator> 
   return facts;
 }
 
-/** The facts of the ask `askId`, focused through the outline (`rowFacts`): its hand-on control
- *  and who it is asked of are there. */
+/** The facts of the ask `askId`, focused through the outline (`rowFacts`): its hand-on control,
+ *  who it is asked of, its edit history, who its answer reaches and its asker's copy handles
+ *  are there. */
 export function askFacts(page: Page, issueKey: string, askId: string): Promise<Locator> {
   return rowFacts(page, issueKey, askId);
 }

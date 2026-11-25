@@ -373,7 +373,7 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	runSweep(t, func(ctx context.Context) {
 		RunMaintenanceSweep(ctx, rig.database.Pool, maintenanceTestInterval, leases, nil)
 	})
-	waitUntil(t, 30*time.Second, "the abandoned run ended by a maintenance pass", func() bool {
+	waitUntil(t, "the abandoned run ended by a maintenance pass", func() bool {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
 		return err == nil && state.Terminal > 0
 	})
@@ -418,7 +418,7 @@ func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
 	}
 	swept := make(chan error, 1)
 	go func() { swept <- sweepGoingRequests(ctx, rig.database.Pool) }()
-	waitUntil(t, 30*time.Second, "the sweep's write of the deleted run waiting on its row", func() bool {
+	waitUntil(t, "the sweep's write of the deleted run waiting on its row", func() bool {
 		var waiting bool
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select exists (select 1 from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))

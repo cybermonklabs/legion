@@ -4,16 +4,22 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
+import { pageQuietText } from "../../../theme/classes";
 import { focusOnDocument } from "../../shell/roving";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { bringOnScreen } from "../identity-block";
+import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
 import { isFilter } from "../presets";
+import { NextPageWords } from "../TreeRows";
 import { TAB_STOP_ROW } from "../tree-focus";
+import { abortOnReaderAct } from "../useNodeEditing";
+import { moveToRow } from "../useTreeKeymap";
 import {
   resetViews,
   subscribeTreeFreshness,
+  useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
   viewQuery,
@@ -186,6 +192,68 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
     </div>
   ) : null;
 }
+
+/**
+ * The control after a view's last row while its view read answers a next page (R15), in the
+ * view's own measure: it says how many nodes the read holds after the pages read
+ * (`NextPageWords`), and a press, or Enter on it, reads the next page (`useNextViewPage`), whose
+ * rows the view draws where the read's order puts them, and puts the focus on the first row the
+ * view drew that it had not drawn before, once it is drawn, unless the reader acts first. A press
+ * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
+ * no page is left. Nothing while the view's answer names no next page.
+ */
+export function NextViewPage({
+  filter,
+  issueKey,
+}: {
+  filter: TreeFilter;
+  issueKey: string;
+}): ReactNode {
+  const next = useNextViewPage(issueKey, filter);
+  const box = useRef<HTMLDivElement | null>(null);
+  // The landing on the first new row a press waits for, which the reader's next act, another
+  // press or the control leaving the page ends.
+  const landing = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => landing.current?.abort(), []);
+  if (next === undefined) return null;
+  const press = (): void => {
+    const view = box.current?.parentElement;
+    if (view == null) return;
+    landing.current?.abort();
+    const before = new Set(view.querySelectorAll(VIEW_ROW));
+    const acts = abortOnReaderAct();
+    landing.current = acts;
+    // The view draws the page's rows in a render after the answer lands, so each change of what it
+    // draws is looked at until a row it did not draw before is there.
+    const drawn = new MutationObserver(() => {
+      const row = [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find((one) => !before.has(one));
+      if (row === undefined) return;
+      acts.abort();
+      moveToRow(row);
+    });
+    drawn.observe(view, { childList: true, subtree: true });
+    acts.signal.addEventListener("abort", () => drawn.disconnect());
+    // A refused page, or one that names a cursor the read asked for already, leaves the answer as
+    // it was (`readNextTreePage`), and the control stays for another press.
+    next.read().catch(() => acts.abort());
+  };
+  return (
+    <div className={`text-xs leading-7 ${pageQuietText}`} data-tree-more="" ref={box}>
+      <button
+        className="dispatch-inline-link font-medium underline decoration-page-hair underline-offset-[3px]"
+        onClick={press}
+        onMouseDown={(event) => event.preventDefault()}
+        type="button"
+        {...pageChrome}
+      >
+        <NextPageWords left={next.left} />
+      </button>
+    </div>
+  );
+}
+
+/** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark. */
+const VIEW_ROW = "[data-node-row]";
 
 /** The outline's tree itself (`IssueTree.tsx`), by its name. */
 const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;

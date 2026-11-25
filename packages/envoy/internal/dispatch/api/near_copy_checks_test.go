@@ -250,13 +250,9 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	// The refusal's write waits for the table until its bound ends it, and only then does the
 	// create's transaction begin; the table is let go once that transaction's write waits, so the
 	// refusal's write cannot have landed and the create's write is the one that lands.
-	deadline := time.Now().Add(30 * time.Second)
-	for !createWaitsForNearCopyChecks(t, database) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the create's transaction did not wait for near_copy_checks in 30 s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitUntil(t, "the create's transaction to wait for near_copy_checks", func() bool {
+		return createWaitsForNearCopyChecks(t, database)
+	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release near_copy_checks: %v", err)
 	}
@@ -519,13 +515,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	}
 	poll := func(what string, done func() bool) {
 		t.Helper()
-		deadline := time.Now().Add(10 * time.Second)
-		for !done() {
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: not within 10s", what)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		waitUntil(t, what, done)
 	}
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {

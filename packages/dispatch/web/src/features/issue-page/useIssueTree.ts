@@ -249,8 +249,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  *
  * The tree is the outline read the page holds (`useTreeRead`): Conversation's read, or Graph's
  * in Graph, as the view of the address the router is at chooses it (`tree-read/tree-read.ts`'
- * `outlineOf`), every page of it, which places, orders and words every node; no document's
- * blocks are read. `IssueTreeReads.tree` is that read's whole answer (R7), so
+ * `outlineOf`), the pages of it read so far - the first on load, each next on the reader's press
+ * or an address (R15) - which place, order and word every node; no document's blocks are read.
+ * `IssueTreeReads.tree` is that read's whole answer as loaded (R7), so
  * `presetView`, `filterSignals` and `blocksOf` read the one tree the page holds. Beside it stand
  * the reads that tell what the answer does not, each under the key another surface of this issue
  * reads too, so opening Details, the history or the Contents pane after the tree finds them

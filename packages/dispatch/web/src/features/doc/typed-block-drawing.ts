@@ -368,6 +368,7 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
  * that quotes the opener in fenced code or in front matter is the document's own text. Undefined
  * where the text renders the block no state, or holds no real opener of it, or more than one.
  */
+// kept for one release: release-before-text
 export function renderedAskOf(
   markdown: string | undefined,
   blockId: string

@@ -4,7 +4,9 @@ import { useRef } from "react";
 import { api } from "../../api/client";
 import type { Subscriber } from "../../api/types";
 import { useAgentText } from "../refs/AgentName";
+import { standsFailed } from "../refs/reference-target";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import { retryRead } from "./details-error";
 import { CONTROL_LABELS } from "./page-words";
 
 /** The sessions subscribed to an issue, and the write that takes one off. The panel's People
@@ -14,10 +16,8 @@ export interface IssueSubscribers {
    *  last answer said, kept through a later read that failed; before any has, it
    *  counts nobody, since the number would be a claim the page cannot make. */
   readonly counted: boolean;
-  /** Whether the read is said as failed, with its Retry: while it stands failed, and while it is
-   *  read again after it failed holding no answer, since a fetch of such a read clears its failure
-   *  and puts it back to pending as it starts, which would take the line, and its Retry with a
-   *  reader's focus, away at the press. `rows` still holds what an earlier read answered. */
+  /** Whether the read is said as failed, with its Retry, under the Subscribers control, which
+   *  then carries no count: while it stands failed (`standsFailed`). */
   readonly error: boolean;
   /** How many times the read has failed, which keys the failure the line says
    *  (`DetailsErrorLineProps.failure`), so a read that fails again is said again. */
@@ -27,7 +27,7 @@ export interface IssueSubscribers {
   readonly failure: unknown;
   readonly fetching: boolean;
   /** Sends the read again, or joins the read that is out rather than ending it and sending
-   *  another (`cancelRefetch: false`). */
+   *  another (`retryRead`). */
   readonly refetch: () => void;
   readonly rows: readonly Subscriber[];
   readonly unsubscribe: KeyedWriteResult<void, string, unknown>;
@@ -57,13 +57,11 @@ export function useIssueSubscribers(issueKey: string): IssueSubscribers {
   });
   return {
     counted: subscribers.data !== undefined,
-    error: subscribers.isError || (subscribers.isPending && subscribers.errorUpdateCount > 0),
+    error: standsFailed(subscribers),
     errorUpdateCount: subscribers.errorUpdateCount,
     failure: subscribers.error ?? lastFailure.current,
     fetching: subscribers.isFetching,
-    refetch: () => {
-      void subscribers.refetch({ cancelRefetch: false });
-    },
+    refetch: retryRead(subscribers),
     rows,
     unsubscribe,
   };

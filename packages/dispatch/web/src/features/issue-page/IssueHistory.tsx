@@ -31,41 +31,51 @@ import { HISTORY_ENTRY_ATTRIBUTE } from "../margin/details-focus-keeper";
 import { KEEPS_DETAILS_ATTRIBUTE } from "../margin/Margin";
 import { AgentName, type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { EditedMark } from "../refs/PostBody";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
-import { scrollingAncestor, ViewportAnchor } from "../shell/ViewportAnchor";
-import { CutWords } from "./CutWords";
-import { DetailsErrorLine } from "./details-error";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { DetailsErrorLine, retryRead } from "./details-error";
+import { ENTRY_CONTROLS, SHOW_MORE_CONTROL, ShowMoreWords } from "./details-leaves";
 import { HistoryHandoff } from "./HistoryHandoff";
 import {
   buildHistory,
-  type HistoryBlock,
+  comparePlaces,
+  HISTORY_PAGE,
   type HistoryDay,
   type HistoryEntry,
+  type HistoryPlace,
   type HistoryTurn,
   historyBlocks,
+  historyDownTo,
+  type NamedBlock,
+  placeUnder,
+  turnPlace,
 } from "./history-model";
 import { useMarginDrawer } from "./margin-slot";
+import { DeletedLine } from "./NodeRow";
 import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { scrollingAncestor } from "./scroll-box";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
 
-/** The event the history's heading raises, bubbling, once an arrival at `/activity` has brought
- *  it to the top of Details' view. That scroll is the landing the arrival asked for, not a move
- *  that takes the reader from their place: the hold of the place `t v` lands the focus at keeps
- *  the focused history where this scroll leaves it (`details-more.tsx`). */
+/** The event the history's heading raises, bubbling, once a following of `/activity`
+ *  (`useFollowing`) has brought it to the top of Details' view. That scroll is the landing that
+ *  following asked for, not a move that takes the reader from their place: the hold of the place
+ *  `t v` lands the focus at keeps the focused history where this scroll leaves it
+ *  (`details-more.tsx`). */
 export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
 
 /** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
- *  above and below, its words as written. Its count is at weight 500 in the quiet grey. */
-const DAY_LINE = `py-[5px] text-left text-xs leading-[18px] font-semibold ${pageMutedText}`;
+ *  above and below, its words as written. */
+const DAY_LINE = `py-[5px] text-xs leading-[18px] font-semibold ${pageMutedText}`;
 
 /** One entry, the prototype's `.hev`: 12 px on 18 px in the muted grey, 14 px from a 2 px rule
  *  at its left in the page's line, the rule 4 px from the column's edge, 4 px above and 6 px
@@ -83,26 +93,34 @@ const AUTHOR = `font-semibold ${pageInkText}`;
  *  #44403C, 2 px under the entry's line. */
 const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageKindTag.issue}`;
 
+/** A turn of a thread the history holds that an address names (`/issues/<key>/comments/<id>` or
+ *  `/messages/<id>`), with the following of that address it was named at (`useFollowing`). */
+export interface AddressedTurn {
+  readonly following: string;
+  readonly id: string;
+}
+
 /**
- * The issue's history, a list in the panel (`history-model.ts`):
- * newest first, each day before today folded to one line with its count, which opens it - the
- * day the pages of the log read so far end in with no count, as its entries are not all read
- * yet (`HistoryDay.partial`). An event is one line with its pin; a run of uploads - one
- * author's newest upload and their uploads made at most a minute before it, with no other
- * author's upload between them - is one entry that opens each file, each with its own upload's
- * pin, drawn under one key as the run grows or a newer upload splits it (`runKeys`); a thread
- * agents wrote among themselves is drawn whole, each turn's words with its Reply, which sets the
- * line at the foot of the outline to reply to it - and once a person has replied in a thread,
- * the outline draws it and this list no longer does.
+ * The issue's history, a list in the panel (`history-model.ts`): newest first, every day drawn
+ * open under a line that names it, which is no control. It draws its first `HISTORY_PAGE`
+ * entries, and one control under the last entry drawn draws the next ones (Show more). An event
+ * is one line with its pin, and a handoff's line holds its fields, open until the reader folds
+ * them (`HistoryHandoff`); a run of uploads - one author's newest upload and their uploads made at
+ * most a minute before it, with no other author's upload between them - is one entry that opens
+ * each file, each with its own upload's pin, drawn under one key as the run grows or a newer
+ * upload splits it (`runKeys`); a thread the history holds (`agents-only.ts`: a thread the Legion
+ * daemon began, whoever wrote in it, or an agents' post tied to no text) is one entry drawn
+ * whole, each turn's words whole at any length, with the marks of a post its author corrected
+ * and with its Reply, which sets the line at the foot of the outline to reply to it. Once a person
+ * has written in an agents' post, the outline draws it and this list no longer does.
  *
- * The day that was today as midnight passes with the history drawn stays open, as if the reader
- * had opened it: a reader reading its entries then is still on them.
- *
- * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
- * at `/activity` the heading is brought into Details' view once for each arrival, except a
- * reader's coming back to the history they left drawn, who finds it where they left it;
- * `item` is the entry such an address names, which is marked and brought into view, its day
- * opened. It writes no read mark. The line that says what is new is drawn at `visitMark`,
+ * `/activity`, `t v` and the address of a turn of such a thread open Details here:
+ * at `/activity` the heading is brought into Details' view once for each following of that
+ * address (`useFollowing`), `t v` pressed there among them, except a reader's coming back to the
+ * history they left drawn, who finds it where they left it;
+ * `item` is the turn such an address names, which is marked, drawn with every entry above its
+ * thread, and brought into view once for each following of its address. It writes no read mark.
+ * The line that says what is new is drawn at `visitMark`,
  * where the reader's mark stood as the history first drew in this visit, which
  * `DetailsHistory` holds while Details is shut and this list is not drawn: so a later move of
  * the mark, from another page or tab, leaves the line where the reader found it.
@@ -113,18 +131,20 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
  */
 export function IssueHistory({
-  activityAddress,
+  activityFollowing,
   issue,
   item,
   state,
   visitMark,
 }: {
-  /** The `/activity` address the reader is at, or undefined at any other: each arrival at it
-   *  brings the history's heading into Details' view once. */
-  activityAddress: string | undefined;
+  /** The following of `/activity` the reader is on (`useFollowing`), or undefined at any other
+   *  address: each following of `/activity` brings the history's heading into Details' view
+   *  once. */
+  activityFollowing: string | undefined;
   issue: IssueDetails;
-  /** The id of the comment or message the address names, which the list marks. */
-  item: string | undefined;
+  /** The turn the address names, which the list marks, draws and brings into view once for each
+   *  following of that address. */
+  item: AddressedTurn | undefined;
   state: UserState | undefined;
   /** The reader's read mark for this visit (`DetailsHistory`), where the line that says what is
    *  new is drawn. */
@@ -238,33 +258,57 @@ export function IssueHistory({
   // newer part of a run that upload splits.
   const runKeyOfUpload = useRef(new Map<number, string>());
   const drawnIds = useMemo(() => runKeys(days, runKeyOfUpload.current), [days]);
-  // The days before today the reader opened; the day the address's entry is in is opened as
-  // the address names it, and the day that was today as the date moves on as if the reader had
-  // opened it; the reader's own press closes either again like any other.
-  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
-  // The day the history last drew as today: the render that reads a new date opens it, and React
-  // draws that render again with it opened before committing anything, so the day never folds
-  // under the reader for a frame.
-  const [drawnToday, setDrawnToday] = useState(today);
-  if (drawnToday !== today) {
-    setDrawnToday(today);
-    setOpened(openDay(drawnToday));
+  // How far down the history is drawn (`historyDownTo`): to the place of the last entry drawn
+  // (`HistoryPlace`), so an entry that arrives above it is drawn and takes no entry drawn out from
+  // under the reader. Until that place is held, the first `HISTORY_PAGE` entries are drawn. It is
+  // held from the render in which the log and every read the threads come from have answered, so
+  // that a thread those reads bring stands among the first entries rather than above them.
+  const [end, setEnd] = useState<HistoryPlace | undefined>(undefined);
+  const firstEnd = useMemo(() => placeUnder(days, undefined, HISTORY_PAGE), [days]);
+  const shownEnd = end ?? firstEnd;
+  const settled =
+    log.data !== undefined &&
+    comments.status !== "pending" &&
+    messages.status !== "pending" &&
+    asks.status !== "pending";
+  // How many pages of the log were held when a press of the control, or of the next page's
+  // Retry in its place, asked for the next one: once that page lands, the next entries are drawn
+  // from it.
+  const pages = log.data?.pages.length ?? 0;
+  const [asked, setAsked] = useState<number | undefined>(undefined);
+  // The entry of the thread that holds the turn the address names, which is drawn however far
+  // under the entries drawn it stands, with every entry above it.
+  const itemId = item?.id;
+  const itemPlace = useMemo(
+    () => (itemId === undefined ? undefined : turnPlace(days, itemId)),
+    [days, itemId]
+  );
+  // Each move of the place is drawn in the render that finds it, before React commits anything.
+  let nextEnd = end;
+  if (asked !== undefined && pages > asked) {
+    setAsked(undefined);
+    nextEnd = placeUnder(days, shownEnd, HISTORY_PAGE);
+  } else if (
+    itemPlace !== undefined &&
+    (shownEnd === undefined || comparePlaces(itemPlace, shownEnd) < 0)
+  ) {
+    nextEnd = itemPlace;
+  } else if (end === undefined && settled) {
+    nextEnd = shownEnd;
   }
-  const marked = item === undefined ? undefined : dayOf(days, item);
-  useEffect(() => {
-    if (marked === undefined) return;
-    setOpened(openDay(marked));
-  }, [marked]);
+  if (nextEnd !== end) setEnd(nextEnd);
+  const drawn = useMemo(() => historyDownTo(days, shownEnd), [days, shownEnd]);
   // The address of a turn of a thread that began before the oldest event read so far names an
-  // entry the history does not draw yet (`HistoryInput.loadedFrom`), so the log is read on, one
-  // page at a time, until that thread is in or the log has ended, and the landing below then
-  // marks the turn, opens its day and brings it on screen. It waits for the comments and
-  // messages the threads are drawn from, before which no thread is drawn at all, and for every
-  // read in flight, so each page is one request; a read that failed stops it, and its line says
-  // so with its Retry.
+  // entry the history does not hold yet (`HistoryInput.loadedFrom`), so the log is read on, one
+  // page at a time, until that thread is in or the log has ended; the history is then drawn down
+  // to that thread, and the landing below marks the turn and brings it on screen. It waits for
+  // the comments and messages the threads are drawn from, before which no thread is drawn at all,
+  // and for every read in flight, so each page is one request. A read that failed stops it: a
+  // failed next page says so with its Retry, and a refetch that failed over the pages held draws
+  // no line, which leaves the control under the entries to read on.
   const seeksItem =
     item !== undefined &&
-    marked === undefined &&
+    itemPlace === undefined &&
     comments.data !== undefined &&
     messages.data !== undefined &&
     log.hasNextPage &&
@@ -279,60 +323,65 @@ export function IssueHistory({
       id: eventItemId({ id: eventId }),
       op: isPinnedEvent(dismissed, eventId) ? "unpin" : "pin",
     }));
-  // The entry an address names is brought into view once, as the list first draws it: an entry
-  // with no box yet - its day still folded, or Details still closed around the list, which the
-  // page opens a commit after this one mounts - is not landed on, so the render that draws it
-  // lands it. An entry taller than Details' view lands at the top of that view, so its head is
-  // read first; a shorter one in the middle of it. The history's anchor keeps the landed entry's
-  // row where this scroll left it, from the landing on (`keepRow`): a change of height in the
-  // same frame, whether the scroll's event is read before it or after it, then moves Details by
-  // as much rather than moving the entry, until the reader's next act names their place. The
-  // place the reader's hand was on before the landing is often wholly outside the view after it,
-  // and is no place they can see (`rowToKeep`).
+  // The turn an address names is brought into view once for each following of that address
+  // (`AddressedTurn`), as the list first draws it there: the same address followed again, a
+  // link to it pressed in the history among them, brings it into view again however far the
+  // reader has read since. A turn with no box yet - not drawn yet, or Details still closed around
+  // the list, which the page opens a commit after this one mounts - is not landed on, so the
+  // render that draws it lands it. A turn taller than Details' view lands at the top of that
+  // view, so its head is read first; a shorter one in the middle of it. The history's anchor
+  // keeps the landed turn where this scroll left it, from the landing on: its own place, inside
+  // the entry of the history it stands in (`keepRow`'s `element`). A change of height in the same
+  // frame, whether the scroll's event is read before it or after it, then moves Details by as
+  // much rather than moving the turn, until the reader's next act names their place. That holds
+  // for a change inside the entry too, such as a turn above a reply whose words finish drawing
+  // after the scroll, which leaves the entry's top where it was and moves the reply. The place
+  // the reader's hand was on before the landing is often wholly outside the view after it, and
+  // is no place they can see (`rowToKeep`).
   const landed = useRef<string | undefined>(undefined);
   // The history's anchor, which keeps the reader's place in Details (`ViewportAnchor` below).
   const anchor = useRef<ViewportAnchor>(null);
   useEffect(() => {
-    if (item === undefined || landed.current === item || marked === undefined) return;
-    const entry = document.querySelector<HTMLElement>(`[data-history-item="${CSS.escape(item)}"]`);
+    if (item === undefined || landed.current === item.following) return;
+    const entry = document.querySelector<HTMLElement>(
+      `[data-history-item="${CSS.escape(item.id)}"]`
+    );
     if (entry === null || entry.getClientRects().length === 0) return;
-    landed.current = item;
+    landed.current = item.following;
     const box = scrollingAncestor(entry);
     const tall = box !== null && entry.getBoundingClientRect().height > box.clientHeight;
     entry.scrollIntoView({ block: tall ? "start" : "center" });
-    anchor.current?.keepRow(entry.closest<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}]`));
+    anchor.current?.keepRow(entry.closest<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}]`), entry);
   });
-  // `/activity` opens Details at the history: its heading is brought into Details' view
-  // once for each arrival at that address, on the first render it has a box and the log under
-  // it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
-  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up
-  // by - and leaving the address lets the next arrival bring it again. A reader who comes back
-  // with the browser's Back or Forward to the history this list drew there before - Details left
-  // open beside a view, or at a turn's address - finds Details where they left it, so that
-  // arrival brings nothing. Only the box Details scrolls in moves, never the page under it; the
-  // reader's own scroll after that is theirs. Once the heading has landed it says so
+  // `/activity` opens Details at the history: its heading is brought into Details' view once for
+  // each following of that address (`useFollowing`), on the first render it has a box and the log
+  // under it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
+  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up by.
+  // Each entry the page makes at the address is a following of its own - `t v` pressed there, a
+  // link to it followed there - so each brings the heading back to the top of Details' view,
+  // however far down Details the reader has read. A following the browser steps to itself (`POP`)
+  // once this list has landed a heading brings nothing: a reader who comes back with Back or
+  // Forward to the history this list drew there before - Details left open beside a view, or at a
+  // turn's address - finds Details where they left it, and so does one who types a fragment at
+  // the address. Only the box Details scrolls in moves, never the page under it; the reader's own
+  // scroll after that is theirs. Once the heading has landed it says so
   // (`HISTORY_HEADING_LANDED_EVENT`).
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
-  const landedBefore = useRef(false);
   useEffect(() => {
-    if (activityAddress === undefined) {
-      headingLanded.current = undefined;
-      return;
-    }
     const element = heading.current;
     if (
-      headingLanded.current === activityAddress ||
+      activityFollowing === undefined ||
+      headingLanded.current === activityFollowing ||
       element === null ||
       element.getClientRects().length === 0 ||
       log.data === undefined
     ) {
       return;
     }
-    headingLanded.current = activityAddress;
-    const comingBack = navigation === "POP" && landedBefore.current;
-    landedBefore.current = true;
+    const comingBack = navigation === "POP" && headingLanded.current !== undefined;
+    headingLanded.current = activityFollowing;
     if (comingBack) return;
     const box = scrollingAncestor(element);
     if (box === null) return;
@@ -344,7 +393,7 @@ export function IssueHistory({
   // Details' own, or the document outside the shell. It follows each entry's own id
   // (`data-history-entry`), not its `data-event-seq`: a thread whose first turn's event is on a
   // page of the log not yet read carries seq 0 until that page lands, beside every other such
-  // thread, so its seq names neither one entry nor the same entry before and after `Load older`.
+  // thread, so its seq names neither one entry nor the same entry before and after that page.
   // That box is found once the list is drawn; moving the panel to another host remounts it.
   const anchorRoot = useRef<HTMLElement | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
@@ -366,53 +415,68 @@ export function IssueHistory({
       anchorRoot.current?.closest("section")?.contains(active) === true
     );
   };
-  // A control of the history that goes away under the reader's focus leaves the focus in the
-  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which the
-  // log's end takes away, hands it on to a control the page it read added: first one the reader
-  // can see, one under the list drawn before the press before one above it, as the page lands
-  // where Load older stood; else one out of view under that list; else any the page added;
-  // else Load older again, where pages are left; else the last control drawn before the press,
-  // which stood just above Load older, for a last page that adds no control (its events go into
-  // a day drawn folded, or are all events the outline draws); and only then the heading, above
-  // the whole list. The Retry of a failed next page, which stands where Load older stood, hands
-  // it on the same way; the Retry of a failed read of the log, gone once the read lands, hands
-  // it to the heading. None of them is disabled while it reads, since Chromium drops the focus
-  // of a focused button that turns disabled to the page, so the focus stays on the control
-  // pressed while its read is out, and a press of it then joins that read rather than ending it
-  // and sending another (`readOlderPage` for a page, `cancelRefetch: false` for the log). Each
-  // press, made with the focus on its control, is held until the reads settle, and a press of
-  // the control already held keeps the first press's hold, the controls drawn before it with it,
-  // so the press that joins changes nothing of the hand-on; then a focus left on the page moves,
-  // and so does one still on that control once its read has landed - Load older where pages are
-  // left hands it on as if it had gone - while a read that failed leaves it there, beside the
-  // line that says so. A reader who has put the focus elsewhere by then keeps it there. No such
-  // move scrolls Details, whose reader keeps their place: from the press until its reads settle,
-  // Details keeps the place of the entry next to the pressed control (`keepEntryBeside`), so the
-  // page that lands, and a cut of the turns above it in the same commit, leave that entry where
-  // the reader saw it, and a control the page pushed out of view - under files it added to a run
-  // above - takes the focus only when none is in view. The entry the focus moved to is then the
-  // place Details holds as the entries above it change height (`ViewportAnchor` records the
-  // place at every focus moved into its rows).
+  // The control under the last entry drawn, Show more, draws the next entries and moves the
+  // focus to the first entry it added, as Show more under every other list of Details does
+  // (`details-leaves.tsx`'s `useListPages`), whether the control stays or goes: a control of
+  // that entry the reader can see; else one the press added that they can see, one under the
+  // entries drawn before the press before one above them, as the next entries are drawn where
+  // the control stood; else that entry's control out of view; else any the press added; else the
+  // control again, where entries or pages are left; else the last control drawn before the press,
+  // which stood just above it, for a page that adds no entry (its events are all events the
+  // outline draws); and only then the heading, above the whole list. A press that reads the
+  // log's next page moves it once that page has landed and its first entries are drawn. A
+  // control of the
+  // history that goes away under the reader's focus so leaves the focus in the history, never on
+  // the page, as Details' Unpin does (`IssuePins.tsx`). The Retry of a failed next page, which
+  // stands where the control stood, hands it on the same way; the Retry of a failed read of the
+  // log, gone once the read lands, hands it to the heading. None of them is disabled while it
+  // reads, since Chromium drops the focus of a focused button that turns disabled to the page,
+  // so the focus stays on the control pressed while its read is out, and a press of it then joins
+  // that read rather than ending it and sending another (`readOlderPage` for a page, `retryRead`
+  // for the log). Each press, made with the focus on its control, is held until what it asked
+  // for is drawn, and a press of the control already held keeps the first press's hold, the
+  // controls drawn before it with it, so the press that joins changes nothing of the hand-on;
+  // then a focus left on the page moves, and so does one still on that control once what it
+  // asked for is drawn, while a read that failed leaves it there, beside the line that says so. A
+  // reader who has put the focus elsewhere by then keeps it there. No such move scrolls Details,
+  // whose reader keeps their place: from the press until its reads settle, Details keeps the
+  // place of the entry next to the pressed control (`keepEntryBeside`), so the entries drawn
+  // under it leave that entry where the reader saw it, and a control the page pushed out of view
+  // - under files it added to a run above - takes the focus only when none is in view. The entry
+  // the focus moved to is then the place Details holds as the entries above it change height
+  // (`ViewportAnchor` records the place at every focus moved into its rows).
   const pressed = useRef<
     | {
-        readonly before: ReadonlySet<HTMLElement>;
+        /** The controls and the entries drawn as the press was made. */
+        readonly before: HeldParts;
         readonly control: Element;
-        readonly kind: "older";
+        readonly kind: "more";
+        /** Whether the press reads the log's next page, rather than draws entries read. */
+        readonly reads: boolean;
       }
     | { readonly control: Element; readonly kind: "retry" }
   >(undefined);
-  const loadOlder = useRef<HTMLButtonElement>(null);
+  const more = useRef<HTMLButtonElement>(null);
   const failure = useRef<HTMLDivElement>(null);
   const controlsOfList = () => [
-    ...(anchorRoot.current?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)") ?? []),
+    ...(anchorRoot.current?.querySelectorAll<HTMLElement>(ENTRY_CONTROLS) ?? []),
   ];
-  // The place Details keeps from a press of Load older or of either Retry that sends a read,
+  const entriesOfList = () => [
+    ...(anchorRoot.current?.querySelectorAll<HTMLElement>(
+      `[data-history-day] > ol > [${HISTORY_ENTRY_ATTRIBUTE}]`
+    ) ?? []),
+  ];
+  const heldParts = (): HeldParts => ({
+    controls: new Set(controlsOfList()),
+    entries: new Set(entriesOfList()),
+  });
+  // The place Details keeps from a press of Show more or of either Retry that sends a read,
   // made with the focus on its control or not, until the reads it sent settle: that of the
-  // entry next to the control, the list's last under Load older and the next page's Retry, its
-  // first above the log's Retry. The control is outside the entries, so while the focus is on
-  // it no act of the reader's names a place, and a page that lands in the same commit as a cut
-  // of the turns above it would take the entries under that cut, the new ones with them, up out
-  // of Details' view. The history's anchor keeps it (`keepRow`).
+  // entry next to the control, the list's last over Show more and the next page's Retry, its
+  // first under the log's Retry. The control is outside the entries, so while the focus is on
+  // it no act of the reader's names a place, and entries that grow above it as the next ones are
+  // drawn would take the entries under them, the new ones with them, out of Details' view. The
+  // history's anchor keeps it (`keepRow`).
   const keeping = useRef(false);
   const keepEntryBeside = (control: "above" | "under") => {
     const entries = anchorRoot.current?.querySelectorAll<HTMLElement>(
@@ -423,15 +487,18 @@ export function IssueHistory({
       entries === undefined ? null : entries.item(control === "under" ? entries.length - 1 : 0)
     );
   };
-  // The reader's own read of the next page while it is out, from a press of Load older or of the
+  // The reader's own read of the next page while it is out, from a press of Show more or of the
   // next page's Retry: a press made meanwhile joins it and sends nothing, where the render's
   // `isFetchingNextPage` can be older than a second press made before React draws the first
   // one's read. It is marked here, at the press, and not joined by `cancelRefetch: false`, which
   // joins whatever read of the log is out: a refetch a live event sent, common on a busy issue,
   // would take the press and read no page. A press with no read of its own out reads the next
-  // page as `fetchNextPage` does by default, ending a refetch that is out.
+  // page as `fetchNextPage` does by default, ending a refetch that is out. Where every entry read
+  // is drawn as the press is made, the next entries are drawn from that page once it lands
+  // (`asked`).
   const olderRead = useRef<Promise<unknown> | null>(null);
   const readOlderPage = () => {
+    if (drawn.left === 0) setAsked((held) => held ?? pages);
     if (olderRead.current !== null) return;
     olderRead.current = log.fetchNextPage().finally(() => {
       olderRead.current = null;
@@ -439,24 +506,28 @@ export function IssueHistory({
   };
   useLayoutEffect(() => {
     const press = pressed.current;
-    if (press === undefined || log.isFetching) return;
+    const reads = press?.kind === "retry" || press?.reads === true;
+    if (press === undefined || (reads && log.isFetching)) return;
     pressed.current = undefined;
     const active = document.activeElement;
     const onPage = active === null || active === document.body;
-    const onPressedAfterRead = active === press.control && !log.isError;
+    const onPressedAfterRead = active === press.control && !(reads && log.isError);
     if (!onPage && !onPressedAfterRead) return;
-    // The page it read lands under every control drawn before it, where Load older stood. Its
-    // entries can push one another out of Details' view: files the page added to a run above
-    // move the entries under that run down, so a new control is in view or not by where it is
-    // drawn once the entry next to the pressed control is back where it stood: the place kept
-    // from the press (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before
-    // this runs.
-    const before = press.kind === "older" ? press.before : new Set<HTMLElement>();
-    const lastBefore = [...before].filter((control) => control.isConnected).at(-1);
-    const added = controlsOfList().filter((control) => !before.has(control));
-    const isBelow = (control: HTMLElement) =>
+    if (press.kind === "retry") {
+      (failure.current?.querySelector("button") ?? heading.current)?.focus({ preventScroll: true });
+      return;
+    }
+    // The entries it drew stand under every control drawn before it, where Show more stood. They
+    // can push one another out of Details' view: files a page added to a run above move the
+    // entries under that run down, so a new control is in view or not by where it is drawn once
+    // the entry next to the pressed control is back where it stood: the place kept from the
+    // press (`keepEntryBeside`), which `ViewportAnchor` restored in this commit before this runs.
+    const { controls, entries } = press.before;
+    const lastBefore = [...controls].filter((control) => control.isConnected).at(-1);
+    const added = controlsOfList().filter((control) => !controls.has(control));
+    const isBelow = (element: HTMLElement) =>
       lastBefore === undefined ||
-      (lastBefore.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      (lastBefore.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     const view = scroller.current?.getBoundingClientRect() ?? {
       bottom: window.innerHeight,
       top: 0,
@@ -465,15 +536,19 @@ export function IssueHistory({
       const at = control.getBoundingClientRect();
       return at.height > 0 && at.top >= view.top && at.bottom <= view.bottom;
     };
+    const first =
+      entriesOfList()
+        .find((entry) => !entries.has(entry) && isBelow(entry))
+        ?.querySelector<HTMLElement>(ENTRY_CONTROLS) ?? undefined;
     const target =
-      press.kind === "older"
-        ? (added.find((control) => isBelow(control) && inView(control)) ??
-          added.find(inView) ??
-          added.find(isBelow) ??
-          added[0] ??
-          loadOlder.current ??
-          lastBefore)
-        : failure.current?.querySelector("button");
+      (first !== undefined && inView(first) ? first : undefined) ??
+      added.find((control) => isBelow(control) && inView(control)) ??
+      added.find(inView) ??
+      first ??
+      added.find(isBelow) ??
+      added[0] ??
+      more.current ??
+      lastBefore;
     (target ?? heading.current)?.focus({ preventScroll: true });
   });
   // The place kept from the press goes once the reads it sent have settled, after the hand-on,
@@ -485,32 +560,29 @@ export function IssueHistory({
     keeping.current = false;
     anchor.current?.keepRow(null);
   });
-  // The history draws the log it holds whatever the last read's outcome: a read
-  // that fails once it holds the log - a refetch after an event, a later open of Details, the
-  // next page - says so with its Retry beside the entries, never in their place, and the line
-  // stands alone only while no page is held. A failed next page is said where Load older is,
-  // and its Retry reads that page again; any other failure under the heading, where its Retry
-  // reads the log again. The line stays while the read its Retry sent is out, even where no page
-  // is held: a fetch of a log that holds none clears its failure and puts it back to pending as
-  // it starts, which would take the line, and its Retry with the focus, away at the press. A
-  // failure it counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn
-  // afresh by that count, so a read that fails again is said again, in the same words.
-  const logFailed = log.isError || (log.isPending && log.errorUpdateCount > 0);
-  const failed = logFailed ? (
+  // The history draws the log it holds whatever the last read's outcome. The log's own line
+  // stands under the heading, in place of the loading line, while the log stands failed
+  // (`standsFailed`). A failed next page is said where Show more is, below the pages held, and
+  // its Retry reads that page again; that line stays while the page is read again, since the log
+  // keeps that failure meanwhile.
+  const logFailed = standsFailed(log);
+  const saysFailure = logFailed || log.isFetchNextPageError;
+  const failed = saysFailure ? (
     <div ref={failure}>
       <DetailsErrorLine
         error={log.error}
         failure={log.errorUpdateCount}
         message={ANSWER_LINES.history_unreadable}
         onRetry={() => {
-          // The next page's Retry stands where Load older stood, and hands the focus on as it
-          // does; the log's Retry, under the heading, to the heading. Neither is disabled while
-          // it reads, since Chromium drops the focus of a focused button that turns disabled
-          // to the page, so a read that fails again leaves the focus on it; it reads busy then,
-          // and a press while the log is read joins that read rather than ending it and sending
-          // another: the next page's as `readOlderPage` says, the log's by `cancelRefetch: false`,
-          // which the query decides as the press lands, as the render's `isFetching` can be older
-          // than a second press made before React draws the first one's read.
+          // The next page's Retry stands where Show more stood, and does its work and hands the
+          // focus on as it does; the log's Retry, under the heading, to the heading. Neither is
+          // disabled while it reads, since Chromium drops the focus of a focused button that
+          // turns disabled to the page, so a read that fails again leaves the focus on it; it
+          // reads busy then, and a press while the log is read joins that read rather than ending
+          // it and sending another: the next page's as `readOlderPage` says, the log's by
+          // `retryRead`, which the query decides as the press lands, as the render's
+          // `isFetching` can be older than a second press made before React draws the first
+          // one's read.
           const active = document.activeElement;
           if (
             active !== null &&
@@ -518,17 +590,19 @@ export function IssueHistory({
             pressed.current?.control !== active
           ) {
             pressed.current = log.isFetchNextPageError
-              ? { before: new Set(controlsOfList()), control: active, kind: "older" }
+              ? { before: heldParts(), control: active, kind: "more", reads: true }
               : { control: active, kind: "retry" };
           }
           keepEntryBeside(log.isFetchNextPageError ? "under" : "above");
           if (log.isFetchNextPageError) readOlderPage();
-          else void log.refetch({ cancelRefetch: false });
+          else void retryRead(log)();
         }}
         retrying={log.isFetching}
       />
     </div>
   ) : null;
+  // Show more reads busy while the page its press asked for is read, the entries read all drawn.
+  const readsPage = drawn.left === 0 && log.isFetchingNextPage;
 
   return (
     <section
@@ -564,103 +638,82 @@ export function IssueHistory({
             className="flex min-w-0 flex-col gap-1"
             {...authorText}
           >
-            {days.map((day) => {
-              const open = day.today || opened.has(day.date);
-              const count = day.entries.filter((entry) => entry.kind !== "unread").length;
-              return (
-                <li className="flex min-w-0 flex-col" data-history-day={day.date} key={day.date}>
-                  {day.today ? (
-                    <p className={DAY_LINE}>{day.label}</p>
-                  ) : (
-                    <button
-                      aria-expanded={open}
-                      className={`dispatch-inline-link self-start ${DAY_LINE} ${pageRowAct}`}
-                      onClick={() =>
-                        setOpened((held) => {
-                          const next = new Set(held);
-                          if (!next.delete(day.date)) next.add(day.date);
-                          return next;
-                        })
-                      }
-                      type="button"
-                    >
-                      {day.label}
-                      {/* The day the pages read so far end in holds entries not read yet
-                          (`HistoryDay.partial`): its name alone, which still opens it. */}
-                      {day.partial ? null : (
-                        <>
-                          {" "}
-                          <span className={`font-medium ${pageQuietText}`}>· {count}</span>
-                        </>
-                      )}
-                    </button>
-                  )}
-                  {open ? (
-                    <ol className="flex min-w-0 flex-col">
-                      {day.entries.map((entry) => {
-                        const drawnId = drawnIds.get(entry.id) ?? entry.id;
-                        return (
-                          <Entry
-                            drawnId={drawnId}
-                            entry={entry}
-                            issueKey={issueKey}
-                            item={item}
-                            key={drawnId}
-                            onPin={togglePin}
-                            pinned={(id) => isPinnedEvent(issueState.dismissed ?? [], id)}
-                          />
-                        );
-                      })}
-                    </ol>
-                  ) : null}
-                </li>
-              );
-            })}
+            {drawn.days.map((day) => (
+              <li className="flex min-w-0 flex-col" data-history-day={day.date} key={day.date}>
+                <p className={DAY_LINE}>{day.label}</p>
+                <ol className="flex min-w-0 flex-col">
+                  {day.entries.map((entry) => {
+                    const drawnId = drawnIds.get(entry.id) ?? entry.id;
+                    return (
+                      <Entry
+                        drawnId={drawnId}
+                        entry={entry}
+                        issueKey={issueKey}
+                        item={item?.id}
+                        key={drawnId}
+                        onPin={togglePin}
+                        pinned={(id) => isPinnedEvent(issueState.dismissed ?? [], id)}
+                      />
+                    );
+                  })}
+                </ol>
+              </li>
+            ))}
           </ol>
         </ViewportAnchor>
       )}
       {log.isFetchNextPageError ? failed : null}
-      {log.hasNextPage ? (
+      {log.data !== undefined && (drawn.left > 0 || log.hasNextPage) ? (
         <button
-          aria-busy={log.isFetchingNextPage || undefined}
-          className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
+          aria-busy={readsPage || undefined}
+          className={`${SHOW_MORE_CONTROL} self-start`}
           onClick={(event) => {
             // Not disabled while its page is read, since Chromium drops the focus of a focused
             // button that turns disabled to the page: a press then joins the reader's own read of
-            // that page (`readOlderPage`), and keeps the first press's hold.
+            // that page (`readOlderPage`), and keeps the first press's hold. It draws the entries
+            // read and not drawn yet, and reads the next page only where it has drawn them all.
             const control = event.currentTarget;
             if (document.activeElement === control && pressed.current?.control !== control) {
-              pressed.current = { before: new Set(controlsOfList()), control, kind: "older" };
+              pressed.current = {
+                before: heldParts(),
+                control,
+                kind: "more",
+                reads: drawn.left === 0,
+              };
             }
             keepEntryBeside("under");
-            readOlderPage();
+            if (drawn.left > 0) setEnd((held) => placeUnder(days, held ?? shownEnd, HISTORY_PAGE));
+            else readOlderPage();
           }}
-          ref={loadOlder}
+          ref={more}
           type="button"
           {...pageChrome}
         >
-          {log.isFetchingNextPage ? ANSWER_LINES.loading_older : CONTROL_LABELS.load_older}
+          {readsPage ? (
+            ANSWER_LINES.loading_older
+          ) : (
+            // The count is of the entries read and not drawn, with "+" while an older page of
+            // the log is unread, and none once every entry read is drawn.
+            <ShowMoreWords
+              count={
+                drawn.left === 0 ? undefined : (
+                  <span data-history-left="" {...authorText}>
+                    {log.hasNextPage ? `${drawn.left}+` : drawn.left}
+                  </span>
+                )
+              }
+            />
+          )}
         </button>
       ) : null}
     </section>
   );
 }
 
-/** The day the entry `item` names is in: a thread's turn, root or reply. */
-function dayOf(days: readonly HistoryDay[], item: string): string | undefined {
-  return days.find((day) =>
-    day.entries.some(
-      (entry) =>
-        entry.kind === "thread" &&
-        (entry.root.id === item || entry.replies.some((reply) => reply.id === item))
-    )
-  )?.date;
-}
-
-/** The update of the days opened that opens `day` too. A day already open leaves the set it was
- *  handed as it is, so the history does not draw again for it. */
-function openDay(day: string): (held: ReadonlySet<string>) => ReadonlySet<string> {
-  return (held) => (held.has(day) ? held : new Set(held).add(day));
+/** What a press of Show more found drawn: each control of the list, and each entry. */
+interface HeldParts {
+  readonly controls: ReadonlySet<HTMLElement>;
+  readonly entries: ReadonlySet<HTMLElement>;
 }
 
 /**
@@ -885,23 +938,23 @@ function DocumentLine({
 }
 
 /** The line of a block repaired or found invalid that names the block by its node's words
- *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's a
- *  link to its node in the page's ink and its rows' underline, where its address reads as one. */
+ *  (`HistoryEntry.block`), as `DocumentLine` draws a document's: its words, with the block's -
+ *  the part of the line `block.part` names - a link to its node in the page's ink and its rows'
+ *  underline, where its address reads as one. */
 function BlockLine({
   block,
   description,
 }: {
-  block: HistoryBlock;
+  block: NamedBlock;
   description: readonly AgentPart[];
 }): ReactNode {
-  const { path, words } = block;
-  const linked = path === undefined ? -1 : description.lastIndexOf(words);
+  const { path } = block.block;
   return (
     <span>
       <AgentParts
         parts={description}
         text={(part, index) =>
-          index !== linked || path === undefined ? (
+          index !== block.part || path === undefined ? (
             part
           ) : (
             <Link
@@ -918,7 +971,12 @@ function BlockLine({
   );
 }
 
-/** One turn of a thread agents wrote among themselves: who, when, the words, and Reply. */
+/**
+ * One turn of a thread the history holds: when, who, and ` · edited` after the author where
+ * the author edited it (`EditedMark`); its words whole at any length, or, where its author
+ * deleted it, the deleted line in their place, as the outline's rows draw it (`DeletedLine`);
+ * and Reply, which a deleted turn has not, as Dispatch takes no reply to it.
+ */
 function Turn({
   issueKey,
   marked,
@@ -950,17 +1008,20 @@ function Turn({
         <span className={AUTHOR}>
           <AgentName actor={turn.author} inline />
         </span>
+        <EditedMark at={turn.editedAt} deleted={turn.deleted} marks={pageChrome} />
       </p>
-      {/* Cut as the outline cuts an agent's words, and whole where the address
-          names this turn. Details is reached by Tab, so its controls keep their tab stops. */}
-      <CutWords className={WORDS} tabStops whole={marked}>
-        <MarkdownBody
-          markdown={turn.body}
-          source={textSourceOf(turn.kind, turn.id)}
-          tree={turn.bodyTree}
-        />
-      </CutWords>
-      {writer === undefined ? null : (
+      <div className={WORDS}>
+        {turn.deleted === null ? (
+          <MarkdownBody
+            markdown={turn.body}
+            source={textSourceOf(turn.kind, turn.id)}
+            tree={turn.bodyTree}
+          />
+        ) : (
+          <DeletedLine deleted={turn.deleted} />
+        )}
+      </div>
+      {writer === undefined || turn.deleted !== null ? null : (
         <p>
           <button
             className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}

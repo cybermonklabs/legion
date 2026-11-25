@@ -55,7 +55,7 @@ const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
 });
 const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
-function Time({ at }: { at: string | null }): ReactNode {
+export function Time({ at }: { at: string | null }): ReactNode {
   if (at === null) return NONE;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return <time>{at}</time>;
@@ -94,7 +94,7 @@ function HyphenGroups({ piece }: { piece: string }): ReactNode {
  *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
  *  so neither forces its column wider than its longest part. A number or a single letter keeps
  *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
-function Identifier({ value }: { value: string }): ReactNode {
+export function Identifier({ value }: { value: string }): ReactNode {
   if (value === "") return NONE;
   const pieces = value.split("/");
   // Each piece is keyed by the text up to and including it, which no other piece of the id shares.

@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 
 import {
+  askOpenerBlockId,
   askOpenerLines,
+  askOpeners,
   blockPointerValueProblem,
   DISPATCH_BLOCK_ID_ENCODINGS,
   DISPATCH_BLOCK_POINTER_VALUES,
@@ -310,6 +312,51 @@ test.each([
     lines: ["---", opener("a")],
     want: [opener("a")],
   },
+  {
+    // A backslash before ASCII punctuation escapes it, so `\]` and `\[` are part of the label. An
+    // unescaped `[` makes the line no footnote label.
+    name: "a footnote label holds an escaped bracket, and a block opens on its line",
+    lines: [
+      `[^a\\]b]: ${opener("a")}`,
+      "",
+      `[^c\\[d]: ${opener("b")}`,
+      "",
+      `[^e[f]: ${opener("c")}`,
+    ],
+    want: [opener("a"), opener("b")],
+  },
+  {
+    name: "a fence opened on the line of a footnote label that holds an escaped bracket is code",
+    lines: ["[^a\\]b]: ```", `    ${opener("a")}`, "    ```", "", opener("b")],
+    want: [opener("b")],
+  },
+  {
+    // An inline code span keeps the spaces at the start of its later lines, so such a line can
+    // start with an opener. Four columns or more past its containers' lines, the line goes on
+    // with the paragraph and opens no block. The columns of a footnote definition or a list item
+    // that the line goes on with are its containers' columns.
+    name: "a line of an inline code span four columns past its containers opens no block",
+    lines: [
+      "Text `code",
+      `    ${opener("a")}\` more.`,
+      "",
+      "[^n]: Note `code",
+      `        ${opener("b")}\` more.`,
+      "",
+      `    ${opener("c")}`,
+      "",
+      "10. Item",
+      "",
+      `    ${opener("d")}`,
+    ],
+    want: [opener("c"), opener("d")],
+  },
+  {
+    // An opener four columns or more past the marker before it is indented code.
+    name: "a line four columns past its containers' markers opens no block",
+    lines: [`    > ${opener("a")}`, "", `>     ${opener("b")}`, "", `-     ${opener("c")}`],
+    want: [],
+  },
 ])("askOpenerLines: $name", ({ lines, want }) => {
   expect(askOpenerLines(lines.join("\n"))).toEqual([...want]);
 });
@@ -317,4 +364,17 @@ test.each([
 test("askOpenerLines reads lines that end in a carriage return and a line feed", () => {
   const lines = ["```", opener("a"), "```", opener("b"), ""];
   expect(askOpenerLines(lines.join("\r\n"))).toEqual([opener("b")]);
+});
+
+test("askOpenerBlockId reads back each id as the renderer writes it, and no other spelling", () => {
+  for (const { id, written } of DISPATCH_TYPED_BLOCK_ID_SPELLINGS) {
+    expect(askOpenerBlockId(`:::ask{${written} state="open"}`)).toBe(id);
+    expect(askOpenerBlockId(`::::ask{${written}}`)).toBe(id);
+    expect(askOpeners([`:::ask{${written}}`], id)).toEqual([`:::ask{${written}}`]);
+  }
+  // The renderer writes `#a`, never `id="a"`. A `#id` ends at a character the shortcut cannot
+  // hold, and only a space or the closing brace may follow it.
+  for (const line of [':::ask{id="a"}', ":::ask{#a.b}", ":::ask{#}", ':::ask{state="open" #a}']) {
+    expect(askOpenerBlockId(line)).toBeUndefined();
+  }
 });

@@ -278,7 +278,7 @@ func skeletonDatabase(t *testing.T) string {
 		t.Fatalf("connect to the test server: %v", err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
+	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the run's database: %v", err)
 	}
 	t.Cleanup(func() { dropSkeletonDatabase(t, admin.String(), name) })
@@ -695,7 +695,7 @@ func newSkeletonStatements(t *testing.T, databaseURL string, runConn *pgx.Conn) 
 	if err != nil {
 		return unmeasured("connect to the test server: %v", err)
 	}
-	_, err = conn.Exec(ctx, "create database "+own)
+	_, err = conn.Exec(ctx, "create database "+own+" strategy file_copy")
 	_ = conn.Close(ctx)
 	if err != nil {
 		return unmeasured("create %s, the database the snapshots are read from: %v", own, err)

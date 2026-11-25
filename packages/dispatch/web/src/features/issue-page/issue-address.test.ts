@@ -157,20 +157,40 @@ test("an address naming an ask or a comment opens the outline, unless it pins a 
   expect(issueAddress(spec, "?v=3", "#b-p1", undefined).document).toBeUndefined();
 });
 
-// R20: a comment or a message agents wrote outside every thread a person wrote in lands in the
-// history, not the outline; one in a thread a person wrote in, and a reply under an ask, is a
-// node of the outline like any other.
-test("an item in a thread no person wrote in is the history's, and every other the outline's", () => {
+// The address of a turn of a thread the history holds lands in the history, not the outline: a
+// comment thread tied to no text that only agents wrote in, and a message thread the Legion
+// daemon began, a person's reply in it included. A comment thread a person wrote in, one whose
+// head is tied to text, a reply under an ask, an agent's note and a message thread a person
+// answered are nodes of the outline like any other.
+test("an item of a thread the history holds is the history's, and every other the outline's", () => {
   const agent = { id: "session-1", kind: "session" } as const;
+  const daemon = { id: "legion-daemon:CORE", kind: "session" } as const;
   const person = { id: "alice", kind: "user" } as const;
+  const tied = {
+    artifact_id: "spec",
+    block_id: null,
+    mark_id: "mark-1",
+    orphaned: false,
+    quote: "The words it is tied to.",
+    version: 1,
+  };
   const comments = [
-    { ask_id: null, author: agent, id: "agents-root", reply_to: null },
-    { ask_id: null, author: agent, id: "agents-reply", reply_to: "agents-root" },
-    { ask_id: null, author: agent, id: "mixed-root", reply_to: null },
-    { ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
-    { ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "agents-root", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "agents-reply", reply_to: "agents-root" },
+    { anchor: null, ask_id: null, author: agent, id: "mixed-root", reply_to: null },
+    { anchor: null, ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
+    { anchor: tied, ask_id: null, author: agent, id: "tied-root", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "tied-reply", reply_to: "tied-root" },
+    { anchor: null, ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
   ];
   const messages = [
+    {
+      message: { ...messageFixture, author: daemon, id: "daemon-message" },
+      replies: [
+        { ...messageFixture, author: agent, id: "daemon-agent-reply" },
+        { ...messageFixture, author: person, id: "daemon-person-reply" },
+      ],
+    },
     {
       message: { ...messageFixture, author: agent, id: "agents-message" },
       replies: [{ ...messageFixture, author: agent, id: "agents-message-reply" }],
@@ -182,13 +202,23 @@ test("an item in a thread no person wrote in is the history's, and every other t
   ];
   const landing = (id: string) =>
     agentsOnlyItem({ id, kind: "item" }, comments, messages, undefined);
-  for (const id of ["agents-root", "agents-reply", "agents-message", "agents-message-reply"]) {
+  for (const id of [
+    "agents-root",
+    "agents-reply",
+    "daemon-message",
+    "daemon-agent-reply",
+    "daemon-person-reply",
+  ]) {
     expect(landing(id), `${id} is drawn in the outline`).toBe(id);
   }
   for (const id of [
     "mixed-root",
     "mixed-reply",
+    "tied-root",
+    "tied-reply",
     "under-ask",
+    "agents-message",
+    "agents-message-reply",
     "asked-message",
     "answered-message",
   ]) {

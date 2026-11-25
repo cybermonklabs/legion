@@ -1357,21 +1357,43 @@ export function blocksOfRole(
 
 /**
  * The pages of one read as one answer: every page's nodes and tuples in the order the pages
- * came, so the walk's order holds across them, and what describes the issue rather than a page
- * (`converted`, `tree`, `view_of`, `documents`) from the first. The answer has no next page.
- * One page is its own answer, which is every issue the page size was set above. Here rather than
- * beside the read (`tree-read.ts`' `readTree`), so the e2e helpers, which load this module and
- * not that one, merge the pages the page received by the same rule.
+ * came, so the walk's order holds across them, what describes the issue rather than a page
+ * (`converted`, `tree`, `view_of`, `documents`, `comments_before`) from the first, and the last
+ * page's `cursor` and `remaining`, so the answer names the page after the last one read, and how
+ * many nodes are left after it, where one remains. One page is its own answer. A next page the
+ * reader's press reads merges into the answer the page holds by the same rule, that answer as the
+ * first page (`tree-read.ts`' `readNextTreePage`). Here rather than beside the read
+ * (`tree-read.ts`' `readTree`), so the e2e helpers, which load this module and not that one,
+ * merge the pages the page received by the same rule.
  */
 export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): TreeAnswer {
   const [first] = pages;
   if (pages.length === 1) return first;
-  return {
+  const last = pages[pages.length - 1] ?? first;
+  const merged: PagedAnswer = {
     ...first,
-    cursor: null,
+    cursor: last.cursor ?? null,
     nodes: pages.flatMap((page) => page.nodes ?? []),
+    remaining: (last as PagedAnswer).remaining,
     tuples: pages.flatMap((page) => page.tuples ?? []),
   };
+  return merged;
+}
+
+/** A page of the tree read with the count of the nodes the read holds after it (`remaining`),
+ *  which the server answers beside `cursor` and the generated contract does not name yet. */
+type PagedAnswer = TreeAnswer & { readonly remaining?: unknown };
+
+/**
+ * How many nodes the read holds after the pages `answer` holds (`remaining`), the exact number the
+ * server answers beside a `cursor`; undefined where the answer names no next page
+ * (`nextTreeCursor`) or gives no count.
+ */
+export function nodesRemaining(answer: TreeAnswer): number | undefined {
+  const { remaining } = answer as PagedAnswer;
+  return nextTreeCursor(answer) !== undefined && typeof remaining === "number"
+    ? remaining
+    : undefined;
 }
 
 /**

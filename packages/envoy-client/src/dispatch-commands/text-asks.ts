@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { askOpenerLines } from "@legion/contracts";
+import { askOpenerBlockId, askOpenerLines } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -14,15 +14,18 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
  * release before writes them (`askOpenerLines` in packages/contracts, which the web reads them by
- * too). Only a real opener counts: a line that, past its containers' quote, list and footnote
- * markers, opens the directive, outside fenced code and outside the front matter a document opens
- * with. A line that quotes an opener in code - a fence, one opened on a footnote's label line too,
- * or an inline span, which never starts the line - opens no block, and nor does a line of front
- * matter, which is no markdown, so a document's writer cannot make it read as an answer Dispatch
- * recorded. A document of this release with no ask block opens none, and reads no ask.
+ * too). Only a real opener counts: a line that opens the directive past the containers it is in
+ * (quotes, list items and footnote definitions), within three columns of them, outside fenced and
+ * indented code and outside the front matter a document opens with. A line that quotes an opener
+ * in code - a fence, one opened on a footnote's label line too, or a later line of an inline code
+ * span that stands four columns or more past its containers - opens no block, and nor does a
+ * line of front matter, which is no markdown, so a document's writer cannot make it read as an
+ * answer Dispatch recorded. A document of this release with no ask block opens none, and reads no
+ * ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
+  // kept for one release: release-before-text
   return openerAsks(askOpenerLines(text.markdown));
 }
 
@@ -36,7 +39,8 @@ export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
 }
 
 /** The ask block `line`, a line past its containers' markers that opens the directive, opens, its
- *  attributes read as the release before wrote them, or undefined where it names no block id. */
+ *  attributes read as the release before wrote them, or undefined where it names no block id. Its
+ *  id is read as `askOpeners` reads it (`askOpenerBlockId`). */
 function openerOf(line: string): TextAsk | undefined {
   const end = line.lastIndexOf("}");
   const start = line.indexOf("ask{");
@@ -46,7 +50,7 @@ function openerOf(line: string): TextAsk | undefined {
   for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
     values.set(name, attributeValue(raw));
   }
-  const id = /^#([^\s}]+)/.exec(attributes)?.[1] ?? values.get("id");
+  const id = askOpenerBlockId(line);
   if (id === undefined) return undefined;
   const selected = selectionOf(values.get("selected"));
   const words = values.get("answer");

@@ -1,3 +1,6 @@
+/** the rows ask a command bar run of the server and change an issue inside it, and read what
+ *  Details and the run's page draw for its asker and for another login, which the server's reads
+ *  answer for the asker alone */
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   NODE_REFERENCES_WORDS,

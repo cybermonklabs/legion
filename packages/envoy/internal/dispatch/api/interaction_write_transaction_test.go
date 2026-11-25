@@ -250,9 +250,7 @@ func heldOpen(t *testing.T, database *store.Store, table string, write func() er
 	planInteractionWrite(t, database, table, "after", "hold")
 	done := make(chan error, 1)
 	go func() { done <- write() }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 5*time.Second); waiting < 1 {
-		t.Fatalf("the write never reached its %s row: no backend waits on the lock that holds it open", table)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	read()
 	planInteractionWrite(t, database, table, "after", "")
 	if err := holder.Rollback(ctx); err != nil {
@@ -451,7 +449,7 @@ func requireTwoFrameWritersQueueAtTheRunsNode(t *testing.T, server *server, data
 			second, err = appendGoingEvent(ctx, database.Pool, run.ID, going.Text("The second writer's frame."))
 			secondDone <- err
 		}()
-		waitUntil(t, 5*time.Second, "the second writer waiting on the run's interaction row while the first held it", func() bool {
+		waitUntil(t, "the second writer waiting on the run's interaction row while the first held it", func() bool {
 			waiting, err := storetest.CountLockWaits(ctx, database, graphstore.NodeRowLockSQL)
 			if err != nil {
 				t.Fatalf("count the writers waiting on the run's node: %v", err)

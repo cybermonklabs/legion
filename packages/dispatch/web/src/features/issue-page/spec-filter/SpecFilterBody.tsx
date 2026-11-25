@@ -457,7 +457,6 @@ export function SpecFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
@@ -486,7 +485,6 @@ export function SpecFilterBody({
       if (path !== undefined) navigate(path);
     },
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld: asksHeld,
     rows,
     // The whole tree, which `q` walks for the next open question, and `w` on a row that is no
