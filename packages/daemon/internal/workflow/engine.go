@@ -135,6 +135,16 @@ type Config struct {
 	// where GitHub answers `unknown`, and an `unknown` answer then asks for no more. Nil asks for
 	// none, as ReadMergeState's nil does.
 	ReadBaseMergeStates func(repo, base string, issues, once []string)
+	// MergeForwardEnded is told, on the commit of a fact that may leave the merge of issue's head
+	// owed to no role any more - the merge forward landed, a move left its open ask owed to nobody,
+	// or the ask was cleared (mergeForwardEnds) - that the take hold the owed merge put on every
+	// take of the issue that would adopt the working copy may have ended (MergeForwardOwed). The
+	// daemon posts each claim of the issue the event a turn's end posts (supervise.IssueTurnEnded,
+	// which carries no fact), so a take that hold refused is offered again at once
+	// (workflowRuntime.mergeForwardEnded). Nil tells none, which leaves the supervision sweep's
+	// offer of a take refused at its latest revision as the hold's only end: the API-only daemon,
+	// and a test that supervises nothing.
+	MergeForwardEnded func(issue string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
 	// in internal/daemon), which paces every wake the daemon causes together — the role processes

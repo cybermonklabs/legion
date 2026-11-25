@@ -789,6 +789,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
+	// The end of a merge forward's take hold - its landing, withdrawal or clear - tells every claim
+	// of the issue, through the supervisor attach hands the outbox (mergeForwardEnded).
+	engineCfg.MergeForwardEnded = w.mergeForwardEnded
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
@@ -1239,6 +1242,38 @@ func (w *workflowRuntime) phaseRole(ctx context.Context, key string) (claim.Role
 		return "", nil
 	}
 	return workflow.OpenPhaseRole(issue.Phase), nil
+}
+
+// mergeForwardOwed answers supervise's Deps.MergeForwardOwed from the issue record, in a short
+// read-only transaction of its own: whether the merge of the head the issue's pull request stands
+// at is owed to a role and has not landed, and to which role (workflow.MergeForwardOwed, the
+// workflow's one rule of an owed merge, which the ask sent again at a relaunch reads too). Every
+// take of the issue that would adopt the working copy is held while it is, so it is read at each
+// such take, and a restarted daemon reads the same record. A claim on an issue the daemon does not
+// record owes no merge.
+func (w *workflowRuntime) mergeForwardOwed(ctx context.Context, key string) (claim.Role, bool, error) {
+	var role claim.Role
+	var owed bool
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		role, owed, err = workflow.MergeForwardOwed(ctx, w.records, tx, key)
+		return err
+	}); err != nil {
+		return "", false, fmt.Errorf("read whether a merge forward of %s is owed: %w", key, err)
+	}
+	return role, owed, nil
+}
+
+// mergeForwardEnded answers the engine's Config.MergeForwardEnded: once the workflow has recorded
+// the merge forward of issue landed, withdrawn or cleared, every claim of the issue is told, as a
+// turn's end tells the issue's other claims (supervisor.wakeIssueClaims), so a take the owed merge
+// held is offered again at once. A fact committed before the outbox's supervisor is attached tells
+// nobody, and the supervision sweep's offer of a take refused at its latest revision is the end
+// then.
+func (w *workflowRuntime) mergeForwardEnded(issue string) {
+	if r := w.outboxWake.Load(); r != nil && r.supervisor != nil {
+		r.supervisor.wakeIssueClaims(issue)
+	}
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a

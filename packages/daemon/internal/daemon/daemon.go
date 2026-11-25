@@ -525,6 +525,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.phaseRole = workflow.phaseRole
+		plan.mergeForwardOwed = workflow.mergeForwardOwed
 		plan.cacheRepositories = workflow.cacheRepositories
 		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
@@ -1047,6 +1048,10 @@ type plan struct {
 	// pod start gate puts first among the starts no request raised (supervise.Deps.PhaseRole); nil
 	// without a workflow, where no role is the phase worker.
 	phaseRole func(ctx context.Context, issue string) (claim.Role, error)
+	// mergeForwardOwed is the workflow's answer to whether a merge forward of an issue is owed to a
+	// role and has not landed, which holds every take of the issue that would adopt the working
+	// copy (supervise.Deps.MergeForwardOwed); nil without a workflow, where no merge is owed.
+	mergeForwardOwed func(ctx context.Context, issue string) (claim.Role, bool, error)
 	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
 	// project's live issue records and of the launches since their last read
 	// (workflowRuntime.cacheRepositories). A daemon with no workflow keeps none.
@@ -1996,6 +2001,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
 		PhaseRole:               p.phaseRole,
+		MergeForwardOwed:        p.mergeForwardOwed,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,

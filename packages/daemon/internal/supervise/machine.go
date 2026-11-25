@@ -1132,6 +1132,20 @@ type Deps struct {
 	// (takeable). The daemon answers it from the claims its machines publish (Claim.InTurn), read
 	// without waiting on any decision in flight (Machine.View). nil holds no take back.
 	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
+	// MergeForwardOwed says whether a merge forward of issue is owed to a role and has not landed,
+	// and which role it is owed to: the daemon's ask that a role merge the base forward onto the
+	// head of the issue's pull request (internal/workflow's MergeForwardOwed, which reads the
+	// record's open ask and whether its role still owes the merge where the issue stands). The ask
+	// is an Envoy role message and no take, so between two runs of the merge, or before its first
+	// run starts, no role of the issue is in a turn (IssueInTurn), and an adoption of the working
+	// copy made then lands an empty commit on the merge in progress. So while it is owed, every take
+	// that would adopt the working copy (adopts) is refused in-turn, whatever its role, the asked
+	// role's own included, and a take that adopts nothing never asks it (takeable). It is read from
+	// the store at each such take, so a restarted daemon holds the same take. A read that fails
+	// leaves the take undecided (undecided), never accepted. The hold ends when the daemon records
+	// the merge landed, withdrawn or cleared, which posts the issue's claims IssueTurnEnded; the
+	// sweep's offer of a take refused at its latest revision is the backstop. nil holds no take.
+	MergeForwardOwed func(ctx context.Context, issue string) (claim.Role, bool, error)
 	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
 	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
 	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
@@ -4925,9 +4939,9 @@ func (m *Machine) disarmAll() {
 // and does not: it goes through writeBucket, under the claim-write bound alone. Store.AdmitClaim
 // and Store.CheckLaunch keep today's behaviour and take no deadline: what they wait on is an
 // advisory lock another transaction holds, so a deadline there would fail a launch that was only
-// queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
-// the next write will say rather than hold the row, and whose failure costs the decision and
+// queued behind its predecessor. So do the reads of the record — PhaseHolds, RootHears, RootTask,
+// DesignNews, TreeClosable, MergeForwardOwed — which decide what the next write will say rather
+// than hold the row, and whose failure costs the decision and
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
 // the machine's lock for the length of the outage; a write it cuts short is owed and made again
 // at the claim's next decision (owes, repair).

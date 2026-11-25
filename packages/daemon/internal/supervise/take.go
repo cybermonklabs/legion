@@ -174,7 +174,11 @@ const (
 	HoldAdoption = "adoption"
 	// HoldNotOwed is a number the claim's record does not owe it: it records nothing.
 	HoldNotOwed = "not-owed"
-	// HoldInTurn is a claim in a turn: its own, or the turn of this very task, already started.
+	// HoldInTurn is a claim in a turn: its own, or the turn of this very task, already started. It
+	// is also a merge forward of the claim's issue owed to a role and not landed, which a task that
+	// adopts the working copy waits for whatever role takes it (Deps.MergeForwardOwed): the merge
+	// runs in turns of the asked role that no take started, and writes that working copy between
+	// them.
 	HoldInTurn = "in-turn"
 	// HoldNotReady is a claim whose agent has not said it is ready.
 	HoldNotReady = "not-ready"
@@ -789,7 +793,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // has no architect to hear it and narrowed to what it still names once the root hears
 // (currentRootTask), and retired when that leaves it naming nothing. Last, for a task that adopts
 // the working copy the issue's roles share, another role of the issue in a turn, or holding an
-// accepted take whose turn has not ended (issueInTurn).
+// accepted take whose turn has not ended (issueInTurn), and then a merge forward of the issue owed
+// to a role and not landed (mergeForwardOwed), which refuses the take in-turn whatever role takes,
+// the asked role's own included: the merge is a role message and no take, so between two of its
+// runs, or before its first run starts, no role of the issue is in a turn, and an adoption then
+// would leave an empty commit on the merge in progress. A take that adopts nothing never reads it.
+// A read of it that fails decides nothing, and the take is undecided (undecided).
 //
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
@@ -879,6 +888,17 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 		m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 			"task", p.Number, "issue", m.claim.Issue, "inTurn", other)
 		return HoldIssueInTurn, false, nil
+	}
+	if m.adopts(*p) {
+		asked, merging, err := m.mergeForwardOwed(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		if merging {
+			m.log.Info("supervise: a merge forward of this issue is owed and has not landed; the phase task waits rather than adopt the working copy the merge writes",
+				"task", p.Number, "issue", m.claim.Issue, "asked", asked)
+			return HoldInTurn, false, nil
+		}
 	}
 	return "", false, nil
 }

@@ -161,7 +161,10 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery.
+// row's end on a claim that failed or retired, and the delivery. end, where set, is the row's end
+// itself, which deletes the row: told is the launch of the claim the message reached, read before
+// the publish, and 0 for the end at a claim that failed or retired (a merge-forward ask's,
+// endMergeForwardAsk). nil leaves the row's end to its settle.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -171,6 +174,7 @@ type heldMessage struct {
 	attributes []any
 	claimEnded string
 	delivered  string
+	end        func(ctx context.Context, told uint64) error
 }
 
 // deliverHeld publishes m's message to the Envoy topic of m's role, and to nothing else, and holds
@@ -185,7 +189,7 @@ type heldMessage struct {
 // either: the row waits for it.
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
-// m.claimEnded, once the role's claim has failed or retired, since that claim will not hold its
+// m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
 // role again. A released merger is held by the rule that holds its start
 // (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
 // and a released role of another kind while the root's design gate is closed (designGateClosed):
@@ -196,9 +200,23 @@ type heldMessage struct {
 // holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
 // delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied).
+//
+// Where m has an end, both ends of the row are it: at a claim that failed or retired, before the
+// line is logged, and after the publish, with the launch the claim held just before it, which is
+// never later than the launch whose session took the message (the claim's launches only rise). An
+// end that fails fails the attempt: undelivered, the row is read again at its retry; delivered, it
+// is published again and ends again, so a launch may be told twice and none is told nothing.
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {
+		if r.beforeUndeliveredEnd != nil {
+			r.beforeUndeliveredEnd(row)
+		}
+		if m.end != nil {
+			if err := m.end(ctx, 0); err != nil {
+				return err
+			}
+		}
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}
@@ -225,10 +243,17 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	} else if waits {
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
+	var told uint64
+	if m.end != nil {
+		told = r.supervisedClaim(m.token).Generation
+	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
+		if m.end != nil {
+			return m.end(ctx, told)
+		}
 		return nil
 	case errors.Is(published, notify.ErrNoHolder):
 		return wait.Errorf("%s waits for a session to hold its %s's role: %w", m.what, m.role, published)

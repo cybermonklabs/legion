@@ -1275,6 +1275,13 @@ Notices, an architect's catch-up, a pod update round's ask, hooks, merge-forward
 **A phase task waits for the turns of the other roles.**
 The daemon refuses a role's take of a phase task while another claim of the same issue is in a turn, or holds an accepted take whose turn has not ended (the hold `issue-in-turn`).
 It writes the task's value again when that turn ends, the role takes it then, and the adoption runs before that take is answered.
+A second hold, named `in-turn` as a take refused in a turn of the claim's own is, also refuses the take of a phase task while the issue's record holds a merge forward that is owed to a role and has not landed, whatever role takes it, the asked role's own included.
+A merge forward is a message to the asked role and no take, so between two runs of that merge no claim of the issue is in a turn, and an adoption then would leave an empty commit on the merge in progress.
+A take of a task that adopts nothing is not held by it.
+The daemon's log says why, with the role the merge is owed to: `supervise: a merge forward of this issue is owed and has not landed; the phase task waits rather than adopt the working copy the merge writes`.
+The daemon writes each refused task's value again when the merge lands, is withdrawn or is cleared, and when a move leaves it owed to nobody; the sweep writes it again for an end it missed.
+A daemon that restarts reads the same record and holds the same take.
+A take whose read of the record fails is answered `500 CLAIM_WRITE_FAILED` and never accepted, and its value is written again once the read answers.
 
 **Five lines in the daemon's log show what each adoption did.**
 Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
@@ -1952,7 +1959,13 @@ a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD` and moves nothi
 keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`, and the
 completion is made again at the new head. A completion of a phase the issue has already left is
 recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
-the merge and approve the new head. A red check sends nothing back from anywhere.
+the merge and approve the new head. While the merge forward is owed, every take of the issue that
+would adopt the workspace is refused `in-turn` (see "A phase task waits for the turns of the other
+roles"), so the role asked is asked again where its process was relaunched after the ask was
+delivered, by a death or a provider error's retry: at the ready of each later launch the ask is sent
+once more and that launch is recorded on the ask (`sentLaunch`), with `workflow: a merge forward
+still owed is asked again at its role's new launch`, and a launch that comes up while a row of the
+ask is still queued is told by that row. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

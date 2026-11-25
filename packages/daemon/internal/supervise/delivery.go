@@ -1181,6 +1181,23 @@ func (m *Machine) adoptionWaits() (claim.Token, bool) {
 	return m.issueInTurn()
 }
 
+// mergeForwardOwed names the role a merge forward of this claim's issue is owed to, when one is
+// owed and has not landed (Deps.MergeForwardOwed), read from the record at each ask: a take of the
+// pending task that would adopt the working copy waits for that merge to land (takeable), since
+// the merge writes the working copy between runs no turn of the issue covers. A daemon with no
+// workflow supplies no answer, and no merge is owed. A read that fails is the caller's to answer:
+// it decides nothing.
+func (m *Machine) mergeForwardOwed(ctx context.Context) (claim.Role, bool, error) {
+	if m.deps.MergeForwardOwed == nil || m.claim.Issue == "" {
+		return "", false, nil
+	}
+	role, owed, err := m.deps.MergeForwardOwed(ctx, m.claim.Issue)
+	if err != nil {
+		return "", false, fmt.Errorf("read whether a merge forward of %s is owed: %w", m.claim.Issue, err)
+	}
+	return role, owed, nil
+}
+
 // adopt hands the working copy the role's App identity before the phase task's take is
 // answered, so the task's commits are authored by the bot. It runs with the machine's lock let
 // go (Machine.Take), so it reads only what the take captured under the lock (adoption). A failure
