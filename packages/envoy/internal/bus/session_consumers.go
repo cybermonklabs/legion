@@ -174,8 +174,9 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
-	// logger is the logger the connection was opened with (ConnectSessionConsumers),
-	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
+	// logger is the logger the connection was opened with (ConnectSessionConsumers), the client's
+	// own where that was nil (sessionConsumersOn): where create and recordResumeFloorAt write
+	// their lines.
 	logger *slog.Logger
 	// pendingMu guards pending, createFault, deleteAnswerFault and infoFault.
 	pendingMu sync.Mutex
@@ -231,12 +232,13 @@ type SessionConsumers struct {
 // INFO line of a caller's start it lowered to the session's resume record, and the WARN line of
 // a start past the stream's end it created at the stream's first sequence instead; and where
 // every resume record it writes logs the WARN line of a floor past the stream's end it recorded
-// at the sequence before the stream's first (recordResumeFloorAt). slog.Default() stands in for
-// a nil logger. The listener passes its own JSON logger (cmd/listener connectSessionDelivery,
-// logging.Logger.Slog), so those lines carry its machine_id as its other session-consumer lines
-// do, and it never sets the default instead (store.WithLogger says why). It is a parameter for
-// the reason inactiveThreshold is: no create or record runs before the logger is set, and
-// nothing writes the field while either reads it.
+// at the sequence before the stream's first (recordResumeFloorAt). A nil logger stands for the
+// client's own (WithLogger, else where slog.Default() points at each line). The listener passes
+// its own JSON logger (cmd/listener connectSessionDelivery, logging.Logger.Slog), so those lines
+// carry its machine_id as its other session-consumer lines do, and it never sets the default
+// instead (store.WithLogger says why). It is a parameter for the reason inactiveThreshold is: no
+// create or record runs before the logger is set, and nothing writes the field while either reads
+// it.
 //
 // A server that can skip a message on a consumer filtering on a wildcard and a literal at the same
 // token is refused, naming its version and the fixed releases (natsversion.ConnectedRefusal, which
@@ -268,7 +270,11 @@ func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger 
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
-		logger:            cmp.Or(logger, slog.Default()),
+		// A caller that names no logger gets the client's, so the consumers' lines and the
+		// connection's go to one place: a caller that gave the client WithLogger gets that, and
+		// one that gave it none gets the client's fallback, which writes where slog.Default()
+		// points at each line.
+		logger: cmp.Or(logger, client.log()),
 	}
 }
 

@@ -7,12 +7,12 @@ import (
 
 // ForgetDocument deletes what the reference tables hold for the document artifactID, inside the
 // transaction that is about to delete the document's own row (api.removeArtifact): the refs rows
-// written from it, the row it owes the re-index queue, and the backoff its own mentions were
+// written from it, the rows it owes the re-index queues, and the backoff its own mentions were
 // deferred under (ClearExcerptBackoff). None of them carries a foreign key to artifacts(id), so
 // each would outlive the document. Every one of them is keyed by the document's uuid
-// (refs.from_id, refs_grammar_owed.id, reference_excerpt_backoff.artifact_id), and a document
-// minted later at the same reference key is a new uuid, so it inherits none of them: a row left
-// here would sit unread rather than reach anybody.
+// (refs.from_id, refs_grammar_owed.id, refs_forms_owed.id, reference_excerpt_backoff.artifact_id),
+// and a document minted later at the same reference key is a new uuid, so it inherits none of
+// them: a row left here would sit unread rather than reach anybody.
 //
 // What points AT the document is left where it stands: a removal is refused while another node
 // cites the document or a block of it (DocumentIsCited), and that test is read in this same
@@ -23,14 +23,19 @@ import (
 // document. The spec of dispatch://INFRA-1334 says the same of a citation written outside
 // Dispatch, and accepts it for a document that held nothing.
 //
-// The queue rows (refs_grammar_owed) are keyed by kind and id, and a document is owed under two
-// kinds - `artifact`, its own block index, and `scope`, the sources around it - so the id alone
-// is read here, where a source settling its own index reads both (settleOwed).
+// The queue rows are keyed by kind and id, and a document is owed under two kinds of the whole
+// grammar's queue - `artifact`, its own block index, and `scope`, the sources around it - so the
+// id alone is read there, where a source settling its own index reads both (settleOwed). The
+// forms queue is settled after the delete from refs, which owes it the document whose edges it
+// deletes (migration 20261117025906).
 func ForgetDocument(ctx context.Context, q Execer, artifactID string) error {
 	if _, err := q.Exec(ctx, `delete from refs where from_kind = 'artifact' and from_id = $1`, artifactID); err != nil {
 		return fmt.Errorf("delete the references of the removed document %s: %w", artifactID, err)
 	}
-	if _, err := q.Exec(ctx, `delete from refs_grammar_owed where id = $1::uuid`, artifactID); err != nil {
+	if _, err := q.Exec(ctx, `
+		with grammar as (delete from refs_grammar_owed where id = $1::uuid)
+		delete from refs_forms_owed where kind = 'artifact' and id = $1::uuid
+	`, artifactID); err != nil {
 		return fmt.Errorf("settle the index owed by the removed document %s: %w", artifactID, err)
 	}
 	return ClearExcerptBackoff(ctx, q, artifactID)

@@ -186,7 +186,7 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 
 // mergeWaitState is a state whose two reviewing issues each carry what their round waits on from
 // GitHub — one waiting for GitHub's first answer about the head the approval stands on, one
-// GitHub has held on `blocked`, whose architect and reviewer have been told of it — beside an
+// GitHub has held `behind` its base, whose architect and reviewer have been told of it — beside an
 // implementing issue, whose round waits on nothing there and carries no such object.
 func mergeWaitState() State {
 	const (
@@ -206,9 +206,9 @@ func mergeWaitState() State {
 				MergeWait: &MergeWaitView{WaitsOn: waitingHead, HeadUpdatedAt: &pushed}},
 			"LEGION-30": {Key: "LEGION-30", Phase: phase.Reviewing, Status: "needs_review",
 				PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 30, Head: stuckHead,
-					State: "open", MergeState: "blocked", ReviewDecision: "approved"},
-				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "blocked", StateReadAt: &read,
-					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "blocked"}},
+					State: "open", MergeState: "behind", ReviewDecision: "approved"},
+				MergeWait: &MergeWaitView{WaitsOn: stuckHead, MergeState: "behind", StateReadAt: &read,
+					HeadUpdatedAt: &stood, CheckRuns: 2, ToldHead: stuckHead, ToldState: "behind"}},
 		},
 	}
 }

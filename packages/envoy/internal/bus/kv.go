@@ -112,7 +112,8 @@ const (
 )
 
 // wrapKeyValue is WrapKeyValue, with two things its callers choose, under ctx, which bounds the
-// handle's open as well as RequestTimeout does.
+// handle's open as well as RequestTimeout does. Its lines, the WARNs of a wait on the member and
+// of an open sent again, go where the client owning conn writes (loggerOwning).
 //
 // created says this start has just created the bucket, so the STREAM.INFO that opens the
 // jetstream handle is taken again until the member answering has applied that create
@@ -136,6 +137,9 @@ const (
 // for a read whose caller waits two seconds for it, and an open that kept sending would leave that
 // read and every one after it unanswered rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
+	// Its lines go where the client owning conn writes, and where slog.Default() points at each
+	// line when no client owns it: every caller of this function wants that one reading.
+	logger := loggerOwning(conn)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		return KeyValue{}, err
@@ -159,11 +163,11 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, readLimitOf(ctx), send) }
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, logger, request, readLimitOf(ctx), send) }
 	}
 	var watch jetstream.KeyValue
 	if created {
-		watch, err = awaitBucketApplied(ctx, kv.Bucket(), bucketMissing, open)
+		watch, err = awaitBucketApplied(ctx, logger, kv.Bucket(), bucketMissing, open)
 	} else {
 		watch, err = open()
 	}

@@ -503,7 +503,7 @@ func reduceFilters(subjects []string, fedBy []int) []filterSubject {
 	for merged := true; merged; {
 		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
 		reduced = compactFilters(reduced)
-		reduced, merged = reduceFilterPairs(reduced)
+		reduced, merged, _ = reduceFilterPairs(reduced)
 	}
 	return reduced
 }
@@ -539,6 +539,12 @@ func compactFilters(subjects []filterSubject) []filterSubject {
 // containing the other it merges that pair, with the provenance of both, and reports true, or
 // reports false when it reaches the last pair with no merge. It changes subjects in place.
 //
+// It reports beside them how many pairs it weighed, which reduceFilters drops and
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce reads. That number is the
+// pass's work counted the same way on every machine: a clock reads the machine the test ran on as
+// much as the reduction, and a count of allocations misses a scan that weighs pairs again on tokens
+// already split, which allocates nothing.
+//
 // A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
 // that contains another overlaps it, so such a pair is neither a drop nor a merge.
 //
@@ -549,10 +555,12 @@ func compactFilters(subjects []filterSubject) []filterSubject {
 // the subject that follows when the first went. A merge does restart it, from a sorted list: the
 // merged subject is new, so every subject must be weighed against it, and it takes its own place
 // in the order.
-func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
+func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool, int) {
+	weighed := 0
 	for i := 0; i < len(subjects); i++ {
 		for j := i + 1; j < len(subjects); {
 			a, b := subjects[i], subjects[j]
+			weighed++
 			switch {
 			case !tokensOverlap(a.tokens, b.tokens):
 				j++
@@ -569,11 +577,11 @@ func reduceFilterPairs(subjects []filterSubject) ([]filterSubject, bool) {
 				}
 				subjects = slices.Delete(subjects, j, j+1)
 				subjects = slices.Delete(subjects, i, i+1)
-				return append(subjects, merged), true
+				return append(subjects, merged), true, weighed
 			}
 		}
 	}
-	return subjects, false
+	return subjects, false, weighed
 }
 
 // commonTokenPrefix is the tokens a and b begin with alike, up to the first that differs or is `>`,

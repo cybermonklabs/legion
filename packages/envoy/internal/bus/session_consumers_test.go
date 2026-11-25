@@ -15,6 +15,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -96,6 +97,73 @@ func TestReduceFilterSubjects(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// INFRA-1555. A registration reduces its topics to its consumer's filters (SessionConsumerFilters)
+// inside its own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest
+// registration production had seen, the reduction spent that budget: it went back to the first
+// pair after every subject it dropped, so the renewal's claim read ran out of time on every
+// heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
+// (reduceFilterPairs), so between merges it weighs no pair twice. A merge does start the scan
+// again, by design: the merged subject is new and must be weighed against every other.
+//
+// This case holds that by the pairs the reduction weighs, which are the same on every machine, and
+// not by a clock. cmd/listener's TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair
+// counts the allocations of a registration's reductions. Those see a split of both subjects of
+// every pair weighed, the other half of INFRA-1555, and not a scan started again on tokens already
+// split, which allocates nothing: this count sees that scan.
+//
+// The bound, n(n-1)/2 for n subjects, is the pairs there are, and it holds only within one pass, a
+// scan of the pairs that ends in no merge. So the case runs one pass of the reduction
+// (reduceFilterPairs) over the forms as reduceFilters sorts and compacts them, and fails as
+// UNKNOWN when that pass ends on a merge. It reads the merge from the pass itself and not from the
+// filters, since a merged subject can be one of the forms already (`notifications.x.*.c` and
+// `notifications.x.1.*` merge into `notifications.x.>`), which compactFilters then folds into that
+// form, leaving every filter a form. It also fails as UNKNOWN when nothing was dropped, where a
+// restarted scan weighs no pair twice either. A pass that ends in no merge is the whole reduction,
+// so its filters are SessionConsumerFilters', which the case checks.
+//
+// The list is shapetest.Planned, the topics a registration of the largest shape plans, in the
+// forms SessionConsumerFilters gives them: 1,610 topics, the role lane and the agent subject
+// among them, in 1,612 forms, which reduce to 1,604 filters. A registration reduces another list
+// (cmd/listener's sessionFilter): it leaves the role lane out, and puts the session's agent subject
+// first, so the agent subject is in its list twice. That list is 1,610 subjects in 1,612 forms, the
+// agent subject's two forms counted twice; held once each, 1,609 topics in 1,610 forms, which
+// reduce to the 1,602 filters that cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim counts on the server. The two
+// forms more here are the role lane's. They sort last and overlap nothing, so they add pairs that
+// are each weighed once and change neither the bound's meaning nor a drop.
+func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
+	t.Parallel()
+	topics := shapetest.Planned("legion-controller", "ses_largest_holder")
+	forms, _ := sessionConsumerForms(topics, false)
+	pass := make([]filterSubject, 0, len(forms))
+	for _, form := range forms {
+		pass = append(pass, filterSubject{subject: form, tokens: strings.Split(form, ".")})
+	}
+	slices.SortFunc(pass, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
+	pass = compactFilters(pass)
+	subjects := len(pass)
+	reduced, merged, weighed := reduceFilterPairs(pass)
+	if merged {
+		t.Fatalf("UNKNOWN: the pass over the %d subjects of the %d topics ended on a merge; a merge starts the scan again by design, and the bound of the pairs there are holds only within one pass", subjects, len(topics))
+	}
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
+	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
+		t.Fatalf("the pass reduced here gives %d filters and SessionConsumerFilters %d: this case is not weighing the list SessionConsumerFilters reduces", len(filters), len(want))
+	}
+	if subjects == len(filters) {
+		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
+	}
+	pairs := subjects * (subjects - 1) / 2
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the pass ended in no merge, dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	if weighed > pairs {
+		t.Fatalf("one pass over %d subjects, ending in no merge, weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+			subjects, weighed, float64(weighed)/float64(pairs), pairs)
 	}
 }
 

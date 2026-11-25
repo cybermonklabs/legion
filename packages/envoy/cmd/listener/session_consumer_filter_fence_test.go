@@ -447,7 +447,7 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	// own: the repair and both listeners' registrations are given the test's deadline
 	// (budgetsUntilTheDeadline), or three of b's registrations at a load of 1,270 to 1,760 spend
 	// the repair's bound and the fence ends one pass short, its row moved under 3 passes.
-	budgetsUntilTheDeadline(t, a, b)
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, moves := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -486,7 +486,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// As in TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow, each pass runs a registration on b.
-	budgetsUntilTheDeadline(t, a, b)
+	budgetsUntilTheDeadline(t, a.deps, b.deps)
 
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
