@@ -7481,12 +7481,16 @@ test("clear brush window pressed with the Window control scrolled out of sight s
 // INFRA-2160's R8, merged over this row: the item after the last of the rows a bulk action is
 // on is selected and its row has the keyboard focus, not a control in it. That row is the one now
 // at the marked row's place, and where it stands partly out of the reader's sight there, the
-// hand-off brings it whole into sight at its nearest edge (`focusIntoView`), the one scroll a
-// landing may make (INFRA-3135's ruling of 2026-11-21 12:3xZ) beside the line that closes above
-// the list. Measured at 390x664 in the full lane's Jobs at 3a7a98a9
-// (infra-2160-fullproof-shard-2 and -4), with the bar's own focus scrolling to that row while the
-// threads still stood: the row stood at the window's top, 266 px above the place, for one thread,
-// and 1045 px above the window for two, in Chromium, Firefox and WebKit.
+// hand-off brings it whole into sight at its nearest edge, the one scroll a landing may make
+// (INFRA-3135's ruling of 2026-11-21 12:3xZ) beside the line that closes above the list. Measured
+// at 390x664 in the full lane's Jobs at 3a7a98a9 (infra-2160-fullproof-shard-2 and -4), with the
+// bar's own focus scrolling to that row while the threads still stood: the row stood at the
+// window's top, 266 px above the place, for one thread, and 1045 px above the window for two, in
+// Chromium, Firefox and WebKit. The nearest edge is the window's own, and no scroll padding:
+// #3729's 05c3e917 (its tester's red row 5994f791, a landing cut by the window's bottom at 390 px)
+// lands the bar's hand-off by the window's and each box's visible edges (`landNearest`), not by
+// the root's `scroll-padding-bottom` below 1280 px. Measured at bca3e9a0 (builds Job
+// infra-2160-bdb-bca3-xvhqv): the row stood 80 px, that padding, lower than a padded edge.
 test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at the marked row's place, and scrolls by no more than the line that closes above the list and what shows that row whole @firefox @webkit", async ({
   page,
 }) => {
@@ -7555,9 +7559,8 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       };
     });
   /** Where the list's box stands in the page and whether it is the box that scrolls the rows,
-   *  the part of the window the reader sees through it, less the scroll padding of the box that
-   *  scrolls the rows - the window's `scroll-padding-bottom` below 1280 px (`styles.css`), which a
-   *  nearest-edge scroll leaves clear as `scrollIntoView` does - and where a row stands on screen
+   *  the part of the window the reader sees through it - the visible edges the landing shows a
+   *  row whole between (`landNearest`), with no scroll padding - and where a row stands on screen
    *  and how tall it is: the row `id` names, else the row that holds the focus. */
   const rowAndList = (id: string | null) =>
     page.evaluate((rowId) => {
@@ -7572,9 +7575,6 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         frame !== null &&
         (overflowY === "auto" || overflowY === "scroll") &&
         frame.scrollHeight > frame.clientHeight;
-      const padded = getComputedStyle(
-        listScrolls && frame !== null ? frame : document.documentElement
-      );
       const [from, to] =
         listScrolls && box !== undefined ? [box.top, box.bottom] : [0, window.innerHeight];
       return {
@@ -7582,16 +7582,8 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
         listTop: (box?.top ?? 0) + window.scrollY,
         rowHeight: row?.getBoundingClientRect().height ?? 0,
         rowTop: row?.getBoundingClientRect().top ?? null,
-        viewBottom: Math.min(
-          to - (Number.parseFloat(padded.scrollPaddingBottom) || 0),
-          box?.bottom ?? window.innerHeight,
-          window.innerHeight
-        ),
-        viewTop: Math.max(
-          from + (Number.parseFloat(padded.scrollPaddingTop) || 0),
-          box?.top ?? 0,
-          0
-        ),
+        viewBottom: Math.min(to, box?.bottom ?? window.innerHeight, window.innerHeight),
+        viewTop: Math.max(from, box?.top ?? 0, 0),
       };
     }, id);
   const wrong: string[] = [];
