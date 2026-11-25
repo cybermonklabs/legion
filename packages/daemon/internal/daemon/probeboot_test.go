@@ -195,7 +195,7 @@ func TestProbeBootRunsTheDaemonsImageProbeAfterTheClusterCheck(t *testing.T) {
 	}
 	opts := built[0]
 	k := cfg.Runtime.Kubernetes
-	if opts.Namespace != k.Namespace || opts.Image != k.Image || opts.DispatchURL != cfg.DispatchURL || opts.DispatchToken != "dispatch-test-token" {
+	if opts.Namespace != k.Namespace || opts.Image != k.Image || opts.DispatchURL != cfg.DispatchURL || opts.Dispatch != (sandbox.DispatchCredential{Bearer: "dispatch-test-token"}) {
 		t.Errorf("built from %+v, want the Options boot reads from the configuration", opts)
 	}
 	if opts.Tokens != nil || opts.GitHubCredential != nil || opts.Store != nil || opts.Conns != nil || opts.StreamURL != "" {

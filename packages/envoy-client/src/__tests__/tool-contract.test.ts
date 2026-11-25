@@ -14,6 +14,7 @@ import {
   envoyToolSpecs,
   MessageMetadataSchema,
   messageMetadataShape,
+  NOT_SENT_GUIDE,
   parseEnvoyToolArguments,
   publishConfirmationText,
   STORED_DELIVERY,
@@ -155,6 +156,19 @@ describe("envoyToolSpecs", () => {
     for (const name of ["envoy_subscribe", "envoy_publish"]) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
       expect(description, name).toContain(STORED_DELIVERY);
+    }
+  });
+
+  // The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
+  // refused it before anything went out, so it is temporary and a resend stores it once. Both
+  // tools carry NOT_SENT_GUIDE, the text that says so, so an agent neither waits on it as a send
+  // that may have arrived nor gives up on the message. What the guide says is prose for the agent,
+  // which no unit test holds.
+  test("carries the guide to a message the listener did not send in both tools that send", () => {
+    expect(NOT_SENT_GUIDE.trim()).not.toBe("");
+    for (const name of ["envoy_send", "envoy_publish"]) {
+      const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
+      expect(description, name).toContain(NOT_SENT_GUIDE);
     }
   });
 
