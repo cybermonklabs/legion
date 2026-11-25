@@ -148,7 +148,7 @@ root `package.json`.
 ```sh
 bun install                                                  # every workspace
 .github/scripts/check-biome-tree.sh                          # what CI's required lint job runs: `bunx biome check .`, failing on a file too large for Biome to read
-bunx biome check <package>/                                  # one package
+bunx biome check --diagnostic-level=warn --max-diagnostics=none <package>/  # one package, every warning and error printed, as CI's Biome steps print them
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
