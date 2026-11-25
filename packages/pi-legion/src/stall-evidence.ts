@@ -615,7 +615,7 @@ export interface StallTellerDeps {
   readonly readRecord: (issue: string, signal: AbortSignal) => Promise<LegionIssue | undefined>;
   /** The Envoy listener the notice goes to, or undefined when Envoy is off for this session.
    * Built lazily and once by the caller, as the phase reminder's is. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** Writes one record to the session's transcript (`pi.appendEntry`). */
   readonly appendEntry: (customType: string, data: unknown) => void;
   readonly log: StallWatchdogLog;
@@ -660,6 +660,22 @@ interface NoticeSent {
 }
 
 const NOTICE_UNTOLD: NoticeSent = { ownerTold: false, resend: undefined };
+
+/** Who a notice goes to, with the claim it was built from: a topic is built only from a claim. */
+type NoticeTarget =
+  | Extract<StallNotice, { kind: "none" }>
+  | (Extract<StallNotice, { kind: "topic" }> & { readonly claim: ClaimCapability });
+
+/** Whether two reads of the session's claim name the same claim, as a notice reads it: its
+ *  session, tree, issue and role. */
+function sameClaim(one: ClaimCapability, other: ClaimCapability): boolean {
+  return (
+    one.sessionID === other.sessionID &&
+    one.tree === other.tree &&
+    one.issue === other.issue &&
+    one.role === other.role
+  );
+}
 
 /**
  * The detector's teller: the evidence into the session's transcript, and one notice to the owner
@@ -828,7 +844,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   /** The first publish of a notice, and what it achieved, with the resends a refusal for the send
    * rate asks for. Nothing here throws: the ladder runs either way. */
   const publishNotice = async (
-    notice: StallNotice,
+    notice: NoticeTarget,
     input: { readonly message: string; readonly payload: string; readonly key: string },
     context: Record<string, unknown>
   ): Promise<NoticeSent> => {
@@ -839,13 +855,26 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       });
       return NOTICE_UNTOLD;
     }
-    const claim = deps.claim();
-    const publish = deps.publisher();
-    if (publish === undefined || claim === undefined) {
+    // The publisher first: its first build can run Envoy's token command, and the session's claim
+    // can end or change meanwhile. The notice (its topic, and the message and payload read beside
+    // it) was built from `notice.claim`, so it goes out only while the session still holds that
+    // claim, under that claim's session.
+    const publish = await deps.publisher();
+    if (publish === undefined) {
       deps.log.warn("legion: Envoy is off for this session, so its owner was not told", {
         ...context,
         topic: notice.topic,
       });
+      return NOTICE_UNTOLD;
+    }
+    const claim = deps.claim();
+    if (claim === undefined || !sameClaim(claim, notice.claim)) {
+      deps.log.warn(
+        claim === undefined
+          ? "legion: this session's claim ended before its owner was told"
+          : "legion: this session's claim changed before its owner was told",
+        { ...context, topic: notice.topic }
+      );
       return NOTICE_UNTOLD;
     }
     const send: SendNotice = () =>
@@ -855,7 +884,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         // The listener refuses an object here: the facts travel as a JSON string.
         payload: input.payload,
         idempotencyKey: input.key,
-        sourceSessionID: claim.sessionID,
+        sourceSessionID: notice.claim.sessionID,
       });
     const where = { ...context, topic: notice.topic };
     const first = await attempt(send);
@@ -873,7 +902,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     };
   };
 
-  const noticeFor = async (): Promise<StallNotice> => {
+  const noticeFor = async (): Promise<NoticeTarget> => {
     const session = deps.session();
     const claim = deps.claim();
     // Only a phase worker's notice depends on the daemon's record, so only it pays the read.
@@ -881,8 +910,9 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       session.kind === "phase-worker" && claim !== undefined
         ? await liveArchitect(claim.issue)
         : false;
+    let notice: StallNotice;
     try {
-      return stallNoticeTopic({ session, claim, project: deps.project, liveArchitect: live });
+      notice = stallNoticeTopic({ session, claim, project: deps.project, liveArchitect: live });
     } catch (error) {
       // An issue key of a shape `roleToken` refuses is one owner not told, never a ladder that
       // stops: the evidence is written and the steps run either way.
@@ -891,6 +921,10 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         why: `this session's role topic could not be built: ${messageFor(error)}`,
       };
     }
+    if (notice.kind === "none") return notice;
+    // `stallNoticeTopic` builds a topic only from a claim.
+    if (claim === undefined) return { kind: "none", why: "this session holds no claim yet" };
+    return { ...notice, claim };
   };
 
   return {

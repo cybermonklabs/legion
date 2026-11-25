@@ -594,10 +594,11 @@ func growsLinearly(t *testing.T, what string, full int, input func(size int) fun
 // processCPUTime is this process's total CPU time, user and system, since it started
 // (cputest.Process), not wall time: it leaves out the time the process waits for a core, though
 // another process's load still slows its own CPU time through shared caches and clock frequency.
-// No test in this package calls t.Parallel (there is no t.Parallel() anywhere under
-// internal/dispatch/pmdoc), so ordinarily at most one measured call runs at a time.
-// leakedCallGuard (below) is what keeps that true even once a call has missed its own deadline
-// and gone on running in the background. Every measured call reads it through timedWindow.
+// Every test that measures a call through it is serial (it does not call t.Parallel), and go test
+// starts a run's parallel tests only once every serial test of that run has ended, so ordinarily
+// at most one measured call runs at a time and nothing else runs beside it. leakedCallGuard
+// (below) is what keeps that true even once a call has missed its own deadline and gone on running
+// in the background. Every measured call reads it through timedWindow.
 func processCPUTime() time.Duration { return cputest.Process() }
 
 // cpuTimeOf is the CPU time one run of an operation takes, for a test that holds one run to a
@@ -873,6 +874,7 @@ func TestAMissedDeadlineLeavesTheCollectorAsItWas(t *testing.T) {
 // child process so that crash, if it happens, is this test's failure rather than the binary's; the
 // child's own verdict is the missed deadline, reported on its test's goroutine.
 func TestALateCallFinishingAfterItsTestDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	child := exec.Command(os.Args[0], "-test.run", "^TestALateCallFinishingAfterItsTestDoesNotPanicHelper$", "-test.count=1", "-test.v")
 	child.Env = append(os.Environ(), lateCallHelperEnv+"=1")
 	output, _ := child.CombinedOutput() // the helper fails by design: its call misses its deadline

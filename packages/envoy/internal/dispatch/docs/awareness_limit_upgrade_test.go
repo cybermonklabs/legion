@@ -12,6 +12,7 @@ import (
 // repository's workspace builds is not reset onto the connection the hijack hands back, so a
 // filter that only wraps the connection never sees a frame.
 func TestADocumentSocketHoldsItsAwarenessBoundThroughARealUpgrade(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)

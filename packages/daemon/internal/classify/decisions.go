@@ -1265,7 +1265,7 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
-// askMergeStateFor refuses a pull request that is not open, so the state the record holds is the
+// mergeStateOwed refuses a pull request that is not open, so the state the record holds is the
 // one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
 // a read of the head again (the opened handler, then Apply's askMergeState). Projection's
 // mergeWaitView makes no state test of its own and relies on this one.
@@ -1324,9 +1324,11 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
-// request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
-// whether a fact of kind fact asks for it, for an issue whose task walks line. Each of two reasons
-// asks, and one is enough:
+// request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
+// ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
+// base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
+// kind fact asks for it, for an issue whose task walks line. Each of two reasons asks, and one is
+// enough:
 //
 //   - The fact moves the head, and a merge forward stands where the issue stands
 //     (MergeForwardStands, dispatch://INFRA-4374 R0): implementing, or a phase after it on the
@@ -1349,8 +1351,8 @@ func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
 // waiting on GitHub's answer about the head, whatever the fact - an approval that stands on a head
 // GitHub has answered nothing for, or a state it would not merge from (RoundWaitsOnMergeState),
 // or a head whose first conflicting read waits for its second (workflow's reviewRound,
-// round.waitsOnMergeState). Only the engine works out the round, so askMergeStateFor adds that
-// reason, and works the round out only for a fact the gate owes no read for.
+// round.waitsOnMergeState). Only the engine works out the round, so workflow's mergeStateOwed adds
+// that reason, and works the round out only for a fact the gate owes no read for.
 func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:

@@ -6,7 +6,7 @@
 # daemon_go_tests, the list that already stood for exactly this closure while it was aliased
 # into the test filter and gated nothing of its own. The tests
 # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
-# below: with them goes the Bun install, which no other test of this module needs, and with
+# plugin-pack.py: with them goes the Bun install, which no other test of this module needs, and with
 # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
 # that stages each plugin's partition of it, which no other test of this module reads.
 # The plain step leaves two tests out as well, internal/supervise's table pins
@@ -44,8 +44,8 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     # its script is pinned too. What it compiles is every test file of the five packages,
     # the skipped tests' included: -skip leaves a test out of the run, never out of the
     # build, so the closure here is the step's whole closure and only those tests' own reads
-    # (the plugin-pack gate below) leave this gate. The step is in the file's second job,
-    # daemon-go-race, which the citation names.
+    # (the plugin-pack gate, plugin-pack.py beside this file) leave this gate. The step is in
+    # the file's second job, daemon-go-race, which the citation names.
     pinned_step("daemon-go-race", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
         (DAEMON, DAEMON_RACE_PKGS, "go test -race over the five concurrent packages, the plugin-pack tests "
                                    "skipped by name", {"race": True}),

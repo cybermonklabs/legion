@@ -298,7 +298,18 @@ against the base tree's filters: each filter it alters selects every path in tha
 A branch made before the gates and the `//ci:` lines moved keeps the old `RULES` and `GATES` in
 `ci_job_reads.py`, and `.github/ci-filters.yaml`, when it merges main; both are refused by name.
 `.github/scripts/ci-reads-convert`, run after that merge stops, moves what the branch added into the
-gate files and the `//ci:` lines and deletes the old file.
+gate files and the `//ci:` lines and deletes the old file. It stages every file it writes. A file it
+leaves in conflict is unmerged in the index, so a plain `git commit` after you merge it by hand
+refuses until you `git add` it. The stages of such a conflict hold the texts the converter merged,
+not the blobs of the merge's three commits: for a gate file, the gate the base's table would have
+written, the branch's and main's; for a test file whose old `//ci:` lines are to be deleted by hand,
+the file as the converter wrote it (stage 2) and main's (stage 3), with no stage 1. A push workflow
+git left in conflict is merged again with its push paths out of the merge and stays unmerged until
+the converter has written those paths; a copy you already resolved by hand is left as it is. A
+`CONFLICT filter` line or a `STOPPED` line makes no file conflict of its own, so git may refuse
+nothing for it (a push workflow still waiting for its paths stays unmerged after a `STOPPED` line):
+settle each, run the converter again with `--filters` until it exits 0, then commit. `--help` prints
+all of this.
 
 ## check-ci-filters.sh holds the table to ci.yaml
 
@@ -322,9 +333,14 @@ script runs. A step off its pin is refused, naming the line that differs.
 
 It fails too when a pinned text or an exact entry's step is gone, when a job or step is gated on a
 filter no gate declares, when a read a gate or a `//ci:` line declares matches no file, and when a
-`//ci:` line cannot be read. It runs go with `GOPROXY=off` over an empty module cache. Run it
-locally from anywhere: `.github/scripts/check-ci-filters.sh` (its header gives the recipe for a
-machine whose go is a bootstrap).
+`//ci:` line cannot be read. It runs the go list behind each closure with `GOPROXY=off` over an
+empty module cache. The tag sets of the darwin vet steps come from `go_build_tags.py`, whose go
+list runs under the machine's own proxy and module cache and can write a checksum a committed
+`go.work.sum` lacks. A run that changes a file of the tree fails naming each, except the files its
+mode writes (each `PUSH_WORKFLOWS` workflow for `write`, the filters and their `.inputs` file for
+`generate`): commit the checksum lines it wrote. Run it locally from anywhere:
+`.github/scripts/check-ci-filters.sh` (its header gives the recipe for a machine whose go is a
+bootstrap).
 
 ## Caches: no job of the router writes one
 

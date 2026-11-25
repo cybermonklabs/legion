@@ -126,7 +126,7 @@ func parkedRelaunchCauses() []parkedRelaunchCause {
 func workingUnderAParkedRelaunch(t *testing.T, h *harness, observation runtime.Observation) claim.Token {
 	t.Helper()
 	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if park.Load() {
 			return now.Add(time.Hour)
 		}
@@ -244,7 +244,7 @@ func TestAFreshSessionRefusedWhileTheRelaunchWaitsItsTurnSaysTheClaimIsUnsettled
 func workingUnderAParkedRefresh(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	var park atomic.Bool
-	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+	h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 		if park.Load() {
 			return now.Add(time.Hour)
 		}
@@ -1164,7 +1164,7 @@ func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *
 		t.Run("the read: "+door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
 			var park atomic.Bool
-			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time {
+			h.supervisor.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time {
 				if park.Load() {
 					return now.Add(time.Hour)
 				}

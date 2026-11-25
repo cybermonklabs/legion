@@ -153,8 +153,8 @@ func sleep(ctx context.Context, d time.Duration) error {
 // toHorizon runs passes until one leaves no id an observation saw above the horizon it read: a
 // pass that ends with the horizon held below such an id (Horizon.Gap), or with the horizon proven
 // past the safe it read by another reader of it, is followed by another 1 s later, doubling to
-// 8 s. The horizon waits on every transaction id of the instance, and a transaction that writes no
-// event ends with no notification, so nothing else says when to read it again.
+// 8 s. The horizon waits on every event write of this database, and one that rolls back ends with
+// no notification, so nothing else says when to read it again.
 func (f *filler) toHorizon(ctx context.Context) error {
 	wait := rereadFirst
 	for {

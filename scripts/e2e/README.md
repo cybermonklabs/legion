@@ -4681,7 +4681,7 @@ one on an open pull request GitHub answers `blocked` for, which is the issue the
 one on an open pull request whose reviewer requests changes in step 5;
 and one whose pull request the record holds closed, its reviewer's approval standing at the head it was closed at.
 Facts enter only as production's do, as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream:
-CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `askMergeStateFor`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
+CI's settlements, the reviews, the branch push, the synchronize, and the pushes onto the base that ask the daemon to read every open pull request recorded there again (`basePush`, `mergeStateOwed`), which is how a step asks for a read of GitHub without changing anything the round is judged by.
 Every assertion is a read of `GET /legion/v1/state`:
 of the `mergeWait` object it decodes to for what the wait says, and of the body's own keys for what the daemon leaves off, since a key written empty and a key left off decode to one Go value and only one of them is what the daemon writes.
 
@@ -6073,7 +6073,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
-Eleven call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
+Twelve call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
 Seven are proofs of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
@@ -6087,6 +6087,7 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 The ninth is [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), whose `prerequisites` check reads `LEGION_TEST_PG_DSN` for each proof that makes that run, which is every entry script that sources it.
 The tenth is [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh)'s negative control, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds the base commit's tree, through the copy [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources.
 The eleventh is [`approved-version-news.sh`](#approved-version-newssh)'s `arguments` check, which reads `LEGION_TEST_PG_DSN` with `require_loopback_dsn` before it builds or extracts anything, through that same copy.
+The twelfth is the skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, which reads a batch's `SKILL_SCENARIOS_POSTGRES_URL` with `require_loopback_dsn` in `services_up` and gives each run's Dispatch the string `run_database_url` rebuilds, in `own_dispatch`, through the copy [`lib/rig.sh`](#librigsh) sources.
 [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh) read their DSN with `run_database_url` alone, in the step that names the run's own database.
 Every proof that writes a server its caller's DSN names reads that DSN with this guard before it starts anything.
 That is the first of two frames for the whole-daemon proofs: this guard reads the caller's DSN with libpq in the shell, and the test binary each of them runs reads every DSN it builds from that one back with pgx inside itself (`DatabaseURL`, `packages/daemon/internal/testpg/testdb/testdb.go`).
@@ -6098,6 +6099,7 @@ psql reads `PGHOSTADDR`, and `PGSERVICE` with `PGSERVICEFILE` name an entry of `
 Measured with an exported entry that sets `hostaddr=127.0.0.2`: psql connected to 127.0.0.2, and the helper printed `127.0.0.1` for the same DSN.
 Each of the nine proofs those eight call sites serve drops the three before its first connection: six in the sweep of the environment it does not inherit, the two two-builds proofs through [`lib/two-builds.sh`](#libtwo-buildssh), and `plan-pointer-drive.sh` in an `unset` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) unsets the three in `prerequisites`, before its own call, and [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh) and [`approved-version-news.sh`](#approved-version-newssh) unset them before their own calls.
+The skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`, drops the three in the sweep of the environment it does not inherit, before its own calls in `services_up` and `own_dispatch`.
 
 `loopback-dsn.py NAME WHAT` reads the DSN from the environment variable NAME, never from the command line, so no process list holds its password.
 WHAT is what the run does on that server, in a few words, and a refusal about the host ends with it.
@@ -6139,7 +6141,8 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
 A third helper, `empty_public_schema`, empties the database a run was given, so that a server migrates it from nothing.
-[`lib/rig.sh`](#librigsh) sources this file, which is how seven of the eleven scripts that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/rig.sh`](#librigsh) sources this file, which is how eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts have it: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth (pi-legion's skill-scenario rig, `packages/pi-legion/scripts/skill-scenarios/rig.sh`).
+The sixth, [`envoy-session-delivery.sh`](#envoy-session-deliverysh), sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 The ninth, [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for each proof that makes its run.
 The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 The eleventh, [`approved-version-news.sh`](#approved-version-newssh), has it through that file too, and calls `require_loopback_dsn` in its own `arguments` check as well, before it builds or extracts anything.
@@ -6873,8 +6876,8 @@ A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` 
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Seven of the eleven scripts that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
-`envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+Eight of the twelve call sites [`lib/loopback-dsn.py`](#libloopback-dsnpy) counts source it too, for [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s two helpers, which this file sources for them: six of the first seven, the eighth ([`lib/two-builds.sh`](#libtwo-buildssh)) and the twelfth, pi-legion's skill-scenario rig.
+`envoy-session-delivery.sh` is the sixth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) is the ninth: it sources `lib/loopback-dsn.sh` on its own, and sources no rig.
 `busy-relaunch-delivery.sh` is the tenth and `approved-version-news.sh` the eleventh: each has those helpers through `lib/live-daemon-proof.sh`, which it sources, and sources no rig.
 
