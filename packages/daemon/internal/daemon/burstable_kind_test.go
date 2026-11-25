@@ -130,7 +130,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	if err != nil {
 		return nil, corev1.ResourceRequirements{}, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
+	opts, err := sandboxOptions(cfg, k, project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), log)
 	if err != nil {
 		return nil, corev1.ResourceRequirements{}, fmt.Errorf("sandboxOptions: %w", err)
 	}

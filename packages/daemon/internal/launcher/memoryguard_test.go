@@ -1462,11 +1462,7 @@ func serveControllerGuardOf(t *testing.T, cfg Config, m *manager, pids *pidGuard
 	done := serveMemoryGuard(ctx, cfg, []*manager{m}, pids)
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the memory guard did not return after its context ended")
-		}
+		testwait.Receive(t, "the memory guard's return after its context ended", done)
 	})
 }
 
@@ -1545,13 +1541,8 @@ func runControllerLauncherOf(t *testing.T, cfg Config) *rig {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case err := <-g.result:
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("the controller's launcher returned %v, want its context's end", err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Error("the controller's launcher did not return after its context ended")
+		if err := testwait.Receive(t, "the controller's launcher returning after its context ended", g.result); !errors.Is(err, context.Canceled) {
+			t.Errorf("the controller's launcher returned %v, want its context's end", err)
 		}
 	})
 	return g
