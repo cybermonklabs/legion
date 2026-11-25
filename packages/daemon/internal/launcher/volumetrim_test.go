@@ -6152,11 +6152,10 @@ func TestASweepThatFreedNothingSaysSoAndOneTheVolumeGrewAByteUnderSaysThat(t *te
 	}
 }
 
-// A report the connection refuses is held and sent on the next attempt, as the launcher's
-// bundleRestore holds its own confirmation: a report the daemon never got is a volume nobody
-// was told about. An answer with no settings discards it, because the daemon that sent that
-// answer has no case for a report; settings the trimmer refuses keep it held and try it
-// (awaitSettings).
+// A report the connection refuses is held and sent on the next attempt: a report the daemon never
+// got is a volume nobody was told about. An answer with no settings discards it, because the
+// daemon that sent that answer has no case for a report; settings the trimmer refuses keep it held
+// and try it (awaitSettings).
 func TestTheTrimmerHoldsAReportItsSendRefused(t *testing.T) {
 	f := newTrimFixture(t, 25) // a hundred entries, ten points: the volume ends below the high mark
 	f.useVolume(f.modelled(90))

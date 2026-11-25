@@ -1,5 +1,5 @@
 ---
-title: "Proving an in-cluster daemon feature on a throwaway kind instance of your own: the standing order's correction, the branch image by digest, a short resync, one relayed root event, an inert controller, and a teardown that leaves nothing"
+title: "Proving an in-cluster daemon feature on a throwaway kind instance of your own: the 2026-09-13 order's correction, the branch image by digest, a short resync, one relayed root event, an inert controller, and a teardown that leaves nothing"
 category: testing
 tags:
   - kind
@@ -40,11 +40,13 @@ applies_when:
 
 ## The order and its correction
 
-Sami's standing order of 2026-09-13 (19:00Z, via the operator) withdrew every pre-merge rig:
+After Sami had the smoke rig shut down on 2026-09-13 at 19:00Z (his words are relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), every pre-merge rig
+was withdrawn:
 no smoke rig, no scratch daemon, no throwaway NATS or tmux server, no throwaway OMP profile —
 [pre-merge-surface-withdrawn-by-standing-order](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md)
 records how a pull request carries its proof when the surface is withdrawn. On 2026-09-14 at
-19:41Z Sami corrected it (LEGION-25 spec v21): a worker **may** build a throwaway instance of
+19:41Z the order was corrected (LEGION-25 spec v21): a worker **may** build a throwaway instance of
 its own — its own cluster, containers, ports, state directory, tmux server, and OMP profile —
 and **must** tear it down; what stays forbidden is the shared dev-box daemon and its state, the
 operator's `~/.omp/profiles/legion` and `~/.config/legion/*`, another issue's rig, and any pane

@@ -141,7 +141,7 @@ func leakCheckDeadline(start time.Time) (time.Time, bool) {
 // tests themselves passed. A service never shut down is given leakWaitBudget to be collected: one
 // still alive then means a test built a service and never shut it down, so that service, its rooms
 // and their documents stayed in memory for the rest of the binary's life, and the lines after the
-// count name the tests to fix, each by a t.Cleanup that shuts the service it built down. A service
+// count name the tests to fix, each by a testcleanup.Add that shuts the service it built down. A service
 // that was shut down is waited for until it is collected, or until the deadline (leakCheckDeadline,
 // never sooner than leakWaitBudget): one still reachable then is held by something after its
 // shutdown. Each shut-down service still reachable at leakWaitBudget is named once then, with how

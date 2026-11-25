@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -55,8 +56,9 @@ const newestMergeFirst = `merged_at desc nulls last, number desc`
 
 // readMerged runs query, which selects mergedColumns, and reads its rows; what names them in an
 // error.
-func readMerged(ctx context.Context, pool *store.Pool, what, query string, args ...any) ([]MergedPullRequest, error) {
-	rows, err := pool.Query(ctx, query, args...)
+func readMerged(ctx context.Context, q refs.Queryer, answers HeadAnswers, what string, statement headsStatement, parameters ...any) ([]MergedPullRequest, error) {
+	query, args := statement.query(answers, parameters...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", what, err)
 	}
@@ -80,20 +82,22 @@ func readMerged(ctx context.Context, pool *store.Pool, what, query string, args 
 // (newestMergeFirst): the merges of the issue's work in the repository it resolves to, each on
 // the branch it merged into. The rows are read through pull_request_heads_issue_head's leading
 // column.
-func (a *Attributor) MergeOfIssue(ctx context.Context, pool *store.Pool, issueKey string) ([]MergedPullRequest, error) {
-	return readMerged(ctx, pool, "the merged pull requests of "+issueKey, `
-		select `+mergedColumns+` from pull_request_heads
-		where issue_key = $1 and state = 'merged'
-		order by `+newestMergeFirst, issueKey)
+func (a *Attributor) MergeOfIssue(ctx context.Context, q refs.Queryer, issueKey string, answers HeadAnswers) ([]MergedPullRequest, error) {
+	return readMerged(ctx, q, answers, "the merged pull requests of "+issueKey, mergeOfIssueRead, issueKey)
 }
+
+var mergeOfIssueRead = newHeadsStatement("", `
+	select `+mergedColumns+` from pull_request_heads
+	where issue_key = $1 and state = 'merged'
+	order by `+newestMergeFirst, 1, "")
 
 // MergeIn is MergeOfIssue for repoFull, a repository issueKey does not resolve to: every merged
 // pull request the issue's external links name there (linkedPullRequestTerms), newest merge
 // first. A repository the issue resolves to answers none. A pull request two links name is listed
 // once.
-func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) ([]MergedPullRequest, error) {
-	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
-		a.mergeInQuery, issueKey, repoFull)
+func (a *Attributor) MergeIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) ([]MergedPullRequest, error) {
+	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests %s links in %s", issueKey, repoFull),
+		a.mergeInRead, issueKey, repoFull)
 }
 
 // LandingOf is every merged pull request of repo whose head was branch, newest merge first: the
@@ -103,12 +107,14 @@ func (a *Attributor) MergeIn(ctx context.Context, pool *store.Pool, issueKey, re
 // compared without case, as HeadStoredAt compares it, since a row an envelope wrote carries
 // GitHub's spelling; the branch is compared as it is, since a git branch name is case-sensitive.
 // The read is one lookup on pull_request_heads_merged_head_ref (migration 20261124124112).
-func LandingOf(ctx context.Context, pool *store.Pool, repo, branch string) ([]MergedPullRequest, error) {
-	return readMerged(ctx, pool, fmt.Sprintf("the merged pull requests of %s from %s", repo, branch), `
-		select `+mergedColumns+` from pull_request_heads
-		where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
-		order by `+newestMergeFirst, repo, branch)
+func LandingOf(ctx context.Context, q refs.Queryer, repo, branch string, answers HeadAnswers) ([]MergedPullRequest, error) {
+	return readMerged(ctx, q, answers, fmt.Sprintf("the merged pull requests of %s from %s", repo, branch), landingRead, repo, branch)
 }
+
+var landingRead = newHeadsStatement("", `
+	select `+mergedColumns+` from pull_request_heads
+	where lower(repo) = lower($1) and head_ref = $2 and state = 'merged'
+	order by `+newestMergeFirst, 2, "")
 
 // MergedPullRequestOf is pull request number of repo as pull_request_heads stores it where it
 // merged, and false where no merged row of it is stored: the read a results read makes of a row
@@ -116,15 +122,17 @@ func LandingOf(ctx context.Context, pool *store.Pool, repo, branch string) ([]Me
 // refresh failed, and nothing where GitHub answered 404 and the row was stamped), to learn the
 // merge commit and the time of merge the refresh stored (api/results_merge.go). repo is compared
 // without case, as LandingOf compares it.
-func MergedPullRequestOf(ctx context.Context, pool *store.Pool, repo string, number int) (MergedPullRequest, bool, error) {
-	merged, err := readMerged(ctx, pool, fmt.Sprintf("the merged pull request %s#%d", repo, number), `
-		select `+mergedColumns+` from pull_request_heads
-		where lower(repo) = lower($1) and number = $2 and state = 'merged'`, repo, number)
+func MergedPullRequestOf(ctx context.Context, q refs.Queryer, repo string, number int, answers HeadAnswers) (MergedPullRequest, bool, error) {
+	merged, err := readMerged(ctx, q, answers, fmt.Sprintf("the merged pull request %s#%d", repo, number), mergedPullRequestRead, repo, number)
 	if err != nil || len(merged) == 0 {
 		return MergedPullRequest{}, false, err
 	}
 	return merged[0], true, nil
 }
+
+var mergedPullRequestRead = newHeadsStatement("", `
+	select `+mergedColumns+` from pull_request_heads
+	where lower(repo) = lower($1) and number = $2 and state = 'merged'`, 2, "")
 
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.
 // HoldUnknown is that it cannot say now: the read failed, or the App cannot read the repository.
@@ -164,7 +172,7 @@ func (a HoldAnswer) String() string {
 // (readBranchCommit), since one repository reaches here under GitHub's spelling and under the
 // lowercased one an issue's repository is stored under.
 func (c *Branches) CommitHolds(
-	ctx context.Context, pool *store.Pool, client *githubapp.Client, repoFull, commit, merge string, now time.Time,
+	ctx context.Context, pool *store.Pool, client *githubapp.Client, repoFull, commit, merge string, now time.Time, readOnly bool,
 ) HoldAnswer {
 	var holds bool
 	err := pool.QueryRow(ctx, `
@@ -185,6 +193,9 @@ func (c *Branches) CommitHolds(
 			slog.Warn("dispatch: ask whether a commit holds a merge", "repo", repoFull, "commit", commit, "merge", merge, "error", err)
 		}
 		return HoldUnknown
+	}
+	if readOnly {
+		return holdAnswerOf(holds)
 	}
 	if _, err := pool.Exec(ctx, `
 		insert into commit_holds (repo, commit_sha, merge_sha, holds, checked_at)

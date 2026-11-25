@@ -170,7 +170,7 @@ var markVersionedDocuments = `
 // log's safe horizon (events.Horizon.Safe): event ids are not commit order, so an uncapped
 // `id > cursor` read could pass an event still committing, and the cursor never moves past safe.
 // A Horizon proves an observation only by a later one, so an event is read by the second tick
-// after it commits, or later while a transaction on the instance stays open across those ticks.
+// after it commits, or later while an event write of this database stays open across those ticks.
 //
 // The tick reads everything first and writes after, in one batch back to back before its commit
 // (queueWrites), so its transaction holds a transaction id for those statements alone: the safe

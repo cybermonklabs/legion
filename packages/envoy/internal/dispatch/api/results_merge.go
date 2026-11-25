@@ -56,6 +56,8 @@ type mergeAnswer struct {
 // the read refreshes no row twice, whichever reader asked first.
 type mergeTimeFills struct {
 	refreshed map[mergeRow]refreshedMerge
+	readOnly bool
+	answers *delivery.HeadAnswers
 }
 
 // mergeRow is one pull request row's key in mergeTimeFills.
@@ -113,11 +115,19 @@ func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo s
 	if learned, refreshed := fills.refreshed[key]; refreshed {
 		return learned
 	}
-	if err := s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, repo, number, time.Now()); err != nil {
-		slog.Warn("dispatch: refresh a merged pull request a results read orders", "repo", repo, "number", number, "error", err)
+	var refreshErr error
+	if fills.readOnly {
+		pulls, err := s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow())
+		fills.answers.Add(pulls)
+		refreshErr = err
+	} else {
+		refreshErr = s.deps.Attributor.RefreshPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, repo, number, s.resultsNow())
+	}
+	if refreshErr != nil {
+		slog.Warn("dispatch: refresh a merged pull request a results read orders", "repo", repo, "number", number, "error", refreshErr)
 	}
 	var learned refreshedMerge
-	pull, found, err := delivery.MergedPullRequestOf(ctx, s.deps.Store.Pool, s.deps.Renames.Canonical(repo), number)
+	pull, found, err := delivery.MergedPullRequestOf(ctx, s.deps.Store.Pool, s.deps.Renames.Canonical(repo), number, *fills.answers)
 	if err != nil {
 		slog.Warn("dispatch: read a refreshed merged pull request", "repo", repo, "number", number, "error", err)
 	} else {
@@ -194,9 +204,9 @@ func (c *comparisonReader) mergesIn(ctx context.Context, issueKey, repo string, 
 	var pulls []delivery.MergedPullRequest
 	var err error
 	if linked {
-		pulls, err = c.server.deps.Attributor.MergeIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+		pulls, err = c.server.deps.Attributor.MergeIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
 	} else {
-		pulls, err = c.server.deps.Attributor.MergeOfIssue(ctx, c.server.deps.Store.Pool, issueKey)
+		pulls, err = c.server.deps.Attributor.MergeOfIssue(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	}
 	set := mergeSet{read: err == nil}
 	if err != nil {
@@ -261,7 +271,7 @@ func (c *comparisonReader) readMergeOn(ctx context.Context, issueKey, repo, bran
 // where the landings cannot be read or ordered, or where whether a newer one's final head holds
 // merge cannot be read, since that one may be the landing.
 func (c *comparisonReader) landingOf(ctx context.Context, repo, branch, merge string) (delivery.MergedPullRequest, mergeState) {
-	pulls, err := delivery.LandingOf(ctx, c.server.deps.Store.Pool, repo, branch)
+	pulls, err := delivery.LandingOf(ctx, c.server.deps.Store.Pool, repo, branch, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the landing of a branch", "repo", repo, "branch", branch, "error", err)
 		return delivery.MergedPullRequest{}, mergeUnknown
@@ -302,7 +312,7 @@ func (c *comparisonReader) holds(ctx context.Context, repo, commit, merge string
 	if answer, memoized := c.holdAnswers[key]; memoized {
 		return answer
 	}
-	answer := c.server.branches.CommitHolds(ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, commit, merge, time.Now())
+	answer := c.server.branches.CommitHolds(ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, commit, merge, c.server.resultsNow(), c.readOnly)
 	c.holdAnswers[key] = answer
 	return answer
 }

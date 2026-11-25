@@ -22,10 +22,10 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1440,4080, legion-role-claim.test.ts:21, src/daemon-api-version.test.ts:14"),
     (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:848"),
     (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:969 (PLUGIN_REPORT :854)"),
-    ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts:79 names packages/dispatch/e2e/run-server.sh in the checkout it builds, and seed.ts:111, which that test names at :108, imports packages/dispatch/e2e/api.ts"),
+    ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts:83 names packages/dispatch/e2e/run-server.sh in the checkout it builds, and seed.ts:111, which that test names at :112, imports packages/dispatch/e2e/api.ts"),
     ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20"),
     ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:8-19 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-    ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:954,1170; prepack stages skills"),
+    ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:44 stages them and :204-208 reads the roots at :194-202; scripts/skill-scenarios/rig.test.ts:1297,1540; prepack stages skills"),
     ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34"),
     ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100"),
     (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:204-208 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of the list at :197"),
@@ -34,8 +34,11 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
     ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
     ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
-    ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
-    (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
+    ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:19 imports scripts/e2e/lib/script-functions and :700 sources scripts/e2e/lib/loopback-dsn.sh for the services_up row; rig.sh:333 sources scripts/e2e/lib/rig.sh"),
+    ("packages/envoy/scripts/lib/pg-url.sh", "packages/pi-legion/scripts/skill-scenarios/rig.sh:337 sources it for pg_sql and safe_url; "
+                                             "rig.test.ts:653 sources it for the safe_url row, :699 for the services_up row and :1541 copies it beside rig.sh, and "
+                                             "rig-isolation.test.ts:77-79 copies it into its scratch checkout beside rig.sh"),
+    (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1538-1545 copies .omp-pin"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")

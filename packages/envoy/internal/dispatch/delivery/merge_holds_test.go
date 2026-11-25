@@ -155,7 +155,7 @@ func TestTheNewestMergeIsTheLastToMergeNotTheLastEdited(t *testing.T) {
 	first, second, edited := "2026-03-01T10:00:00Z", "2026-03-02T10:00:00Z", "2026-03-03T10:00:00Z"
 	check := func(t *testing.T, ctx context.Context, pool *store.Pool, issue string) {
 		t.Helper()
-		merged, err := unrenamed().MergeOfIssue(ctx, pool, issue)
+		merged, err := unrenamed().MergeOfIssue(ctx, pool, issue, HeadAnswers{})
 		if err != nil {
 			t.Fatalf("MergeOfIssue(%s): %v", issue, err)
 		}
@@ -335,7 +335,7 @@ func TestACommitHoldsAMergeIsReadOnceAndKeptForGood(t *testing.T) {
 		commit string
 		want   HoldAnswer
 	}{{after, Holds}, {before, DoesNotHold}, {unread, HoldUnknown}} {
-		if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", row.commit, merge, now); got != row.want {
+		if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", row.commit, merge, now, false); got != row.want {
 			t.Fatalf("CommitHolds(%s, %s) = %v, want %v", row.commit, merge, got, row.want)
 		}
 	}
@@ -363,13 +363,13 @@ func TestACommitHoldsAMergeIsReadOnceAndKeptForGood(t *testing.T) {
 	}
 
 	later := now.Add(24 * time.Hour)
-	if got := branches.CommitHolds(ctx, pool, client, "Acme/Widgets", after, merge, later); got != Holds {
+	if got := branches.CommitHolds(ctx, pool, client, "Acme/Widgets", after, merge, later, false); got != Holds {
 		t.Fatalf("CommitHolds(%s) a day later = %v, want Holds", after, got)
 	}
-	if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", before, merge, later); got != DoesNotHold {
+	if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", before, merge, later, false); got != DoesNotHold {
 		t.Fatalf("CommitHolds(%s) a day later = %v, want DoesNotHold", before, got)
 	}
-	if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", unread, merge, later); got != HoldUnknown {
+	if got := branches.CommitHolds(ctx, pool, client, "acme/widgets", unread, merge, later, false); got != HoldUnknown {
 		t.Fatalf("CommitHolds(%s) again = %v, want HoldUnknown", unread, got)
 	}
 	for commit, want := range map[string]int32{after: 1, before: 1, unread: 2} {
@@ -409,7 +409,7 @@ func TestTheLandingOfABranchIsItsNewestMergedPullRequestWhoseFinalHeadHoldsTheMe
 	write("acme/widgets", 9, headOfFive, "legion/ACME-9", "merged", mergeOfFive, "2026-03-05T10:00:00Z", "2026-03-05T10:00:00Z")
 	write("acme/tools", 10, headOfFive, branch, "merged", mergeOfFive, "2026-03-05T10:00:00Z", "2026-03-05T10:00:00Z")
 
-	landed, err := LandingOf(ctx, pool, "acme/widgets", branch)
+	landed, err := LandingOf(ctx, pool, "acme/widgets", branch, HeadAnswers{})
 	if err != nil {
 		t.Fatalf("LandingOf(%s): %v", branch, err)
 	}
@@ -452,7 +452,7 @@ func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	write(10, headOfSix, "release", mergeOfSix, "2026-03-01T10:00:00Z", "2026-03-03T10:00:00Z")
 	write(9, headOfFive, "main", mergeOfFive, "2026-03-02T10:00:00Z", "2026-03-02T10:00:00Z")
 
-	linked, err := unrenamed().MergeIn(ctx, pool, issue, "acme/tools")
+	linked, err := unrenamed().MergeIn(ctx, pool, issue, "acme/tools", HeadAnswers{})
 	if err != nil {
 		t.Fatalf("MergeIn(%s, acme/tools): %v", issue, err)
 	}
@@ -462,7 +462,7 @@ func TestTheLinkedMergeIsTheNewestLinkedPullRequestsMerge(t *testing.T) {
 	if linked[0].MergeCommitSHA != mergeOfFive || linked[0].BaseRef != "main" || linked[0].HeadSHA != headOfFive {
 		t.Fatalf("MergeIn(%s, acme/tools)[0] = %+v, want #9's merge commit, base and final head", issue, linked[0])
 	}
-	own, err := unrenamed().MergeIn(ctx, pool, issue, "acme/widgets")
+	own, err := unrenamed().MergeIn(ctx, pool, issue, "acme/widgets", HeadAnswers{})
 	if err != nil || len(own) != 0 {
 		t.Fatalf("MergeIn(%s, acme/widgets) = %v, %v; want none: it is the issue's own repository", issue, numbersOf(own), err)
 	}
@@ -488,7 +488,7 @@ func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
 			t.Fatalf("store %s#%d: %v", row.Repo, row.Number, err)
 		}
 	}
-	pull, found, err := MergedPullRequestOf(ctx, pool, "Acme/Widgets", 5)
+	pull, found, err := MergedPullRequestOf(ctx, pool, "Acme/Widgets", 5, HeadAnswers{})
 	if err != nil || !found {
 		t.Fatalf("MergedPullRequestOf(Acme/Widgets, 5) = %+v, %v, %v; want acme/widgets#5", pull, found, err)
 	}
@@ -500,7 +500,7 @@ func TestAMergedPullRequestIsReadByItsRepositoryAndNumber(t *testing.T) {
 		repo   string
 		number int
 	}{{"acme/widgets", 6}, {"acme/widgets", 7}, {"acme/tools", 5}} {
-		if pull, found, err := MergedPullRequestOf(ctx, pool, none.repo, none.number); err != nil || found {
+		if pull, found, err := MergedPullRequestOf(ctx, pool, none.repo, none.number, HeadAnswers{}); err != nil || found {
 			t.Fatalf("MergedPullRequestOf(%s, %d) = %+v, %v, %v; want no merged pull request", none.repo, none.number, pull, found, err)
 		}
 	}

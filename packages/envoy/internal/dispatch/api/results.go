@@ -586,15 +586,16 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	// The read's memo of merge times is made before anything orders a merged pull request, so the
-	// CI read of each check and the comparison after it learn each merge time once
-	// (fillMergeTimes).
-	fills := &mergeTimeFills{}
-	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks, fills)
+	// Learn heads before deriving CI, so both reads use the same stored or request-local heads.
+	// The reader shares one merge-time fill across the comparison and every CI head.
+	reader := newComparisonReader(r.Context(), s, at)
+	reader.learn(r.Context(), checks)
+	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	reader.headCI = headCI
 	// Each result's observed text is registered for its tree once no check's results are replaced
 	// any more (deriveCIResults), since what is registered is a pointer into the row.
 	for index := range checks {
@@ -602,12 +603,6 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.headCI, reader.fills = headCI, fills
-	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}

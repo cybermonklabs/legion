@@ -135,7 +135,7 @@ type ciRun struct {
 // Verification document holds the checks and whose pull request heads they are read at. Only a
 // failed read of Dispatch's own database is an error; whatever GitHub answers is a case of the
 // answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock, fills *mergeTimeFills) (map[string]map[ciHeadKey]*model.CheckCI, error) {
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) (map[string]map[ciHeadKey]*model.CheckCI, error) {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -154,7 +154,7 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return nil, err
 	}
-	heads, ordered, err := s.ciHeadsOf(ctx, issueKey, fills)
+	heads, ordered, err := s.ciHeadsOf(ctx, issueKey, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -243,8 +243,8 @@ const (
 // read's fill (fillMergeTimes, over fills) says they can be: where it says they cannot, ordered is
 // false and no head is read, since the head of the highest number, or of a merge with no time
 // ordered last, may be an older merge's than the newest.
-func (s *server) ciHeadsOf(ctx context.Context, issueKey string, fills *mergeTimeFills) ([]delivery.NewestHead, bool, error) {
-	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *comparisonReader) ([]delivery.NewestHead, bool, error) {
+	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil {
 		return nil, false, err
 	}
@@ -265,10 +265,10 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, fills *mergeTim
 	for index, head := range attributed {
 		merged[index] = head.MergeTime()
 	}
-	if !s.fillMergeTimes(ctx, fills, merged) {
+	if !s.fillMergeTimes(ctx, reader.fills, merged) {
 		return nil, false, nil
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, reader.answers)
 	if err != nil || !found {
 		return nil, true, err
 	}

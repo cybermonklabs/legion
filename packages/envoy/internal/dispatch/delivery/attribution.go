@@ -428,8 +428,9 @@ type Attributor struct {
 	batchQuery      string
 	linkedQuery     string
 	headQuery       string
-	headsQuery      string
-	mergeInQuery    string
+	headsRead       headsStatement
+	mergedInRead    headsStatement
+	mergeInRead headsStatement
 }
 
 // NewAttributor is the Attributor of renames.
@@ -440,8 +441,9 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		batchQuery:      attributionBatchQuery(renames),
 		linkedQuery:     linkedPullRequestsQuery(renames),
 		headQuery:       headAttributedQuery(renames),
-		headsQuery:      headsAttributedQuery(renames),
-		mergeInQuery:    mergeInQuery(renames),
+		headsRead:       headsAttributedRead(renames),
+		mergedInRead:    baseBranchMergedInRead(renames),
+		mergeInRead: mergeInRead(renames),
 	}
 }
 

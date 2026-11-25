@@ -31,7 +31,7 @@ import (
 // stands at it, and only a result at no head of the list needs the repository read at all
 // (commitStands).
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
-	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
+	heads, err := c.server.deps.Attributor.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
