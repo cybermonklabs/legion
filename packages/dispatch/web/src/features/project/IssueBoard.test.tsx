@@ -119,6 +119,14 @@ function renderBoard(
   };
 }
 
+/** Puts the focus on `card`'s own title link and returns it. */
+function focusTitleLink(card: Element, key: string): HTMLElement {
+  const link = card.querySelector<HTMLElement>("[data-issue-link]");
+  if (link === null) throw new Error(`${key}'s card draws no title link`);
+  act(() => link.focus());
+  return link;
+}
+
 test("board collapses Icebox and Done into droppable rails by default", async () => {
   const { cleanup } = renderBoard();
   try {
@@ -667,9 +675,7 @@ test("a card a refetch takes away from under the focus hands it to no other card
   try {
     const board = await screen.findByRole("region", { name: "Project board" });
     const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    const title = bravo.querySelector<HTMLElement>("[data-issue-link]");
-    if (title === null) throw new Error("CORE-2's card draws no title link");
-    act(() => title.focus());
+    focusTitleLink(bravo, "CORE-2");
 
     listIssues.mockResolvedValue(keyboardIssues.filter((entry) => entry.key !== "CORE-2"));
     await act(async () => {
@@ -1725,10 +1731,7 @@ for (const reader of [
         expect(bravo).toHaveFocus();
       }
       if (reader === "put the focus on the card's own link") {
-        const link = pressed.querySelector<HTMLElement>("[data-issue-link]");
-        if (link === null) throw new Error("CORE-1's card draws no title link");
-        act(() => link.focus());
-        expect(link).toHaveFocus();
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
       }
       if (reader === "put the focus on the body") {
         act(() => pressed.blur());
@@ -1796,10 +1799,7 @@ for (const opener of ["the pressed card", "the pressed card's own link", "the bo
         expect(document.body).toHaveFocus();
       }
       if (opener === "the pressed card's own link") {
-        const link = pressed.querySelector<HTMLElement>("[data-issue-link]");
-        if (link === null) throw new Error("CORE-1's card draws no title link");
-        act(() => link.focus());
-        expect(link).toHaveFocus();
+        expect(focusTitleLink(pressed, "CORE-1")).toHaveFocus();
       }
       refusal.resolve();
       const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });

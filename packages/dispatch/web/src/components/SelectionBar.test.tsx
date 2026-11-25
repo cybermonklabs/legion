@@ -916,11 +916,7 @@ for (const edge of ["bottom", "header"] as const) {
     list.append(head);
     list.getBoundingClientRect = () => new DOMRect(0, 0, 200, height);
     Object.defineProperties(list, { clientHeight: { value: height }, clientWidth: { value: 200 } });
-    const hit = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
-      if (y < 70) return head;
-      if (y >= height) return list;
-      return list.querySelectorAll("[data-row] input")[9 + Math.floor(y / 100)] ?? null;
-    });
+    const hit = drawOver(head, 70, "[data-row]", 9);
     const scroll = spyOn(list, "scrollBy").mockImplementation(() => {});
     const moves = watchMoves();
     try {
@@ -935,7 +931,7 @@ for (const edge of ["bottom", "header"] as const) {
     } finally {
       moves.restore();
       scroll.mockRestore();
-      hit.mockRestore();
+      hit();
       view.unmount();
       laidOut();
     }

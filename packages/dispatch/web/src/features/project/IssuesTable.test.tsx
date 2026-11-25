@@ -1795,11 +1795,20 @@ test("Claimed by draws no count beside the values the agent registry decides unt
   await waitFor(() => expect(claims()).toContain("Nobody or lapsed, 2 issues"));
 });
 
+/** One header filter's options, by the name each is read out as, with its panel shut after. */
+async function headerOptions(user: UserEvent, header: string): Promise<string[]> {
+  await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${header}`) }));
+  const names = optionNames(screen.getByRole("listbox", { name: `${header} options` }));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+  return names;
+}
+
 // With the agent list refused, the page says it could not check which claims have lapsed, and
 // Nobody or lapsed lists the issues no one claims, holding every claim as held. Each header
 // filter's count that the registry does not decide draws once the issues answer - Assignee's,
 // Priority's and Claimed by's Nobody - and the Claimed by values it decides draw none, never a
-// count it has not decided (the architect, 2026-11-25 13:01Z).
+// count it has not decided.
 test("with the agent registry refused, the header filters draw every count it does not decide, and none that it decides", async () => {
   const user = userEvent.setup();
   const refused = Promise.reject(new Error("agent list refused"));
@@ -1820,17 +1829,9 @@ test("with the agent registry refused, the header filters draw every count it do
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await screen.findByTestId("unclaimed-unchecked");
   expect(screen.queryByRole("row", { name: "CORE-3 Work CORE-3" })).toBeNull();
-  /** One header filter's options, by the name each is read out as, with its panel shut after. */
-  const headerOptions = async (header: string) => {
-    await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${header}`) }));
-    const names = optionNames(screen.getByRole("listbox", { name: `${header} options` }));
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
-    return names;
-  };
-  expect(await headerOptions("Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
-  expect(await headerOptions("Priority")).toEqual(["P1, 1 issue", "P2, 1 issue"]);
-  const claims = await headerOptions("Claimed by");
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  expect(await headerOptions(user, "Priority")).toEqual(["P1, 1 issue", "P2, 1 issue"]);
+  const claims = await headerOptions(user, "Claimed by");
   expect(claims).toHaveLength(3);
   expect(claims.filter((name) => /, \d+ issues?$/.test(name))).toEqual(["Nobody, 2 issues"]);
 });
@@ -2436,28 +2437,20 @@ test("picking Done draws no header filter count until the closed issues are read
   ];
   table(rows, "", { full: closed.promise });
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
-  /** One header filter's options, by the name each is read out as, with its panel shut after. */
-  const headerOptions = async (header: string) => {
-    await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${header}`) }));
-    const names = optionNames(screen.getByRole("listbox", { name: `${header} options` }));
-    await user.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
-    return names;
-  };
-  expect(await headerOptions("Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   await user.click(screen.getByRole("option", { name: "Done, not loaded" }));
   await user.keyboard("{Escape}");
   await screen.findByText("Loading closed issues…");
   for (const header of ["Assignee", "Priority"]) {
-    const names = await headerOptions(header);
+    const names = await headerOptions(user, header);
     expect(names).toHaveLength(2);
     for (const name of names) expect(name).not.toMatch(/, \d+ issues?$/);
   }
   closed.resolve(rows);
   await screen.findByRole("row", { name: "CORE-3 Work CORE-3" });
-  expect(await headerOptions("Assignee")).toEqual(["alice, 3 issues", "bob, 1 issue"]);
-  expect(await headerOptions("Priority")).toEqual(["P1, 3 issues", "P2, 1 issue"]);
+  expect(await headerOptions(user, "Assignee")).toEqual(["alice, 3 issues", "bob, 1 issue"]);
+  expect(await headerOptions(user, "Priority")).toEqual(["P1, 3 issues", "P2, 1 issue"]);
 });
 
 // A Move is nobody's interrupted action. Retried beside one, it reports like any other change

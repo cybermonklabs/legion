@@ -111,6 +111,25 @@ export function ColumnFilter<TData>({
   );
   const show = meta?.show ?? ((value: string) => value);
   const countOf = (value: string) => counts.get(value) ?? 0;
+  const isCounted = typeof counted === "function" ? counted : () => counted;
+  const detail =
+    counted === false
+      ? undefined
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "load"
+              : String(countOf(value));
+  const detailLabel =
+    counted === false
+      ? undefined
+      : (value: string) =>
+          !isCounted(value)
+            ? undefined
+            : unloaded.includes(value)
+              ? "not loaded"
+              : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`;
   return (
     <MultiSelect
       // The funnel is the sign that it opens a panel, as it is on the text filter's `PanelTrigger`
@@ -124,20 +143,8 @@ export function ColumnFilter<TData>({
       open={open}
       // An option whose rows are not read yet says so rather than claim a count of zero, and one
       // that is not counted yet draws no count at all.
-      optionDetail={(value) =>
-        (typeof counted === "function" ? counted(value) : counted)
-          ? unloaded.includes(value)
-            ? "load"
-            : String(countOf(value))
-          : undefined
-      }
-      optionDetailLabel={(value) =>
-        (typeof counted === "function" ? counted(value) : counted)
-          ? unloaded.includes(value)
-            ? "not loaded"
-            : `${countOf(value)} ${countOf(value) === 1 ? noun.one : noun.many}`
-          : undefined
-      }
+      optionDetail={detail}
+      optionDetailLabel={detailLabel}
       optionLabel={show}
       options={options}
       searchLabel={`Search ${name}`}

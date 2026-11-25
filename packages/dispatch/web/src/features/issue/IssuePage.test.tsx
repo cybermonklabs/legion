@@ -2395,7 +2395,9 @@ test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag
     // in the element right before the chips.
     const before = line.previousElementSibling;
     if (!(before instanceof HTMLElement)) throw new Error("nothing stands before the chips");
-    expect(within(before).getByRole("button", { name: /^Priority of CORE-1( |$)/ })).not.toBeNull();
+    expect(
+      within(before).getByRole("button", { name: pickNamed("Priority of CORE-1") })
+    ).not.toBeNull();
     expect(
       within(screen.getByTestId("issue-metadata-rail")).queryByTestId("issue-advances")
     ).toBeNull();

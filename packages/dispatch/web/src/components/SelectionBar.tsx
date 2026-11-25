@@ -106,10 +106,9 @@ export interface MarkedList {
  * last read, that the list still holds. Else the focus goes to the mark of the nearest row before
  * that place that the reader can see. With no reading of where the row stood, the focus goes to
  * the list's own stop. Where no row is marked, the function puts the focus on the mark of the
- * first row the
- * reader can see below whatever the page draws over the list (`markShown`), a row a press is
- * taking away passed over. A mark takes the focus with no scroll of the engine's own, which
- * centres a control it scrolls to, and is shown whole at its nearest edge, the least scroll
+ * first row the reader can see below whatever the page draws over the list (`markShown`), a row a
+ * press is taking away passed over. A mark takes the focus with no scroll of the engine's own,
+ * which centres a control it scrolls to, and is shown whole at its nearest edge, the least scroll
  * (`landMark`). Where no row can take the focus, in either case, it goes to the list's own stop,
  * with no scroll, which is given `tabindex="-1"` where it has none. The function then answers
  * true. So a reader deep in a long list keeps their place, and the focus goes neither to the
@@ -312,8 +311,8 @@ function firstMarkShown(
 
 /** Lands `mark`, the row mark the bar's hand-off chose, with no scroll of the engine's own, and
  *  shows it whole at its nearest edge, the least scroll, wherever it stands, below the list's
- *  sticky head `head` too (`landNearest`). A mark whose row will move up into the reader's sight once
- *  the rows a press is still taking away have gone (`moved`) takes the focus with no scroll
+ *  sticky head `head` too (`landNearest`). A mark whose row will move up into the reader's sight
+ *  once the rows a press is taking away have gone (`moved`) takes the focus with no scroll
  *  instead: shown now, it would be shown where it stands before they go, and the list's anchor
  *  shows it whole once they have gone (`ViewportAnchor`). */
 function landMark(mark: HTMLElement, moved: MovedUp | undefined, head: Element | null): void {
@@ -377,11 +376,11 @@ function markShown(
  * one puts the focus on that Start next, on the row around it or on the body, and leaves the
  * press the cause (`repeatTookFocusFrom`). So does a bar that stays while the control holding
  * the focus goes from it: **Select all**, which the bar stops offering once it has run. The focus
- * goes to the first of these that applies, which the page's
- * own hand-off focuses (`useLastMarkedPlace`). The checkbox of the row the reader marked
- * last, while the list holds it and no press is taking it away, out of sight or not. Else a row
- * the reader can see: after a press that took that row away, the row at its place or the nearest
- * before it, each judged where it will stand once the rows the press is taking away have gone,
+ * goes to the first of these that applies, which the page's own hand-off focuses
+ * (`useLastMarkedPlace`). The checkbox of the row the reader marked last, while the list holds it
+ * and no press is taking it away, out of sight or not. Else a row the reader can see: after a
+ * press that took that row away, the row at its place or the nearest before it, each judged where
+ * it will stand once the rows the press is taking away have gone,
  * and the nearest row after that place where their going leaves the row at it wholly above the
  * view; with no row marked, the first row in sight below whatever the page draws over the list.
  * A row's checkbox is shown whole at its nearest edge, the least scroll, never centred as the

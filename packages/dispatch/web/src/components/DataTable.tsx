@@ -145,9 +145,9 @@ export interface DataTableModel<Row> {
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
-  /** Focuses a row or a control inside it. If the row is undrawn, scrolls to draw it and returns
-   *  null until then. A `"nearest"` hand-off places the control whole, measured once drawn,
-   *  rather than letting the row's approximate virtual offset decide where it ends up. */
+  /** Focuses a row or a control inside it, scrolling an undrawn row in first and focusing it once
+   *  it lands. A `"nearest"` hand-off places the control whole, measured once drawn, rather than
+   *  letting the row's approximate virtual offset decide where it ends up. */
   readonly focusRow: FocusRow;
   readonly names: DataTableNames;
 }

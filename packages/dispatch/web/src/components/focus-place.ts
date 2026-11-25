@@ -516,11 +516,12 @@ export function landNearest(
 ): boolean {
   const boxes = clippingBoxes(element);
   const headBox = head === null ? undefined : boxes.find((box) => box.contains(head));
+  let firstOrigin = origin;
   return land(element, () => {
     for (const box of boxes) {
       const sight = belowHead(scrollportOf(box), box === headBox ? head : null);
       const drawn = boxOf(element, undefined);
-      const from = box === origin?.box ? origin.top - box.scrollTop : 0;
+      const from = box === firstOrigin?.box ? firstOrigin.top - box.scrollTop : 0;
       scrollNearestIn(box, drawn, sight, from);
     }
     scrollNearestIn(
@@ -528,7 +529,7 @@ export function landNearest(
       boxOf(element, undefined),
       belowHead(viewport(), headBox === undefined ? head : null)
     );
-    origin = undefined;
+    firstOrigin = undefined;
   });
 }
 
@@ -1494,9 +1495,9 @@ function walkBack(
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). A
  *  component's hand-off (`useFocusPlace`) reads it of each control its walk back reaches, as it
- *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of each row
- *  mark it tries (`SelectionBar`'s `markShown`), with `moved` where the mark's row will move up
- *  once the rows a press is taking away have gone. */
+ *  reaches it, and of its fallback too, and the selection bar's hand-off reads it of a row mark
+ *  it considers (`SelectionBar`'s `markAtPlace` and `landMark`), with `moved` where the mark's
+ *  row will move up once the rows a press is taking away have gone. */
 export function inSightNow(
   element: Element,
   clips: Map<Element, boolean>,

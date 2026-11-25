@@ -3080,15 +3080,12 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(rail.getByTestId("issue-advances")).toHaveCount(0);
     // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows
     // (`listTrigger`), and it stands in the element right before the chips.
-    const tag = listTrigger(stateRow, `Priority of ${seed.rollout}`);
+    const tag = listTrigger(
+      line.locator("xpath=preceding-sibling::*[1]"),
+      `Priority of ${seed.rollout}`
+    );
     await expect(tag).toBeVisible();
-    expect(
-      await line.evaluate(
-        (element, held) => element.previousElementSibling?.contains(held) ?? false,
-        await tag.elementHandle()
-      )
-    ).toBe(true);
-    const tagBox = await stateRow.getByLabel(/^Priority of /).boundingBox();
+    const tagBox = await tag.boundingBox();
     const lineBox = await line.boundingBox();
     expect(lineBox?.x ?? Number.NaN).toBeGreaterThan(tagBox?.x ?? Number.NaN);
     expect(lineBox?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(120);
