@@ -113,20 +113,29 @@ trap cleanup EXIT
 
 # run_subtest TREE LISTENER LOG runs the subtest from TREE's packages/daemon with the listener
 # built from LISTENER's packages/envoy, writing `go test -v`'s output to LOG, and prints the
-# subtest's result: PASS, FAIL, or SKIP for a run that printed neither line, which no case takes.
+# subtest's result:
+#   - PASS: its `--- PASS` line and a `go test` that exited 0;
+#   - FAIL: its `--- FAIL` line and a `go test` that exited non-zero;
+#   - SKIP: a `--- SKIP` line for the subtest or its parent, since `go test` exits 0 for a test
+#     that was skipped;
+#   - UNKNOWN: anything else, such as a PASS line beside a non-zero exit (the parent test or the
+#     binary failed after the subtest) or a run that printed no line of the subtest at all.
+# No case takes SKIP or UNKNOWN as its result.
 run_subtest() {
-  local tree=$1 listener=$2 log=$3
+  local tree=$1 listener=$2 log=$3 status=0
   (
     cd "$tree/packages/daemon"
     LEGION_E2E_REPO_ROOT=$listener go test -v -count=1 -timeout 30m \
       -run "^TestIdleReleaseAndWake\$/^$subtest\$" ./internal/daemon/
-  ) >"$log" 2>&1 || true
-  if grep -q -- "--- PASS: TestIdleReleaseAndWake/$subtest " "$log"; then
+  ) >"$log" 2>&1 || status=$?
+  if grep -q -E -- "--- SKIP: TestIdleReleaseAndWake( |/$subtest )" "$log"; then
+    echo SKIP
+  elif [ "$status" -eq 0 ] && grep -q -- "--- PASS: TestIdleReleaseAndWake/$subtest " "$log"; then
     echo PASS
-  elif grep -q -- "--- FAIL: TestIdleReleaseAndWake/$subtest " "$log"; then
+  elif [ "$status" -ne 0 ] && grep -q -- "--- FAIL: TestIdleReleaseAndWake/$subtest " "$log"; then
     echo FAIL
   else
-    echo SKIP
+    echo UNKNOWN
   fi
 }
 

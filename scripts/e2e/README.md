@@ -265,7 +265,8 @@ Each item below names a script, then what it proves.
   the base tree's test passes with the base tree's listener, which is the negative control;
   with this checkout's listener the base tree's test fails on the line that says no message reached the released role's woken session, since that daemon ends each prompt's row at the listener's 404;
   and this checkout's test passes with this checkout's listener, each prompt reaching the woken session once.
-  Run by hand from a full checkout with go, git, tar and docker
+  Run by hand from a full checkout with go, git, tar and docker.
+  Each case reads its subtest's own result: PASS only with the subtest's `--- PASS` line and `go test` exiting 0, FAIL only with its `--- FAIL` line and a non-zero exit, and SKIP or UNKNOWN, which no case takes, for a skip or anything else; [`lib/hook-prompt-two-builds.test.ts`](lib/hook-prompt-two-builds.test.ts) (`bun test scripts/e2e/lib`) drives that reader over a stand-in `go`
 
 - `verification-results.sh`
 
