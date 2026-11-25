@@ -505,15 +505,15 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 	return rig
 }
 
-// assertWaitNotice checks that the architect was told the close waits exactly once: one
-// close-waits notice, naming the pull request and the keys the close waits for beneath the root.
-// The architect's other notices — a child's close or its move out of the workflow among them — are
-// not this one's business.
+// assertWaitNotice checks that the architect was told the root's close waits exactly once: one
+// close-waits notice of the root's pull request #42, naming the keys the close waits for beneath
+// the root. The architect's other notices — a child's own close-waits at its merge, a child's close
+// or its move out of the workflow among them — are not this one's business.
 func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 	t.Helper()
 	var got []record.Notice
 	for _, notice := range architectNotices(t, pool) {
-		if notice.Kind == "close-waits" {
+		if notice.Kind == "close-waits" && strings.Contains(notice.Reason, "#42 ") {
 			got = append(got, notice)
 		}
 	}

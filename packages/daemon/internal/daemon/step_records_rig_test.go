@@ -393,15 +393,17 @@ func (r *stepRecordsRig) signOff(issue string) {
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request
-// (publishMergeOf), which ends the walk's last step: the issue then waits in verifying for the
-// checks of its goal, since a merge closes nothing by itself. A caller that needs another phase
-// waits for it.
+// (publishMergeOf), which ends the walk's last step. The merge closes nothing by itself: the issue
+// waits in verifying for the checks of its goal, and the read of the checks the merge queues runs
+// on its own. An issue whose close waits for nothing closes at that read, often before a poll here
+// sees verifying, so merge waits for the issue to leave merging into either, and a caller that
+// needs one of them waits for it.
 func (r *stepRecordsRig) merge() {
 	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
 	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
-	r.waitPhase(phase.Verifying)
+	r.waitPhaseOf(r.key, phase.Verifying, phase.Done)
 }
 
 // waitPhase waits for the issue to stand in want.
@@ -410,16 +412,16 @@ func (r *stepRecordsRig) waitPhase(want phase.Phase) {
 	r.waitPhaseOf(r.key, want)
 }
 
-// waitPhaseOf waits for issue to stand in want.
-func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
+// waitPhaseOf waits for issue to stand in one of want.
+func (r *stepRecordsRig) waitPhaseOf(issue string, want ...phase.Phase) {
 	r.t.Helper()
 	var last string
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
 		got, ok := r.d.state().Issues[issue]
 		last = string(got.Phase)
-		return ok && last == string(want)
+		return ok && slices.Contains(want, got.Phase)
 	}) {
-		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
+		r.t.Fatalf("%s stands in %q, want %v", issue, last, want)
 	}
 }
 

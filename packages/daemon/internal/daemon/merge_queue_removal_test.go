@@ -224,12 +224,16 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		}
 	})
 
-	t.Run("a merged answer closes the issue and tells nobody", func(t *testing.T) {
+	// The merge GitHub reported is taken: the issue leaves merging for verifying, where its close
+	// waits for the read of its checks. Whether that read then closes it is not this case's
+	// business: the merge was taken, and its merger told nothing.
+	t.Run("a merged answer takes the merge and tells its merger nothing", func(t *testing.T) {
 		issue := merged
 		rig.github.answer(issue.number, dequeueMerged)
 		reads := rig.publish(t, issue, issue.head)
-		rig.await(t, "the issue to close on the merge GitHub reported", func() bool {
-			return rig.phase(t, issue.key) == phase.Done
+		rig.await(t, "the issue to leave merging on the merge GitHub reported", func() bool {
+			stands := rig.phase(t, issue.key)
+			return stands == phase.Verifying || stands == phase.Done
 		})
 		rig.await(t, "the read's row to finish", func() bool {
 			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRead) == 0

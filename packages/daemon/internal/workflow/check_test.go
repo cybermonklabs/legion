@@ -260,6 +260,9 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 		})
 	})
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+	// The merge stands the rerun in verifying, and a person's close opens its check, as
+	// childCheckRig does.
+	rig.apply("child-closed", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"})
 	if check := productionCheck(t, rig.pool, "LEGION-209"); check == nil || !check.Open() || !check.OpenedAt.Equal(checkOpened) || check.Looks != 1 || !check.LookOpen {
 		t.Fatalf("the check after the rerun's merge = %+v, want the second check, opened at the merge, at look 1 open", check)
 	}
@@ -605,15 +608,15 @@ func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
 	}
 }
 
-// The boot's sweep closes a migrated issue that awaits a merge GitHub already reported, as the
-// merge would have: a root with no running child, and an issue held from merging, whose
-// hold the close clears, each with a check opened on no merge commit yet. A root with a child still
-// in the workflow stays, and closes when that child leaves; an issue whose pull request is open
-// stays as it is. The boot writes its "closes" line only where it closed, and no notice at all:
-// the architect was told of the wait when the close entered it. Another project's merged issue is
-// never read here, since the daemon's records hold no record of another project: that case is the
-// daemon package's (TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands).
-func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t *testing.T) {
+// The boot's sweep takes the merge of a migrated issue that awaits a merge GitHub already
+// reported, as the merge would have: a root with no running child, a root with a child still in
+// the workflow, and an issue held from merging, whose hold the move clears, each wait in verifying
+// for its checks, and the root with the running child waits for that child too. An issue whose
+// pull request is open stays as it is. The boot opens no production check, writes its line only
+// where it took a merge, and tells each issue it moved close-waits once. Another project's merged
+// issue is never read here, since the daemon's records hold no record of another project: that
+// case is the daemon package's (TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands).
+func TestTheBootSweepMovesMigratedMergedIssuesIntoVerifying(t *testing.T) {
 	rig := newCheckRig(t)
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-301", Project: "LEGION", Title: "alone", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "A"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-301", Repo: "sjawhar/legion", Number: 1, Branch: "legion/LEGION-301", HeadSHA: "h1", Failing: []string{}})
@@ -627,67 +630,44 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-305", Repo: "sjawhar/legion", Number: 5, Branch: "legion/LEGION-305", HeadSHA: "h5", Failing: []string{}})
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
-	phases := map[string]phase.Phase{}
-	lingering := map[string]bool{}
-	rows, err := rig.pool.Query(context.Background(), "select key, phase, linger_until is not null from issues")
-	if err != nil {
-		t.Fatalf("read issues: %v", err)
-	}
-	for rows.Next() {
-		var key string
-		var p phase.Phase
-		var lingers bool
-		if err := rows.Scan(&key, &p, &lingers); err != nil {
-			t.Fatalf("scan issue: %v", err)
-		}
-		phases[key], lingering[key] = p, lingers
-	}
-	rows.Close()
-	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.Merging} {
-		if phases[key] != want || lingering[key] != (want == phase.Done) {
-			t.Fatalf("%s after the boot = %s lingering %t, want %s", key, phases[key], lingering[key], want)
-		}
-	}
-	for _, key := range []string{"LEGION-301", "LEGION-304"} {
-		if check := productionCheck(t, rig.pool, key); check == nil || !check.Open() || check.Looks != 1 || check.MergeSHA != "" {
-			t.Fatalf("%s's check after the boot = %+v, want it open at look 1 with no merge commit yet", key, check)
-		}
-		if starts := superviseRowsOf(t, rig.pool, key, "start"); len(starts) != 1 || starts[0].CheckLook != 1 || !strings.Contains(starts[0].Task, "merge commit unknown, read it from the pull request on GitHub") {
-			t.Fatalf("%s's starts = %+v, want its check's look 1 telling the agent to read the merge commit from GitHub", key, starts)
+	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Verifying, "LEGION-302": phase.Verifying, "LEGION-303": phase.Implementing, "LEGION-304": phase.Verifying, "LEGION-305": phase.Merging} {
+		if got := issueAt(t, rig.pool, key); got != want {
+			t.Fatalf("%s after the boot = %s, want %s", key, got, want)
 		}
 	}
 	var held *string
 	if err := rig.pool.QueryRow(context.Background(), "select held_from from issues where key = 'LEGION-304'").Scan(&held); err != nil || held != nil {
-		t.Fatalf("the held issue's hold after its close = %v, %v; want cleared", held, err)
+		t.Fatalf("the held issue's hold after its move = %v, %v; want cleared", held, err)
 	}
-	for _, key := range []string{"LEGION-302", "LEGION-305"} {
+	for _, key := range []string{"LEGION-301", "LEGION-302", "LEGION-304", "LEGION-305"} {
 		if check := productionCheck(t, rig.pool, key); check != nil {
-			t.Fatalf("%s's check after the boot = %+v, want none", key, check)
+			t.Fatalf("%s's check after the boot = %+v, want none: a check opens at a read in verifying", key, check)
 		}
 	}
-	// The boot writes its "closes" line only where it closed, and tells no architect anything: a
-	// restart must not repeat the notice the entry into the wait wrote, and a root can now wait for
-	// days across many boots.
-	for _, key := range []string{"LEGION-301", "LEGION-304"} {
+	for _, key := range []string{"LEGION-301", "LEGION-302", "LEGION-304"} {
 		if !strings.Contains(rig.logged.String(), `upgrade" issue=`+key) {
-			t.Fatalf("the boot's journal holds no close of %s:\n%s", key, rig.logged.String())
+			t.Fatalf("the boot's journal holds no move of %s:\n%s", key, rig.logged.String())
+		}
+		if got := noticeKinds(t, rig.pool, key); len(got) != 1 || got[0] != "close-waits" {
+			t.Fatalf("%s's notices after the boot = %v, want the one close-waits of its move", key, got)
 		}
 	}
-	if strings.Contains(rig.logged.String(), `upgrade" issue=LEGION-302`) {
-		t.Fatalf("the boot logged a close of the root it left waiting:\n%s", rig.logged.String())
+	if strings.Contains(rig.logged.String(), `upgrade" issue=LEGION-305`) {
+		t.Fatalf("the boot logged a move of the issue whose pull request is open:\n%s", rig.logged.String())
 	}
-	if got := noticeKinds(t, rig.pool, "LEGION-302"); len(got) != 0 {
-		t.Fatalf("the waiting root's notices after the boot = %v, want none", got)
+
+	// A second boot finds each of them waiting already, and tells nobody again.
+	rig.apply("boot-again", intake.DaemonBooted{Boot: 2})
+	if got := noticeKinds(t, rig.pool, "LEGION-302"); len(got) != 1 {
+		t.Fatalf("the waiting root's notices after a second boot = %v, want the one of its move", got)
 	}
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-303", Seq: 2, Type: "issue.closed", Status: "done", Title: "running child", Parent: "LEGION-302", Rank: "C"})
-	var rootPhase phase.Phase
-	var rootLingers bool
-	if err := rig.pool.QueryRow(context.Background(), "select phase, linger_until is not null from issues where key = 'LEGION-302'").Scan(&rootPhase, &rootLingers); err != nil || rootPhase != phase.Done || !rootLingers {
-		t.Fatalf("the parent once its last child left = %s lingering %t, %v; want done and lingering", rootPhase, rootLingers, err)
+	if got := issueAt(t, rig.pool, "LEGION-302"); got != phase.Verifying {
+		t.Fatalf("the parent once its last child left = %s, want verifying until the read after the leave", got)
 	}
-	if check := productionCheck(t, rig.pool, "LEGION-302"); check == nil || !check.Open() || check.MergeSHA != "m2" {
-		t.Fatalf("the parent's check = %+v, want it open on m2", check)
+	if got := len(issueOutboxOf(t, rig.pool, "LEGION-302", "close_read")); got != 1 {
+		t.Fatalf("the parent's close_read rows once its last child left = %d, want one", got)
 	}
 	if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-303/implementer"] != 1 || got["LEGION-302/implementer"] != 0 {
 		t.Fatalf("issue_close rows = %v, want the child's every claim closed and the parent's none", got)

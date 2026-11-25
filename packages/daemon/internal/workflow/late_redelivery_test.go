@@ -201,9 +201,9 @@ func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 			seedTreeLifecycle(t, pool, "LEGION-208")
 			apply := githubFacts(t, pool, New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil))
 			apply("merged-read", lateMerged)
-			assertPhase(t, pool, phase.Done)
-			if check := productionCheck(t, pool, "LEGION-208"); check == nil || !check.Open() || check.MergeSHA != "merge" {
-				t.Fatalf("after the merge the production check is %+v, want it open at merge", check)
+			assertPhase(t, pool, phase.Verifying)
+			if got := len(issueOutboxOf(t, pool, "LEGION-208", "close_read")); got != 1 {
+				t.Fatalf("after the merge the close_read rows = %d, want the one read of the checks", got)
 			}
 			return pool, apply
 		}},

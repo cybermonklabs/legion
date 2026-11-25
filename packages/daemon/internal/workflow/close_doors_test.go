@@ -89,7 +89,10 @@ func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
 	defect := rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
 
 	rig.fact(intake.DispatchIssue{Key: waitRoot, Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
-	rig.stands(waitRoot, phase.Done, "done")
+	// The record's status is admission's to write (its recordObservation), which this rig stubs.
+	if got := issueAt(t, rig.pool, waitRoot); got != phase.Done {
+		t.Fatalf("%s stands at %s after a person's done, want done", waitRoot, got)
+	}
 	messages := messageBodies(t, rig.pool)
 	if len(messages) != 1 || !strings.Contains(messages[0], "c-after") || !strings.Contains(messages[0], "production check") {
 		t.Fatalf("messages = %q, want one naming the check and the production check the close waited for", messages)

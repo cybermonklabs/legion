@@ -87,8 +87,8 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 				t.Fatalf("held merge writes = %+v, want the retro's end, the merge's start and its matching end", writes)
 			}
 			assertEnd(t, writes[2], "merge", 0, 3, "passed", nil)
-			if got := issueAt(t, pool, "LEGION-209"); got != phase.Done {
-				t.Fatalf("merged held child stands at %s, want done", got)
+			if got := issueAt(t, pool, "LEGION-209"); got != phase.Verifying {
+				t.Fatalf("merged held child stands at %s, want verifying: its close waits for its checks", got)
 			}
 		})
 	}
@@ -186,8 +186,8 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 				t.Fatalf("ends of LEGION-209's merge after the close = %+v, want exactly one", ends)
 			}
 			assertEnd(t, ends[0], "merge", 0, 3, tc.wantAfter, nil)
-			if got := issueAt(t, pool, "LEGION-209"); tc.wantAfter == "passed" && got != phase.Done {
-				t.Fatalf("LEGION-209 merged after its tree's close stands at %s, want done", got)
+			if got := issueAt(t, pool, "LEGION-209"); tc.wantAfter == "passed" && got != phase.Verifying {
+				t.Fatalf("LEGION-209 merged after its tree's close stands at %s, want verifying: its close waits for its checks", got)
 			}
 		})
 	}

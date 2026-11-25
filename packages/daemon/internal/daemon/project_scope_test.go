@@ -579,12 +579,12 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 	}
 }
 
-// The boot's sweep closes every issue of the project that awaits a merge GitHub already reported
-// (workflow's sweepMerged), and it reads the issues through the project's records, which hold no
-// record of another project's (projectRecords): on a shared database another project's daemon
-// records its own issue awaiting a merge that GitHub reported, and this daemon's boot leaves it
-// where that daemon stands it — still merging, lingering nowhere, with no production check
-// opened and no row queued keyed by it — while it closes its own.
+// The boot's sweep moves every issue of the project that awaits a merge GitHub already reported
+// into verifying (workflow's sweepMerged), and it reads the issues through the project's records,
+// which hold no record of another project's (projectRecords): on a shared database another
+// project's daemon records its own issue awaiting a merge that GitHub reported, and this daemon's
+// boot leaves it where that daemon stands it — still merging, lingering nowhere, with no production
+// check opened and no row queued keyed by it — while it moves its own.
 func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -639,8 +639,8 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	}); err != nil {
 		t.Fatalf("read the records after the boot: %v", err)
 	}
-	if own == nil || own.Phase != phase.Done {
-		t.Fatalf("%s after the boot = %+v, want it closed: its merge was reported", ownIssue.Key, own)
+	if own == nil || own.Phase != phase.Verifying {
+		t.Fatalf("%s after the boot = %+v, want it in verifying: its merge was reported", ownIssue.Key, own)
 	}
 	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" || theirs.LingerUntil != nil {
 		t.Errorf("%s after the boot = %+v, want OTHER's record merging and lingering nowhere, as OTHER's daemon left it", theirIssue.Key, theirs)

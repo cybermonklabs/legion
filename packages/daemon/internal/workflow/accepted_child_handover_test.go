@@ -65,6 +65,11 @@ func TestTheChildHeldUnderAnAcceptedRootIsHandedOverWhenTheRootCloses(t *testing
 	if at := issueAt(t, pool, root); at != phase.Done {
 		t.Fatalf("%s stands at %s after a person closed it, want done", root, at)
 	}
+	// Admission, which runs after the workflow handler, is what records the status a person's move
+	// shows (its recordObservation); this test runs the engine alone.
+	if _, err := pool.Exec(t.Context(), "update issues set status = 'done', dispatch_status = 'done' where key = $1", root); err != nil {
+		t.Fatalf("record the status the person's close shows: %v", err)
+	}
 	apply("linger", intake.LingerExpired{Issue: root, Generation: 7})
 
 	assertHandedOver(t, pool, held, root, 7)

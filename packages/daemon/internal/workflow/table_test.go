@@ -342,6 +342,8 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Testing)
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return in(phase.Reviewing)
+	case TriggerRetroCompleted:
+		return in(phase.Retro)
 	case TriggerPullRequestMerged:
 		return in(phase.Merging)
 	case TriggerChecksPassed:

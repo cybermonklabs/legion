@@ -189,8 +189,12 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 	}
 }
 
-// mergeClosesTheIssue drives the close the daemon makes when it reads the merged pull request of
-// an issue in merging, and holds it to the one close row that leaves.
+// mergeClosesTheIssue drives the close the daemon makes of a merged issue: the merge of its pull
+// request stands it in verifying, and the read of its checks after the merge, which finds nothing
+// to wait for, closes it. Every row the merge queued is taken as run, its status write testing
+// among them, whose echo the record never saw, so Dispatch and the record both still show
+// in_progress. The close's rows of the checks' read and of close-wait.md are taken as run too, so
+// the one status row left is the close's, which the helper holds it to.
 func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
@@ -209,7 +213,23 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 		intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge"}, engine); err != nil {
 		t.Fatalf("apply the merge: %v", err)
 	}
+	finishRowsOf(t, pool, issue)
+	if _, err := intake.ApplyFact(ctx, pool, "outbox", "read", intake.CloseChecksRead{Issue: issue, Generation: 1, ReadAt: time.Now().Add(time.Second),
+		Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: issue}}}, engine); err != nil {
+		t.Fatalf("apply the read of the checks: %v", err)
+	}
+	if _, err := pool.Exec(ctx, "delete from outbox where issue = $1 and kind in ('close_read', 'close_wait_publish')", issue); err != nil {
+		t.Fatalf("finish the close's other rows: %v", err)
+	}
 	wantsOneCloseRow(t, pool, issue)
+}
+
+// finishRowsOf deletes every outbox row of issue, as their executors finishing them does.
+func finishRowsOf(t *testing.T, pool *store.Pool, issue string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), "delete from outbox where issue = $1", issue); err != nil {
+		t.Fatalf("finish the rows of %s: %v", issue, err)
+	}
 }
 
 // architectClosesTheRoot drives the close an architect makes of a root that has started no phase,
