@@ -172,7 +172,7 @@ func createDatabase(admin *pgxpool.Pool, s shape) (string, error) {
 // A database that fails either step is dropped rather than handed on, so a test never takes a
 // database another test left something in.
 func give(admin *pgxpool.Pool, s shape, name string) error {
-	if err := reset(admin, name); err != nil {
+	if err := reset(admin, s, name); err != nil {
 		return drop(admin, name, err)
 	}
 	pool.mu.Lock()
@@ -206,17 +206,48 @@ func drop(admin *pgxpool.Pool, name string, reason error) error {
 	return nil
 }
 
-// reset empties name: every table of every schema the template holds truncated and its sequences
-// set back, but schema_version, which the template itself holds rows in and a migration test
-// reads. A database with no table at all — a copy of template1 — has its schemas dropped and
-// public made again, so a test that created one is not handed its schema.
-func reset(admin *pgxpool.Pool, name string) error {
+// reset empties name for the next taker of its shape. A copy of a migrated template keeps its
+// schema, so every table but schema_version — the one the template holds rows in — is truncated
+// and its sequences set back. A copy of template1 holds no schema of its own, and a test of it
+// creates one (a migration test migrates it step by step), so its schemas are dropped and public
+// made again. Either way verify reads the result back before the database is handed on.
+func reset(admin *pgxpool.Pool, s shape, name string) error {
 	at, err := on(admin, name)
 	if err != nil {
 		return err
 	}
 	ctx, stop := context.WithTimeout(context.Background(), poolBound)
 	defer stop()
+	if s.template == "" {
+		var schemas []string
+		rows, err := at.Query(ctx, `select format('%I', nspname) from pg_namespace
+			where nspname not in ('pg_catalog', 'information_schema') and nspname !~ '^pg_'`)
+		if err != nil {
+			return fmt.Errorf("read the schemas of %s: %w", name, err)
+		}
+		for rows.Next() {
+			var schema string
+			if err := rows.Scan(&schema); err != nil {
+				rows.Close()
+				return err
+			}
+			schemas = append(schemas, schema)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		sort.Strings(schemas)
+		for _, schema := range schemas {
+			if _, err := at.Exec(ctx, "drop schema "+schema+" cascade"); err != nil {
+				return fmt.Errorf("drop the schema %s of %s: %w", schema, name, err)
+			}
+		}
+		if _, err := at.Exec(ctx, "create schema public"); err != nil {
+			return fmt.Errorf("make the public schema of %s again: %w", name, err)
+		}
+		return nil
+	}
 	var tables []string
 	rows, err := at.Query(ctx, tableNames)
 	if err != nil {
@@ -268,8 +299,9 @@ func verify(admin *pgxpool.Pool, name string, want databaseContent) error {
 
 // readContent is the fingerprint of a database's schema, the rows of its schema_version, and a
 // refusal where any other table holds a row. The fingerprint names every table, view, sequence,
-// index, column and type of the schemas a test can write, every function of them and every
-// extension, so a table altered or a function left behind reads as another schema.
+// index, column and type of the schemas a test can write, every function of them, every extension
+// and every setting the database carries (`alter database … set`, which outlives every schema), so
+// a table altered, a function left behind or a setting changed reads as another schema.
 func readContent(admin *pgxpool.Pool, name string) (databaseContent, error) {
 	at, err := on(admin, name)
 	if err != nil {
@@ -281,8 +313,16 @@ func readContent(admin *pgxpool.Pool, name string) (databaseContent, error) {
 	if err := at.QueryRow(ctx, fingerprintQuery).Scan(&content.fingerprint); err != nil {
 		return databaseContent{}, fmt.Errorf("read the schema of %s: %w", name, err)
 	}
-	if err := at.QueryRow(ctx, versionsQuery).Scan(&content.versions); err != nil {
-		return databaseContent{}, fmt.Errorf("read the versions of %s: %w", name, err)
+	// PostgreSQL resolves every relation a statement names before it runs any of it, so a database
+	// with no schema_version — a copy of template1 — is asked whether it has one first.
+	var versioned bool
+	if err := at.QueryRow(ctx, `select to_regclass('public.schema_version') is not null`).Scan(&versioned); err != nil {
+		return databaseContent{}, fmt.Errorf("read whether %s holds schema_version: %w", name, err)
+	}
+	if versioned {
+		if err := at.QueryRow(ctx, versionsQuery).Scan(&content.versions); err != nil {
+			return databaseContent{}, fmt.Errorf("read the versions of %s: %w", name, err)
+		}
 	}
 	var rows int64
 	var holder string
@@ -317,12 +357,14 @@ const fingerprintQuery = `select coalesce(md5(string_agg(entry, E'\n' order by e
 	union all
 	select format('sch %s', nspname) from pg_namespace
 		where nspname not in ('pg_catalog', 'information_schema') and nspname !~ '^pg_'
+	union all
+	select format('set %s', setting) from pg_db_role_setting d, unnest(d.setconfig) setting
+		where d.setdatabase = (select oid from pg_database where datname = current_database())
 ) reading`
 
-const versionsQuery = `select coalesce((select string_agg(version::text, ',' order by version) from schema_version), '')
-	where exists (select 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
-		where c.relname = 'schema_version' and c.relkind = 'r' and n.nspname = 'public')
-	union all select '' limit 1`
+// versionsQuery is the versions schema_version records, which a migrated template holds and a
+// reset keeps; readContent asks it only of a database that holds the table.
+const versionsQuery = `select coalesce(string_agg(version::text, ',' order by version), '') from public.schema_version`
 
 // rowsQuery counts the rows of every ordinary table but schema_version, in one statement, and
 // names the first table that holds one.
