@@ -50,7 +50,7 @@ import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
 import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { type OnEditing, useNodeEditing, useTakesCaret } from "../useNodeEditing";
+import { type OnEditing, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -358,16 +358,11 @@ export function DecisionsFilterBody({
     onOwnEdit: () => {},
     onReport: reportHere,
   });
-  // Whether a row takes a caret from a press on its words, by the outline's one rule
-  // (`takesCaret`): over the room of the issue the page's writer is of, and what each document's
-  // room admitted the page to. A row that does not is only given the focus by the press, as
-  // every row is, and nothing is said: Enter is what says why.
-  const takesCaret = useTakesCaret(artifacts, isClosed);
-  const pressWords = (row: string, node: TreeNode): void => {
-    if (!takesCaret(node)) return;
-    reportHere("");
-    edit(row, node);
-  };
+  // A press on a row's words asks for the caret where the row takes one, by the outline's one
+  // rule (`takesCaret`): over the room of the issue the page's writer is of, and what each
+  // document's room admitted the page to. A row that does not is only given the focus by the
+  // press, as every row is, and nothing is said: Enter is what says why.
+  const pressWords = useWordsPress({ artifacts, edit, isClosed, onReport: reportHere });
   // The focus leaving the list with no press under way, by Tab or a script, lets go at once of
   // what the row opened, what a key reported and the reader's own review. A press on another
   // control of the page keeps them until that press has ended and its click has landed, or until

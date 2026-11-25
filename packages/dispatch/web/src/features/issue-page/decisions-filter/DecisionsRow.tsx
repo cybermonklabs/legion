@@ -47,7 +47,7 @@ import {
   NODE_TYPE_NAMES,
 } from "../page-words";
 import { RowText } from "../RowText";
-import { pressIsOwn } from "../useNodeEditing";
+import { pressAsksCaret } from "../useNodeEditing";
 import type { AskDeclined, DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
@@ -110,9 +110,11 @@ interface RowPerson {
  *
  * A press on the row's words puts the caret in them, as Enter on the row does, where the list
  * says the row takes one (`onPressWords`), and the row draws its document's one editor on its
- * stage in place of its words while it is the row edited (`editing`). A press on a link or a
- * button inside the words is that control's own; the row's acts and its links stand outside the
- * words, so a press on one is theirs and never the words'.
+ * stage in place of its words while it is the row edited (`editing`). A press on a control inside
+ * the words - a link, a button, a drawn diagram's summary - is that control's own, and a click
+ * that ends a selection made in the words, or a double click's second, asks for no caret
+ * (`pressAsksCaret`); the row's acts and its links stand outside the words, so a press on one is
+ * theirs and never the words'.
  */
 export function DecisionsRow({
   body,
@@ -254,7 +256,7 @@ export function DecisionsRow({
             data-node-words=""
             onClick={(event) => {
               // A press inside the editor drawn in the words' place is the editor's own.
-              if (editing === undefined && !pressIsOwn(event)) onPressWords();
+              if (editing === undefined && pressAsksCaret(event)) onPressWords();
             }}
             ref={words}
             style={clamped ? { maxHeight: clamp.height } : undefined}

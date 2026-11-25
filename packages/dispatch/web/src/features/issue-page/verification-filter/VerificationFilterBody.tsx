@@ -64,7 +64,7 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
-import { type OnEditing, pressIsOwn, useNodeEditing, useTakesCaret } from "../useNodeEditing";
+import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -170,11 +170,12 @@ export function queryTyped(query: string): boolean {
  * A row's node is edited in place, in this view, as a row of the outline is
  * (`useNodeEditing.ts`): Enter on a statement's row, a check's row or another row of the table,
  * or on a check's words, puts the caret at the start of that node's text, in the document the
- * text lives in, and the row says why where none goes in; a pointer's press on a statement's
- * words or a check's words does the same where the row takes a caret (`takesCaret`), and else
- * only gives the row the focus. The page draws that document's one editor (`onEditing`), and the
- * row draws it on its stage in place of its words while it is the row edited; Escape gives the
- * row back the focus and its words.
+ * text lives in, and the row says why where none goes in; a pointer's press on the words of any
+ * of those rows does the same where the row takes a caret (`takesCaret`), and else only gives the
+ * row the focus, and a press on a control inside them, or one that ends a selection made in them,
+ * is not the words' (`pressAsksCaret`). The page draws that document's one editor (`onEditing`),
+ * and the row draws it on its stage in place of its words while it is the row edited; Escape
+ * gives the row back the focus and its words.
  */
 export function VerificationFilterBody({
   addressed,
@@ -402,18 +403,17 @@ export function VerificationFilterBody({
   /** The document the row with this id is being edited in, while it is the row edited. */
   const editingFor = (id: string): string | undefined =>
     editing?.row === id ? editing.artifactId : undefined;
-  // Whether a row takes a caret, by the outline's one rule (`takesCaret`): over the room of the
-  // issue the page's writer is of, and what each document's room admitted the page to.
-  const takesCaret = useTakesCaret(artifacts, isClosed);
-  /** Puts the caret in the node of the row with this id (`useNodeEditing`'s `edit`): from Enter,
-   *  which always asks and is told why where no caret goes in, or from a pointer's press on the
-   *  row's words (`pressed`), which asks only where the row takes a caret, and else leaves the row
-   *  the focus the press gave it with nothing said. What a key reported before goes as it asks. */
-  const editRow = (row: string, node: TreeNode, pressed: boolean) => {
-    if (pressed && !takesCaret(node)) return;
+  /** Enter on a row, or on a check's words: the caret asked for in the node of the row with this
+   *  id (`useNodeEditing`'s `edit`), which says why where no caret goes in. What a key reported
+   *  before goes as it asks. */
+  const editRow = (row: string, node: TreeNode) => {
     reportHere("");
     edit(row, node);
   };
+  // A pointer's press on a row's words, which asks for the caret as Enter does only where the row
+  // takes one, by the outline's one rule (`takesCaret`), and else leaves the row the focus the
+  // press gave it with nothing said.
+  const pressWords = useWordsPress({ artifacts, edit, isClosed, onReport: reportHere });
   /** Enter on a row itself: the caret asked for in the node it draws (`editRow`), found by the
    *  row's own `data-node-id` among the statements, the checks under them or of the table's own,
    *  and the other rows. The answer is whether the row draws one: the issue's row holds no text,
@@ -422,7 +422,7 @@ export function VerificationFilterBody({
     const id = row.dataset.verificationRow;
     const node = drawnNodes.find((drawn) => drawn.id === row.dataset.nodeId);
     if (id === undefined || node === undefined) return false;
-    editRow(id, node, false);
+    editRow(id, node);
     return true;
   };
   // The tree's keys, which are the outline's. The page's keymap listens on `window` and leaves a
@@ -541,6 +541,7 @@ export function VerificationFilterBody({
                   key={statement.node.id}
                   onEdit={editRow}
                   onPress={press}
+                  onPressWords={pressWords}
                   presses={presses}
                   reportFor={reportFor}
                   statement={statement}
@@ -571,8 +572,9 @@ export function VerificationFilterBody({
                   kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={true}
-                  onEdit={(pressed) => editRow(check.node.id, check.node, pressed)}
+                  onEdit={() => editRow(check.node.id, check.node)}
                   onPress={press}
+                  onPressWords={() => pressWords(check.node.id, check.node)}
                   pressed={presses.get(check.node.id)}
                   report={reportFor(check.node.id)}
                   row={check.node.id}
@@ -585,6 +587,7 @@ export function VerificationFilterBody({
                   editing={editingFor(node.id)}
                   key={node.id}
                   node={node}
+                  onPressWords={() => pressWords(node.id, node)}
                   report={reportFor(node.id)}
                   tabIndex={tabIndexFor(node.id)}
                 />
@@ -1126,10 +1129,12 @@ function Headings(): ReactNode {
  * statement no check of this issue serves holds no group and so says nothing of being open. A
  * pointer's press on its words cell puts the caret in its words where the row takes one, as
  * Enter on its row does, and the row draws its document's one editor on its stage in place of
- * the words while it is the row edited; a press on a link in its words or on its parent line's
- * link is that link's own. The links are tab stops, as every control of the view is. What a key
- * reported at the row, where Enter put no caret, is drawn at the end of the statement's own
- * cell, before the rows of its checks, which say their own. As a card its left edge is the
+ * the words while it is the row edited; a press on a control in the cell - a link in its words,
+ * its parent line's link, a drawn diagram's summary - is that control's own, and a click that
+ * ends a selection made in the words asks for nothing (`pressAsksCaret`). The links are tab
+ * stops, as every control of the view is. What a key reported at the row, where Enter put no
+ * caret, is drawn at the end of the statement's own cell, before the rows of its checks, which
+ * say their own. As a card its left edge is the
  * statement's teal, or the failed red where it reads Not met or no check serves it, so the card
  * says so before its words are read. How it stands is the issue's reading of it, whatever a
  * words query left of its checks.
@@ -1144,6 +1149,7 @@ function Statement({
   editingFor,
   onEdit,
   onPress,
+  onPressWords,
   presses,
   reportFor,
   statement,
@@ -1154,11 +1160,14 @@ function Statement({
   /** The document the row with this id is being edited in, while it is the row edited (the
    *  body's `editingFor`). */
   editingFor: (id: string) => string | undefined;
-  /** Asks for the caret in the node of the row with this id: by Enter, or by a pointer's press
-   *  (`pressed`) where the row takes one (the body's `editRow`). */
-  onEdit: (row: string, node: TreeNode, pressed: boolean) => void;
+  /** Asks for the caret in the node of the row with this id by Enter, as on a check's words (the
+   *  body's `editRow`). */
+  onEdit: (row: string, node: TreeNode) => void;
   /** Sets the press of the check row with this id (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
+  /** Asks for the caret in the node of the row with this id by a pointer's press on its words,
+   *  where the row takes one (the body's `pressWords`). */
+  onPressWords: (row: string, node: TreeNode) => void;
   /** Each drawn check's press, by its row's id. */
   presses: ReadonlyMap<string, boolean>;
   /** What a key reported at the row with this id, where it put no caret (the body's
@@ -1196,7 +1205,7 @@ function Statement({
         className={`flex min-w-0 flex-col ${CELL}`}
         onClick={(event) => {
           // A press inside the editor drawn in the words' place is the editor's own.
-          if (editing === undefined && !pressIsOwn(event)) onEdit(node.id, node, true);
+          if (editing === undefined && pressAsksCaret(event)) onPressWords(node.id, node);
         }}
       >
         <p
@@ -1240,8 +1249,9 @@ function Statement({
                   kept={statement.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={false}
-                  onEdit={(pressed) => onEdit(row, check.node, pressed)}
+                  onEdit={() => onEdit(row, check.node)}
                   onPress={onPress}
+                  onPressWords={() => onPressWords(row, check.node)}
                   pressed={presses.get(row)}
                   report={reportFor(row)}
                   row={row}
@@ -1293,8 +1303,10 @@ function Statement({
  * role: their links are tab stops too, and no control holds another. Enter on them, and a
  * pointer's press on them where the row takes a caret, puts the caret in the check's own text,
  * which the row edits in place, drawing its document's one editor on its stage in place of the
- * words while it is the row edited; a press on a link or a button of the row is that control's
- * own, and a press on the latest result's cell only gives the row the focus. So a reader reaches
+ * words while it is the row edited; a press on a control in the words - a link, a drawn diagram's
+ * summary - or on a button of the row is that control's own, and a click that ends a selection
+ * made in the words asks for nothing (`pressAsksCaret`); a press on the latest result's cell only
+ * gives the row the focus. So a reader reaches
  * every fact of a check and of its results by the keyboard alone, and the table stays the table
  * the picture draws.
  *
@@ -1314,6 +1326,7 @@ function Check({
   loose,
   onEdit,
   onPress,
+  onPressWords,
   pressed,
   report,
   row,
@@ -1329,11 +1342,13 @@ function Check({
   kept: ReadonlySet<string>;
   /** Whether the check serves no statement, and so stands as a row of the table itself. */
   loose: boolean;
-  /** Asks for the caret in the check's text: by Enter on its words, or by a pointer's press on
-   *  them (`pressed`), which asks only where the row takes one (the body's `editRow`). */
-  onEdit: (pressed: boolean) => void;
+  /** Asks for the caret in the check's text by Enter on its words (the body's `editRow`). */
+  onEdit: () => void;
   /** Sets this row's press (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
+  /** Asks for the caret in the check's text by a pointer's press on its words, where the row
+   *  takes one (the body's `pressWords`). */
+  onPressWords: () => void;
   /** The reader's own press: open, shut, or neither, in which case the focus decides. */
   pressed: boolean | undefined;
   /** What a key reported at the row, where it put no caret. */
@@ -1386,7 +1401,7 @@ function Check({
           data-verification-check-words=""
           onClick={(event) => {
             // A press inside the editor drawn in the words' place is the editor's own.
-            if (editing === undefined && !pressIsOwn(event)) onEdit(true);
+            if (editing === undefined && pressAsksCaret(event)) onPressWords();
           }}
           onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
             // A key on a link in the words, or typed into the editor drawn in their place, is
@@ -1395,7 +1410,7 @@ function Check({
             if (event.key !== "Enter") return;
             if (event.altKey || event.ctrlKey || event.metaKey) return;
             event.preventDefault();
-            onEdit(false);
+            onEdit();
           }}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view.
           tabIndex={0}
@@ -1676,21 +1691,27 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
  *  The links in its words are tab stops, as every control of the view is: the tree's keys move
  *  between rows and reach no link inside one. Enter on it asks for the caret in its node's text,
- *  as on every row of the table, and the row says why where none goes in. A comment or a message
- *  its author corrected carries its mark as the outline's row does (INFRA-1523, R2 and R3): a
- *  deleted one draws the deleted line in place of its words (`DeletedLine`), from the delete and
- *  never from its text, which names the actor as no registry knows it and the time as stored; an
- *  edited one says ` · edited` after its kind (`EditedMark`), outside its words, as the outline's
- *  row says it in its margin. */
+ *  as on every row of the table, and the row says why where none goes in; a pointer's press on
+ *  its words asks for it too where the row takes a caret (`takesCaret`), as on a statement's
+ *  words or a check's, and else only gives the row the focus. A comment or a message its author
+ *  corrected carries its mark as the outline's row does (INFRA-1523, R2 and R3): a deleted one
+ *  draws the deleted line in place of its words (`DeletedLine`), from the delete and never from
+ *  its text, which names the actor as no registry knows it and the time as stored; an edited one
+ *  says ` · edited` after its kind (`EditedMark`), outside its words, as the outline's row says it
+ *  in its margin. */
 function OtherRow({
   editing,
   node,
+  onPressWords,
   report,
   tabIndex,
 }: {
   /** The document its node's text is being edited in, while this is the row edited. */
   editing: string | undefined;
   node: TreeNode;
+  /** Asks for the caret in its node's text by a pointer's press on its words, where the row takes
+   *  one (the body's `pressWords`). */
+  onPressWords: () => void;
   /** What a key reported at the row, where it put no caret. */
   report: string | undefined;
   tabIndex: 0 | -1;
@@ -1713,7 +1734,16 @@ function OtherRow({
         <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
         <EditedMark at={node.editedAt} marks={NODE_EDITED_MARKS} />
       </p>
-      <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+          pointer's way to what Enter on the row does; the words are no control of their own. */}
+      <div
+        className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`}
+        data-node-words=""
+        onClick={(event) => {
+          // A press inside the editor drawn in the words' place is the editor's own.
+          if (editing === undefined && pressAsksCaret(event)) onPressWords();
+        }}
+      >
         {deleted === null ? (
           <RowWords editing={editing} node={node} />
         ) : (

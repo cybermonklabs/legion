@@ -2,6 +2,8 @@ import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
+  // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for a double click's second click on its own, which user-event sends only after a first click that asks for the editor itself
+  fireEvent,
   type RenderHookResult,
   type RenderResult,
   render,
@@ -33,6 +35,7 @@ import { measureNearWords } from "../clamp-fixtures";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { DocumentStage, DocumentStages } from "../document-stage";
 import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
+import * as roomTarget from "../model-rows/room-target";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import { KEY_REPORTS } from "../page-structure";
@@ -58,7 +61,7 @@ import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
-import { treeContext } from "../tree-drafts";
+import { blockNodeId, treeContext } from "../tree-drafts";
 import type { OnEditing } from "../useNodeEditing";
 import { shortCommit } from "./statement-state";
 import {
@@ -1102,6 +1105,190 @@ test("Escape in a row's editor gives the row back its focus, and a key typed in 
     expect(statement?.querySelector("[data-node-words]")?.textContent).toBe(served.text);
   } finally {
     view.unmount();
+  }
+});
+
+// A row an address named that the filter does not draw itself - a note of the spec here, as a
+// plan task or a decision would be - takes a pointer's press on its words as a statement's and a
+// check's words do: where the row takes a caret, the press asks for the editor of the document its
+// text lives in, and the row draws it on its stage in place of its words. A press on the words of
+// a named comment, whose text no document holds, only gives its row the focus and says nothing.
+test("a press on the words of a row an address named asks for its editor where it takes a caret", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const met = passing("c-one");
+  const note = node({
+    id: blockNodeId(SPEC_SLUG, "n1"),
+    reference: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-n1`,
+    text: "A note of the spec an address named.",
+    type: "callout",
+  });
+  const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const view = drawBody(
+    [statementNode("r1", "The page draws it.", [checkNode(met)]), note, named],
+    [met],
+    { editing: page, named: [note.id, named.id] }
+  );
+  try {
+    const rowOf = (id: string) =>
+      view.container.querySelector<HTMLElement>(`[data-node-id="${id}"]`);
+    const commentRow = rowOf(named.id);
+    const noteRow = rowOf(note.id);
+    expect(commentRow?.hasAttribute("data-verification-other")).toBe(true);
+    expect(noteRow?.hasAttribute("data-verification-other")).toBe(true);
+
+    await user.click(commentRow?.querySelector("[data-node-words]") as Element);
+    expect(document.activeElement).toBe(commentRow);
+    expect(askedDocuments(page)).toEqual([]);
+    expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+    await user.click(noteRow?.querySelector("[data-node-words]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+    expect(noteRow?.querySelector("[data-node-words] [data-editor-stand]")).not.toBeNull();
+    expect(noteRow?.querySelector("[data-node-words]")?.textContent).not.toContain(note.text);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press on a control inside a row's words is that control's own and asks for no editor: a
+// drawn diagram's summary, which opens its source (`mermaid-diagrams.ts`'s `drawBlock` draws the
+// figure into the words once the diagram is drawn), a label, and an element that plays a button,
+// in a statement's words and in a check's. A press on a check's words themselves still asks for
+// the check's editor: they are a tab stop of their own, and the element that heard a press is
+// never the control that owns it.
+test("a press on a diagram's summary, a label or a button inside a row's words is that control's own and asks for no editor", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(one)])], [one], {
+    editing: page,
+  });
+  try {
+    const statement = view.container.querySelector("[data-verification-card]");
+    const check = view.container.querySelector("[data-verification-check]");
+    /** Draws into `words` what the drawn text's own code draws there: a drawn diagram's figure
+     *  with the summary of its source, as `drawBlock` builds it, a label, and an element that
+     *  plays a button. Answers the summary, the label and the button. */
+    const controlsIn = (words: Element | null | undefined): HTMLElement[] => {
+      const summary = document.createElement("summary");
+      summary.textContent = "Mermaid source";
+      const details = document.createElement("details");
+      details.append(summary);
+      const figure = document.createElement("figure");
+      figure.append(details);
+      const label = document.createElement("label");
+      label.textContent = "A label";
+      const button = document.createElement("span");
+      button.setAttribute("role", "button");
+      button.textContent = "A button";
+      words?.append(figure, label, button);
+      return [summary, label, button];
+    };
+    for (const control of [
+      ...controlsIn(statement?.querySelector("[data-node-words]")),
+      ...controlsIn(check?.querySelector("[data-node-words]")),
+    ]) {
+      await user.click(control);
+      expect(askedDocuments(page), `a press on a ${control.localName} asked for an editor`).toEqual(
+        []
+      );
+    }
+
+    await user.click(check?.querySelector("[data-verification-check-words]") as Element);
+    expect(askedDocuments(page)).toEqual(["artifact-verification"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A click on a row's words that ends a selection the reader made in them - a drag over the words,
+// which leaves the window's selection not collapsed - asks for no editor, nor does the second
+// click of a double click, which selects a word: the editor drawn in the words' place would drop
+// that selection and put the caret at the start. A plain click on the words still asks for it.
+test("a click that ends a selection made in a row's words, and a double click's second click, ask for no editor", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const one = passing("c-one");
+  const served = statementNode("r1", "The page draws it.", [checkNode(one)]);
+  const view = drawBody([served], [one], { editing: page });
+  try {
+    const words = view.container.querySelector<HTMLElement>(
+      "[data-verification-card] [data-node-words]"
+    );
+    if (words === null) throw new Error("the statement drew no words");
+    expect(words.textContent).toBe(served.text);
+
+    // A double click's second click, with no selection standing.
+    act(() => document.getSelection()?.removeAllRanges());
+    fireEvent.click(words, { detail: 2 });
+    expect(askedDocuments(page), "a double click's second click asked for an editor").toEqual([]);
+
+    // A drag over the first two words, which ends in a click on them.
+    await user.pointer([
+      { keys: "[MouseLeft>]", offset: 0, target: words },
+      { offset: 8 },
+      { keys: "[/MouseLeft]" },
+    ]);
+    expect(document.getSelection()?.toString()).toBe("The page");
+    expect(askedDocuments(page), "a click that ended a selection asked for an editor").toEqual([]);
+
+    // A plain click, which leaves no selection, asks for the statement's editor.
+    await user.click(words);
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+  } finally {
+    document.getSelection()?.removeAllRanges();
+    view.unmount();
+  }
+});
+
+// Enter on the row already being edited before its editor's hold is on starts nothing new where
+// the issue is edited in its room too (`useNodeEditing.ts`'s `edit`), as on the outline's rows
+// with no room (`IssueTree.test.tsx`): the first Enter's look for the caret goes on, and the
+// second Enter is an act of the reader's in it, so a focus moved off the row after it ends the
+// editing. A new look started at the second Enter counted the reader as not having acted yet, and
+// a focus a script moved off the row left the editing on. The room's facts stand in for the tree
+// read, which the page does not read yet, and the page hands the row no editor, so its hold is
+// never on.
+test("a second Enter on a row edited in its room while its editor's hold is not on starts no new look for the caret: a focus moved off the row after it ends the editing", async () => {
+  const user = userEvent.setup();
+  const rooms = spyOn(roomTarget, "useRoomFacts").mockReturnValue({
+    converted: true,
+    issueKey: ISSUE_KEY,
+    tree: "artifact-tree",
+    viewOf: null,
+  });
+  const page = editingPage();
+  const one = passing("c-one");
+  const view = drawBody([statementNode("r1", "The page draws it.", [checkNode(one)])], [one], {
+    editing: page,
+  });
+  // A control out of the view, which a script moves the focus to.
+  const control = document.createElement("button");
+  document.body.append(control);
+  try {
+    const statement = view.container.querySelector<HTMLElement>("[data-verification-card]");
+    act(() => statement?.focus());
+    await user.keyboard("{Enter}");
+    expect(askedDocuments(page)).toEqual(["artifact-spec"]);
+
+    await user.keyboard("{Enter}");
+    expect(page.asked.mock.calls.at(-1)?.[0], "the second Enter ended the editing").toBe(
+      "artifact-spec"
+    );
+    expect(document.activeElement, "the focus left the statement's row").toBe(statement);
+    await act(async () => control.focus());
+    await waitFor(() =>
+      expect(
+        page.asked.mock.calls.at(-1)?.[0],
+        "the focus moved off the row after the second Enter left the editing on"
+      ).toBeUndefined()
+    );
+    expect(document.activeElement, "the focus left the control it was moved to").toBe(control);
+  } finally {
+    view.unmount();
+    control.remove();
+    rooms.mockRestore();
   }
 });
 

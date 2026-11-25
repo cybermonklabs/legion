@@ -106,28 +106,56 @@ export function nodeEditable(
   return !isClosed && place !== undefined && admissions.get(place.artifact.id) !== true;
 }
 
-/** Whether a pointer's press on a row's words belongs to a link or a button inside the element
- *  that heard it rather than to the words. A press on a row's words puts the caret in them where
- *  the row takes one (`useTakesCaret`), as Enter on the row does, and one on a link or a button
- *  inside them - a link in the words, a code block's copy control, the link of a parent line -
- *  is that control's own. The Verification and Decisions views read it. */
-export function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
-  const owner = event.target instanceof Element ? event.target.closest("a, button") : null;
-  return owner !== null && event.currentTarget.contains(owner);
+/** What takes a pointer's press inside a row's words as its own rather than the words': each
+ *  control a drawn text can hold - a link in the words, a code block's copy control, the link of
+ *  a parent line - a disclosure's summary, which a drawn diagram carries for its source, a label,
+ *  and an element that plays a button. It is `RowText.tsx`'s `FOCUSABLE` without its
+ *  `[tabindex]`: `RowText` gives each element of the words that scrolls, a wide code block or a
+ *  table's wrapper, a tab index of its own (`useOutOfTabOrder`), and such an element acts on no
+ *  press, so a press on its text is the words'. */
+const OWN_PRESS =
+  'a[href], area[href], button, input, select, textarea, iframe, summary, label, [role="button"]';
+
+/** Whether a pointer's click on a row's words asks for the caret in them, as Enter on the row
+ *  does. A click on a control inside the element that heard it (`OWN_PRESS`) is that control's
+ *  own. A click that ends a selection the reader made - a drag over the words, which leaves the
+ *  window's selection not collapsed - asks for nothing, nor does the second click of a double
+ *  click or a later one, which selects a word or a line: the editor drawn in the words' place
+ *  would drop that selection and put the caret at the start. The Verification and Decisions views
+ *  read it, and ask for the caret where the row takes one (`useWordsPress`). */
+export function pressAsksCaret(event: MouseEvent<HTMLElement>): boolean {
+  if (event.detail > 1 || window.getSelection()?.isCollapsed === false) return false;
+  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+  return owner === null || !event.currentTarget.contains(owner);
 }
 
-/** Whether a row takes a caret, by the outline's one rule (`room-target.ts`'s `takesCaret`), as
- *  the Verification and Decisions views ask it of a press on a row's words: over the room of the
- *  issue the page's writer is of, read as Enter reads it (`useNodeEditing`), and what each
- *  document's room admitted the page to (`document-admission.tsx`), given each artifact of the
- *  issue by its slug (`artifacts`) and whether the issue is closed (`isClosed`). */
-export function useTakesCaret(
-  artifacts: ReadonlyMap<string, Artifact>,
-  isClosed: boolean
-): (node: Pick<TreeNode, "id" | "reference" | "type">) => boolean {
+/** A pointer's press on a row's words, as the Verification and Decisions views take it once it
+ *  asks for the caret (`pressAsksCaret`): the caret asked for in the node of the row with this key
+ *  (`edit`, `useNodeEditing`'s), as Enter asks for it, and what a key reported before let go
+ *  (`onReport`, with no line), but only where the row takes a caret, by the outline's one rule
+ *  (`room-target.ts`'s `takesCaret`): over the room of the issue the page's writer is of, read as
+ *  Enter reads it (`useNodeEditing`), and what each document's room admitted the page to
+ *  (`document-admission.tsx`), given each artifact of the issue by its slug (`artifacts`) and
+ *  whether the issue is closed (`isClosed`). A row that takes none keeps the focus the press gave
+ *  it, and nothing is said: Enter is what says why. */
+export function useWordsPress({
+  artifacts,
+  edit,
+  isClosed,
+  onReport,
+}: {
+  artifacts: ReadonlyMap<string, Artifact>;
+  edit: NodeEditing["edit"];
+  isClosed: boolean;
+  onReport: (report: string) => void;
+}): (row: string, node: TreeNode) => void {
   const room = useRoomFacts(useOutlineWriter()?.issueKey);
   const admissions = useDocumentAdmissions();
-  return (node) => takesCaret(node, artifacts, room, isClosed, admissions);
+  return (row, node) => {
+    if (!takesCaret(node, artifacts, room, isClosed, admissions)) return;
+    onReport("");
+    edit(row, node);
+  };
 }
 
 /**
@@ -255,6 +283,9 @@ export function useNodeEditing({
           onReport(KEY_REPORTS[target.report]);
           return;
         }
+        // Enter on the row already edited before the editor's hold is on leaves the first Enter's
+        // look for the caret under way, as it does on an issue with no room (below).
+        if (editing?.row === row && hold.current !== "on") return;
         setEditing({ artifactId: target.artifactId, blockId: target.blockId, row });
         return;
       }
