@@ -252,7 +252,7 @@ func planTasksOf(stored *record.StoredPlan) []record.PlanTask {
 func (e *Engine) startAfterWait(ctx context.Context, tx pgx.Tx, s TaskScope, said string, args ...any) error {
 	w, view := s.walk, s.issue
 	role := w.RoleAt(w.Place)
-	if err := e.clearHandoff(ctx, tx, view.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
 	reason := w.StartReason

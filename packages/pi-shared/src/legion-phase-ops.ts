@@ -239,7 +239,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       // The step the move returns to, by its place in the task: the daemon takes the place and
       // refuses a `to` that is not the phase that step runs as.
       return_to: returnTo("request_backward_move").optional(),
-      // The task of the issue's plan the move is of (contract 263): an architect names the task it
+      // The task of the issue's plan the move is of (contract 264): an architect names the task it
       // returns from accepting where two or more stand there, and a phase worker may name the task
       // of its own step. The daemon judges it (TASK_REQUIRED, TASK_NOT_AT_PHASE, TASK_NOT_GRANTS);
       // a blank one is refused here.

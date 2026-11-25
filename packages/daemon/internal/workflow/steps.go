@@ -337,13 +337,13 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, s TaskScope, at p
 		agent, err := e.startAgent(ctx, tx, s, at)
 		return agent, time.Time{}, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, worker)
+	row, err := e.stepRow(ctx, tx, s, worker)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	if at == phase.Merging {
 		// The retro's completion is recorded on the row of the role that works the retro.
-		retro, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(phase.Retro))
+		retro, err := e.stepRow(ctx, tx, s, phase.RoleFor(phase.Retro))
 		if err != nil {
 			return "", time.Time{}, err
 		}

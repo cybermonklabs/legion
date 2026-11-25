@@ -519,7 +519,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				strandedWithoutTokens(want)
 			}
 			// A pod below tasksContract is served each issue without its `tasks`, the key contract
-			// 263 added (api's withoutTasks).
+			// 264 added (api's withoutTasks).
 			if tc.contract < tasksContract {
 				issuesWithoutTasks(want)
 			}

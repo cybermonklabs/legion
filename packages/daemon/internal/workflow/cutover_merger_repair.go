@@ -142,7 +142,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return false, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	row, err := e.stepRow(ctx, tx, owner.scope, claim.RoleMerger)
 	if err != nil || row.HandoffCommit == "" {
 		return false, err
 	}
@@ -160,13 +160,13 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 // back from the merger's queued rows, since the mark is StartOrOwe's to set.
 func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspendedOwner) error {
 	issue := owner.scope.issue
-	if err := e.clearHandoff(ctx, tx, issue.Key, claim.RoleMerger); err != nil {
+	if err := e.clearHandoff(ctx, tx, owner.scope, claim.RoleMerger); err != nil {
 		return err
 	}
 	// The row is read after the clear, so the row the start is built from is the row the
 	// transaction leaves. The clear moves no entry, and the merger's run is the one the selection
 	// read: nothing between the two writes a queued row or the claim.
-	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	row, err := e.stepRow(ctx, tx, owner.scope, claim.RoleMerger)
 	if err != nil {
 		return err
 	}

@@ -86,7 +86,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, issue.Phase) {
 			continue
 		}
-		row, err := e.phaseRow(ctx, tx, issue.Key, owner.role)
+		row, err := e.stepRow(ctx, tx, owner.scope, owner.role)
 		if err != nil {
 			return intake.Result{}, err
 		}

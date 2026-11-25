@@ -258,6 +258,7 @@ type OwedStart struct {
 	// created_at, which is how the issue keeps its place in the line.
 	WriteMark  int64
 	Role       claim.Role
+	Claim      claim.Token
 	Phase      phase.Phase
 	Generation uint64
 	LeaseToken string

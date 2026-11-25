@@ -752,9 +752,13 @@ func (m EventMark) ID() int64 {
 	return 0
 }
 
-// PhaseRow is the durable part of a role's work on an issue; live claim facts are joined for state.
+// PhaseRow is the durable work of one task, role and agent; live claims are joined for state.
 type PhaseRow struct {
 	Issue string
+	// Task and Agent are the row's durable identity. Generation reset keeps them while clearing
+	// StepTask and StepPlace, the current entry's attachment to a step.
+	Task  string
+	Agent claim.Agent
 	Role  claim.Role
 	Claim claim.Token
 	// HandoffCommit is the commit the role's completion of its current phase reported: for the
@@ -938,12 +942,41 @@ func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
 
-// PhaseRole names one row of the phases record: the issue and the role whose row it is, which
-// together are that row's key. It is how a batched read of many issues' rows answers
-// (Store.PhaseEntries).
-type PhaseRole struct {
+// PhaseKey names a durable phase row. Task is empty for work outside a plan. Role names the
+// work, while Agent names the worker: two tasks or agents of one role keep distinct entries.
+type PhaseKey struct {
 	Issue string
+	Task  string
 	Role  claim.Role
+	Agent claim.Agent
+}
+
+// Key is the row's durable address. A newly constructed row may name its task only in StepTask
+// and its agent only in Claim; PutPhase stores the resolved identity so reads do not parse it.
+func (p PhaseRow) Key() PhaseKey {
+	task, agent := p.Task, p.Agent
+	if task == "" {
+		task = p.StepTask
+	}
+	if agent == "" {
+		_, named, ok := p.Claim.Cut()
+		if ok {
+			agent = named
+		} else {
+			agent = claim.Agent(p.Role)
+		}
+	}
+	return PhaseKey{Issue: p.Issue, Task: task, Role: p.Role, Agent: agent}
+}
+
+// PhaseRowAt reads only the complete phase identity. Missing rows have no raised entry.
+func PhaseRowAt(rows []PhaseRow, key PhaseKey) PhaseRow {
+	for _, row := range rows {
+		if row.Key() == key {
+			return row
+		}
+	}
+	return PhaseRow{Issue: key.Issue, Task: key.Task, Role: key.Role, Agent: key.Agent}
 }
 
 // PhaseEntry is what a batched read of many issues' phases rows answers for one of them
@@ -2197,7 +2230,7 @@ type Store interface {
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
-	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
+	// PhaseRow.EntryVerbatim), by complete PhaseKey, read in one statement. Admission's sweep weighs
 	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
 	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
 	// moment beside them to tell how long a role has been owed the work the number names (admit's
@@ -2205,7 +2238,7 @@ type Store interface {
 	// project, which a project running hundreds of trees pays hundreds of times over. A row the
 	// record does not hold is absent from the answer, which reads as the zero entry: a role no
 	// transition has ever handed work on.
-	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
+	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseKey]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	// EarlierRunOf says whether an earlier run of issue ran a step: a phases row of a role other
 	// than the architect's, which a new generation keeps. A run's first step asks it.
@@ -3202,21 +3235,33 @@ func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim
 	}
 }
 
-// PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that
-// role: a role no transition has ever handed work on, which stands on no entry, names no handoff
-// and holds no claim. Every reader of one role's row among an issue's picks it here — the state
-// the projection writes (projection.Project), the entry the admission pass weighs a claim against
-// (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
-// (internal/daemon's outbox), the completion route's position (api's handoffPosition), the claim
-// of a role's worker (WorkerClaim) and the engine's own read (workflow's phaseRow) — so that rule
-// is stated once and read the same way by all of them.
+// PhaseRowOf reads a role outside a plan. Task work must use PhaseRowAt or PhaseRowForClaim,
+// since a role alone is not a phase identity once several tasks can run.
 func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	for _, row := range rows {
-		if row.Role == role {
+		if row.Role == role && row.Key().Task == "" {
 			return row
 		}
 	}
 	return PhaseRow{}
+}
+
+// PhaseRowForClaim is the latest entry this claim was handed on role. One agent can run
+// successive tasks, so its entry rises across their rows; another agent never changes this fence.
+func PhaseRowForClaim(rows []PhaseRow, role claim.Role, token claim.Token) PhaseRow {
+	if token == "" {
+		return PhaseRowOf(rows, role)
+	}
+	var latest PhaseRow
+	for _, row := range rows {
+		if row.Role == role && row.Claim == token && row.Entry >= latest.Entry {
+			latest = row
+		}
+	}
+	if latest.Role == "" {
+		return PhaseRowOf(rows, role)
+	}
+	return latest
 }
 
 // WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
@@ -3231,17 +3276,30 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 // Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
 // names a role reaches the agent that works that role's step when the row runs.
 func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
-	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
-		return row.Claim, nil
+	var worker claim.Token
+	for _, row := range rows {
+		if row.Role != role || row.StepTask == "" || row.Claim == "" {
+			continue
+		}
+		if worker != "" && worker != row.Claim {
+			return "", fmt.Errorf("the %s of %s is worked by several agents; name the claim of the intended agent", role, issue)
+		}
+		worker = row.Claim
+	}
+	if worker != "" {
+		return worker, nil
 	}
 	return claim.NewToken(project, issue, role)
 }
 
 // WorkerClaimOf is WorkerClaim over entries, a batched read of many issues' phases rows
 // (Store.PhaseEntries), for a pass over many issues that reads their rows in one statement.
-func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) (claim.Token, error) {
-	entry := entries[PhaseRole{Issue: issue, Role: role}]
-	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
+func WorkerClaimOf(project string, key PhaseKey, entries map[PhaseKey]PhaseEntry) (claim.Token, error) {
+	entry := entries[key]
+	if entry.Claim != "" && entry.StepTask == key.Task {
+		return entry.Claim, nil
+	}
+	return claim.AgentToken(project, key.Issue, key.Agent)
 }
 
 // Lingers says whether the root lingers after its close: its linger deadline is set, and

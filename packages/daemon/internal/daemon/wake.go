@@ -451,12 +451,8 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	open := workflow.OpenStepsOf(issue)
-	if len(open) == 0 {
-		return nil
-	}
-	rows, err := r.phaseRows(ctx, issue.Key)
-	if err != nil {
+	workers, err := workflow.OpenWorkers(r.project, issue)
+	if err != nil || len(workers) == 0 {
 		return err
 	}
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
@@ -464,11 +460,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		return err
 	}
 	armed := map[claim.Token]bool{}
-	for _, step := range open {
-		worker, err := record.WorkerClaim(r.project, issue.Key, step.Role, rows)
-		if err != nil {
-			return fmt.Errorf("the %s of %s: %w", step.Role, issue.Key, err)
-		}
+	for _, worker := range workers {
 		for _, c := range released {
 			if armed[worker] || c.Token != worker || c.ServingGeneration != issue.Generation {
 				continue
@@ -476,9 +468,9 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 			armed[worker] = true
 			due := r.now().UTC().Add(r.backstop)
 			r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-				"issue", issue.Key, "role", step.Role, "claim", worker, "due", due.Format(time.RFC3339))
+				"issue", issue.Key, "role", c.Role, "claim", worker, "due", due.Format(time.RFC3339))
 			if err := r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-				Claim: worker, Role: step.Role, DueAt: due}); err != nil {
+				Claim: worker, Role: c.Role, DueAt: due}); err != nil {
 				return err
 			}
 		}

@@ -185,7 +185,7 @@ func TestAPhaseRowCarriesItsStep(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
+		if got := PhaseRowAt(rows, reviewer.Key()); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
 		if got := PhaseRowOf(rows, claim.RoleImplementer); got.StepTask != "" || got.StepPlace != 0 {
@@ -209,7 +209,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		must(t, NewStore().PutPhase(ctx, tx, row))
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
+		if got := PhaseRowAt(rows, row.Key()); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row before the new generation runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
 		must(t, NewStore().ClearGeneration(ctx, tx, planIssue, planGivenAt))
@@ -217,7 +217,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
 		must(t, err)
-		got := PhaseRowOf(rows, claim.RoleReviewer)
+		got := PhaseRowAt(rows, row.Key())
 		if got.Entry != 2 {
 			t.Fatalf("the reviewer's entry after a new generation = %d, want 2 kept", got.Entry)
 		}
@@ -815,6 +815,7 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 		rows, err = records.Phases(ctx, tx, noPlan)
 		must(t, err)
 		want := implementer
+		want.Agent = claim.Agent(claim.RoleImplementer)
 		want.Pass, want.Rounds, want.ConflictRounds, want.BackwardMoves, want.CapTold = counts.Pass, counts.Rounds, counts.ConflictRounds, counts.BackwardMoves, counts.CapTold
 		if got := PhaseRowOf(rows, claim.RoleImplementer); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the implementer's row of %s = %#v, want the counts on it and every other column kept: %#v", noPlan, got, want)

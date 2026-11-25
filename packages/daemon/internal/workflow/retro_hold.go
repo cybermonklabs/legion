@@ -212,7 +212,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	e.logOnCommit(ctx, "workflow: the last issue beneath a held parent left the workflow, and its retro starts", "issue", held.Key, "tree", held.Tree,
 		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", held.Status)
 	role := phase.RoleFor(phase.Retro)
-	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
 	// The pull request of the parent's task, read once as its row alone (taskPullRequestRow): the

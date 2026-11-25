@@ -1525,7 +1525,7 @@ test("a failed step's completion names the step its task returns to", () => {
 // Contract 219: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
-// Contract 263: each task is answered with the tasks it needs, by id, an empty list for none and
+// Contract 264: each task is answered with the tasks it needs, by id, an empty list for none and
 // never null, and the plan with the tasks its version added, by id, an empty list for none and
 // never null. No plugin code reads a field of the answer, so the reader takes each as optional
 // and refuses only a value of the wrong type.
@@ -1853,7 +1853,7 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
   // body: the operator routes are the only surface that serves it. Each issue's served `tasks`
-  // are read past: a task's `waitsFor.task` is the id of another task of the plan (contract 263),
+  // are read past: a task's `waitsFor.task` is the id of another task of the plan (contract 264),
   // and no task view carries a pending task.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
   expect(

@@ -651,7 +651,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 			return nil
 		}
 		if payload.News && workflow.NamesTheRound(payload.Role) && !roundNamed {
-			if carried.Task, err = workflow.RoundTask(ctx, tx, r.records, issue.Key, payload.Role, carried.Task); err != nil {
+			if carried.Task, err = workflow.RoundTask(ctx, tx, r.records, issue.Key, payload.Role, token, carried.Task); err != nil {
 				return err
 			}
 			roundNamed = true

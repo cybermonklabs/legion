@@ -485,7 +485,7 @@ const legionMergeWaitView = z.object({
 });
 
 /** `api.AgentStepView` — the agent a task's step waits for, and the running step that agent works
- * (contract 263): that step's task and its place from 1. `task` and `position` are absent where
+ * (contract 264): that step's task and its place from 1. `task` and `position` are absent where
  * the agent works no delivered step, as when a step of another task has waited for it longer, and
  * `position` alone is absent where the agent works a retro. No plugin code reads it
  * (LEGION_ANSWER_READS), so every field is optional. */
@@ -495,7 +495,7 @@ const legionAgentStepView = z.object({
   position: z.number().int().positive().optional(),
 });
 
-/** `api.TaskView` — one task of an issue's plan (contract 263): where it stands, the act at its
+/** `api.TaskView` — one task of an issue's plan (contract 264): where it stands, the act at its
  * place, what the step there waits for, its own pull request and its own counts of returns.
  * `state` is `waiting`, `running`, `held`, `done`, `stopped` or `left`; `needs` the ids of the
  * tasks it needs, empty for none; `kind` and `position` its place (`step` with the step's place
@@ -1033,9 +1033,9 @@ const legionIssue = z.object({
   /** The roles whose start waits for the issue's pod, which runs no process of theirs yet
    * (`api.Issue.StartWaitsForPod`): absent for an issue no start waits on. */
   startWaitsForPod: z.array(nonEmptyString).optional(),
-  /** Each task of the issue's plan, in task id order (`legionTaskView`, contract 263): one for each
+  /** Each task of the issue's plan, in task id order (`legionTaskView`, contract 264): one for each
    * task of the plan of its generation, a plan of one task among them. Absent for an issue with no
-   * plan rows, and from every issue of the body the route serves a caller before 263
+   * plan rows, and from every issue of the body the route serves a caller before 264
    * (`api.shapeIssue`, `withoutTasks`), which is why a reader takes it as optional. */
   tasks: z.array(legionTaskView).optional(),
   /** The standing hold of the issue's pod (contract 246, `legionPodHold`): present only while a
@@ -2091,7 +2091,7 @@ const legionAnsweredPause = z.object({
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
  * reads when the task's work starts, so it is answered with no step: an empty list, never null.
- * Contract 263 adds each task's `needs`, the ids of the tasks it needs as register_plan resolved
+ * Contract 264 adds each task's `needs`, the ids of the tasks it needs as register_plan resolved
  * them, an empty list for none, never null, and the plan's `added`, the ids of the tasks the
  * version adds over the version in force, in the plan's order: every task of a generation's first
  * version, an empty list for a version that adds none, never null, and the same list for a
@@ -2281,7 +2281,7 @@ export function legionPlanRatingLoneField(
  * The daemon refuses the implementer's completion of implementing when no pull request is open on
  * its task's branch and none is recorded merged (`HANDOFF_NO_PULL_REQUEST`), and, for an issue with
  * plan rows, a plan of one task among them, when the open one is against another branch than the
- * base the plan gives that task (`HANDOFF_PULL_REQUEST_BASE`, contract 263); an issue with no plan
+ * base the plan gives that task (`HANDOFF_PULL_REQUEST_BASE`, contract 264); an issue with no plan
  * rows is held to no base. Either refusal records nothing.
  * `verdict` is `pass`
  * or `fail` for the completion of the tester and of a role of the deployment
@@ -2422,7 +2422,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
    * 258): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
    * that step runs as. */
   returnTo: z.number().int().positive().optional(),
-  /** The task of the issue's plan the move is of (contract 263): an architect's move that names
+  /** The task of the issue's plan the move is of (contract 264): an architect's move that names
    * none is of the one task at `accepting`, and the daemon answers `409 TASK_REQUIRED` where two or
    * more stand there and `409 TASK_NOT_AT_PHASE` for a named task that does not; a phase worker's
    * move is of the task of its own step, and a task it names must be that one
@@ -2436,7 +2436,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
  * an escalation sends it to the controller in the held notice, beside the cause that hold
  * already names. A request that names none is unchanged: the restarted role is told the
  * daemon's own words, and the escalation's notice carries no such field. `task` names the held
- * task of the issue's plan the decision is of (contract 263): a request that names none is of the
+ * task of the issue's plan the decision is of (contract 264): a request that names none is of the
  * one held task, and the daemon answers `409 TASK_REQUIRED` where two or more are held and
  * `409 TASK_NOT_AT_PHASE` for a named task that is not held. */
 export const LegionPhaseRetryRequest = z.strictObject({
@@ -2465,7 +2465,7 @@ export const LegionEscalateRequest = z.strictObject({
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
  * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
  * parent, since a parent is accepted only once no issue beneath it is still in the workflow
- * (dispatch://INFRA-980). `task` names the task of the issue's plan it accepts (contract 263): a
+ * (dispatch://INFRA-980). `task` names the task of the issue's plan it accepts (contract 264): a
  * sign-off that names none is of the one task at `accepting`, and the daemon answers
  * `409 TASK_REQUIRED` where two or more stand there and `409 TASK_NOT_AT_PHASE` for a named task
  * that does not. */

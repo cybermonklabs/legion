@@ -514,8 +514,8 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a key of 301 bytes", Supported(oneTask("a", "implementer acceptance:"+role)), 0, "a", cut(role) + ".", 1},
 		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
 		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
-		// The key's reason comes first, then the step's, which names tester:<key> twice.
-		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:"+role) + ",", 2},
+		// A keyed tester is supported; its position before the implementer is the one refusal.
+		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 0, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.got) <= tc.at {
@@ -643,7 +643,7 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 		{"a need", Validate(planOf(t, 1, taskNeeding("a", plantedURL)), d), "a", quote},
 		{"a role nobody defines", Validate(withSteps(implementer, Step{Role: plantedURL}), d), "a", quote},
 		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}), "", quote},
-		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL})), "a", quote},
+		{"a key", Supported(withSteps(implementer, Step{Role: "acceptance", Key: plantedURL})), "a", quote},
 		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL})), "a", quote},
 		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer)), "a", cut("tester:" + redactedURL)},
 	} {

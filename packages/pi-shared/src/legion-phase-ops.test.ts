@@ -790,7 +790,7 @@ test("request_backward_move sends return_to as returnTo", async () => {
   );
 });
 
-// Contract 263: a move back may name the task of the issue's plan it is of, `task`, which goes on
+// Contract 264: a move back may name the task of the issue's plan it is of, `task`, which goes on
 // the wire as the daemon's own `task`: an architect's names the task it returns from accepting
 // where two or more tasks stand there, and a phase worker's may name the task of its own step. A
 // move that names none sends none, and a blank one is refused before any request.

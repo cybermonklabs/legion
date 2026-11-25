@@ -1811,6 +1811,7 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -1826,6 +1827,7 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string

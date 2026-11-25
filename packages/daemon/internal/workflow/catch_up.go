@@ -264,7 +264,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil || finished {
 		return err
 	}
-	token, err := e.workerClaim(ctx, tx, *issue, role)
+	token, err := e.rowClaim(scope, role)
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if queuedRowCovers(run, *root, issue.Phase) {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	row, err := e.stepRow(ctx, tx, scope, role)
 	if err != nil {
 		return err
 	}

@@ -3700,7 +3700,7 @@ package api
 // deployment roles at 258. This branch carries that allocation without changing its owner's head.
 // SupportedContracts names api.strandedTokenContract after api.deploymentRolesContract.
 //
-// 263: each task of an owner's plan works in a working copy of its own, and the daemon's
+// 264: each task of an owner's plan works in a working copy of its own, and the daemon's
 // adoption names it. The worker frame `adopt-working-copy` (`shimwire.AdoptWorkingCopy`) gains
 // `branch`, the branch of the task whose working copy the shim adopts: absent for the issue's own
 // working copy, `legion/<KEY>.<task>` for another task's, and refused when it is the branch of no
@@ -3742,7 +3742,7 @@ package api
 // agent it waits for and the running step that agent works (`waitsFor`), its own `pullRequest`
 // with what its review round waits on from GitHub (`mergeWait`), and its own `counts`; the key is
 // absent for an issue with no plan rows. The issue's own `pullRequest` and `mergeWait` are its
-// merge's, the pull request of the task that merges. A caller whose contract is below 263 is
+// merge's, the pull request of the task that merges. A caller whose contract is below 264 is
 // served each issue without `tasks` (one band of shaping.go at `tasksContract`): a plugin built
 // before the reader that drops a key it does not know reads an issue as a strict object and
 // would refuse the whole state over it. From this entry the last number of answers.go's
@@ -3759,7 +3759,7 @@ package api
 // a version given at generation 0 and carried to the issue's generation by its first step among
 // them, which was answered `409 PLAN_VERSION_OLD` there; a version the issue's first step passed
 // over since, given again, is judged and stored as any version is, where it was answered `200`
-// and stored nothing. No request or answer shape changes with it. A caller below 263 is served
+// and stored nothing. No request or answer shape changes with it. A caller below 264 is served
 // neither `needs` nor `added`
 // (shaping.go's withoutNeedsOrAdded); the reader of 219 parses the plan and a task as zod objects,
 // which drop the keys, so a plugin before it reads either body.
@@ -3770,6 +3770,4 @@ package api
 // says of its own kind; the way back of this change's migration
 // (`store/migrations/20261121165047_task_copies.up.sql`) deletes those rows before a rollback. No
 // shape of `GET /legion/v1/state` moves with it.
-// (This unreleased entry used 224 while the work was built. Its release number is 263, allocated
-// above the merged base's 256 and independently checked against each open head before the push.)
-const DaemonAPIVersion = 263
+const DaemonAPIVersion = 264

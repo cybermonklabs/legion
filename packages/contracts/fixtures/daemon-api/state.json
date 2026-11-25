@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 256,
-    "caller": 256
+    "daemon": 264,
+    "caller": 264
   },
   "admission": {
     "cap": 7,
@@ -837,6 +837,7 @@
       "tree": "LEGION-240",
       "repo": "acme/widgets",
       "defaultBranch": "main",
+      "priority": null,
       "workers": {},
       "designGate": {
         "artifactId": "4b8e2f61-7a3c-4d95-b0e6-1c9f5a2d8e74",
@@ -869,6 +870,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "heldFrom": "step",
+      "priority": null,
       "workers": {
         "checker": {
           "claim": {

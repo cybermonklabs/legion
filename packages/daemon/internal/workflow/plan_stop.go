@@ -404,7 +404,7 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
 	// defines starts that role again.
 	role := s.walk.RoleAt(first)
-	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, role); err != nil {
 		return err
 	}
 	// The pull request of the task, read once: the start's task names it (readPull), and the merge

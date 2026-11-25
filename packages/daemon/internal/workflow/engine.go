@@ -1072,7 +1072,8 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if token == "" {
 		return false, nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	row := record.PhaseRowForClaim(rows, role, token)
 	if err != nil || row.Completed() {
 		return false, err
 	}
@@ -1218,7 +1219,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return refusedLingering(*issue, fmt.Sprintf("the %s's completion of phase %s", fact.Role, reported)), nil
 	}
 	if late != nil {
-		if err := e.spendLateHandoff(ctx, tx, fact); err != nil {
+		if err := e.spendLateHandoff(ctx, tx, s, fact); err != nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{Refusal: late}, nil
@@ -2756,7 +2757,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's backward move to %s", fact.Requester, fact.To)), nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, fact.Requester)
+	row, err := e.stepRow(ctx, tx, s, fact.Requester)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2991,7 +2992,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if w.Stored && row.To != phase.Done {
 		starting = w.RoleAt(row.ToPlace)
 	}
-	if err := e.clearHandoff(ctx, tx, issue.Key, starting); err != nil {
+	if err := e.clearHandoff(ctx, tx, s, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -3578,6 +3579,13 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 // agent, a keyed agent on a step of another role included. Where the role's row runs no step of
 // the plan, it is the role's own token.
 func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
+	if issue.ViewTask != "" {
+		s, err := e.ScopeOf(ctx, tx, issue, issue.ViewTask)
+		if err != nil {
+			return "", err
+		}
+		return e.rowClaim(s, role)
+	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err

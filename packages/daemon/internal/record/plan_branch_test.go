@@ -64,10 +64,10 @@ func taskOf(t *testing.T, tx pgx.Tx, issue string, generation uint64, task strin
 func TestTheFirstTaskToStartTakesTheIssuesBranch(t *testing.T) {
 	st := migratedStore(t)
 	inTx(t, st, func(tx pgx.Tx) {
-		putTasks(t, tx, planIssue, 1, 1, "a", "b", "Task C")
+		putTasks(t, tx, planIssue, 1, 1, "a", "b", "lock")
 		a := assign(t, tx, planIssue, 1, "a")
 		b := assign(t, tx, planIssue, 1, "b")
-		c := assign(t, tx, planIssue, 1, "Task C")
+		c := assign(t, tx, planIssue, 1, "lock")
 		again := assign(t, tx, planIssue, 1, "b")
 		if a != "legion/LEGION-208" || b != "legion/LEGION-208.b" || !strings.HasPrefix(c, "legion/LEGION-208.t-") || again != b {
 			t.Fatalf("a=%q b=%q c=%q again=%q", a, b, c, again)

@@ -89,6 +89,7 @@ type outbox struct {
 	tokens     appauth.Tokens
 	handlers   []intake.Handler
 	project    string
+	deployment stepplan.Deployment
 	// dispatchProject is the Dispatch project whose issues' rows this outbox claims: the database
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
@@ -2514,7 +2515,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			rowsRead = true
-			if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
+			if entry := record.PhaseRowForClaim(rows, payload.Role, payload.Claim).Entry; payload.Entry < entry {
 				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
 					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
 				return nil
@@ -3402,7 +3403,7 @@ func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload r
 		if err != nil {
 			return err
 		}
-		stands = payload.Entry >= record.PhaseRowOf(rows, payload.Role).Entry
+		stands = payload.Entry >= record.PhaseRowForClaim(rows, payload.Role, payload.Claim).Entry
 		return nil
 	})
 	if err != nil {
@@ -4110,7 +4111,7 @@ func (r *outbox) openWorkers(ctx context.Context, tx pgx.Tx, key string) ([]clai
 	if err != nil || issue == nil {
 		return nil, err
 	}
-	return workflow.OpenWorkers(ctx, r.records, tx, r.project, *issue)
+	return workflow.OpenWorkers(r.project, *issue)
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
@@ -4362,7 +4363,7 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 		if err != nil {
 			return startNews{}, false, err
 		}
-		if why := newsOnlyRefusal(machine, found, record.PhaseRowOf(rows, payload.Role).Entry); why != "" {
+		if why := newsOnlyRefusal(machine, found, record.PhaseRowForClaim(rows, payload.Role, token).Entry); why != "" {
 			r.log.Info("outbox news-only start reaches no claim; finished without acting", "row", row.ID, "issue", issue.Key,
 				"role", payload.Role, "why", why)
 			return startNews{}, true, nil

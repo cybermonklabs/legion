@@ -1124,13 +1124,13 @@ const deploymentRolesContract = 258
 const strandedTokenContract = 259
 
 // tasksContract is the daemon contract that added each issue's tasks to the state (version.go's
-// 263, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
+// 264, `issues.<key>.tasks`): each task of the issue's plan with where it stands, the act at its
 // place, what the step there waits for, its own pull request and its own counts (TaskView).
 //
 // It is a literal of its own and never DaemonAPIVersion, for the reason deploymentRolesContract
 // gives, and it is the last number of answers.go's SupportedContracts, which names the constant
 // rather than its number for that reason.
-const tasksContract = 263
+const tasksContract = 264
 
 // withoutDeploymentRoles is the issue as a caller below deploymentRolesContract reads it: an issue
 // at step is at work, so it is served as implementing — its Dispatch status is in_progress, as

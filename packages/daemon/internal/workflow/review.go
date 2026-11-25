@@ -841,7 +841,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		return intake.Result{}, err
 	}
 	issue := &scope.issue
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	reviewer, err := e.stepRow(ctx, tx, *scope, claim.RoleReviewer)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -1507,7 +1507,7 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	}
 	// The round's own answer matters only where the fact and the phase owe no read: every phase
 	// a round can wait on GitHub in already owes one on a head move or a base push.
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	reviewer, err := e.stepRow(ctx, tx, *scope, claim.RoleReviewer)
 	if err != nil {
 		return false, err
 	}
