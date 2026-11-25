@@ -131,28 +131,74 @@ func (r *clusterRig) arrange(t *testing.T, lead, cut int) {
 	t.Helper()
 	dispatch := dispatchConsumerName(r.consumers.spec.Project)
 	preferred := []byte(`{"placement":{"preferred":"` + r.cluster.Name(lead) + `"}}`)
-	testwait.Eventually(t, "the stream led by "+r.cluster.Name(lead)+" and the durable led off "+r.cluster.Name(cut), func() bool {
-		read, cancel := rowRead(t)()
-		defer cancel()
-		stream, err := r.stream.Info(read)
-		if err != nil || stream.Cluster == nil {
-			return false
-		}
-		if stream.Cluster.Leader != r.cluster.Name(lead) {
-			_, _ = r.admin.Conn().RequestWithContext(read, "$JS.API.STREAM.LEADER.STEPDOWN."+notificationStream, preferred)
-			return false
-		}
-		durable, err := r.stream.Consumer(read, dispatch)
-		if err != nil || durable.CachedInfo().Cluster == nil {
-			return false
-		}
-		if durable.CachedInfo().Cluster.Leader == r.cluster.Name(cut) || durable.CachedInfo().Cluster.Leader == "" {
-			_, _ = r.admin.Conn().RequestWithContext(read, "$JS.API.CONSUMER.LEADER.STEPDOWN."+notificationStream+"."+dispatch, preferred)
-			return false
-		}
-		return true
-	})
+	r.moveLeader(t, "the stream", "$JS.API.STREAM.LEADER.STEPDOWN."+notificationStream, preferred,
+		func(ctx context.Context) (string, error) {
+			info, err := r.stream.Info(ctx)
+			if err != nil || info.Cluster == nil {
+				return "", err
+			}
+			return info.Cluster.Leader, nil
+		},
+		func(leader string) bool { return leader == r.cluster.Name(lead) })
+	r.moveLeader(t, "the Dispatch durable", "$JS.API.CONSUMER.LEADER.STEPDOWN."+notificationStream+"."+dispatch, preferred,
+		func(ctx context.Context) (string, error) {
+			durable, err := r.stream.Consumer(ctx, dispatch)
+			if err != nil || durable.CachedInfo().Cluster == nil {
+				return "", err
+			}
+			return durable.CachedInfo().Cluster.Leader, nil
+		},
+		func(leader string) bool { return leader != r.cluster.Name(cut) })
 	r.leader = r.currentLeader(t)
+}
+
+// leaderElectionWait bounds the wait for a group to name a leader again after a stepdown: an
+// election of three members takes a few seconds under the race detector on a loaded runner.
+const leaderElectionWait = 15 * time.Second
+
+// moveLeader asks group to step down, through the subject stepdown with body, until its leader as
+// leaderOf reads it is one placed accepts. Each request waits for the election it starts to name a
+// leader other than the one it stepped down before it asks again: a stepdown sent while the group
+// is still electing starts another election, and asking on every poll kept a 2.15.1 cluster
+// electing for the whole of a minute in CI under the race detector.
+func (r *clusterRig) moveLeader(t *testing.T, group, stepdown string, body []byte, leaderOf func(context.Context) (string, error), placed func(string) bool) {
+	t.Helper()
+	deadline := time.Now().Add(testwait.Bounded(t, 3*time.Minute, 30*time.Second))
+	led := func(not string) string {
+		until := time.Now().Add(leaderElectionWait)
+		for {
+			read, cancel := rowRead(t)()
+			leader, err := leaderOf(read)
+			cancel()
+			if err == nil && leader != "" && leader != not {
+				return leader
+			}
+			if time.Now().After(until) {
+				return ""
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	leader := led("")
+	for attempt := 1; ; attempt++ {
+		if leader != "" && placed(leader) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s is led by %q after %d stepdowns, want a leader its placement accepts", group, leader, attempt-1)
+		}
+		read, cancel := rowRead(t)()
+		_, err := r.admin.Conn().RequestWithContext(read, stepdown, body)
+		cancel()
+		if err != nil {
+			t.Logf("%s's stepdown %d: %v", group, attempt, err)
+		}
+		if next := led(leader); next != "" {
+			leader = next
+		} else {
+			leader = led("")
+		}
+	}
 }
 
 // probeThrough is this project's idle probe sending its create through conn, a client of one member.
@@ -334,15 +380,16 @@ func clusterProbeRows(t *testing.T, image string) {
 		// its quorum, which is a stale leader's read, not a stream with none. The other two are cut
 		// at once, so daemon never wins an election with one of them before both are gone.
 		preferred := []byte(`{"placement":{"preferred":"` + r.cluster.Name((daemon+1)%3) + `"}}`)
-		testwait.Eventually(t, "the stream led by a member other than "+r.cluster.Name(daemon), func() bool {
-			if r.leader = r.currentLeader(t); r.leader != daemon {
-				return true
-			}
-			read, cancel := rowRead(t)()
-			defer cancel()
-			_, _ = r.admin.Conn().RequestWithContext(read, "$JS.API.STREAM.LEADER.STEPDOWN."+notificationStream, preferred)
-			return false
-		})
+		r.moveLeader(t, "the stream", "$JS.API.STREAM.LEADER.STEPDOWN."+notificationStream, preferred,
+			func(ctx context.Context) (string, error) {
+				info, err := r.stream.Info(ctx)
+				if err != nil || info.Cluster == nil {
+					return "", err
+				}
+				return info.Cluster.Leader, nil
+			},
+			func(leader string) bool { return leader != r.cluster.Name(daemon) })
+		r.leader = r.currentLeader(t)
 		r.cluster.Isolate(t, (daemon+1)%3, (daemon+2)%3)
 		defer func() {
 			r.cluster.Rejoin(t, (daemon+1)%3)
