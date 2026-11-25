@@ -147,7 +147,7 @@ root `package.json`.
 
 ```sh
 bun install                                                  # every workspace
-bunx biome check .                                           # what CI's required lint job runs; `<package>/` for one package
+bunx biome check --diagnostic-level=warn --max-diagnostics=none .  # what CI's required lint job runs, every warning and error printed; `<package>/` for one package
 (cd packages/<package> && bun run typecheck && bun run test) # the root has no tsconfig.json and no test script
 (cd packages/<package> && bun test <file> -t '<test name>')  # one test
 bun test scripts/<file or directory>                         # scripts/ is no workspace
@@ -195,8 +195,8 @@ entry.
 
 A package's own commands are in its `README.md` where it has one, and the `AGENTS.md` at the root
 and beside most packages holds the rules for working in that part; `skills/AGENTS.md` covers the
-skills. The documentation site's [contributing page](https://cybermonklabs.github.io/legion/contributing/)
-covers writing its pages.
+skills, and `CONTRIBUTING.md` the pull request process. The documentation site's
+[contributing page](https://cybermonklabs.github.io/legion/contributing/) covers writing its pages.
 
 ## License
 
