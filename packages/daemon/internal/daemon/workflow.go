@@ -1746,7 +1746,11 @@ func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, b
 	if !ok {
 		return runtime.GitIdentity{}, false
 	}
-	return known.KnownIdentity(appauth.AppRoleFor(role))
+	app, err := appauth.AppRoleFor(role, w.deployed)
+	if err != nil {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(app)
 }
 
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it

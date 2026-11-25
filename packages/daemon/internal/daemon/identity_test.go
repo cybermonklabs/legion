@@ -54,7 +54,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			asked = append(asked, string(appauth.AppRoleFor(role))+" on "+repository.String())
+			asked = append(asked, string(appOf(role))+" on "+repository.String())
 			return bot, nil
 		}}
 	spec, err := s.SpawnSpec(context.Background(), c)
@@ -96,10 +96,17 @@ var appIdentities = map[appauth.AppRole]runtime.GitIdentity{
 	appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
 }
 
-// otherApp is the App other than role's own (appauth.AppRoleFor): the App a launch of role asks
-// for the identity of the roles its own App does not cover (specs.roleIdentities).
+// appOf is the App of role, one of Legion's own (appauth.AppRoleFor, with no role of a
+// deployment): these tests launch Legion's roles alone.
+func appOf(role claim.Role) appauth.AppRole {
+	app, _ := appauth.AppRoleFor(role, nil)
+	return app
+}
+
+// otherApp is the App other than role's own (appOf): the App a launch of role asks for the
+// identity of the roles its own App does not cover (specs.roleIdentities).
 func otherApp(role claim.Role) appauth.AppRole {
-	if appauth.AppRoleFor(role) == appauth.Implement {
+	if appOf(role) == appauth.Implement {
 		return appauth.Review
 	}
 	return appauth.Implement
@@ -125,8 +132,8 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 			if at != repository {
 				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, at, repository)
 			}
-			asked = append(asked, appauth.AppRoleFor(role))
-			return appIdentities[appauth.AppRoleFor(role)], nil
+			asked = append(asked, appOf(role))
+			return appIdentities[appOf(role)], nil
 		}}
 	const table = `{"architect":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
 		`"implementer":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
@@ -144,13 +151,13 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the %s's SpawnSpec: %v", role, err)
 		}
-		if want := []appauth.AppRole{appauth.AppRoleFor(role), otherApp(role)}; !slices.Equal(asked, want) {
+		if want := []appauth.AppRole{appOf(role), otherApp(role)}; !slices.Equal(asked, want) {
 			t.Errorf("the %s's launch asked identity for the Apps %q, want %q: its own App, then the other App", role, asked, want)
 		}
 		if got := spec.Env[runtime.RoleIdentitiesVariable]; got != table {
 			t.Errorf("the %s's LEGION_ROLE_IDENTITIES = %q, want every role's identity, %q", role, got, table)
 		}
-		if own := appIdentities[appauth.AppRoleFor(role)]; spec.Env["JJ_USER"] != own.Name || spec.Env["JJ_EMAIL"] != own.Email {
+		if own := appIdentities[appOf(role)]; spec.Env["JJ_USER"] != own.Name || spec.Env["JJ_EMAIL"] != own.Email {
 			t.Errorf("the %s commits as %q <%s>, want its own App's identity, %q <%s>", role, spec.Env["JJ_USER"], spec.Env["JJ_EMAIL"], own.Name, own.Email)
 		}
 	}
