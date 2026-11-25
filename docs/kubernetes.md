@@ -3488,17 +3488,20 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to that rule: after the two blocks, it records every migration the binary embeds but the five the blocks delete (`leftStanding`, against `wayBackVersions`), and reports the maximum of those remaining versions.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to that rule: after the two blocks, it records every migration the binary embeds but the five the blocks delete (`leftStanding`, against `wayBackVersions`), and reports the maximum of those remaining versions, which on this tree is 20261124143026.
 The test runs only those two blocks, not the complete rollback's prerequisite ways back.
 The complete rollback also runs the prerequisite steps named above, including "Rolling back the release whose owner's plan picks the steps", which runs the way back in `20261124033010_plan_earlier_givers.up.sql` and deletes that migration's row.
 The ways back of `20261121170714_dispatch_issue_applied_seq.up.sql` and `20261123224717_members_owed.up.sql` likewise delete their own rows where those migrations were applied.
 For each procedure, read the maximum row actually left in `schema_version` after its last step.
-Deleting 20261124033010 does not delete a later row such as 20261124060500 or 20261124073512.
-A store whose latest recorded migration is `20261124073512_claim_cause_times` reports 20261124073512 after the two blocks and after the complete rollback: that migration has no way back, since an earlier release names none of its four columns.
-20261124073512 stands above 20261124033010, which stands above 20261123212127.
+In version order, 20261123212127 stands below 20261124033010, which stands below 20261124060500, 20261124073512 and 20261124143026, in that order.
+Deleting 20261124033010 does not delete any of those three later rows, and no way back deletes them: none of their migrations carries one.
+`20261124060500_issue_priority.up.sql` carries no way back, since an earlier release names the columns of `issues` in each statement and leaves `priority` alone.
+`20261124073512_claim_cause_times.up.sql` carries none, since an earlier release names none of the four columns it adds.
+`20261124143026_issue_release_teardown.up.sql` carries none, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave the new columns to their defaults, which the new index of `pod_releases` does not hold.
+So a store whose latest recorded migration is `20261124073512_claim_cause_times` reports 20261124073512 after the two blocks and after the complete rollback, and one whose latest is `20261124143026_issue_release_teardown` reports 20261124143026.
 If a higher migration remains recorded, its version is reported instead.
-What the rollback costs is the two times: the earlier release rewrites a claim's cause and leaves standing the time and the digest of the cause before it, and this release serves a time only while its digest is the digest of the cause the claim holds, and a start failure's time before the claim's `lastReady` as none (the migration's header).
-So after the roll-forward a cause the earlier release wrote with other text is served with no time, and so is a start failure it wrote after a ready; a cause it wrote with the same text, a death or a start failure with no ready between, is served with the older cause's time until this release records the next cause of that kind, and no read can tell.
+What the rollback of a store that #5349's release or a later one migrated costs is the two times: the earlier release rewrites a claim's cause and leaves standing the time and the digest of the cause before it, and #5349's release serves a time only while its digest is the digest of the cause the claim holds, and a start failure's time before the claim's `lastReady` as none (the migration's header).
+So after the roll-forward a cause the earlier release wrote with other text is served with no time, and so is a start failure it wrote after a ready; a cause it wrote with the same text, a death or a start failure with no ready between, is served with the older cause's time until that release records the next cause of that kind, and no read can tell.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3507,7 +3510,7 @@ Those three touch no row in common, so any of them runs first.
 Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
 The eleven statements, after the prerequisite blocks where they apply, leave the store at the earlier release's schema except for the additions of later migrations whose rows those steps keep.
 After the whole procedure, the store reports the maximum version row still recorded in `schema_version`, not necessarily the version of the migration reversed by the last block.
-In particular, the row of `20261124073512_claim_cause_times` remains recorded whether or not the plan-givers' way back has deleted 20261124033010, so a store whose latest recorded migration was 20261124073512 still reports that number.
+In particular, no way back deletes the row of `20261124060500_issue_priority`, `20261124073512_claim_cause_times` or `20261124143026_issue_release_teardown`, and each stays recorded whether or not the plan-givers' way back has deleted 20261124033010, so a store whose latest recorded migration was one of them still reports that number.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3586,6 +3589,7 @@ The migrations recorded above this one are these.
 20261124033010_plan_earlier_givers adds `issue_plans.earlier_givers`, each owner that gave a version of a plan before the one `given_by` names, at its default, no earlier giver, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; its way back, which drops the column where `issue_plans` still stands and deletes its row, runs only in a rollback past `20261117034837_issue_plans`, before or after that migration's way back, and a rollback onto a release that has the plan tables costs what its header says: the earlier release passes a version over at a first step where the giver it last recorded no longer owns the issue, though an earlier giver still does.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
+20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -7908,6 +7912,8 @@ The runtime answers a `Suspended` kept Sandbox that carries the release's record
 A `Suspended` kept Sandbox that carries no such record can still own its Secrets: a launch that failed after it wrote them leaves it so.
 The rule releases such a Sandbox once.
 That release deletes its Secrets, keeps the Sandbox with its uid and writes the record, and the next pass holds the issue under `unowned_sandbox_gone`.
+The runtime also answers absent a Sandbox whose stored object carries a `deletionTimestamp`, for as long as it does, and, from the moment the API server answered this runtime's write until the runtime's store of Sandboxes shows it, one its own delete has taken and a kept Sandbox its own release has just written `legion.dev/secrets-released` on (`IssueSandbox`, `podimage.go`).
+The release learns from the API server that its write is done, and the store learns it only when the watch delivers it, so without that answer the pass after a release can read the Sandbox as it was and release the pod a second time.
 Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
@@ -7951,6 +7957,16 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the seven Secrets it owns, the provisioning Secret and the six role Secrets ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
+  A teardown that finds no Sandbox of the issue to release, one another hand deleted after the release was marked or a kept Sandbox an earlier release already released, takes nothing and says so (`ReleaseIssue` answers false).
+  The release of a pod no claim owns then logs `outbox: the release found no Sandbox of the issue to release and released nothing` in place of its release line and records no release; it still ends the pod's hold under a pause, runs the end of the pod and clears the release's mark.
+  So a Sandbox another hand deleted after the release was marked leaves no release record, though its pod went away.
+  Took nothing is a fact of the release and not of one attempt of its teardown: the daemon's teardown notes `reached` on the release's mark (`issue_releases.teardown`) from the runtime's callback, just before the runtime's first write to the Sandbox, so a retry of a teardown whose earlier attempt took the pod and then failed, or whose daemon stopped, before its record finds no Sandbox and still records the release once.
+  The rule, how the note is written and the one window in which a retry records a release that no attempt made are stated on `store.ReleaseTeardown` (`internal/store/issue_release.go`).
+  The column defaults to `reached`, and only this release's own mark insert writes the empty note, so a mark this release did not write reads `reached`: one standing when the migration (`20261124143026_issue_release_teardown.up.sql`) ran, and one that a daemon still on an earlier release writes after it, a daemon of another project that shares the database or the daemon of a rollback.
+  That daemon recorded a release whatever its teardown found, so a teardown it began is recorded as before.
+  The idle release logs its release line and records its release either way, because its stops suspended the roles that a wake brings back, and that wake is measured against the release's record.
+  Either release records itself once: the record names the release's mark (`pod_releases.issue_release_id`, one record per mark), so a teardown that recorded its release and then failed, or whose daemon stopped, before it cleared the mark runs again and takes the record it already wrote.
+  Its release line follows the record, and a teardown whose record was already written logs no second line.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
 A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod and no Secret.
@@ -9646,8 +9662,9 @@ The secrets broker also serves an RFC 8693 token exchange at `POST /v1/oauth/tok
 It takes five kinds of subject token, each under its own `subject_token_type`:
 a pod's projected Kubernetes service-account token, minted for the exchange's own audience (`SubjectTokenTypeKubernetes`), a GitHub Actions workflow run's token (`SubjectTokenTypeGitHub`), a machine's Google identity token (`SubjectTokenTypeGoogle`), a person's own Google identity token, carried with the machine's as the actor token (`SubjectTokenTypePerson`, with `ActorTokenTypeMachine`), and a machine login's own access token (`SubjectTokenTypeAccessToken`).
 
-The exchange answers with an opaque Dispatch access token, bound to the key the request's DPoP proof names (`exchangeGrant`, `packages/envoy/internal/cipher/oauth/exchange.go`).
+The exchange answers with an opaque Dispatch access token, bound to the key the request's DPoP proof names (`exchangeGrant`, `packages/envoy/internal/cipher/oauth/exchange.go`), or, for a trade that asks for `read` and sends a second proof in the `DPoP-Holder` header, to the key that proof names.
 The token lives `BROKER_ACCESS_TOKEN_SECONDS`, 900 seconds by default (`packages/envoy/internal/cipher/config/config.go`).
+A token whose trade asked for `read` lives no longer than its subject token, nor than the launcher credential it names.
 An issued token carries these claims and no others:
 
 - `session` — the session the token's writes are recorded as.
@@ -9660,8 +9677,9 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person` or `none`, which says what `projects` means.
-  Only a read entry's token carries `none`, and that token writes no project.
+- `project_scope` — `named`, `person` or `none`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+  Only a read entry's token carries `none`, and that token writes nothing.
+  A token carrying a narrowed word writes nothing either.
 
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
   A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
@@ -9670,8 +9688,11 @@ An issued token carries these claims and no others:
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token, which holds no other scope.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, and `read person` for such a token that carries `read-person` and names a person.
   Every other token carries none.
+
+- `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
+  Every other token, and such a token whose trade named no cut, carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
@@ -9680,11 +9701,18 @@ An issued token carries these claims and no others:
 The subject token's own kind decides those claims (`packages/envoy/internal/cipher/exchange/exchange.go`).
 A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
 A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
-The token it mints holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
-That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
+The token it mints for a trade that asks for no scope holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
+That token reads every read of Dispatch's read class that needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its documents, comments and asks.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
-The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
+The entry decides the scope of a trade that asks for none.
+A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, one at the zero time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and one in any other form are refused `invalid_request`.
+A token that holds `read` is never the subject of a trade.
+It is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.
+The broker also refuses to mint or move a launcher credential onto a key a live read token is bound to, so no key signs both a read token's proofs and launcher proofs.
+A read trade makes, moves and extends no launcher credential: a person's read trade names the credential the sign-in already holds, so once that credential lapses (with the identity token the sign-in's last ordinary trade presented) read trades are refused `invalid_grant` until one ordinary trade of the sign-in, which `agent-secrets` makes, renews it, and the read tokens it named end with it.
+A driver that renews a copy's read token keeps the sign-in trading ordinarily as well.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
@@ -9730,8 +9758,9 @@ A pod, the daemon, a tmux pane and the daemon-launched controller present the da
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
 Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release.
-It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
-The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
+It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
+It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
+The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares

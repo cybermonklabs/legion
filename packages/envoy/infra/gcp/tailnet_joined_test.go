@@ -1,7 +1,9 @@
 package gcp_test
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,12 +42,14 @@ type joinedHarness struct {
 // newJoinedHarness fails the test at once without jq, or the wc or sed its docker stub runs, on
 // this machine (tool): the script reads each state with jq, and without one of them reads none, so
 // it would ask again every 5 seconds forever, its sleep stubbed to return at once, until the
-// shell's deadline (gcp.ShellCommand).
+// shell's deadline (gcp.ShellCommand). It fails it at once, too, with a jq the script cannot run
+// on (requireJQFailsOnEmptyInput).
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
 	for _, name := range []string{"jq", "wc", "sed"} {
 		tool(t, name)
 	}
+	requireJQFailsOnEmptyInput(t)
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{
@@ -60,6 +64,35 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 	require.NoError(t, os.WriteFile(filepath.Join(h.bin, "sleep"), []byte(sleepStub), 0o700))
 	require.NoError(t, os.WriteFile(h.key, []byte(authKey), 0o600))
 	return h
+}
+
+// requireJQFailsOnEmptyInput fails the test, naming the jq, unless the jq the script runs (the first
+// on PATH, as tool finds it) exits non-zero under -e when it reads no input. The script's wait reads
+// `docker exec … | jq -e`, and docker prints nothing while the container is not up yet: jq 1.7 and
+// later exit 4 then, as Container-Optimized OS's 1.8 does, and the wait goes on. jq 1.6 exits 0, so
+// under it the script takes a container that is not up for a node that runs, and a row's verdict
+// would be this machine's jq rather than the script's.
+//
+// The probe passes only on a status the jq itself returned. A probe killed by a signal (its
+// context's deadline, an out-of-memory kill) also gives an *exec.ExitError, and taking that for
+// "it exits non-zero" would pass every jq on a machine too slow to run the probe.
+func requireJQFailsOnEmptyInput(t *testing.T) {
+	t.Helper()
+	jq := tool(t, "jq")
+	probe := exec.CommandContext(gcp.ScriptContext(t), jq, "-e", ".")
+	probe.Stdin = strings.NewReader("")
+	err := probe.Run()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		version, _ := exec.CommandContext(gcp.ScriptContext(t), jq, "--version").Output()
+		t.Fatalf("this jq (%s) exits 0 on empty input; the tailnet-joined script needs the exit 4 that jq 1.7+ gives, as COS ships 1.8",
+			strings.TrimSpace(string(version)))
+	case !errors.As(err, &exit):
+		t.Fatalf("%s -e . on empty input did not run: %v", jq, err)
+	case !exit.Exited():
+		t.Fatalf("%s -e . on empty input did not exit of its own (%v), so what it answers on empty input is not read", jq, exit.ProcessState)
+	}
 }
 
 // run runs the script once, as one boot's tailnet-joined.service does, with docker answering the
