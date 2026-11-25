@@ -29,6 +29,7 @@ import {
   patchPriority,
 } from "./api";
 import { actionBar } from "./editor";
+import { listTrigger } from "./filters";
 import { pendingWrites } from "./keyed-writes";
 import { pauseClock } from "./page-clock";
 import { settledValue } from "./settled";
@@ -278,8 +279,10 @@ async function chooseTab(page: Page, tab: keyof typeof TABS): Promise<void> {
  *  where that table is the last thing on the page and its box takes the window rather than
  *  standing under another table below the fold. */
 function pagerBelowWindow(page: Page): Promise<number> {
+  // The pager of the tab's one table, by its component's own test identifier, as
+  // `tablesOverflow` finds its box: `priorities-table-pager` or `issues-table-pager`.
   return page
-    .getByTestId("issues-table-pager")
+    .locator('[data-testid$="-table-pager"]')
     .evaluate((pager) => pager.getBoundingClientRect().bottom - window.innerHeight);
 }
 
@@ -3075,13 +3078,16 @@ test("an issue's header names the priorities it advances and links to each", asy
     await expect(header).not.toContainText("Advances");
     const rail = header.getByTestId("issue-metadata-rail");
     await expect(rail.getByTestId("issue-advances")).toHaveCount(0);
+    // The P0-P3 tag is the shared list's single pick, named for its list and then what it shows
+    // (`listTrigger`), and it stands in the element right before the chips.
+    const tag = listTrigger(stateRow, `Priority of ${seed.rollout}`);
+    await expect(tag).toBeVisible();
     expect(
       await line.evaluate(
-        (element) =>
-          element.previousElementSibling?.querySelector("select")?.getAttribute("aria-label") ??
-          null
+        (element, held) => element.previousElementSibling?.contains(held) ?? false,
+        await tag.elementHandle()
       )
-    ).toBe(`Priority of ${seed.rollout}`);
+    ).toBe(true);
     const tagBox = await stateRow.getByLabel(/^Priority of /).boundingBox();
     const lineBox = await line.boundingBox();
     expect(lineBox?.x ?? Number.NaN).toBeGreaterThan(tagBox?.x ?? Number.NaN);
