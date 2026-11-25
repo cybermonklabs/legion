@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { rowWaits, untilGone } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // lib/process-tree.sh (sourced through lib/rig.sh): how a proof knows a process it started by the
@@ -37,6 +38,15 @@ beforeAll(() => {
 // whose init runs as this user). The harness shell, and so everything it starts with `&`, runs in
 // a process group of its own (ownGroup): the rows stop what they end, and a stopped member of the
 // test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
+//
+// Each wait of a row, its shell's (until_true) and the TypeScript side's (untilGone,
+// lib/row-waits.ts), ends on the event it waits for, and is bounded only by the row's bound, 20 s
+// before it, never by the wait's own seconds: a loaded host took more than 10 s to deliver a zombie
+// (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). Every row's bound is `slow`, which
+// every runner reads whatever its command line; Bun ends a row at its bound and kills what the
+// row's shell left running, so a wait gives up first, to name what it waited for.
+const slow = 60_000;
+const waits = rowWaits(slow);
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -45,6 +55,7 @@ work=$(mktemp -d "$DIR/work.XXXXXX") evidence=$work timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))
 scratch=$(mktemp -d "$DIR/run.XXXXXX")
 started=()
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.
@@ -82,27 +93,6 @@ ${body}`;
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
-
-// gone says whether PID has ended, a zombie counting as ended, within five seconds: what a row
-// started must not outlive it. A SIGKILL's delivery and the end of the process it hits are the
-// kernel's, and no fake clock drives them, so this polls the process itself, as the role-kill rows do.
-async function gone(pid: number): Promise<boolean> {
-  for (let i = 0; i < 100; i++) {
-    let state: string;
-    try {
-      state = readFileSync(`/proc/${pid}/stat`, "utf8")
-        .replace(/^.*\) /, "")
-        .slice(0, 1);
-    } catch {
-      return true;
-    }
-    if (state === "Z" || state === "X") return true;
-    await Bun.sleep(50);
-  }
-  return false;
-}
-
-const slow = 60_000;
 
 host.describe("record_pid_sh and recorded_pid", () => {
   test(
@@ -177,7 +167,7 @@ found=$(launched "$top" "$program")
       const found = /^found the program (\d+)$/.exec(r.out.trim());
       expect(found).not.toBeNull();
       // The row's own end stops the whole line: the program two levels below what it started too.
-      expect(await gone(Number(found?.[1]))).toBe(true);
+      await untilGone(Number(found?.[1]), "the program below the line", waits.end());
     },
     slow
   );
@@ -208,9 +198,9 @@ echo "one child: status $st: $why"
         lines[1] ?? ""
       );
       expect(two).not.toBeNull();
-      expect(await gone(Number(found?.[1]))).toBe(true);
-      expect(await gone(Number(two?.[1]))).toBe(true);
-      expect(await gone(Number(two?.[2]))).toBe(true);
+      await untilGone(Number(found?.[1]), "the program beside the helper", waits.end());
+      await untilGone(Number(two?.[1]), "a child of the program's parent", waits.end());
+      await untilGone(Number(two?.[2]), "a child of the program's parent", waits.end());
     },
     slow
   );
@@ -257,8 +247,8 @@ echo "line: status $st: $why"
           `^line: status 1: no process below \\d+ runs ${literalPattern(program)}; below it: \\d+ ${literalPattern(other)}$`
         )
       );
-      expect(await gone(Number(two?.[2]))).toBe(true);
-      expect(await gone(Number(two?.[3]))).toBe(true);
+      await untilGone(Number(two?.[2]), "one of the two programs", waits.end());
+      await untilGone(Number(two?.[3]), "one of the two programs", waits.end());
     },
     slow
   );
@@ -329,7 +319,7 @@ if native_program "$scratch/mise" >/dev/null; then echo "mise itself: named"; el
         "a mise shim: status 1",
         "mise itself: named",
       ]);
-      expect(await gone(Number(kid?.[1]))).toBe(true);
+      await untilGone(Number(kid?.[1]), "the other program, the child", waits.end());
     },
     slow
   );
@@ -396,16 +386,21 @@ leader=\${fields[2]}
 # it, a CI step's or a pod's bash tool's. The child says so when it leads its group itself, which
 # would make the question vacuous.
 bash -c '. "$1"; g=$(proc_group $$); if [ "$g" = $$ ]; then echo "the child leads its own group"; elif signalable "$g" 2>/dev/null; then echo "signalable took the group leader $g"; else echo "its group'"'"'s leader: refused"; fi' - "$root/scripts/e2e/lib/process-tree.sh"
+# Every signal stop_tree sends goes through kill, here a function that records it and sends it,
+# so what the wrong parent's stop sent is read from the record, never from a state that a signal
+# still in flight has not changed yet. The right parent's stop then must fill the record, so an
+# empty one after the wrong parent's is a record that could see a signal.
+kill() { printf '%s\\n' "$*" >>"$scratch/kills"; builtin kill "$@"; }
 stop_tree "$g" 1
-sleep 1
-read -r stat </proc/"$g"/stat
-case \${stat##*) } in S* | R*) echo "a wrong parent: left running" ;; *) echo "a wrong parent: acted on, state \${stat##*) }" ;; esac
+echo "a wrong parent: sent [$(paste -sd, "$scratch/kills" 2>/dev/null || :)]"
 # The shell's own "Killed" notice of the tree it reaps goes nowhere: it is no output of the row.
 exec 3>&2 2>/dev/null
 stop_tree "$g"
 wait "$g" || :
 exec 2>&3 3>&-
+unset -f kill
 echo "stopped: $g" $kids
+if [ -s "$scratch/kills" ]; then echo "the record: holds the right parent's stop"; else echo "the record: empty after the right parent's stop"; fi
 [ "$(proc_parent $$) $(proc_group $$)" = "$PPID $leader" ] && echo "proc_parent and proc_group: this shell's" || echo "proc_parent and proc_group: $(proc_parent $$) $(proc_group $$)"
 echo "a pid that runs nothing: [$(proc_parent 999999999)$(proc_group 999999999)$(proc_children 999999999)$(proc_describe 999999999)]"
 calls=$(cat "$scratch/calls" 2>/dev/null || :)
@@ -418,12 +413,15 @@ echo "calls: [\${calls//$'\\n'/;}]"
       expect([lines[0], lines[1], lines[2], ...lines.slice(4)]).toEqual([
         "this shell: refused",
         "its group's leader: refused",
-        "a wrong parent: left running",
+        "a wrong parent: sent []",
+        "the record: holds the right parent's stop",
         "proc_parent and proc_group: this shell's",
         "a pid that runs nothing: []",
         "calls: []",
       ]);
-      for (const pid of stopped?.slice(1) ?? []) expect(await gone(Number(pid))).toBe(true);
+      for (const pid of stopped?.slice(1) ?? []) {
+        await untilGone(Number(pid), "a process of the tree stop_tree ended", waits.end());
+      }
     },
     slow
   );
@@ -485,7 +483,9 @@ echo "scratch: $scratch"
         listed: [],
         readsStat: true,
       });
-      for (const pid of asked.slice(0, 3)) expect(await gone(Number(pid))).toBe(true);
+      for (const pid of asked.slice(0, 3)) {
+        await untilGone(Number(pid), "a process of the tree the traced shell stopped", waits.end());
+      }
     },
     slow
   );
@@ -581,7 +581,7 @@ echo "pid $pid"
           "stopped already, its check fails once stopped: 1, sent -STOP, stopped\n" +
           `its check holds: 0, sent -STOP,-TERM,-CONT\npid ${pid}\n`
       );
-      expect(await gone(pid)).toBe(true);
+      await untilGone(pid, "the program freeze_if sent TERM", waits.end());
     },
     slow
   );
@@ -813,7 +813,7 @@ echo "agent $agent"
       expect(r.out).toBe(
         `another pane's ticks: status 1, agent S\nits own ticks: killed\nagent ${agent}\n`
       );
-      expect(await gone(agent)).toBe(true);
+      await untilGone(agent, "the agent kill_the_agent killed", waits.end());
     },
     slow
   );
@@ -827,11 +827,16 @@ const ps = hostGate({ programs: ["ps"] });
 // names_dir) answer 2 for an environment that is empty, a process that has gone or one with no
 // variable at all, never 1, the answer of an environment that lacks the name.
 host.describe("proc_start and the environment readers", () => {
+  // The zombie is a child of a bash that execs sleep, which never reaps it. The child ends only once
+  // its parent runs sleep: one that ended before the exec was reaped by the parent's bash and never
+  // became a zombie, which happened once in 60 runs and every time with a second's sleep before the
+  // exec. It gives up at the end of the row's waits, and the wait for the zombie then names it.
   test(
     "proc_start gives a zombie no start and a live process its own",
     () => {
       const r = run(`
-bash -c 'sleep 600 & "$0" 0 </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' "$program" </dev/null >"$scratch/zombie" 2>/dev/null &
+printf '%s\\n' 'end=$((SECONDS + $2))' 'until [ "$(readlink "/proc/$PPID/exe")" = "$1" ]; do [ "$SECONDS" -lt "$end" ] || exit 1; sleep 0.05; done' >"$scratch/child"
+bash -c 'sleep 600 & bash "$1" "$2" "$3" </dev/null >/dev/null 2>&1 & echo $!; exec sleep 600' parent "$scratch/child" "$(realpath -e -- "$(command -v sleep)")" "$((until_true_deadline - SECONDS))" </dev/null >"$scratch/zombie" 2>/dev/null &
 parent=$!
 started+=("$parent")
 until_true 10 "the child to be a zombie" sh -c 'read -r z <"$1" && read -r s </proc/$z/stat && s=\${s##*) } && [ "\${s%% *}" = Z ]' sh "$scratch/zombie"
@@ -1003,6 +1008,8 @@ echo "the trap's shell exited $st"
 // A row that fails in until_true (lib/rig.sh) exits inside it, through the harness's `fail`, so the
 // harness's EXIT trap runs where until_true's locals are in scope. One of them was named `started`,
 // and the trap then read that number in place of the row's `started` pids and stopped none of them.
+// The subshell clears the row's until_true_deadline, so its until_true fails at its own 1 s, not at
+// the end of the row's waits.
 host.describe("the row harness", () => {
   test(
     "an EXIT trap that runs when until_true fails reads the row's own started pids",
@@ -1010,7 +1017,7 @@ host.describe("the row harness", () => {
       const r = run(`
 "$program" 600 </dev/null >/dev/null 2>&1 &
 started+=("$!")
-(trap 'echo "the trap reads [\${started[*]}]"' EXIT; until_true 1 "nothing" false) 2>/dev/null || :
+(trap 'echo "the trap reads [\${started[*]}]"' EXIT; until_true_deadline=; until_true 1 "nothing" false) 2>/dev/null || :
 echo "the row started [\${started[*]}]"
 `);
       expect(r.err).toBe("");

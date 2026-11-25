@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   appendFileSync,
   chmodSync,
@@ -31,6 +31,7 @@ import { z } from "zod";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
+import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { ANSWERS, BOOTED, labelOf, SKIPS, scenarioOf } from "./completion-answers";
 import { routeFor } from "./gh-call";
@@ -65,8 +66,8 @@ import { WORLD_REPO, WORLD_SPEC } from "./world-issue";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute.
-setDefaultTimeout(60_000);
+// one minute, and a wait of a row on its processes (untilRunning) ends 20 s before that.
+const waits = rowWaits(60_000);
 
 /** The gh stand-in the rows call and put behind a pane's `gh`, a bundle built from gh-standin.ts
  * for this suite, so no call transpiles it again (test-programs.ts). */
@@ -9503,7 +9504,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep");
+    await untilRunning(run.pid, "sleep", waits.end());
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
@@ -9561,7 +9562,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
             )
             .find((child) => child !== "")
         );
-        await untilRunning(inner, "sleep");
+        await untilRunning(inner, "sleep", waits.end());
         const procRoot = procRootOf(dir, [agent.pid, inner]);
         const named = groupBash(
           `set -euo pipefail\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\nrun_env_pids "$1"`,
