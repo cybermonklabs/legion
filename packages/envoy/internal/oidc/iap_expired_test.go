@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -86,5 +87,27 @@ func TestIAPVerifierReportsAnUnreadableKeySetForAnExpiredAssertion(t *testing.T)
 	rig.server.FailKeys(0)
 	if _, err := rig.verify(t, rig.signing, expiredClaims(nil)); !errors.Is(err, ErrExpired) {
 		t.Fatalf("the same assertion once the key set answers: err = %v, want %v", err, ErrExpired)
+	}
+}
+
+// Verify judges an assertion's exp against its clock's present (NewIAPVerifierOn), so a row names
+// the moment it is judged at rather than waiting for the wall clock to pass the exp: one assertion
+// is taken at IAPClockSkew past its exp, and expired a second after that.
+func TestIAPVerifierJudgesTheExpAtItsClocksPresent(t *testing.T) {
+	rig := newIAPRig(t)
+	exp := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	fake := clocktest.New(exp.Add(IAPClockSkew))
+	verifier := NewIAPVerifierOn(iapTestAudience, NewKeysAt(rig.server.URL()+"/keys"), fake)
+	claims := iapClaims()
+	claims["iat"] = exp.Add(-10 * time.Minute).Unix()
+	claims["exp"] = exp.Unix()
+	raw := rig.server.Mint(t, rig.signing, claims)
+
+	if _, err := verifier.Verify(context.Background(), raw); err != nil {
+		t.Fatalf("at IAPClockSkew past its exp, on the verifier's clock: err = %v, want the assertion taken", err)
+	}
+	fake.Advance(time.Second)
+	if _, err := verifier.Verify(context.Background(), raw); !errors.Is(err, ErrExpired) {
+		t.Fatalf("a second later, on the verifier's clock: err = %v, want %v", err, ErrExpired)
 	}
 }
