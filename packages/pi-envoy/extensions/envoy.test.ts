@@ -19873,7 +19873,6 @@ console.log(JSON.stringify(args));
           event_id: eventID,
         });
 
-      // The clock moves once the first reply reached Dispatch, past the session's settings read.
       const context = await onTestClock(
         async () => {
           agent.push(btw("evt-btw-first"));

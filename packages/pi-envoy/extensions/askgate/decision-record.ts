@@ -200,10 +200,10 @@ export interface RecordDeps {
   now: () => number;
   /**
    * The session's Dispatch as the directory given configures it, every request ending with the
-   * signal given or at the deadline given, counted from this call (`DispatchClient`'s
-   * `deadlineMs`), which ends a write Dispatch is, or may be, still running as such
-   * (`DispatchWriteUnsettledError`'s `running`); undefined when the session has no Dispatch
-   * configuration.
+   * signal given or at the deadline given, counted from when the client is made, once the
+   * session's settings are read (`DispatchClient`'s `deadlineMs`), which ends a write Dispatch is,
+   * or may be, still running as such (`DispatchWriteUnsettledError`'s `running`); undefined when
+   * the session has no Dispatch configuration.
    */
   dispatchClient: (
     directory: string,
@@ -418,7 +418,7 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
     // write does: the record is lost and the entry says why.
     const write = async (): Promise<string | undefined> => {
       // One client for the record's read, create and append, so its deadline bounds all three:
-      // the session's next record waits on this one, and a minute is all it waits.
+      // the session's next record waits on this one, and a minute is all those three take.
       const dispatch = await deps.dispatchClient(
         directory,
         stop.signal,
