@@ -923,11 +923,13 @@ pg_sql() {
 # nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
 # NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
 # own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
-# client, and a host that swallows the connection cannot hold its caller past its bound.
+# client, and a host that swallows the connection cannot hold its caller past its bound. It cuts
+# the path before the user info, so a `@` in the path is not read as the end of a user info: the
+# host and port are the authority's, the one nats_url_host read, after its last `@`.
 nats_ready() {
   local hostport=${1#*://} line=''
-  hostport=${hostport##*@}
   hostport=${hostport%%/*}
+  hostport=${hostport##*@}
   line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
     -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
   case $line in 'INFO '*) ;; *) return 1 ;; esac

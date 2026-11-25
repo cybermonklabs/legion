@@ -706,6 +706,58 @@ describe("safe_url", () => {
   });
 });
 
+// nats_ready URL probes the host and port URL names for a NATS server's INFO line. The batch
+// probes a given NATS with it after nats_url_host read that URL's host as loopback, so it must
+// probe that same host.
+describe("nats_ready", () => {
+  /** A server on 127.0.0.1 that greets each connection with a NATS INFO line, and a port on
+   * 127.0.0.1 that nothing listens on. */
+  function servers() {
+    const info = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { open: (socket) => void socket.write("INFO {}\r\n"), data: () => {} },
+    });
+    const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data: () => {} } });
+    const nobody = free.port;
+    free.stop(true);
+    return { info, nobody };
+  }
+  /** nats_ready's status for each URL, run while this process's server can answer it. */
+  async function ready(...urls: string[]) {
+    const proc = Bun.spawn(
+      [
+        "bash",
+        "-c",
+        `${fn("nats_ready")}\nfor url; do nats_ready "$url"; echo $?; done`,
+        "-",
+        ...urls,
+      ],
+      { env: childEnv, stdout: "pipe", stderr: "pipe" }
+    );
+    await proc.exited;
+    return (await new Response(proc.stdout).text()).trim().split("\n");
+  }
+
+  // Catches: a probe that reads its host after the last `@` of the whole URL, a path's included,
+  // so nats://127.0.0.1:<port>/@other:4222, whose host is 127.0.0.1, probes other. Here "other" is
+  // the server that answers INFO and the URL's own port has nothing on it, so a probe of other
+  // answers ready; the control, the other way round, answers ready from the URL's own host.
+  test("nats_ready probes the URL's own host, not one after a `@` in its path", async () => {
+    const { info, nobody } = servers();
+    try {
+      expect(
+        await ready(
+          `nats://127.0.0.1:${nobody}/@127.0.0.1:${info.port}`,
+          `nats://127.0.0.1:${info.port}/@127.0.0.1:${nobody}`
+        )
+      ).toEqual(["1", "0"]);
+    } finally {
+      info.stop(true);
+    }
+  });
+});
+
 // services_up reads a given SKILL_SCENARIOS_POSTGRES_URL before anything connects to that server
 // or the batch writes the URL anywhere. python3 with libpq: its guards read the URL with this
 // host's libpq (scripts/e2e/lib/loopback-dsn.py), which refuses every URL where it finds none.
