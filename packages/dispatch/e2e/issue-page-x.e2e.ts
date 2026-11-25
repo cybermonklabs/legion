@@ -15,7 +15,7 @@ import {
   SETTLE_ANSWERS,
 } from "../web/src/features/issue-page/page-words";
 import { DRAWN_LEVELS, NARROW_LEVELS } from "../web/src/features/issue-page/tree-fold";
-import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { parseNodeReference } from "../web/src/features/refs/routes";
 import { wordsOf as readingWords } from "../web/src/features/refs/tree-fragment";
 import { pageStateText } from "../web/src/theme/classes";
@@ -423,6 +423,8 @@ interface LoadedPage {
   readonly answer: IssueTreeRead;
   readonly key: string;
   readonly plain: string;
+  /** The issue read and the asks read as alice reads them (`treeIdReads`), once the seed wrote. */
+  readonly reads: TreeIdReads;
   readonly seeded: NodeStateSeed;
   readonly traffic: ApiRequests;
   readonly treeId: (readId: string) => string;
@@ -447,7 +449,8 @@ async function loadedPage(page: Page, seeded: NodeStateSeed): Promise<LoadedPage
       (node) => node.id === seeded.ids.statement7 && node.state === "proposed"
     )
   );
-  return { answer, key, plain, seeded, traffic, treeId: treeIdOf(answer, await treeIdReads(key)) };
+  const reads = await treeIdReads(key);
+  return { answer, key, plain, reads, seeded, traffic, treeId: treeIdOf(answer, reads) };
 }
 
 /**
@@ -1314,8 +1317,7 @@ test("a proposed node is marked and settled on the page, and an overtaken one is
       answer: loaded.answer,
       levels: size === PHONE ? NARROW_LEVELS : DRAWN_LEVELS,
       readId: seeded.ids.statement8,
-      reads: await treeIdReads(loaded.key),
-      treeId: loaded.treeId,
+      reads: loaded.reads,
       what: "statement 8",
     });
     const read: ProposedPage = { ...loaded, graph, opens };

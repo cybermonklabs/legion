@@ -877,9 +877,7 @@ test("an overtaken decision waits on nobody", () => {
 test("a proposed ask and a proposed decision still wait on the reader", () => {
   const tree = answerOf([
     statement,
-    ...askNodes.map((node) =>
-      node.id === "mine" ? { ...node, state: "proposed" as const } : node
-    ),
+    ...mine({ state: "proposed" }),
     decisionNode("listed", ["r1"], { state: "proposed" }),
   ]);
 

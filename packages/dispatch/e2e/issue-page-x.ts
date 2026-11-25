@@ -6,7 +6,7 @@ import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { blockIdOfNode } from "../web/src/features/issue-page/decision-review";
 import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
 import { checkStanding } from "../web/src/features/issue-page/tree-drafts";
-import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { closedReadIds } from "../web/src/features/issue-page/waiting";
 import { buildDispatchReference } from "../web/src/features/refs/routes";
 import {
@@ -1278,8 +1278,6 @@ export interface PlaceOnLoad {
   /** That issue's read and its asks read, as the page's reader reads them (`treeIdReads`), which
    *  pair each question's block with its ask, open or answered (`closedReadIds`). */
   readonly reads: TreeIdReads;
-  /** The id the page draws a node of `answer` under, by its read id (`treeIdOf`). */
-  readonly treeId: (readId: string) => string;
   /** How the owed note names the node. */
   readonly what: string;
 }
@@ -1299,15 +1297,15 @@ export interface PlaceOnLoad {
  * of the frontier, so it is read for a node under which nothing is open, in whose place the
  * frontier opens no live node. The rows at or under an overtaken node, as the header's count
  * finds them (`waiting.ts`' `closedReadIds`), the row of a question whose ask's node is overtaken
- * among them, told by the id the page draws each under (`treeId`, which gives a question's ask
- * the row of the block it was indexed from), are left out, so the gate never reads this part's
- * own behaviour.
+ * among them, told by the id the page draws each under (`treeIdOf` over `reads`, which gives a
+ * question's ask the row of the block it was indexed from), are left out, so the gate never reads
+ * this part's own behaviour.
  */
 export async function openOnLoadGate(
   page: Page,
-  { answer, levels, readId, reads, treeId, what }: PlaceOnLoad
+  { answer, levels, readId, reads, what }: PlaceOnLoad
 ): Promise<Gate> {
-  const closed = new Set([...closedReadIds(answer, reads)].map(treeId));
+  const closed = new Set([...closedReadIds(answer, reads)].map(treeIdOf(answer, reads)));
   const rows = await rowsAsOpened(page);
   // A node whose row the load does not draw stands in no place an opening draws the rows of.
   const level = rows.find((item) => item.readId === readId)?.level ?? Number.POSITIVE_INFINITY;

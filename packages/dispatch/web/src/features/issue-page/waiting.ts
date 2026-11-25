@@ -80,14 +80,10 @@ export function waitingOnReader(
   const reads: DecisionReads = { asks: asksRead, issue };
   const closed = closedReadIds(tree, reads);
   if (tree !== undefined && closed.size > 0) {
-    // The ask of each closed ask node, its conversation node or its block, paired as the tree
-    // pairs them (`askOfNode`).
-    const askOf = askOfNode(reads);
-    const closedAsks = new Set(
-      (tree.nodes ?? []).flatMap((node) => {
-        const ask = node.supertag === "ask" && closed.has(node.id) ? askOf(node) : undefined;
-        return ask === undefined ? [] : [ask.id];
-      })
+    // The ask of each closed ask node, its conversation node or its block.
+    const closedAsks = askIdsOf(
+      (tree.nodes ?? []).filter((node) => closed.has(node.id)),
+      askOfNode(reads)
     );
     issue = {
       ...issue,
@@ -151,12 +147,7 @@ export function closedReadIds(
   if (overtaken.length === 0) return new Set();
   const askOf = askOfNode(reads);
   // The id of the ask each overtaken ask node is, which every ask node it pairs with is too.
-  const overtakenAsks = new Set(
-    overtaken.flatMap((node) => {
-      const ask = node.supertag === "ask" ? askOf(node) : undefined;
-      return ask === undefined ? [] : [ask.id];
-    })
-  );
+  const overtakenAsks = askIdsOf(overtaken, askOf);
   // Each node's children, by the read's own id of the parent, which is what `parent` names.
   const children = new Map<string, AnswerNode[]>();
   for (const node of nodes) {
@@ -167,10 +158,12 @@ export function closedReadIds(
   }
   const closing = [
     ...overtaken,
-    ...nodes.filter((node) => {
-      const ask = node.supertag === "ask" ? askOf(node) : undefined;
-      return ask !== undefined && overtakenAsks.has(ask.id);
-    }),
+    ...(overtakenAsks.size === 0
+      ? []
+      : nodes.filter((node) => {
+          const id = askIdOfNode(node, askOf);
+          return id !== undefined && overtakenAsks.has(id);
+        })),
   ];
   const closed = new Set<string>();
   for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
@@ -179,6 +172,26 @@ export function closedReadIds(
     closing.push(...(children.get(node.id) ?? []));
   }
   return closed;
+}
+
+/** The id of the ask the `ask` node `node` is, by the tree's one pairing rule (`askOfNode`): a
+ *  question's conversation node and the block it is written as give the same ask. Undefined for
+ *  any other node, and for an ask node no ask of the reads is. */
+function askIdOfNode(node: AnswerNode, askOf: ReturnType<typeof askOfNode>): string | undefined {
+  return node.supertag === "ask" ? askOf(node)?.id : undefined;
+}
+
+/** The id of the ask each `ask` node of `nodes` is (`askIdOfNode`). */
+function askIdsOf(
+  nodes: readonly AnswerNode[],
+  askOf: ReturnType<typeof askOfNode>
+): ReadonlySet<string> {
+  return new Set(
+    nodes.flatMap((node) => {
+      const id = askIdOfNode(node, askOf);
+      return id === undefined ? [] : [id];
+    })
+  );
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

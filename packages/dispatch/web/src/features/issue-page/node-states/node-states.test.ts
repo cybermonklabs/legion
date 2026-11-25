@@ -2379,6 +2379,7 @@ test("a view's row under a parent the view holds live is not closed by that pare
     readNodeOf(presetView(root, "spec", query).root, blockReadId("spec", "r3"));
   expect(markKeys(readNodeOf(outline, blockReadId("spec", "r2")))).toEqual(["closed", "life"]);
   expect(markKeys(readNodeOf(outline, blockReadId("spec", "r3")))).toEqual(["closed"]);
+  expect(r3Under("")?.id).toBe("spec#b-r3");
   expect(markKeys(r3Under(""))).toEqual([]);
   expect(r3Under("zebra")?.parentLine).toMatchObject({
     id: "spec#b-r2",
