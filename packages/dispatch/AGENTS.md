@@ -61,7 +61,8 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - `components/focus-place.ts`: a component's own hand-off of a control a press takes out of it (`useFocusPlace`), armed by the reader's press at the component's root (`armOnPress`); `components/row-marker.ts` says what it treats as a row.
 
-- `components/held-press.ts`: the hold on a control that cannot be pressed now: one whose press started a write or a read that is still out, or a step with no page to go to (`StepButton.tsx`, `Pager.tsx`).
+- `components/held-press.ts`: the hold on a control that cannot be pressed now: one whose press started a write or a read that is still out, a step with no page to go to (`StepButton.tsx`, `Pager.tsx`), or a control with nothing to do, such as Rename with no new name (`features/delivery/SessionGroupsEditor.tsx`) and Move with no epic staged (`features/project/issues-table-page.tsx`).
+  A hold through a write's answer (`useHeldThroughAnswer`) keeps the armed hand-off of the press that started the write live (`holdHandOff`); a control held with nothing to do, before its press or once what answers its press has ended, keeps no press live (`components/focus-place.ts`).
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 

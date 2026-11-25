@@ -34,6 +34,7 @@ import {
 } from "../issue/parent-status/status-change-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useDialog } from "../shell/useDialog";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
@@ -1637,14 +1638,15 @@ function statusChangeOf(input: { dry_run?: boolean; include_children?: boolean }
   return `${input.dry_run === true ? "dry run" : "write"} with ${option}`;
 }
 
-/** A move that asks: its own dry run is refused by the rule (ACME-4's child in work),
- *  `include_children`'s dry run answers, `unlink_children`'s is held, and `write` answers the
- *  status change with the option. */
-function answerTheQuestion(write: () => Promise<StatusChangeAnswer>) {
+/** A move that asks: its own dry run is refused by the rule (ACME-4's child in work), once `held`
+ *  settles where a row holds it, `include_children`'s dry run answers, `unlink_children`'s is held,
+ *  and `write` answers the status change with the option. */
+function answerTheQuestion(write: () => Promise<StatusChangeAnswer>, held?: Promise<void>) {
   return answerStatusChanges().mockImplementation(async (_key, input) => {
     if (input.dry_run !== true) return write();
     if (input.include_children === true) return fixtureAnswer("dry-run");
     if (input.unlink_children === true) return new Promise<StatusChangeAnswer>(() => {});
+    if (held !== undefined) await held;
     throw fixtureRefusal("conflict");
   });
 }
@@ -1691,24 +1693,62 @@ test("board: checking - a second drop while the first is checking waits behind i
   }
 });
 
+/** A dialog of another part of the page, open over the board: `useDialog` takes the focus as it
+ *  opens and gives it to its control a frame later. */
+function AnotherDialog(): ReactNode {
+  const dialog = useDialog<HTMLDivElement>({ onClose: () => {}, open: true });
+  return (
+    <div aria-label="Another dialog" ref={dialog.containerRef} role="dialog">
+      <button type="button">In another dialog</button>
+    </div>
+  );
+}
+
 // INFRA-3135: a keyboard move the rule's dry run checks first places the card only once the dry
 // run answers. The focus follows the card then only while it stands where the reader's press left
-// it; a reader who has moved on - here `j` to the next card - keeps their place.
-for (const movedOn of [false, true]) {
-  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (${movedOn ? "the reader moved on" : "the reader stayed"})`, async () => {
+// it. A reader who has moved on keeps their place: here `j` to the next card, or a blur that puts
+// the focus on the body, as a click on a blank spot of the page's shell does in Chromium and
+// WebKit. The board's draw of the card in its new column removes the node the press focused, so
+// after that draw the body tells nothing: only what the move read as it placed the card tells the
+// reader's blur from the card's going. Another dialog open over the board is no place the press
+// left the focus: with the focus on the body under it, as a press on its text leaves it, the move
+// takes no focus to the card behind it.
+for (const reader of [
+  "stayed",
+  "moved on",
+  "put the focus on the body",
+  "opened another dialog and put the focus on the body",
+] as const) {
+  test(`board: checking - focus follows a checked keyboard move only while it stands where the press left it (the reader ${reader})`, async () => {
     const user = userEvent.setup();
     const dryRun = Promise.withResolvers<StatusChangeAnswer>();
     const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
     const patchIssue = patchInFlight();
     const { cleanup } = renderBoard({}, undefined, parentIssues);
+    let closeAnother: (() => void) | undefined;
     try {
       const board = await screen.findByRole("region", { name: "Project board" });
-      act(() => within(board).getByRole("article", { name: "CORE-1 Parent" }).focus());
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
       await user.keyboard("{Shift>}L{/Shift}");
       await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
-      if (movedOn) await user.keyboard("j");
       const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-      if (movedOn) expect(bravo).toHaveFocus();
+      if (reader === "moved on") {
+        await user.keyboard("j");
+        expect(bravo).toHaveFocus();
+      }
+      if (reader === "put the focus on the body") {
+        act(() => pressed.blur());
+        expect(document.body).toHaveFocus();
+      }
+      if (reader === "opened another dialog and put the focus on the body") {
+        closeAnother = render(<AnotherDialog />).unmount;
+        await afterFrameAndTasks();
+        const control = screen.getByRole("button", { name: "In another dialog" });
+        expect(control).toHaveFocus();
+        act(() => control.blur());
+        expect(document.body).toHaveFocus();
+      }
       await act(async () => {
         dryRun.resolve(fixtureAnswer("dry-run"));
         await settle();
@@ -1717,9 +1757,61 @@ for (const movedOn of [false, true]) {
       await waitFor(() =>
         expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
       );
+      expect(pressed).not.toBeInTheDocument();
+      await afterFrameAndTasks();
+      const kept = {
+        "moved on": bravo,
+        "opened another dialog and put the focus on the body": document.body,
+        "put the focus on the body": document.body,
+        stayed: within(inProgress).getByRole("article", { name: "CORE-1 Parent" }),
+      };
+      expect(kept[reader]).toHaveFocus();
+    } finally {
+      closeAnother?.();
+      cleanup();
+      patchIssue.mockRestore();
+      statusChanges.mockRestore();
+    }
+  });
+}
+
+// The rule's question takes the focus as it opens and gives it back as it closes
+// (`useDialog`). A keyboard move whose card a choice of the question places takes the focus to
+// that card only where the question took the focus from the card the press moved. A reader who
+// puts the focus on the body while the move's dry run is out has the question open on the body:
+// once the choice has placed the card and the question has closed, the focus stays on the body.
+for (const opener of ["the pressed card", "the body"] as const) {
+  test(`board: asking - a choice that places a keyboard move's card takes the focus to it only where the question took the focus from that card (the question opened on ${opener})`, async () => {
+    const user = userEvent.setup();
+    const refusal = Promise.withResolvers<void>();
+    const statusChanges = answerTheQuestion(async () => fixtureAnswer("changed"), refusal.promise);
+    const patchIssue = patchInFlight();
+    const { cleanup } = renderBoard({}, undefined, parentIssues);
+    try {
+      const board = await screen.findByRole("region", { name: "Project board" });
+      const pressed = within(board).getByRole("article", { name: "CORE-1 Parent" });
+      act(() => pressed.focus());
+      await user.keyboard("{Shift>}L{/Shift}");
+      await waitFor(() => expect(statusChanges).toHaveBeenCalledTimes(1));
+      if (opener === "the body") {
+        act(() => pressed.blur());
+        expect(document.body).toHaveFocus();
+      }
+      refusal.resolve();
+      const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+      const moveThem = within(question).getByRole("button", { name: "Move them with it" });
+      await waitFor(() => expect(moveThem).toBeEnabled());
+      await user.click(moveThem);
+      const inProgress = within(board).getByRole("region", { name: "In progress" });
+      await waitFor(() =>
+        expect(within(inProgress).getByRole("article", { name: "CORE-1 Parent" })).toBeDefined()
+      );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       await afterFrameAndTasks();
       expect(
-        movedOn ? bravo : within(inProgress).getByRole("article", { name: "CORE-1 Parent" })
+        opener === "the body"
+          ? document.body
+          : within(inProgress).getByRole("article", { name: "CORE-1 Parent" })
       ).toHaveFocus();
     } finally {
       cleanup();

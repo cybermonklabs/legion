@@ -534,8 +534,9 @@ test("AgentsPage: the header's Clear selection arms the header's hand-off", asyn
 // The header's armed hand-off (`SelectionHeader`): Clear selection goes with the selection it
 // empties, and its focus goes to the select-all checkbox before it. While no row matches, that
 // checkbox is disabled and the header holds no other control, so the header's own hand-off walks
-// back over the main content it was in (`walkBackInRegion`): past the search box, which takes
-// typed text, to the Filter button, and never out to the navigation.
+// back over the main content it was in (`walkBackInRegion`) to the Filter button, and never out
+// to the navigation. The page's control row draws the search box first and the Filter button
+// after it (`ControlRow`), so the walk reaches the Filter button before the search box.
 test("AgentsPage: Clear selection hands its focus to the select-all checkbox, and with no row matching walks back to the Filter button", async () => {
   const user = userEvent.setup();
   const region = await drawAgents();

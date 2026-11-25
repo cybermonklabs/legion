@@ -18,7 +18,9 @@ import {
   ARM_ON_PRESS,
   armOnPress,
   causedByReader,
+  focusedOutOfSight,
   holdHandOff,
+  repeatTookFocusFrom,
   useFocusPlace,
 } from "./focus-place";
 
@@ -1412,6 +1414,105 @@ test("a double click on a control the press's write holds, in a root inside the 
   expect(landed).toEqual({
     "a double click on the held Start next": "After",
     "nothing after the press": "After",
+  });
+});
+
+/** The reader's pointer press on `element` that drops the focus onto the body, as WebKit's press
+ *  on a button can where nothing around the button takes the focus: its `pointerdown`, the focus
+ *  taken off the element that holds it, then its `click`. */
+function droppingPress(element: HTMLElement): void {
+  element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  fireEvent.click(element);
+}
+
+// What the selection bar reads of the armed press as it goes after the reader's press on a
+// control outside it that the press holds (`SelectionBar`): whether that press, or a move of the
+// focus onto such a control, took the focus from inside the bar (`repeatTookFocusFrom`), and
+// whether the reader had scrolled the element the press last noted the focus on out of their
+// sight (`focusedOutOfSight`), an element that may have left the page by the time the bar asks.
+// Armed by the project List's Take out of epic, whose run holds the row's Start next. A press on
+// that Start next takes the focus from the bar when it drops the focus onto the body, as WebKit's
+// can, and when it puts the focus on the Start next. A second press keeps that, and a move of the
+// focus from the bar onto the held Start next with no press counts the same. A move of the focus
+// onto an unheld control forgets it, and so does the press's end. A press made after the focus
+// left the bar for the body takes nothing from the bar. The Start next the reader clicks is in
+// their sight until they scroll the page past it.
+test("the armed press says whether a press on a control its write holds took the focus from a place, and whether the reader scrolled the element it last noted the focus on out of sight", async () => {
+  const read: Record<string, boolean> = {};
+  await inMain(["Filter"], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const bar = ["Take out of epic"];
+    const view = render(createElement(ArmedSection, { bar, held: false }), { container: host });
+    try {
+      const startNext = () => view.getByRole("button", { name: "Start next" });
+      const takeOut = () => view.getByRole("button", { name: "Take out of epic" });
+      const filter = main.querySelector<HTMLElement>(":scope > button");
+      // The bar's line, holding Take out of epic, and the table body's, holding Start next.
+      const barLine = takeOut().parentElement;
+      const startLine = startNext().parentElement;
+      if (filter === null || barLine === null || startLine === null) {
+        throw new Error("the page draws no Filter, or a button stands in no line");
+      }
+      // No press of an earlier case is still armed.
+      disarm();
+      read["with nothing armed"] = repeatTookFocusFrom(barLine);
+      read["out of sight, with nothing armed"] = focusedOutOfSight();
+      clickPress(takeOut());
+      // The run the press starts holds Start next, and what answers it.
+      view.rerender(createElement(ArmedSection, { bar, held: true }));
+      const answered = holdHandOff();
+      read["the bar's press alone"] = repeatTookFocusFrom(barLine);
+      droppingPress(startNext());
+      read["a press on the held Start next that focused nothing"] = repeatTookFocusFrom(barLine);
+      read["the same, from the Start next's own line"] = repeatTookFocusFrom(startLine);
+      // A second click, which focuses the held Start next, as Chromium's does.
+      startNext().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      clickPress(startNext());
+      read["a second press, which focused the held Start next"] = repeatTookFocusFrom(barLine);
+      read["out of sight, the focused Start next in sight"] = focusedOutOfSight();
+      // The page scrolled past the row: its Start next stands above the window's top edge, which
+      // the press reads at its next frame.
+      placeAt(startNext(), -400);
+      await frameAndTasks();
+      read["out of sight, the focused Start next scrolled above the window"] = focusedOutOfSight();
+      // A script's focus on the Filter, which nothing holds.
+      filter.focus();
+      read["the focus then moved onto the unheld Filter"] = repeatTookFocusFrom(barLine);
+      // The focus back on Take out of epic, then off it onto the body, before a press on the held
+      // Start next.
+      takeOut().focus();
+      takeOut().blur();
+      droppingPress(startNext());
+      read["a press after the focus left the bar for the body"] = repeatTookFocusFrom(barLine);
+      // A script's focus on Take out of epic, then on the held Start next, with no press.
+      takeOut().focus();
+      startNext().focus();
+      read["the focus moved from the bar onto the Start next"] = repeatTookFocusFrom(barLine);
+      answered();
+      disarm();
+      read["once the press has ended"] = repeatTookFocusFrom(barLine);
+      read["out of sight, once the press has ended"] = focusedOutOfSight();
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(read).toEqual({
+    "with nothing armed": false,
+    "out of sight, with nothing armed": false,
+    "the bar's press alone": false,
+    "a press on the held Start next that focused nothing": true,
+    "the same, from the Start next's own line": false,
+    "a second press, which focused the held Start next": true,
+    "out of sight, the focused Start next in sight": false,
+    "out of sight, the focused Start next scrolled above the window": true,
+    "the focus then moved onto the unheld Filter": false,
+    "a press after the focus left the bar for the body": false,
+    "the focus moved from the bar onto the Start next": true,
+    "once the press has ended": false,
+    "out of sight, once the press has ended": false,
   });
 });
 

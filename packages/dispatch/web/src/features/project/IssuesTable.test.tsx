@@ -9,14 +9,14 @@ import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
-import { pick, pickNamed } from "../../__tests__/list-picks";
+import { optionNames, pick, pickNamed } from "../../__tests__/list-picks";
 import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, meInboxQuery, projectIssuesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import type { Agent, CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
 import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { answerStatusChanges, fixtureRefusal } from "../issue/parent-status/status-change-fixtures";
@@ -106,20 +106,23 @@ afterEach(() => {
   localStorage.clear();
 });
 /** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
- *  `open` the one that holds the open ones alone, in place of `issues` itself; `inMain` draws the
- *  List in the shell's main content, after a link that stands for the shell's navigation, as the
- *  app draws it; `client` is the query client the List reads through, a plain one unless the case
- *  needs the app's own; `props` is what a caller other than the project page passes: a listing of
- *  its own, the priorities' titles and the prefix its view is written under. */
+ *  `open` the one that holds the open ones alone, in place of `issues` itself; `agents` answers
+ *  the agent registry, an empty one unless the case holds or fills it; `inMain` draws the List in
+ *  the shell's main content, after a link that stands for the shell's navigation, as the app
+ *  draws it; `client` is the query client the List reads through, a plain one unless the case
+ *  needs the app's own; `props` is what a caller other than the project page passes: a listing
+ *  of its own, the priorities' titles and the prefix its view is written under. */
 function table(
   issues: IssueSummary[],
   search = "",
   {
+    agents,
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
     full,
     open,
     inMain = false,
   }: {
+    agents?: Promise<Agent[]>;
     client?: QueryClient;
     full?: Promise<IssueSummary[]>;
     open?: Promise<IssueSummary[]>;
@@ -151,7 +154,7 @@ function table(
     );
   });
   const state = spyOn(api, "getMyState").mockResolvedValue({});
-  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const registry = spyOn(api, "listAgents").mockImplementation(async () => agents ?? []);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     login: "alice",
@@ -192,7 +195,7 @@ function table(
     client.clear();
     listing.mockRestore();
     state.mockRestore();
-    agents.mockRestore();
+    registry.mockRestore();
     viewer.mockRestore();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
@@ -1452,6 +1455,69 @@ test("a live update that takes away, above the row in hand, a row an earlier act
   expect(rowTop(kept)).toBe(seen);
 });
 
+// The List's own case of the selection bar's row under a list's sticky head
+// (`SelectionBar.test.tsx`). The reader marks a row by its checkbox. Then the table's box scrolls
+// until that row stands at the box's top, where the table's sticky head covers the top 60 px of
+// the checkbox. Clear selection empties the selection, and the bar goes while it holds the focus.
+// The issue marked last is still listed, so its checkbox takes the focus (`useLastMarkedPlace`)
+// with no scroll of the engine's own. The engine does not see the head, so its own scroll to the
+// nearest edge would move nothing. The table's box scrolls up by the least distance, the 60 px,
+// and the checkbox stands whole below the head.
+test("Clear selection hands the focus to the checkbox of the issue marked last under the List's sticky head, and the table's box scrolls it out from under the head by the least distance", async () => {
+  const user = userEvent.setup();
+  // Drawn in the shell's main content, as the app draws it: Clear selection is a press of the
+  // reader's, so the bar hands its focus on.
+  table(
+    Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  // The reader marks the sixth row the table draws.
+  const marked = drawnRows()[5]?.getAttribute("data-issue-row") ?? "";
+  const mark = screen.getByRole("checkbox", { name: `Select ${marked}` });
+  await user.click(mark);
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no scroll box");
+  const boxRect = spyOn(box, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 600));
+  restores.push(() => boxRect.mockRestore());
+  // The checkbox is at the top of the scrolled box, behind the sticky header.
+  let markTop = 0;
+  const markRect = spyOn(mark, "getBoundingClientRect").mockImplementation(
+    () => new DOMRect(12, markTop, 14, 14)
+  );
+  restores.push(() => markRect.mockRestore());
+  // The box clips what overflows it, as its `overflow-auto` makes it do in a browser. happy-dom
+  // applies no utility class and does not expand the `overflow` shorthand, so the case sets the
+  // two values the browser computes.
+  box.style.overflowX = "auto";
+  box.style.overflowY = "auto";
+  // The head's cells stick to the box's top, and the first of them is the Select column's. It is
+  // 60 px tall and stays at the box's top however far the box scrolls. happy-dom lays out no
+  // sticky element, so the case gives the cell its box.
+  const selectAll = screen.getByRole("checkbox", { name: "Select every row on this page" });
+  const cell = selectAll.closest("th");
+  if (cell === null) throw new Error("The List drew no header cell for its Select column");
+  const cellBox = spyOn(cell, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 44, 60));
+  restores.push(() => cellBox.mockRestore());
+  // Model only the checkbox's movement. Other rows need no layout in this case.
+  const scrolled = spyOn(box, "scrollBy").mockImplementation((by?: ScrollToOptions | number) => {
+    if (typeof by === "object") markTop -= by.top ?? 0;
+  });
+  restores.push(() => scrolled.mockRestore());
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  const moves = watchMoves();
+  restores.push(moves.restore);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(mark).toHaveFocus());
+  expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: mark });
+  expect<readonly unknown[]>(scrolled.mock.calls).toEqual([[{ top: -60 }]]);
+  // The rows moved down 60 px, and the head stayed: the checkbox's top meets the head's bottom.
+  expect(mark.getBoundingClientRect().top).toBe(cell.getBoundingClientRect().bottom);
+  expect(moves.scrolled).toEqual([]);
+});
+
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
 // in the commit that lets its controls go. Take out of epic with no Epic filter leaves the two
 // issues listed, so the bar's hand-off puts the focus on the checkbox of the issue marked last.
@@ -1687,6 +1753,27 @@ test("the row's filter panel turns Unclaimed on and the table narrows to it", as
   await waitFor(() => expect(screen.queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull());
   expect(screen.getByRole("row", { name: "CORE-2 Work CORE-2" })).toBeDefined();
   expect(within(listBar()).getByRole("button", { name: "Remove Unclaimed filter" })).toBeDefined();
+});
+
+// Which claims have lapsed is the agent registry's answer. Until `/api/v1/agents` answers, no
+// session's claim reads lapsed, so a count of Nobody or lapsed would leave out the issue whose
+// session has gone. The Claimed by filter offers its values with no count beside them until then,
+// and counts them once the registry answers.
+test("Claimed by draws no count beside its values until the agent registry answers", async () => {
+  const user = userEvent.setup();
+  const registry = Promise.withResolvers<Agent[]>();
+  const gone: IssueSummary["claim"] = {
+    actor: { kind: "session", id: "session-gone", origin: { session_title: "Gone holder" } },
+    at: "2026-09-10T00:00:00Z",
+  };
+  table([issue("CORE-1"), issue("CORE-2", { claim: gone })], "", { agents: registry.promise });
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await user.click(screen.getByRole("button", { name: /^Filter Claimed by/ }));
+  const claims = () => optionNames(screen.getByRole("listbox", { name: "Claimed by options" }));
+  expect(claims()).toHaveLength(3);
+  for (const name of claims()) expect(name).not.toMatch(/, \d+ issues?$/);
+  registry.resolve([]);
+  await waitFor(() => expect(claims()).toContain("Nobody or lapsed, 2 issues"));
 });
 
 test("an open epic is an ordinary row, and a group heading only when grouped by Epic", async () => {
@@ -2254,6 +2341,45 @@ test("the Status filter counts Done once the closed issues are loaded", async ()
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
   expect(screen.getByRole("option", { name: "Done, 1 issue" })).toBeDefined();
+});
+
+// The header filters count the rows the table waits on. Before Done is picked, the open issues
+// are every one of them, so the filters count them and Done says it is not loaded. Once Done is
+// picked and the closed issues are out, a count of the open issues alone would read as every
+// issue's, so no filter draws a count until the closed issues answer, and then each counts them.
+test("picking Done draws no header filter count until the closed issues are read", async () => {
+  const user = userEvent.setup();
+  const closed = Promise.withResolvers<IssueSummary[]>();
+  const rows = [
+    issue("CORE-1", { assignee: "alice", priority: 1 }),
+    issue("CORE-2", { assignee: "bob", priority: 2 }),
+    issue("CORE-3", { assignee: "alice", priority: 1, status: "done" }),
+    issue("CORE-4", { assignee: "alice", priority: 1, status: "done" }),
+  ];
+  table(rows, "", { full: closed.promise });
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  /** One header filter's options, by the name each is read out as, with its panel shut after. */
+  const headerOptions = async (header: string) => {
+    await user.click(screen.getByRole("button", { name: new RegExp(`^Filter ${header}`) }));
+    const names = optionNames(screen.getByRole("listbox", { name: `${header} options` }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
+    return names;
+  };
+  expect(await headerOptions("Assignee")).toEqual(["alice, 1 issue", "bob, 1 issue"]);
+  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+  await user.click(screen.getByRole("option", { name: "Done, not loaded" }));
+  await user.keyboard("{Escape}");
+  await screen.findByText("Loading closed issues…");
+  for (const header of ["Assignee", "Priority"]) {
+    const names = await headerOptions(header);
+    expect(names).toHaveLength(2);
+    for (const name of names) expect(name).not.toMatch(/, \d+ issues?$/);
+  }
+  closed.resolve(rows);
+  await screen.findByRole("row", { name: "CORE-3 Work CORE-3" });
+  expect(await headerOptions("Assignee")).toEqual(["alice, 3 issues", "bob, 1 issue"]);
+  expect(await headerOptions("Priority")).toEqual(["P1, 3 issues", "P2, 1 issue"]);
 });
 
 // A Move is nobody's interrupted action. Retried beside one, it reports like any other change

@@ -2094,16 +2094,19 @@ function InboxBody({
   // under it, so the list lets its keys go until the dialog closes.
   useKeymap(keymapScope, composing ? [] : inboxKeys);
 
-  // The bar's hand-off where the row marked last cannot take the focus, with no scroll. After a
-  // press that took that row away: a row the reader can see at its place, else before it. With no
-  // row marked: the first row the reader can see below whatever the page draws over the list.
-  // Else the list column's own stop. A row a Dismiss or a Move to Inbox press is taking off this
-  // view is passed over: it is still drawn until the write's optimistic apply lands, and a focus
-  // handed to it would drop with it. `dismissedHere` names every such row - each id the dismiss
-  // write's `pending` holds, and the ids of a press made under the narrowing, which `pending`
-  // leaves out. Each row after such rows is judged where it will stand once they have gone, as
-  // the list's anchor lets them go (`leaving` below); where their going leaves the row at the
-  // place wholly above the view, the nearest row after it in sight takes the focus.
+  // The bar's hand-off (`useLastMarkedPlace`): the mark of the row the reader marked last while
+  // the list draws it and no press is taking it away, out of sight or not. After a press that took
+  // that row away: a row the reader can see at its place, else before it. With no row marked: the
+  // first row the reader can see below whatever the page draws over the list. Each is shown whole
+  // at its nearest edge. Else the list column's own stop, with no scroll. A row a Dismiss or a
+  // Move to Inbox press is taking off this view is passed over: it is still drawn until the
+  // write's optimistic apply lands, and a focus handed to it would drop with it. `dismissedHere`
+  // names every such row - each id the dismiss write's `pending` holds, and the ids of a press
+  // made under the narrowing, which `pending` leaves out. Each row after such rows is judged where
+  // it will stand once they have gone, as the list's anchor lets them go (`leaving` below); where
+  // their going leaves the row at the place wholly above the view, the nearest row after it in
+  // sight takes the focus. A mark that will move up into sight then takes the focus with no
+  // scroll, and the anchor shows it whole once those rows have gone.
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,
@@ -2613,17 +2616,10 @@ function InboxBody({
       count={bulkBarShown ? selectedCount : 0}
       label="Selected rows"
       notice={snoozeRefusal}
-      // The bar gone with the focus, or the control in it that held the focus: the checkbox of
-      // the row the reader marked last while the list draws it and no press is taking it away,
-      // brought into view. Else the hand-off above (`landAtPlace`) has put the focus itself,
-      // with no scroll, after a press that took that row away or with no row marked. The list
-      // column's own stop is the last place the focus can go.
-      returnFocus={() =>
-        landAtPlace()
-          ? null
-          : (originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
-            focusListStop(listScroller.current))
-      }
+      // The bar gone with the focus, or the control in it that held the focus: the hand-off above
+      // (`landAtPlace`) puts the focus itself. The list column's own stop is the last place the
+      // focus can go.
+      returnFocus={() => (landAtPlace() ? null : focusListStop(listScroller.current))}
       size={BAR_SIZE}
       state={barState}
     >

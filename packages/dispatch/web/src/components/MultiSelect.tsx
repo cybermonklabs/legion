@@ -63,6 +63,18 @@ function letGo(opening: { current: Opening | null }): void {
   opening.current = null;
 }
 
+/** What four changes of the reader's wait for before the list marks active an option it shows
+ *  whole (`MultiSelect`'s `awaiting`): the commit that draws the search they typed in its text
+ *  box, or the empty search a multi-select's Create row starts (`query`); for the value a
+ *  multi-select's Enter or press ticked or unticked (`value`), the commit in which the host's pick
+ *  holds that value otherwise than it did at the press (`picked`), with whether a pointer pressed
+ *  its row (`pointer`), which scrolls nothing; or, for a multi-select's Clear, the commit in which
+ *  the host's pick holds no value (`cleared`). No other change waits. */
+type Awaiting =
+  | { readonly query: string }
+  | { readonly picked: boolean; readonly pointer: boolean; readonly value: string }
+  | { readonly cleared: true };
+
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
  *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
  *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
@@ -290,7 +302,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const shownId = `${id}-shown`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
-  const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
+  // The option marked active: undefined while none is marked, which leaves the first row active,
+  // and null where a pointer's press left no option whole in sight to mark (`awaiting`), which
+  // leaves no row active until an arrow or a word typed marks one.
+  const [activeValue, setActiveValue] = useState<string | null | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
@@ -300,6 +315,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const opensWith = useRef("");
   // What an open keeps shown whole (`Opening`), null while it keeps nothing.
   const opening = useRef<Opening | null>(null);
+  // What a change of the reader's that `Awaiting` names waits for before the list shows its
+  // active option whole, null while none waits.
+  const awaiting = useRef<Awaiting | null>(null);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -319,7 +337,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       ? searchText
       : undefined;
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
-  const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
+  const activeRow =
+    activeValue === null
+      ? undefined
+      : activeValue !== undefined && rows.includes(activeValue)
+        ? activeValue
+        : rows[0];
   // The empty message stands where no option is left. A multi-select's create row stands in its
   // place, since it adds an option; a single pick's row takes the typed value as it is, so the
   // message stays over it.
@@ -337,8 +360,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // A single pick puts the focus on the trigger before it hands the value over, so a pick that
   // takes the trigger away - the search bar's Project list, gone once its narrowing is on - takes
   // it from the trigger's own place, from which the panel around it hands the focus on
-  // (`useFocusPlace`), rather than from a list portalled outside that panel.
-  const choose = (value: string) => {
+  // (`useFocusPlace`), rather than from a list portalled outside that panel. A multi-select's pick
+  // waits for the host's answer (`awaiting`), with whether a pointer pressed the row (`pointer`).
+  const choose = (value: string, pointer: boolean) => {
     setActiveValue(value);
     if (props.mode === "single") {
       onOpenChange(false, "pick");
@@ -346,20 +370,22 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       props.onPick(value);
       return;
     }
+    const picked = isPicked(value);
+    awaiting.current = { picked, pointer, value };
     props.onChange(
-      isPicked(value)
-        ? selected.filter((current) => fold(current) !== fold(value))
-        : [...selected, value]
+      picked ? selected.filter((current) => fold(current) !== fold(value)) : [...selected, value]
     );
   };
-  // A multi-select's row adds the typed value and starts a fresh search. A single pick's row
-  // hands it to the host, which answers whether it took it: taken, the list closes as a pick
-  // does; refused, the list stays open with the text in its box for the reader to correct.
+  // A multi-select's row adds the typed value and starts a fresh search, which shows the option
+  // it then marks active whole once it is drawn (`awaiting`). A single pick's row hands it to the
+  // host, which answers whether it took it: taken, the list closes as a pick does; refused, the
+  // list stays open with the text in its box for the reader to correct.
   const create = (value: string) => {
     setActiveValue(value);
     if (props.mode !== "single") {
       props.onCreate?.(value);
       setQuery("");
+      awaiting.current = { query: "" };
     } else if (props.onCreate?.(value) === true) {
       onOpenChange(false, "pick");
       triggerRef.current?.focus();
@@ -370,10 +396,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // the closed trigger in the text box, if one opened it, before the open paints: the search the
   // list last closed on would otherwise narrow the rows its first frame draws. The option it
   // starts on is then kept shown whole (`opening`) until the close ends that, and the panel hands
-  // the focus to the search unless the host hands it in itself (`focusOnOpen`).
+  // the focus to the search unless the host hands it in itself (`focusOnOpen`). The close ends
+  // what a change of the reader's waits for too (`awaiting`), so the next open scrolls nothing
+  // for it.
   useLayoutEffect(() => {
     if (!open) {
       letGo(opening);
+      awaiting.current = null;
       return;
     }
     const value = opensOn.current;
@@ -459,25 +488,84 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // drawn: the rows scroll under both.
   const headRef = useRef<HTMLDivElement>(null);
   const footRef = useRef<HTMLDivElement>(null);
-  // Scrolls the list the least that shows option `value` whole, between the text box and the
-  // Clear foot, so an option already whole scrolls nothing. Only the list's own box scrolls
-  // (`scrollToShow`), and its own bottom is measured only where no foot is drawn.
-  const showOption = (value: string) => {
+  // The part of the list's box, in the window, that shows a row whole: from the bottom of the text
+  // box to the top of the Clear foot, or to the box's own bottom where no foot is drawn, which is
+  // measured only then; null while no list is drawn.
+  const rowsShown = () => {
     const head = headRef.current;
     const box = head?.parentElement ?? null;
-    const option = document.getElementById(optionId(value));
-    if (head === null || box === null || option === null) return;
+    if (head === null || box === null) return null;
     const top = head.getBoundingClientRect().bottom;
     const bottom = footRef.current?.getBoundingClientRect().top ?? shownSpan(box).bottom;
-    scrollToShow(box, option.getBoundingClientRect(), { bottom, top });
+    return { bottom, box, top };
+  };
+  // Scrolls the list the least that shows option `value` whole in that part (`rowsShown`), so an
+  // option already whole scrolls nothing. Only the list's own box scrolls (`scrollToShow`).
+  const showOption = (value: string) => {
+    const option = document.getElementById(optionId(value));
+    if (option === null) return;
+    const shown = rowsShown();
+    if (shown !== null) scrollToShow(shown.box, option.getBoundingClientRect(), shown);
   };
   // ArrowDown and ArrowUp show the option they mark active whole. The reader has moved on from the
-  // option the list opened on, which is no longer kept shown (`letGo`).
+  // option the list opened on, which is no longer kept shown (`letGo`), and from what a change of
+  // theirs waited for (`awaiting`), which then scrolls nothing.
   const markActive = (value: string) => {
     letGo(opening);
+    awaiting.current = null;
     setActiveValue(value);
     showOption(value);
   };
+  // Four changes of the reader's show the option the list then marks active whole, as the arrows
+  // do, in the commit that draws what answers them (`awaiting`), before it paints. A word typed in
+  // the text box or cleared marks the first option it leaves active. The empty search a
+  // multi-select's Create row starts marks active the value it made, where the host lists it by
+  // then, else the first option. Without that scroll the box stayed where the arrows had scrolled
+  // it: in the issue header's Status, Triage stood 39 px above what the box showed after "e". A
+  // multi-select's Enter ticks or unticks the active option, and a key's press of a row that holds
+  // the focus the row it presses, which it marks active. The host's pick that answers it can draw
+  // the Clear foot over the bottom of the box - the first tick drew it over lab-07 in the project
+  // List's Labels filter - or move the option, as a host that lists the picked values first does
+  // (the Delivery page's facets): a tick took acme/r06 to the top of a box scrolled 83 px, and the
+  // untick took it back below what the box showed. Clear keeps active the option it finds active.
+  // Where that option is picked, such a host moves it from the top back to its own place, which
+  // can stand below what the box shows. Neither answer need come in a commit of the list's own:
+  // the host applies the pick in its own time, the Delivery page's through the address. So the
+  // list waits for the commit in which the host's pick holds the value otherwise, or holds nothing
+  // after Clear, which draws the foot and the order that come with it, and shows the option then.
+  //
+  // A pointer's press of a row ticks or unticks it as well, and marks it active, but scrolls
+  // nothing: the reader picks among the rows the box shows, and a scroll moves those rows under
+  // the pointer. Once the host's pick answers the press, the list keeps that option active where
+  // it stands whole between the text box and the Clear foot (`rowsShown`), and else marks active
+  // the first option that does, so the next Enter takes an option the reader sees rather than the
+  // one the press moved out of sight. Where no option stands whole there, it marks none, and Enter
+  // takes nothing until an arrow or a word typed marks one. Single picks and their Create rows
+  // set no wait. Arrows and closing cancel the wait; another pick, Clear, or text edit replaces it.
+  useLayoutEffect(() => {
+    const awaited = awaiting.current;
+    if (awaited === null) return;
+    const answered =
+      "query" in awaited
+        ? awaited.query === query
+        : "value" in awaited
+          ? isPicked(awaited.value) !== awaited.picked
+          : selected.length === 0;
+    if (!answered) return;
+    awaiting.current = null;
+    if (activeRow === undefined) return;
+    if (!("pointer" in awaited && awaited.pointer)) {
+      showOption(activeRow);
+      return;
+    }
+    const shown = rowsShown();
+    if (shown === null) return;
+    const whole = (row: string) => {
+      const drawn = document.getElementById(optionId(row))?.getBoundingClientRect();
+      return drawn !== undefined && drawn.top >= shown.top && drawn.bottom <= shown.bottom;
+    };
+    if (!whole(activeRow)) setActiveValue(rows.find(whole) ?? null);
+  });
   // The list opens with the option it starts on shown whole (`opening`), a single pick's picked
   // value, as a `<select>` opens on it: the issue header's Status list on an issue in Testing,
   // Needs review or Retro opened with that status below the five rows its box shows, and Enter
@@ -576,7 +664,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       if (activeRow === createValue) {
         create(activeRow);
       } else {
-        choose(activeRow);
+        choose(activeRow, false);
       }
       return;
     }
@@ -687,6 +775,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           focusOnOpen={focusOnOpen}
           id={panelId}
           onDismiss={(how) => onOpenChange(false, how)}
+          // A pointer tick in a multi-select scrolls nothing. Firefox otherwise follows the moved
+          // option through native scroll anchoring. Arrow and Enter reveal use scrollTop directly.
+          overflowAnchor={single ? undefined : "none"}
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}
@@ -703,8 +794,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               disabled={disabled}
               onChange={(event) => {
                 // A word typed moves the reader on from the option the list opened on, which is
-                // no longer kept shown (`letGo`), even once the search is back where it began.
+                // no longer kept shown (`letGo`), even once the search is back where it began, and
+                // the option it marks active is shown whole once its search is drawn (`awaiting`).
                 letGo(opening);
+                awaiting.current = { query: event.target.value };
                 setQuery(event.target.value);
                 setActiveValue(undefined);
                 onQueryChange?.(event.target.value);
@@ -736,7 +829,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
                   disabled={disabled}
                   id={optionId(option)}
                   key={option}
-                  onClick={() => choose(option)}
+                  // A pointer's click counts its clicks (`detail` 1 or more); the click a key makes
+                  // on a row that holds the focus counts none.
+                  onClick={(event) => choose(option, event.detail > 0)}
                   onClickCapture={noteFocusedRow}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
@@ -810,7 +905,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}
-                onClick={() => props.onChange([])}
+                onClick={() => {
+                  // Clear keeps active the option it finds active, which it shows whole once the
+                  // host's pick holds nothing (`awaiting`).
+                  if (activeRow !== undefined) setActiveValue(activeRow);
+                  awaiting.current = { cleared: true };
+                  props.onChange([]);
+                }}
                 onClickCapture={focusSearchFirst}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"

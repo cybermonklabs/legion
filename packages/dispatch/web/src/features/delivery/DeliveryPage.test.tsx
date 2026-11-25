@@ -1784,6 +1784,74 @@ test("while a new filter's read is out the Own colour list draws no count beside
   expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
 });
 
+/** Each session the session-groups editor lists under "Sessions in this window", by its text,
+ *  read from the editor the Filter panel's **Edit groups** opens, which is closed again so the
+ *  next read opens its own. */
+async function editorSessions(user: UserEvent): Promise<string[]> {
+  await openFilterPanel(user);
+  await user.click(screen.getByRole("button", { name: "Edit groups" }));
+  const editor = within(screen.getByRole("dialog", { name: "Session groups" }));
+  const sessions = within(editor.getByRole("list", { name: "Sessions in this window" }))
+    .getAllByRole("listitem")
+    .map((row) => (row.textContent ?? "").replace(/\s+/gu, " ").trim());
+  await user.click(editor.getByRole("button", { name: "Close session groups" }));
+  return sessions;
+}
+
+// INFRA-3135, round 27 (the tester's row 359d0ed7): the editor lists the sessions of the answer
+// on screen with how many pull requests of the window each is first on. While a new window's read
+// was out the previous window's answer stayed on screen (`keepPreviousData`), and the editor drew
+// that window's counts as this one's. It lists those sessions with their groups and no count until
+// the new window answers, then that window's own sessions and counts.
+test("while a new window's read is out the session-groups editor draws no count beside a session, and the new window's sessions and counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered({
+    ...emptyTimeline,
+    prs: [listedPR],
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
+  });
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Planner one\b.*\b2 PRs · Release crew$/u),
+    expect.stringMatching(/^Planner two\b.*\b1 PR · Release crew$/u),
+    expect.stringMatching(/^Reviewer\b.*\b1 PR$/u),
+  ]);
+
+  await pickIn(user, () => screen.getByLabelText("Window"), "Last 7 days");
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: { preset: 7 },
+    query: "",
+  });
+  // The first window's answer is still on screen while the new window's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  const held = await editorSessions(user);
+  expect(held).toEqual([
+    expect.stringMatching(/^Planner one\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Planner two\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Reviewer\b/u),
+  ]);
+  expect(held.filter((session) => /\b\d+ PRs?\b/u.test(session))).toEqual([]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...emptyTimeline,
+      prs: [listedPR],
+      session_groups: [RELEASE_CREW],
+      session_pr_counts: { s1: 1, s4: 3 },
+      session_titles: { s1: "Planner one", s4: "Builder" },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Builder\b.*\b3 PRs$/u),
+    expect.stringMatching(/^Planner one\b.*\b1 PR · Release crew$/u),
+  ]);
+});
+
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was
 // filtered out of the chart, the list and the count. One row per window, through this file's own
 // `test`, which unmounts inside act and has no `.each`.

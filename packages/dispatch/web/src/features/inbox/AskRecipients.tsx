@@ -237,9 +237,10 @@ type Confirming =
  * as offline, lets the controls go then, and the card says
  * why its recipients are not read. A subscriber whose only matching topic is wider than this
  * owner (e.g. `notifications.dispatch.>`) names that topic and has no control, as the header's
- * Subscribed agents panel does. When the subscribers fetch fails, the card says so with a
- * retry - the shared refilling notice while Envoy's agent list refills - and counts nobody,
- * instead of passing the follower count off as the whole set.
+ * Subscribed agents panel does. While the subscribers fetch is out, the toggle reads
+ * `Recipients` and counts nobody, since the subscribers it would add are not read yet. When the
+ * fetch fails, the card says so with a retry - the shared refilling notice while Envoy's agent
+ * list refills - and counts nobody, instead of passing the follower count off as the whole set.
  */
 export function AskRecipients({
   askId,
@@ -257,13 +258,14 @@ export function AskRecipients({
   // only asks once the sign-in read says the principal is a user, so nothing without the scope
   // cycles on a 403.
   const human = useIsHuman();
+  const readsSubscribers = subscription !== undefined && human;
   // Same key as the issue header (`IssueHeader`) and the project document page
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
   const subscribersQuery = useQuery({
-    enabled: subscription !== undefined && human,
+    enabled: readsSubscribers,
     queryKey: ["subscribers", subscription?.id],
     queryFn: () => {
       if (subscription === undefined) {
@@ -283,9 +285,14 @@ export function AskRecipients({
     routeStatus,
     subscribers: subscriberRows,
   });
-  // `Reaches N` counts nobody from a subscriber read that failed: it says nothing of how many
-  // there are, and the card says why instead.
-  const counted = !subscribersQuery.isError;
+  // `Reaches N` waits on the subscriber read when one runs: until it answers, the count would be
+  // of the followers, the claimant and the route alone, short of the subscribers it then adds.
+  // It holds back on a read that failed too, which says nothing of how many there are, and the
+  // card says why instead. With no read to run, it counts at once every recipient the card has:
+  // an ask on neither an issue nor a document has no subscribers to read. The sign-in check
+  // (`human`) holds back no read in the app, since `AuthGate` (`app.tsx`) draws the dashboard
+  // only for a signed-in person.
+  const counted = !readsSubscribers || (!subscribersQuery.isPending && !subscribersQuery.isError);
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
   // Each is a `DELETE`: made again after one that landed, it finds the session off the ask

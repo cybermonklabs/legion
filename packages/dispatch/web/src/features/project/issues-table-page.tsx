@@ -1,5 +1,5 @@
 import type { Table } from "@tanstack/react-table";
-import { type ReactNode, type RefObject, useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
@@ -119,15 +119,11 @@ type ToolbarPanel = "flags" | "view";
  * (the measurement of 2026-11-24, INFRA-4948's `r8-bar-measurement-md`).
  */
 export function IssueTableToolbar({
-  searchRef,
   selection,
   stateKey,
   table,
   unclaimedUnchecked,
 }: {
-  /** The search box. The focus goes here when a control of the table's head or of a notice goes
-   *  with it and no control at its place can take it (`noteFocus`). */
-  searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;
   /** The prefix this table's view is written under (`useTableView`), which **Clear filters**
@@ -270,7 +266,6 @@ export function IssueTableToolbar({
           label: "Search issues",
           onChange: (value) => setSearch(value),
           placeholder: "Search issues",
-          ref: searchRef,
           value: search,
         }}
         size="compact"
