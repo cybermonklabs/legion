@@ -1,12 +1,10 @@
 package store
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -68,23 +66,17 @@ func (s *Store) RecordPodReplacement(ctx context.Context, project string, r PodR
 	return nil
 }
 
-// standingReplacement is a record that stands, with the moment its row was written.
-type standingReplacement struct {
-	PodReplacement
-	written time.Time
-}
-
 // scanReplacements is every record rows hold, in their order: rows select operation, issue,
-// pod_uid, takes, target_uid, with_pod, record and written_at.
-func scanReplacements(rows pgx.Rows) ([]standingReplacement, error) {
+// pod_uid, takes, target_uid, with_pod and record.
+func scanReplacements(rows pgx.Rows) ([]PodReplacement, error) {
 	defer rows.Close()
-	var standing []standingReplacement
+	var standing []PodReplacement
 	for rows.Next() {
 		var (
-			r             standingReplacement
+			r             PodReplacement
 			takes, record string
 		)
-		if err := rows.Scan(&r.Operation, &r.Issue, &r.PodUID, &takes, &r.Act.Target, &r.WithPod, &record, &r.written); err != nil {
+		if err := rows.Scan(&r.Operation, &r.Issue, &r.PodUID, &takes, &r.Act.Target, &r.WithPod, &record); err != nil {
 			return nil, err
 		}
 		r.Act.Takes, r.Record = runtime.Takes(takes), []byte(record)
@@ -98,20 +90,13 @@ func scanReplacements(rows pgx.Rows) ([]standingReplacement, error) {
 func (s *Store) PodReplacements(ctx context.Context, project string) ([]PodReplacement, error) {
 	var standing []PodReplacement
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select operation, issue, pod_uid, takes, target_uid, with_pod, record::text, written_at
+		rows, err := tx.Query(ctx, `select operation, issue, pod_uid, takes, target_uid, with_pod, record::text
 			from pod_replacements where project = $1 order by written_at, operation`, project)
 		if err != nil {
 			return err
 		}
-		read, err := scanReplacements(rows)
-		if err != nil {
-			return err
-		}
-		standing = make([]PodReplacement, 0, len(read))
-		for _, r := range read {
-			standing = append(standing, r.PodReplacement)
-		}
-		return nil
+		standing, err = scanReplacements(rows)
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("read the records of %s's pod replacements: %w", project, err)
@@ -143,10 +128,13 @@ type PodReplacementFinish struct {
 // reviewer's Important 1 on #5285 at 7da847c0): two acts on one target each stand recorded under an
 // operation of their own (a replacement by issue and the launch that replaced the round's pod while
 // it waited, a launch that failed and the act after it, a launch that stopped before its delete and
-// the next launch), and the runtime reads each made from the target alone. The finish reads the
-// finished record whole from its row, and the issue's other records with their rows locked, and
-// decides in Go which of them go, by the targets each names (PodReplacement.Targets), so the rule
-// of what an act takes is written once (the Legion reviewer's Important on #5285 at 69e00593).
+// the next launch), and the runtime reads each made from the target alone. The finish first takes
+// every record of the issue with its row locked, oldest first, in one statement, and holds no row
+// of the issue before it: two finishes of one issue take the rows in one order, so neither holds a
+// row the other waits on while it waits itself, and neither is aborted as a deadlock (the Legion
+// reviewer's fix 1 on #5285 at 4b123279). It then decides in Go which records go, by the targets
+// each names (PodReplacement.Targets), so the rule of what an act takes is written once (the
+// Legion reviewer's Important on #5285 at 69e00593).
 //
 // notice, where it is not nil, is asked for the act's notice in the same transaction, with every
 // record the finish took (PodReplacementFinish.Took), so the notice is built from the reads of all
@@ -171,20 +159,7 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 	var finish PodReplacementFinish
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		finish = PodReplacementFinish{}
-		finished := standingReplacement{PodReplacement: PodReplacement{Operation: operation, Issue: issue}}
-		var takes, record string
-		err := tx.QueryRow(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = $3
-			returning pod_uid, takes, target_uid, with_pod, record::text, written_at`, project, issue, operation).Scan(
-			&finished.PodUID, &takes, &finished.Act.Target, &finished.WithPod, &record, &finished.written)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		finished.Act.Takes, finished.Record = runtime.Takes(takes), []byte(record)
-		finish.Found = true
-		rows, err := tx.Query(ctx, `select operation, issue, pod_uid, takes, target_uid, with_pod, record::text, written_at
+		rows, err := tx.Query(ctx, `select operation, issue, pod_uid, takes, target_uid, with_pod, record::text
 			from pod_replacements where project = $1 and issue = $2 order by written_at, operation for update`, project, issue)
 		if err != nil {
 			return err
@@ -193,28 +168,30 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		if err != nil {
 			return err
 		}
-		if yield && yieldsTo(finished.PodReplacement, standing) {
-			finish.Yielded = true
+		at := slices.IndexFunc(standing, func(r PodReplacement) bool { return r.Operation == operation })
+		if at < 0 {
 			return nil
 		}
-		took := takenWith(finished.PodReplacement, standing)
-		if len(took) > 0 {
-			operations := make([]string, 0, len(took))
-			for _, r := range took {
-				operations = append(operations, r.Operation)
-			}
-			if _, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = any($3)`,
-				project, issue, operations); err != nil {
-				return err
-			}
+		finish.Found = true
+		finished := standing[at]
+		took := []PodReplacement{finished}
+		if yield && yieldsTo(finished, standing) {
+			finish.Yielded = true
+		} else {
+			took = takenWith(finished, standing)
 		}
-		took = append(took, finished)
-		slices.SortStableFunc(took, func(a, b standingReplacement) int {
-			return cmp.Or(a.written.Compare(b.written), cmp.Compare(a.Operation, b.Operation))
-		})
+		operations := make([]string, 0, len(took))
 		for _, r := range took {
-			finish.Took = append(finish.Took, r.PodReplacement)
+			operations = append(operations, r.Operation)
 		}
+		if _, err := tx.Exec(ctx, `delete from pod_replacements where project = $1 and issue = $2 and operation = any($3)`,
+			project, issue, operations); err != nil {
+			return err
+		}
+		if finish.Yielded {
+			return nil
+		}
+		finish.Took = took
 		if notice == nil {
 			return nil
 		}
@@ -237,16 +214,17 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 	return finish, nil
 }
 
-// takenWith is every record of standing that the act finished records takes with it, by the
-// targets each names (PodReplacement.Targets). The act takes its own targets. A record whose own
-// act is on a taken target is over, and so is each target it names beside its own: the delete of a
-// Sandbox took the live pod of that Sandbox (WithPod), so a record of that pod's own act goes too,
-// whichever record of the Sandbox's delete is the one finished. Every record that names a taken
-// target goes. A record that names a taken target beside its own act's target goes, but the
-// target of its own act is not taken by that: the suspension of a pod takes no volume, so the
-// finish of a round's act on the pod takes a launch's record of the Sandbox's delete over that pod,
-// and no other record of that Sandbox.
-func takenWith(finished PodReplacement, standing []standingReplacement) []standingReplacement {
+// takenWith is every record of standing, the issue's records oldest first with finished among
+// them, that the act finished records takes, in standing's order: finished itself, and every
+// other record by the targets each names (PodReplacement.Targets). The act takes its own targets.
+// A record whose own act is on a taken target is over, and so is each target it names beside its
+// own: the delete of a Sandbox took the live pod of that Sandbox (WithPod), so a record of that
+// pod's own act goes too, whichever record of the Sandbox's delete is the one finished. Every
+// record that names a taken target goes. A record that names a taken target beside its own act's
+// target goes, but the target of its own act is not taken by that: the suspension of a pod takes
+// no volume, so the finish of a round's act on the pod takes a launch's record of the Sandbox's
+// delete over that pod, and no other record of that Sandbox.
+func takenWith(finished PodReplacement, standing []PodReplacement) []PodReplacement {
 	taken := map[runtime.RecordedAct]bool{}
 	for _, target := range finished.Targets() {
 		taken[target] = true
@@ -264,7 +242,7 @@ func takenWith(finished PodReplacement, standing []standingReplacement) []standi
 			}
 		}
 	}
-	var took []standingReplacement
+	var took []PodReplacement
 	for _, r := range standing {
 		if slices.ContainsFunc(r.Targets(), func(target runtime.RecordedAct) bool { return taken[target] }) {
 			took = append(took, r)
@@ -275,8 +253,8 @@ func takenWith(finished PodReplacement, standing []standingReplacement) []standi
 
 // yieldsTo is whether a record of standing names the act that finished records as a target it
 // takes beside its own (PodReplacement.Targets): another act took that target with its own.
-func yieldsTo(finished PodReplacement, standing []standingReplacement) bool {
-	return slices.ContainsFunc(standing, func(r standingReplacement) bool {
+func yieldsTo(finished PodReplacement, standing []PodReplacement) bool {
+	return slices.ContainsFunc(standing, func(r PodReplacement) bool {
 		return r.Act != finished.Act && slices.Contains(r.Targets(), finished.Act)
 	})
 }
