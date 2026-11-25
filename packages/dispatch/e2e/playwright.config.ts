@@ -507,6 +507,8 @@ const parallelProjects = [
   // `keyboard-complete`'s `k-keyboard-reach` row of an Escape in today's issue page's title editor.
   // The engine's timers of a read's own deadline and of the bound a held control waits on:
   // `issue-page-q`'s row of a change whose document read is never answered.
+  // Where the engine moves the focus on Tab from a link to the next stop: `priorities`' row of a
+  // priority's title reached by the keyboard.
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
   // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading

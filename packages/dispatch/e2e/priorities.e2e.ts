@@ -4386,3 +4386,45 @@ for (const { field, name, run, slow } of tableCells) {
     }
   });
 }
+
+// The tester's red row of round 19 (R20, "a priority's page", and the class of the controller's
+// item 4 of 10:10Z, "a heading and a div were Tab stops that act as buttons"; the architect's
+// ruling of 2026-11-25T17:06Z). A priority's title on its own page is a control the keyboard
+// reaches by Tab as a button, a Tab onto it opens no editor, and Enter opens the editor, as the
+// issue header's Edit title does. At 4f36cd63 `InPlaceField.tsx`'s closed heading is an `<h1>`
+// with `tabIndex={0}` that acts as a button, and its `onFocus` opens the editor, so a Tab onto
+// the title, with no act of the reader's, already puts the caret in its box (WCAG 2.2, 3.2.1 On
+// Focus). Measured in Chromium and Firefox.
+// @firefox: where the engine moves the focus on Tab from a link to the next stop, and whether it
+// focuses an element with a tabindex there.
+test("on a priority's page Tab from Priorities reaches the title as a button that opens no editor, and Enter opens it @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title by the keyboard: ${text}`;
+  const priority = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  await priorityPage(page);
+  await page.goto(`/priorities/${priority.id}`);
+  await expect(titleHeading(page), step("the header draws the title")).toHaveText(
+    "Ship the daemon everywhere"
+  );
+  const box = page.getByRole("textbox", { name: "Title" });
+  const back = page.getByRole("link", { name: "‹ Priorities" });
+  await back.focus();
+  await page.keyboard.press("Tab");
+  await expect(box, step("a Tab onto the title opens no editor")).toHaveCount(0);
+  const focused = await page.evaluate(() => {
+    const element = document.activeElement;
+    return element === null
+      ? null
+      : {
+          role: element.getAttribute("role") ?? element.tagName.toLowerCase(),
+          text: (element.textContent ?? "").trim(),
+        };
+  });
+  expect(focused?.role, step("the Tab after Priorities lands on the title's button")).toBe(
+    "button"
+  );
+  await page.keyboard.press("Enter");
+  await expect(box, step("Enter on the title opens its editor")).toBeFocused();
+  await expect(box, step("the editor holds the title")).toHaveValue("Ship the daemon everywhere");
+});
