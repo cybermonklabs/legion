@@ -1,6 +1,6 @@
-// packages/envoy/scripts/approve/session-scan.test.ts
+// packages/envoy/scripts/approve/scan.test.ts
 //
-// The scan of scripts/approve/session.ts (approve-check.sh step 1e) compares the thumbprint of
+// The scan of scripts/approve/scan.ts (approve-check.sh step 1e) compares the thumbprint of
 // "each private key, as PEM or JWK" it finds on the box with the bindings the broker logged. A
 // signed-in box keeps its own key as a PEM inside a JSON string (the sign-in record's box_key), so
 // a broker key that leaked in that same form must be found too. Each case runs the scan as
@@ -12,7 +12,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const SESSION = join(import.meta.dir, "session.ts");
+const SCAN = join(import.meta.dir, "scan.ts");
 
 /** The stand-in Dispatch: the port it took, and its stop. */
 let dispatch: { readonly port: number | undefined; stop(force?: boolean): void };
@@ -24,7 +24,7 @@ beforeAll(() => {
     hostname: "127.0.0.1",
     fetch: () => Response.json({ code: "BROKER_TOKEN_NOT_ACTIVE" }, { status: 401 }),
   });
-  work = mkdtempSync(join(tmpdir(), "session-scan-"));
+  work = mkdtempSync(join(tmpdir(), "scan-"));
 });
 
 afterAll(() => {
@@ -51,7 +51,7 @@ async function scan(name: string, plant: (box: string, pem: string) => void) {
   );
   plant(box, privateKey.export({ format: "pem", type: "sec1" }).toString());
   // Spawned, not spawnSync: the stand-in Dispatch answers the diagnostic from this process.
-  const run = Bun.spawn([process.execPath, SESSION, "scan", log, box], {
+  const run = Bun.spawn([process.execPath, SCAN, log, box], {
     env: {
       PATH: process.env["PATH"] ?? "",
       DISPATCH_URL: "https://dispatch.approve.test",

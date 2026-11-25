@@ -75,9 +75,9 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:52-56 runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
-    ("envoy_go_checks", "packages/envoy/scripts/approve/session.ts",
+    ("envoy_go_checks", "packages/envoy/scripts/approve/scan.ts",
      at("envoy-go-checks", "Scan tests of approve-check's session (bun test scripts/approve/, whose tests spawn "
-                           "`bun scripts/approve/session.ts scan`)")),
+                           "`bun scripts/approve/scan.ts`)")),
 ]
 
 # The trees a filter names file by file rather than whole: the changes job's generation writes

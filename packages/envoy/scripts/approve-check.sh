@@ -7,7 +7,8 @@
 # from this tree, whose issuer of broker tokens is that broker. A person signs in on a box of the
 # run (`agent-secrets login` at the stack's issuer, the machine's identity from the metadata
 # stand-in), and the agent session on that box is scripts/approve/session.ts, the TypeScript client
-# a session runs.
+# a session runs; step 1e's scan is scripts/approve/scan.ts, run on the box with the session's
+# environment.
 #
 # Four stacks, one after the other:
 #
@@ -75,15 +76,18 @@ FAILED=0
 UNKNOWN=0
 STACK_PID=""
 METADATA_PID=""
-# shellcheck disable=SC2329 # cleanup runs from the EXIT trap below, as every early stop and finish exit
-cleanup() {
+# stop_stack stops the metadata stand-in and the stack this run started, where either runs: after
+# each stack, and from the EXIT trap below, as every early stop and finish exit.
+stop_stack() {
   [ -z "$METADATA_PID" ] || kill "$METADATA_PID" 2>/dev/null || true
-  if [ -n "$STACK_PID" ] && kill -0 "$STACK_PID" 2>/dev/null; then
+  METADATA_PID=""
+  if [ -n "$STACK_PID" ]; then
     kill -TERM "$STACK_PID" 2>/dev/null || true
     wait "$STACK_PID" 2>/dev/null || true
   fi
+  STACK_PID=""
 }
-trap cleanup EXIT
+trap stop_stack EXIT
 echo "approve-check: work directory $WORK" >&2
 
 # result, stop_unknown and finish: how each step is recorded and how the run ends
@@ -146,16 +150,6 @@ start_stack() { # <name> <dev-stack.sh options>...
   echo "approve-check: $name stack up: $DEV_STACK_DIR" >&2
 }
 
-stop_stack() {
-  [ -z "$METADATA_PID" ] || kill "$METADATA_PID" 2>/dev/null || true
-  METADATA_PID=""
-  if [ -n "$STACK_PID" ]; then
-    kill -TERM "$STACK_PID" 2>/dev/null || true
-    wait "$STACK_PID" 2>/dev/null || true
-  fi
-  STACK_PID=""
-}
-
 # --- The person's box on the stack: its machine's metadata stand-in, and the person's sign-in. ---
 PERSON="ada@example.com"
 sign_in_box() {
@@ -171,14 +165,20 @@ sign_in_box() {
     waited=$((waited + 1))
   done
   METADATA_HOST="127.0.0.1:$(tr -dc '0-9' <"$BOX/metadata-port")"
+  # BOX_ENV: the variables every process on the box has, which agent-secrets login and each run of
+  # run_on_box start under alone (env -i): the box's HOME, the broker, the machine identity of the
+  # metadata stand-in, and the sign-in's issuer, client and directories, with no Dispatch bearer.
+  BOX_ENV=(
+    "PATH=$BIN_DIR:$PATH" "HOME=$BOX/home" "AGENT_SECRETS_URL=$AGENT_SECRETS_URL"
+    "AGENT_SECRETS_MACHINE_IDENTITY=metadata" "AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine"
+    "GCE_METADATA_HOST=$METADATA_HOST"
+    "AGENT_SECRETS_SIGNIN_ISSUER=$AGENT_SECRETS_SIGNIN_ISSUER" "AGENT_SECRETS_SIGNIN_CLIENT_ID=$AGENT_SECRETS_SIGNIN_CLIENT_ID"
+    "AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=$AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE"
+    "AGENT_SECRETS_SIGNIN_DIR=$BOX/signins" "AGENT_SECRETS_KEY_DIR=$BOX/keys" "AGENT_SECRETS_HELPER_SOCK="
+  )
   : >"$BOX/login.out"
   : >"$BOX/login.err"
-  env -i PATH="$BIN_DIR:$PATH" HOME="$BOX/home" AGENT_SECRETS_URL="$AGENT_SECRETS_URL" \
-    AGENT_SECRETS_MACHINE_IDENTITY=metadata AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine GCE_METADATA_HOST="$METADATA_HOST" \
-    AGENT_SECRETS_SIGNIN_ISSUER="$AGENT_SECRETS_SIGNIN_ISSUER" AGENT_SECRETS_SIGNIN_CLIENT_ID="$AGENT_SECRETS_SIGNIN_CLIENT_ID" \
-    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE="$AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE" \
-    AGENT_SECRETS_SIGNIN_DIR="$BOX/signins" AGENT_SECRETS_KEY_DIR="$BOX/keys" AGENT_SECRETS_HELPER_SOCK= \
-    agent-secrets login >"$BOX/login.out" 2>"$BOX/login.err" &
+  env -i "${BOX_ENV[@]}" agent-secrets login >"$BOX/login.out" 2>"$BOX/login.err" &
   local login=$! code=""
   for _ in $(seq 240); do
     code="$(sed -n 's/.*type the code \([^ ]*\).*/\1/p' "$BOX/login.err" | head -n1)"
@@ -203,21 +203,24 @@ sign_in_box() {
   psql "$DISPATCH_DB_URL" -v ON_ERROR_STOP=1 -Atqc "insert into people (email) values ('$PERSON') on conflict do nothing" >/dev/null
 }
 
-# session runs one step of the agent session on the box, with the variables a session there has
-# and no Dispatch bearer, so its credential is the broker credential of the person's sign-in.
-# Its stderr goes to $STACK_DIR/session.err, and its stdout, which holds every answer it printed,
-# is kept in $STACK_DIR/session.out as well as handed back: step 1e scans both
+# run_on_box <file> <args>...: scripts/approve/<file> run with bun on the box, under BOX_ENV and the
+# variables a session there has besides, and no Dispatch bearer, so its credential is the broker
+# credential of the person's sign-in. Each step of the session (session.ts) runs this way, and so
+# does step 1e's scan (scan.ts), which on the local stack reads its own environment as the
+# session's. Its stderr goes to $STACK_DIR/session.err, and its stdout, which holds every answer it
+# printed, is kept in $STACK_DIR/session.out as well as handed back: step 1e scans both
 # (session_scan_paths), since a token the session printed is the likeliest leak on a box.
-session() {
-  env -i PATH="$BIN_DIR:$PATH" HOME="$BOX/home" TMPDIR="$BOX/session" AGENT_SECRETS_URL="$AGENT_SECRETS_URL" \
-    AGENT_SECRETS_MACHINE_IDENTITY=metadata AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine GCE_METADATA_HOST="$METADATA_HOST" \
-    AGENT_SECRETS_SIGNIN_ISSUER="$AGENT_SECRETS_SIGNIN_ISSUER" AGENT_SECRETS_SIGNIN_CLIENT_ID="$AGENT_SECRETS_SIGNIN_CLIENT_ID" \
-    AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE="$AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE" \
-    AGENT_SECRETS_SIGNIN_DIR="$BOX/signins" AGENT_SECRETS_KEY_DIR="$BOX/keys" AGENT_SECRETS_HELPER_SOCK= \
+run_on_box() {
+  local file="$1"
+  shift
+  env -i "${BOX_ENV[@]}" TMPDIR="$BOX/session" \
     DISPATCH_URL="$DEV_STACK_DISPATCH_SERVER_URL" APPROVE_CHECK_DISPATCH_LOCAL="$DISPATCH_URL" \
     APPROVE_CHECK_STATE="$STACK_DIR/state.json" APPROVE_CHECK_REVOKE_COMMAND="${REVOKE_COMMAND:-}" \
-    "$BUN_BIN" "$SCRIPT_DIR/approve/session.ts" "$@" 2>>"$STACK_DIR/session.err" | tee -a "$STACK_DIR/session.out"
+    "$BUN_BIN" "$SCRIPT_DIR/approve/$file" "$@" 2>>"$STACK_DIR/session.err" | tee -a "$STACK_DIR/session.out"
 }
+
+# session <step> [args]...: one step of the agent session on the box.
+session() { run_on_box session.ts "$@"; }
 
 # session_scan_paths prints the paths step 1e scans, one a line: every file the session and the
 # sign-in wrote under the box, and the session's stderr and stdout.
@@ -226,12 +229,16 @@ session_scan_paths() { printf '%s\n' "$BOX" "$STACK_DIR/session.err" "$STACK_DIR
 broker_sql() { psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
 dispatch_sql() { psql "$DISPATCH_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
 
-# run_scan <paths...>: the session's scan of the paths against the broker's log. It sets scan to
+# body_count <member>: how many items the body of the session's answer on stdin holds: the body
+# itself where it is an array, else its <member> array.
+body_count() { jq --arg member "$1" '[.body | if type == "array" then .[] else (.[$member] // [])[] end] | length'; }
+
+# run_scan <paths...>: the scan of the paths against the broker's log, on the box. It sets scan to
 # the scan's one JSON line, or {} where it printed none, and scan_exit to its exit status, which
 # set -e must not end the run on: 3 is the scan's UNKNOWN, a step result like any other.
 run_scan() {
   scan_exit=0
-  scan="$(session scan "$BROKER_LOG" "$@")" || scan_exit=$?
+  scan="$(run_on_box scan.ts "$BROKER_LOG" "$@")" || scan_exit=$?
   jq -e . >/dev/null 2>&1 <<<"$scan" || scan="{}"
 }
 
@@ -296,8 +303,8 @@ fi
 comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"A comment the approve placeholder must not write."}')"
 mint="$(session proxy POST /api/v1/me/agent-tokens '{"name":"from-the-proxy","scopes":["person","approve"]}')"
 change="$(session proxy PATCH /api/v1/me/agent-tokens/5f070414-1a7c-43a3-8818-cf76eded9806 '{"scopes":["person","approve"]}')"
-comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
-tokens="$(session agent-tokens | jq '[.body | if type == "array" then .[] else (.tokens // [])[] end] | length')"
+comments="$(session comments | body_count comments)"
+tokens="$(session agent-tokens | body_count tokens)"
 for step in "1c comment:$comment" "1d token mint:$mint" "1d token change:$change"; do
   name="${step%%:*}"
   answer="${step#*:}"
@@ -350,7 +357,7 @@ setup_issue
 issue="$(jq -r .issue <"$STACK_DIR/state.json")"
 comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"A comment the approve-only token must not write."}')"
 mint="$(session proxy POST /api/v1/me/agent-tokens '{"name":"from-the-proxy","scopes":["person","approve"]}')"
-comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
+comments="$(session comments | body_count comments)"
 approved="$(session approve)"
 if [ "$(jq -r .status <<<"$comment")" = 403 ] && [ "$(jq -r .code <<<"$comment")" = APPROVE_ONLY_TOKEN ] && [ "$comments" = 0 ]; then
   result "2i comment with the allow list off" PASS "Dispatch answered 403 APPROVE_ONLY_TOKEN (forwarded $(jq -r .forwarded <<<"$comment")), comments on $issue: $comments"
@@ -375,7 +382,7 @@ sign_in_box
 setup_issue
 issue="$(jq -r .issue <"$STACK_DIR/state.json")"
 comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"Recorded only without the approve-only refusal."}')"
-comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
+comments="$(session comments | body_count comments)"
 if [[ "$(jq -r .status <<<"$comment")" == 2?? ]] && [ "$comments" = 1 ]; then
   result "2 control: Dispatch without the approve-only refusal" PASS "the comment of (i) was recorded ($(jq -r .status <<<"$comment"), comments on $issue: $comments), so the refusal in 2i comes from that check"
 else

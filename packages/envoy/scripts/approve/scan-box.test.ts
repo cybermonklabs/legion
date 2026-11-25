@@ -1,6 +1,6 @@
-// packages/envoy/scripts/approve/session-scan-box.test.ts
+// packages/envoy/scripts/approve/scan-box.test.ts
 //
-// The scan of scripts/approve/session.ts (approve-check.sh step 1e, k31's step (e)) as a process,
+// The scan of scripts/approve/scan.ts (approve-check.sh step 1e, k31's step (e)) as a process,
 // against a stand-in Dispatch that answers every diagnostic 401.
 //
 // On a box, k31 Part 1's form (APPROVE_CHECK_DISPATCH_LOCAL unset), the session's processes are not
@@ -21,7 +21,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const SESSION = join(import.meta.dir, "session.ts");
+const SCAN = join(import.meta.dir, "scan.ts");
 
 let dispatch: { readonly port: number | undefined; stop(force?: boolean): void };
 let work: string;
@@ -37,7 +37,7 @@ beforeAll(() => {
       return Response.json({ code: "BROKER_TOKEN_NOT_ACTIVE" }, { status: 401 });
     },
   });
-  work = mkdtempSync(join(tmpdir(), "session-scan-box-"));
+  work = mkdtempSync(join(tmpdir(), "scan-box-"));
 });
 
 afterAll(() => {
@@ -80,7 +80,7 @@ async function scanCase(
   const log = join(dir, "broker.log");
   writeFileSync(log, options.log);
   const run = Bun.spawn(
-    [process.execPath, SESSION, "scan", log, ...options.paths.map((path) => join(dir, path))],
+    [process.execPath, SCAN, log, ...options.paths.map((path) => join(dir, path))],
     {
       env: {
         PATH: process.env["PATH"] ?? "",

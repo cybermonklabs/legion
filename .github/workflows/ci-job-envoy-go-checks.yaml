@@ -151,7 +151,7 @@ jobs:
       - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
         run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
         working-directory: packages/envoy
-      # approve-check.sh's session (scripts/approve/session.ts): the scan of k31's step (e) finds a
+      # approve-check.sh's scan of its session (scripts/approve/scan.ts), k31's step (e): it finds a
       # logged binding's key as bare PEM and as PEM inside a JSON string, finds a token of the
       # broker's shape in each form a file, a URL or an environment writes it in, and is UNKNOWN,
       # exit 3, when it compared nothing.
