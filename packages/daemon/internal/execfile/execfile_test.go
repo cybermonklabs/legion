@@ -14,11 +14,13 @@ import (
 // A script written and appended to through this package runs, every time, while other goroutines of
 // the process start children as fast as they can: no child forked during a write holds the
 // script's write descriptor, so its exec never fails with ETXTBSY. Without the lock (os.WriteFile
-// and an append of its own) the same loop fails with "text file busy" within its first few hundred
-// scripts on a 4-CPU machine. The forkers run until the last script has run, and the test fails if
-// none of them started a child while the scripts were written, since then it proved nothing.
+// and an append of its own) the same loop failed with "text file busy" at its second or third script
+// in each of five runs on a 4-CPU build-cluster pod, so 200 scripts leave a wide margin while the
+// lock's waits keep the test near a second. The forkers run until the last script has run, and the
+// test fails if none of them started a child while the scripts were written, since then it proved
+// nothing.
 func TestAScriptWrittenBesideForksAlwaysRuns(t *testing.T) {
-	const scripts, forkers = 2000, 4
+	const scripts, forkers = 200, 4
 	dir := t.TempDir()
 	stop := make(chan struct{})
 	var forks atomic.Int64
