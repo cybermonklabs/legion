@@ -4553,11 +4553,6 @@ A gh call has these records:
   A path, or a pair of a query, whose escapes do not decode is read only as written.
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
-  A release asset of `gh release upload <tag> <files>...` or `gh release create <tag> <files>...` is such a file, for each argument after the tag: an argument holding a `#` is the path before its first `#` (the whole argument when the `#` is first); any other argument is the files it matches as a glob pattern, each then split at a `#` the same way, or the argument as written when it matches none.
-  An asset is read as one record and, where it is exactly one JSON document, as its JSON strings too (below), because GitHub publishes it as sent and whoever parses it reads each string decoded.
-  Its file name is a record too, labelled `<path> (asset name)`, because GitHub names the asset by it, and the name of a file a pattern matched is in no argument.
-  The text after the `#` in a matched file's name is the asset's label, which GitHub shows and no argument holds, so it is a record too, labelled `<path> (asset label)`; an argument's own label is in that argument's record.
-  As every file a call sends, an asset is read only for a repository the guard checks.
 
 - Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
@@ -4576,7 +4571,7 @@ A gh call has these records:
 
 A text that `legion leak-check text` checks has two records, `the title` (its first line) and `the body` (the rest).
 A path rule reads only a record's path, and only a pushed file's records carry one: its added or renamed path and each of its added lines.
-A file that a gh call sends carries no path, because GitHub never sees the path the file has where the call runs; a release asset's file name is read as text, as above.
+A file that a gh call sends carries no path, because GitHub never sees the name the file has where the call runs.
 So no label, JSON path or line number is read as a path.
 
 **The report.**

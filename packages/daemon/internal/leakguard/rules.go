@@ -228,12 +228,12 @@ func withoutPath(err error) error {
 // Check is the rule pass over records and nothing else: no shared check, no visibility read, and
 // no read of any environment. It answers nil where no rule matches, a *Refusal of what, the write
 // in the caller's words, whose report is RuleSet.scan's, and a *SetupFailure of what where the
-// pass could not finish. It is the last step of a text the guard runs a rule over (Text) — a push
-// and a gh call run the same pass a record at a time, as git writes a push's records and as the
-// call's files are read (Guard.Push, GhCall) — and the whole of the check of a write with no
-// repository behind it: the daemon's branch create (internal/ghbranch's Create), which holds a
-// ref name and no checkout at all, and runs the set the daemon compiled at boot, so that the
-// create depends on no rule file its process's environment may name.
+// pass could not finish. It is the last step of a gh call and of a text the guard runs a rule over
+// (GhCall, Text) — a push runs the same pass a record at a time, as git writes them (Guard.Push) —
+// and the whole of the check of a write with no repository behind it: the daemon's branch create
+// (internal/ghbranch's Create), which holds a ref name and no checkout at all, and runs the set
+// the daemon compiled at boot, so that the create depends on no rule file its process's
+// environment may name.
 func (r *RuleSet) Check(ctx context.Context, what string, records ...Record) error {
 	pass := r.newPass(ctx)
 	for _, record := range records {
@@ -244,12 +244,11 @@ func (r *RuleSet) Check(ctx context.Context, what string, records ...Record) err
 	return pass.end(what)
 }
 
-// pass is one rule pass of a set over records that arrive one at a time, as a push's diff and a gh
-// call's files are read: it scans each record as it arrives and keeps nothing of it but its
-// report, so its memory is the record in hand, the detector's own cost of scanning it, and the
-// report (shownReport): at most maxLinesShown lines and a count of the rest. Whatever reads the
-// records holds one line of its own beside that. None of it grows with the size of the push's
-// files.
+// pass is one rule pass of a set over records that arrive one at a time, as a push's diff is read:
+// it scans each record as it arrives and keeps nothing of it but its report, so its memory is the
+// record in hand, the detector's own cost of scanning it, and the report (shownReport): at most
+// maxLinesShown lines and a count of the rest. Whatever reads the records holds one line of its
+// own beside that. None of it grows with the size of the push's files.
 type pass struct {
 	ctx    context.Context
 	rules  *RuleSet

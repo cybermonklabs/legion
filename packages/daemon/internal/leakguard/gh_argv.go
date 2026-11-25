@@ -25,12 +25,10 @@ type ghArgv struct {
 	records []Record
 	// sent is what the argv's options name for gh to send, in the order the argv writes them
 	// (GhSent): the files, the use of standard input, whether it is sent and the fields whose
-	// value it is; and unread is why GhCall refuses the call for an upload this reader does not
-	// read, "" for none: an option of ghUnreadUploads, or a release asset it cannot find
-	// (releaseUnread). These are the fallback, for a caller that hands the guard a bare argv
-	// (GhRequest.Sent nil).
+	// value it is; and upload is the first option of ghUnreadUploads it names, "" for none. These
+	// are the fallback, for a caller that hands the guard a bare argv (GhRequest.Sent nil).
 	sent   GhSent
-	unread string
+	upload string
 }
 
 // ghEndpoint is a `gh api` call's endpoint, classified once (ghAPIEndpoint): its kind, which says
@@ -523,42 +521,24 @@ func (argv *ghArgv) field(args []string, at int, option, value string, typed boo
 // refuse a call over a file nobody named, while in `gh pr create` `-dF` is `--draft --body-file`,
 // which only the leaf's own help can say, and `legion gh` reads it so (GhRequest.Sent).
 //
-// No other option's arity is known here but that of -R/--repo, the repository every command
-// takes, so an option's value that itself begins with `-F` (a `--body` whose first word is
-// `-Fixed`) is read as a -F of its own and refuses the call, naming a file nobody meant; and so is
-// a value that is itself `--attach`, which is read as the upload (ghUnreadUploads). That is the
-// direction this errs in: the other way round is `gh release create -F notes.md`, the documented
-// short spelling, going to GitHub unread.
-//
-// A release asset is a positional argument, and with no arity but those this cannot tell one
-// from another option's value (`--notes <text>`), so it does not look for one: a call that may
-// upload one is refused (releaseUnread), and `legion gh`, whose parse knows the leaf's positional
-// arguments, names each asset (GhSent.Asset). For that, the words of the argv are the arguments
-// that are no option: the command's path and then its positional arguments, with the values of
-// -R/--repo and of the file options passed over, and every argument past a bare `--`.
+// No other option's arity is known here, so an option's value that itself begins with `-F` (a
+// `--body` whose first word is `-Fixed`) is read as a -F of its own and refuses the call, naming a
+// file nobody meant; and so is a value that is itself `--attach`, which is read as the upload
+// (ghUnreadUploads). That is the direction this errs in: the other way round is `gh release create
+// -F notes.md`, the documented short spelling, going to GitHub unread.
 func (argv *ghArgv) readOther(args []string) {
-	// words are the argv's words, as many of them as releaseUnread reads.
-	var words []string
-	word := func(arg string) {
-		if len(words) < releaseWords {
-			words = append(words, arg)
-		}
-	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			for at := i; at < len(args); at++ {
-				argv.argument(args, at)
-				if at > i {
-					word(args[at])
-				}
+			for ; i < len(args); i++ {
+				argv.argument(args, i)
 			}
-			break
+			return
 		}
 		argv.argument(args, i)
 		name, after, found := strings.Cut(arg, "=")
-		if ghUnreadUploads[name] && argv.unread == "" {
-			argv.unread = name + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads"
+		if ghUnreadUploads[name] && argv.upload == "" {
+			argv.upload = name
 		}
 		var option, value string
 		var attached bool
@@ -567,17 +547,7 @@ func (argv *ghArgv) readOther(args []string) {
 			option, value, attached = "-F", strings.TrimPrefix(arg[2:], "="), len(arg) > 2
 		case ghFileOptions[name]:
 			option, value, attached = name, after, found
-		case arg == "-R" || arg == "--repo":
-			// The repository, which every command takes, and no positional argument.
-			if i+1 < len(args) {
-				i++
-				argv.argument(args, i)
-			}
-			continue
-		case len(arg) > 1 && arg[0] == '-':
-			continue
 		default:
-			word(arg)
 			continue
 		}
 		if !attached {
@@ -592,43 +562,16 @@ func (argv *ghArgv) readOther(args []string) {
 		}
 		argv.sent.Names(option, value, "", StdinText)
 	}
-	if argv.unread == "" {
-		argv.unread = releaseUnread(words)
-	}
-}
-
-// releaseWords is how many words of an argv (readOther) releaseUnread reads: the command's path,
-// `release create`, its tag, and whether a word comes after it.
-const releaseWords = 4
-
-// releaseUnread is why the fallback refuses a call that may upload a release asset, from words,
-// the call's command path and positional arguments as readOther finds them: every `gh release
-// upload <tag> <files>...`, and a `gh release create [<tag>] [<files>...]` (or `gh release new`,
-// its alias) with a word past the tag, which may be an asset or another option's value; and "" for
-// every other call. gh 2.98.0 takes the first positional argument of either as the tag and
-// uploads each one after it as an asset (cli/cli v2.98.0 pkg/cmd/release/upload/upload.go and
-// create/create.go: `opts.TagName = args[0]`, `shared.AssetsFromArgs(args[1:])`).
-func releaseUnread(words []string) string {
-	if len(words) < 2 || words[0] != "release" {
-		return ""
-	}
-	if command := words[1]; command == "upload" || (command == "create" || command == "new") && len(words) > 3 {
-		return "`gh release " + command + "` uploads each argument after the tag as a release asset, which this guard cannot tell from another option's value in a bare argv, so the call sends nothing; run it through legion gh, which reads each asset"
-	}
-	return ""
 }
 
 // GhSent is what a gh call's options name for gh to send to GitHub beside its argv: the files it
 // sends as content, the use it makes of standard input, whether it sends that input at all, and
-// the fields whose value it is. Its methods are the one rule for what a value an option names is
-// (Names, UsesStdin): a path a file named once, `-` standard input with the use its option makes
-// of it, and two uses that differ no known use; and for what a release asset's path names
-// (Asset): a file, `-` among them, named once. Both readers of a gh call keep to it: this
-// package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's, over its
-// parse of the command by gh's help, in the order the options' names sort (its ghSentFiles). So
-// the two name what one option's value sends the same way. Only cmd/legion names release assets:
-// the bare argv's reader cannot find them, and refuses a call that may upload one
-// (releaseUnread).
+// the fields whose value it is. Its two methods are the one rule for what a value an option
+// names is (Names, UsesStdin): a path a file named once, `-` standard input with the use its
+// option makes of it, and two uses that differ no known use. Both readers of a gh call keep to
+// it: this package's own, over a bare argv in the argv's order (readGhArgv), and cmd/legion's,
+// over its parse of the command by gh's help, in the order the options' names sort (its
+// ghSentFiles). So the two name what one option's value sends the same way.
 //
 // Finding the values is each reader's own work — which options a call names, and the `<path>` of
 // a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is
@@ -672,24 +615,9 @@ func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 		}
 		sent.UsesStdin(use)
 	default:
-		sent.file(GhFile{Option: option, Path: path, Field: field})
-	}
-}
-
-// Asset names path, a file gh uploads as a release asset (ReleaseAsset), with label, the asset's
-// label where no argument holds it (GhFile.Label), once, as Names names a file; "" names nothing.
-// A path of `-` is the file of that name and not standard input: gh opens each asset by its path
-// (cli/cli v2.98.0 pkg/cmd/release/shared/upload.go, AssetsFromArgs).
-func (sent *GhSent) Asset(path, label string) {
-	if path != "" {
-		sent.file(GhFile{Option: ReleaseAsset, Path: path, Label: label})
-	}
-}
-
-// file names named, unless a file of its path is named already (Names, Asset).
-func (sent *GhSent) file(named GhFile) {
-	if !slices.ContainsFunc(sent.Files, func(file GhFile) bool { return file.Path == named.Path }) {
-		sent.Files = append(sent.Files, named)
+		if !slices.ContainsFunc(sent.Files, func(file GhFile) bool { return file.Path == path }) {
+			sent.Files = append(sent.Files, GhFile{Option: option, Path: path, Field: field})
+		}
 	}
 }
 
@@ -725,29 +653,13 @@ func argumentLabel(i int) string {
 }
 
 // GhFile is one file a gh call would send as content: the option that named it, which a setup
-// failure names, or ReleaseAsset for a file no option names; the path the caller named, as the
-// argv wrote it or as a file a release asset's glob pattern matched, which is the record's label;
-// and, for a file a field names (`--field <name>=@<path>`, `-F <name>=@<path>`), the field's name,
-// "" for every other option. The name is what says that a file is a GraphQL query, `query` in a
-// `gh api graphql` call, which is read one literal at a time (graphQLRecords).
+// failure names; the path the argv wrote, which is the record's label; and, for a file a field
+// names (`--field <name>=@<path>`, `-F <name>=@<path>`), the field's name, "" for every other
+// option. The name is what says that a file is a GraphQL query, `query` in a `gh api graphql`
+// call, which is read one literal at a time (graphQLRecords).
 type GhFile struct {
 	Option, Path, Field string
-	// Label is a release asset's label (ReleaseAsset) that no argument of the call holds: the
-	// text after the `#` in the name of a file a glob pattern matched, which gh uploads as the
-	// asset's label and GitHub shows (cmd/legion's ghReleaseAssets). It is "" for every other
-	// file, and for an asset whose label, if any, is in the argument that named it.
-	Label string
 }
-
-// ReleaseAsset is the Option of a GhFile gh uploads as a release asset: a positional argument of
-// `gh release upload` or `gh release create` past the tag, which no option names (GhSent.Asset).
-// GitHub publishes an asset as the bytes gh sends and names it by the file's own name, so GhCall
-// reads it as it reads a body GitHub stores as sent (rawAndJSON), and its name beside it; a setup
-// failure calls it the file gh uploads as a release asset (readGhFile). The asset's label, the
-// text after a `#` (`<file>#<label>`), is text GitHub shows too: an argument's own record holds
-// it, and the label of a file a glob pattern matched, which no argument holds, is its GhFile's
-// Label, which GhCall reads too.
-const ReleaseAsset = "a release asset"
 
 // inputOption is `gh api`'s request body, the one option whose file is itself the body, read as
 // the call's endpoint says (jsonBody), and one of the two whose standard input is (stdinRecords).
@@ -783,16 +695,18 @@ const jsonInputsOption = "--json"
 //     "pull_request_template.md"`) or a Go template for gh's own output (`-t, --template
 //     string`), neither of them a file the command sends.
 //   - `gh gist create <filename>…`, whose positional arguments are files gh publishes, and
-//     every other positional file but a release asset (ReleaseAsset, readOther): `gh alias
-//     import <filename>`. Reading a positional would mean a copy of gh's grammar in here. An
-//     option's name says what its value is in every command that carries it, while a
-//     positional's meaning is the leaf's — a local file in `gist create`, a name inside the gist
-//     in `gist edit <id> <filename>`, a number in `pr comment <number>` — and this reads argv
-//     with no gh to ask, as cmd/legion's own reader asks gh's help. Half a copy would read as
-//     cover where there is none: `gist edit --add <path>` publishes a file too, and its short
-//     `-a` is `--all` in other commands, so it cannot be added to the table above. What these
-//     files keep is the shared check, which reads every argument of the call. No Legion role
-//     writes a gist: the roles post pull request and issue text, which the options above carry.
+//     every other positional file: `gh release create <tag> <asset>…`, `gh alias import
+//     <filename>`. Reading a positional would mean a copy of gh's grammar in here. An option's
+//     name says what its value is in every command that carries it, while a positional's
+//     meaning is the leaf's — a local file in `gist create`, a name inside the gist in `gist
+//     edit <id> <filename>`, a number in `pr comment <number>` — and this reads argv with no gh
+//     to ask, as cmd/legion's own reader asks gh's help. Half a copy would read as cover where
+//     there is none: `gist edit --add <path>` publishes a file too, and its short `-a` is
+//     `--all` in other commands, so it cannot be added to the table above. What these files
+//     keep is the shared check, which reads every argument of the call, and the spec's own line
+//     on release assets, that reading inside them is the check's policy and not this issue's
+//     (dispatch://INFRA-1527, Goals and non-goals). No Legion role writes a gist: the roles
+//     post pull request and issue text, which the options above carry.
 var ghFileOptions = map[string]bool{
 	// The body of a pull request, an issue, a comment, a review or a revert. Twelve commands of
 	// the pinned reference carry it: `awk '/^### /{cmd=$0} /--body-file/{print cmd}'
@@ -810,6 +724,6 @@ var ghFileOptions = map[string]bool{
 // them, up to 10 MiB) or a video (up to 100 MiB) as an asset GitHub serves. It has no short
 // spelling, and `gh api` and `gh workflow run` have none of them. The fallback refuses a call
 // naming one, in its separate or its attached spelling (`--attach=<path>`), before a bare `--`
-// (ghArgv.unread), rather than read a file of that kind and size; `legion gh`, which hands the
+// (ghArgv.upload), rather than read a file of that kind and size; `legion gh`, which hands the
 // guard its parse (GhRequest.Sent), refuses it before the guard runs.
 var ghUnreadUploads = map[string]bool{"--attach": true}

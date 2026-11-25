@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -169,8 +168,7 @@ const whatGhCall = "the gh call"
 // A `gh api` call whose body GitHub stores as gh sends it (ghEndpointStoredAsSent), a release
 // asset's upload among them, has that body read whole and as its decoded JSON strings beside it
 // (jsonBody), and such a call whose fields are its body is refused as a setup failure
-// (ghArgv.fieldsAsBody). A release asset `gh release upload` or `gh release create` uploads
-// (ReleaseAsset) is read the same way, and its file's name beside it.
+// (ghArgv.fieldsAsBody).
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
 	check, err := g.sharedCheck(whatGhCall)
@@ -225,8 +223,11 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	}
 	sent := req.Sent
 	if sent == nil {
-		if call.unread != "" {
-			return answer, &SetupFailure{What: whatGhCall, Why: call.unread}
+		if call.upload != "" {
+			return answer, &SetupFailure{
+				What: whatGhCall,
+				Why:  call.upload + " uploads the file it names, which this guard does not read, so the call sends nothing; write the text in --body or --body-file, which it reads",
+			}
 		}
 		sent = &call.sent
 	}
@@ -237,21 +238,10 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 			return answer, err
 		}
 	}
-	// The records go through one rule pass as they are read, so the guard holds one file in hand
-	// at a time (maxGhFile), and a file it cannot read is a setup failure at once. scan stops at
-	// a scan that did not finish, which the pass's end answers.
-	pass := rules.newPass(ctx)
-	scan := func(records ...Record) {
-		for _, record := range records {
-			if pass.add(record) != nil {
-				return
-			}
-		}
-	}
-	scan(call.records...)
+	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		scan(stdinRecords(stdin, sent.stdinUse, sent.stdinFields, call.endpoint.kind)...)
+		records = append(records, stdinRecords(stdin, sent.stdinUse, sent.stdinFields, call.endpoint.kind)...)
 	}
 	for _, named := range sent.Files {
 		text, err := readGhFile(named)
@@ -261,23 +251,14 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		record := Record{Label: named.Path, Text: text}
 		switch {
 		case call.endpoint.kind == ghEndpointGraphQL && named.Field == graphQLQuery:
-			scan(queryRecords(record)...)
+			records = append(records, queryRecords(record)...)
 		case named.Option == inputOption:
-			scan(jsonBody(record, call.endpoint.kind)...)
-		case named.Option == ReleaseAsset:
-			// GitHub names the asset by the file's own name, and shows its label, neither of
-			// which the argv writes where a glob pattern matched the file (cmd/legion's
-			// ghReleaseAssets).
-			scan(rawAndJSON(record, false)...)
-			scan(Record{Label: named.Path + " (asset name)", Text: filepath.Base(named.Path)})
-			if named.Label != "" {
-				scan(Record{Label: named.Path + " (asset label)", Text: named.Label})
-			}
+			records = append(records, jsonBody(record, call.endpoint.kind)...)
 		default:
-			scan(record)
+			records = append(records, record)
 		}
 	}
-	return answer, pass.end(whatGhCall)
+	return answer, rules.Check(ctx, whatGhCall, records...)
 }
 
 // ghGuard runs the shared check in its gh-guard shape over req, and answers the standard input it
@@ -345,13 +326,10 @@ func stdinRecords(record Record, use StdinUse, fields []string, endpoint ghEndpo
 // 65,536 characters, and a body is the largest thing these options carry to its REST API:
 // `gh api --input` wraps one in a JSON request, which that escaping and the rest of the request
 // leave well inside a mebibyte. A mebibyte is sixteen times that body, so no call to the REST API
-// meets the bound. A release asset, uploaded through `gh api --input` (ghEndpointStoredAsSent) or
-// by `gh release upload` or `create` (ReleaseAsset), can be larger, and GitHub takes one of up to
-// 2 GiB; the guard refuses one past the bound, since it has not read it. Such a file is a setup
-// failure rather than a pass — the call is refused either way. The guard holds one file in hand
-// at a time beside the standard input it buffered: each file's records are scanned before the
-// next file is read (GhCall), so a call naming many files holds one of them at a time and never
-// their sum, and the rule pass never reads a gigabyte into memory to run its regexes over.
+// meets the bound. A release asset uploaded through `gh api --input` (ghEndpointStoredAsSent) can
+// be larger, and GitHub takes one of up to 2 GiB; the guard refuses one past the bound, since it
+// has not read it. Such a file is a setup failure rather than a pass — the call is refused either
+// way — and the rule pass never reads a gigabyte into memory to run its regexes over.
 const maxGhFile = 1 << 20
 
 // maxGhFileSaid is what a setup failure says of a file or a standard input longer than maxGhFile,
@@ -360,10 +338,10 @@ const maxGhFileSaid = ", the most this guard reads of what a call sends"
 
 // readGhFile is the text of one file a gh call would send, read to maxGhFile (readBounded). A
 // file that cannot be opened, cannot be read, or is longer than maxGhFile is a setup failure
-// naming the option that named it, or that gh uploads it as a release asset (ReleaseAsset), and
-// the path the caller named (GhFile.Path), each as shownText shows it: a guard that could not
-// read what the call publishes has cleared nothing, and a call it cleared would be the hole this
-// closes. The error under it is what went wrong alone, since the message names the path already.
+// naming the option that named it and the path as it was written, each as shownText shows it: a
+// guard that could not read what the call publishes has cleared nothing, and a call it cleared
+// would be the hole this closes. The error under it is what went wrong alone, since the message
+// names the path already.
 func readGhFile(named GhFile) (string, error) {
 	text, err := readBounded(named.Path, maxGhFile)
 	var failed *boundedReadError
@@ -374,13 +352,9 @@ func readGhFile(named GhFile) (string, error) {
 	if failed.longer {
 		why += maxGhFileSaid
 	}
-	file := "the file " + shownText(named.Option) + " names, "
-	if named.Option == ReleaseAsset {
-		file = "the file gh uploads as a release asset, "
-	}
 	return "", &SetupFailure{
 		What: whatGhCall,
-		Why:  file + shownText(named.Path) + ", " + why,
+		Why:  "the file " + shownText(named.Option) + " names, " + shownText(named.Path) + ", " + why,
 		Err:  failed.err,
 	}
 }

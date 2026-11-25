@@ -2204,28 +2204,6 @@ func TestGhRefusalShowsMatch(t *testing.T) {
 	}
 }
 
-// `legion gh release create <tag> <asset>` uploads the asset, which GitHub publishes as the bytes
-// sent, so on a public repository (the stand-in gh answers public) the guard reads the file the
-// parse names an asset: one naming the fixture's word is refused, exit 2, the report naming the
-// asset's file, and gh never runs the call; a clean asset reaches gh, which answers its own 7.
-func TestLegionGhReadsAReleaseAssetOnAPublicRepository(t *testing.T) {
-	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
-	word := writeFile(t, "word.txt", "the "+leakguardtest.Word+" notes\n")
-	clean := writeFile(t, "clean.txt", "a clean asset\n")
-	args := []string{"release", "create", "v1", word, "-R", "acme/widgets", "--notes", "a clean note"}
-	got := run(t, ghCheckAt(t, ghCheckPasses), "", args...)
-	if want := "  " + word + ": " + leakguardtest.WordClass + ": matched "; got.code != 2 || !strings.Contains(got.stderr, want) {
-		t.Errorf("legion gh %q = exit %d, stderr %q; want exit 2 and a line holding %q", args, got.code, got.stderr, want)
-	}
-	if strings.Contains("\n"+got.gh, "\ngh ") {
-		t.Errorf("gh ran a call the guard refused: %q", got.gh)
-	}
-	args[3] = clean
-	if got := run(t, ghCheckAt(t, ghCheckPasses), "", args...); got.code != 7 || got.stderr != "" {
-		t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7 and nothing printed", args, got.code, got.stderr)
-	}
-}
-
 // `legion gh` hands the guard the use the call makes of standard input, read out of its parse
 // from the option that named that input (leakguard.GhRequest.Sent), so the guard reads that
 // input as what it is. A JSON request body on `gh api --input -` whose one field holds the fixture
@@ -3278,9 +3256,9 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 }
 
 // ghSentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
-// its exported methods Names, Asset and UsesStdin (sentNames, sentAsset, sentUsesStdin), the three
-// ghSentFiles builds its answer with. Its fields of standard input are leakguard's own and no
-// literal here can set them, so an answer to compare whole is built so.
+// its exported methods Names and UsesStdin (sentNames, sentUsesStdin), the two ghSentFiles builds
+// its answer with. Its fields of standard input are leakguard's own and no literal here can set
+// them, so an answer to compare whole is built so.
 func ghSentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
 	sent := &leakguard.GhSent{}
 	for _, step := range steps {
@@ -3292,12 +3270,6 @@ func ghSentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
 // sentNames is the step of ghSentBy that names path as option's value (leakguard.GhSent.Names).
 func sentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
 	return func(sent *leakguard.GhSent) { sent.Names(option, path, field, use) }
-}
-
-// sentAsset is the step of ghSentBy that names path as a release asset with label, the label no
-// argument holds, "" for none (leakguard.GhSent.Asset).
-func sentAsset(path, label string) func(*leakguard.GhSent) {
-	return func(sent *leakguard.GhSent) { sent.Asset(path, label) }
 }
 
 // sentUsesStdin is the step of ghSentBy that names standard input with use alone
@@ -3453,52 +3425,6 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			}
 			if target.sent == nil {
 				t.Fatalf("ghTargetOf(%q) handed no parse of what the call sends, so the guard would read the argv again", tc.argv)
-			}
-			if !reflect.DeepEqual(target.sent, tc.want) {
-				t.Errorf("ghTargetOf(%q) read what the call sends as %+v, want %+v", tc.argv, target.sent, tc.want)
-			}
-		})
-	}
-}
-
-// gh 2.98.0 uploads each positional argument of `gh release upload` and `gh release create` past
-// the tag as a release asset (cli/cli v2.98.0 pkg/cmd/release/shared/upload.go, AssetsFromArgs),
-// so the parse names each one an asset (leakguard.GhSent.Asset), for the guard to read: a file as
-// written, and the path before a `#<label>`, whose label the argument's own record holds, in
-// upload and in create; a `#` that starts the argument is part of the file's name, and `-` is a
-// file of that name, no standard input. A pattern is the files gh's glob matches, each split at a
-// `#` as an argument is, so a pattern matching `notes#v1.txt` names the file `notes` beside it
-// with the label `v1.txt`, which no argument holds; one matching nothing is named as written,
-// which the guard then cannot open. An asset that is also the release notes' file is named as the
-// asset. A create with the tag alone names none. The help is the saved walk of gh 2.98.0, which
-// holds `gh release upload`'s.
-func TestGhTargetOfReadsTheReleaseAssetsTheCallWouldUpload(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"x.json", "y.json", "notes", "notes#v1.txt"} {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	help := savedGhHelpOf(t, "2.98.0")
-	for _, tc := range []struct {
-		name string
-		argv []string
-		want *leakguard.GhSent
-	}{
-		{"upload's files, one with a label", []string{"release", "upload", "v1", "a.txt", "b.txt#Label", "-R", "acme/widgets"}, ghSentBy(sentAsset("a.txt", ""), sentAsset("b.txt", ""))},
-		{"create's file beside its notes", []string{"release", "create", "v1", "a.txt", "--notes", "x", "-R", "acme/widgets"}, ghSentBy(sentAsset("a.txt", ""))},
-		{"create with the tag alone", []string{"release", "create", "v1", "--notes", "x", "-R", "acme/widgets"}, ghSentBy()},
-		{"a # that starts the argument", []string{"release", "upload", "v1", "#odd", "-R", "acme/widgets"}, ghSentBy(sentAsset("#odd", ""))},
-		{"a file named -", []string{"release", "upload", "v1", "-", "-R", "acme/widgets"}, ghSentBy(sentAsset("-", ""))},
-		{"a pattern", []string{"release", "upload", "v1", filepath.Join(dir, "*.json"), "-R", "acme/widgets"}, ghSentBy(sentAsset(filepath.Join(dir, "x.json"), ""), sentAsset(filepath.Join(dir, "y.json"), ""))},
-		{"a pattern that matches nothing", []string{"release", "upload", "v1", filepath.Join(dir, "*.zip"), "-R", "acme/widgets"}, ghSentBy(sentAsset(filepath.Join(dir, "*.zip"), ""))},
-		{"a pattern's match holding a #", []string{"release", "upload", "v1", filepath.Join(dir, "*.txt"), "-R", "acme/widgets"}, ghSentBy(sentAsset(filepath.Join(dir, "notes"), "v1.txt"))},
-		{"an asset that is also the notes file", []string{"release", "create", "v1", "notes.md", "--notes-file", "notes.md", "-R", "acme/widgets"}, ghSentBy(sentAsset("notes.md", ""))},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			target, err := ghTargetOfKept(t, tc.argv, nil, help, noGitRepository, ownersOwnDirectories)
-			if err != nil {
-				t.Fatalf("ghTargetOf(%q) = %v", tc.argv, err)
 			}
 			if !reflect.DeepEqual(target.sent, tc.want) {
 				t.Errorf("ghTargetOf(%q) read what the call sends as %+v, want %+v", tc.argv, target.sent, tc.want)
