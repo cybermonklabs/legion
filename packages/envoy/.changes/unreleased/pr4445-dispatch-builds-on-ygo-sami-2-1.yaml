@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Dispatch builds on sjawhar/ygo v1.55.1-sami.2.1, which adds two options to the websocket server:
+  the deadline on one peer write and the deadline on a close frame sent for a cancel cause. A
+  deployment sets neither, so each keeps the ten seconds and the one second the server held before;
+  only a test process sets them (docs.Deps.PeerWriteDeadline and CloseFrameDeadline).

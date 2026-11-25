@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"runtime/debug"
 	"sort"
@@ -109,6 +110,21 @@ type Deps struct {
 	// test hooks): its give-up, for an end-to-end row whose settlement at shutdown waits on a step
 	// of the row's own.
 	ShutdownDrainDeadline clock.Deadline
+	// PeerWriteDeadline is the end a test gives ygo's deadline on each write to a document socket
+	// (Server.PeerWriteTimeout), in place of the fork's ten seconds from the write's start; the
+	// zero value is production's, and a deployment leaves it zero. ygo counts the deadline from
+	// each write, so a moment becomes the span from New to it (socketWriteTimeout), which ends
+	// every later write's deadline no sooner than that moment. A test hands its give-up, so a page
+	// a loaded machine is slow to read for keeps its socket until the test would give up on it.
+	PeerWriteDeadline clock.Deadline
+	// CloseFrameDeadline is the end a test gives ygo's deadline on the close frame sent to a socket
+	// whose request context was cancelled with a cause (Server.CloseFrameTimeout), the
+	// admission-revoked close among them (schemaAdmission.cancel), in place of the fork's one
+	// second; the zero value is production's, and a deployment leaves it zero. It becomes a span
+	// as PeerWriteDeadline does. A test hands its give-up, so a close that waits behind a message
+	// a loaded machine is slow to send, or that the machine is slow to write, still goes out,
+	// where the second would end the socket with no close frame.
+	CloseFrameDeadline clock.Deadline
 	// Clock is the clock a room query's wait and its flush answer's timeout run on (roomQueries),
 	// a published write's loss check (publishedLossTimeout, recordPublishedLoss), VerifyMark's
 	// wait for a mark (MarkWait), the compaction queue's waits (compactionQueue), the
@@ -1029,6 +1045,11 @@ func New(deps Deps) *Service {
 	// queue: the room has already applied the update (reearth/ygo#268, in the pinned fork).
 	srv.MaxPendingItems = service.maxPendingItems
 	srv.PeerWriteQueueBytes = peerWriteQueueBytes
+	// ygo's deadlines on each write to a socket and on the close frame a cancelled socket is sent:
+	// the fork's own ten seconds and one second, unless a test hands an end of its own
+	// (Deps.PeerWriteDeadline, Deps.CloseFrameDeadline).
+	srv.PeerWriteTimeout = socketWriteTimeout(deps.PeerWriteDeadline)
+	srv.CloseFrameTimeout = socketWriteTimeout(deps.CloseFrameDeadline)
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
 	// been idle for roomIdleTimeout: ygo stamps a room idle when its last peer leaves, and when an
 	// Apply on a room no peer is in returns (reearth/ygo#269). Idle eviction refuses a room any
@@ -1094,6 +1115,20 @@ func New(deps Deps) *Service {
 	}
 
 	return service
+}
+
+// socketWriteTimeout is the span ygo arms on a write to a document socket under end, a Deps
+// deadline in place of one of ygo's own (Deps.PeerWriteDeadline, Deps.CloseFrameDeadline): zero,
+// which ygo reads as its own default, for the zero value; for a moment, the span from now to it on
+// the real clock, which ygo's socket deadlines run on, so every write after New ends no sooner
+// than that moment; and for no end the longest span a duration holds, since ygo reads zero or
+// less as its default and has no value for none.
+func socketWriteTimeout(end clock.Deadline) time.Duration {
+	span, bounded := end.Within(clock.Real(), 0)
+	if !bounded {
+		return math.MaxInt64
+	}
+	return span
 }
 
 // RoomFigures is what the document rooms of one Service hold and what their work costs, as the

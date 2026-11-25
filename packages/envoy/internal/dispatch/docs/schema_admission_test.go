@@ -393,7 +393,9 @@ func TestATokenIsAnsweredFromTheAdmissionItsSocketCarries(t *testing.T) {
 // is read-only; a current page's socket stays open and writable. This process reads version and
 // creates up to creatable (newAdmissionServer), so the older page is one version below it, and
 // the process that joins is of the build after this one: it reads one version above version and
-// creates up to version.
+// creates up to version. The page reads the close's code through requireRevokedClose, so the row
+// depends on ygo's deadline on that close frame (Server.CloseFrameTimeout), which the test
+// service sets to the test's give-up.
 func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
@@ -425,7 +427,9 @@ func TestAdmissionRecheckClosesASocketTheFleetNoLongerAdmits(t *testing.T) {
 // that page's socket with the admission-revoked code, and its reconnect is read-only. A current
 // page's socket stays open and writable. This process reads version and creates up to creatable
 // (newAdmissionServer), and the newer page is of the build after this one, beside a live process
-// of that build: both read one version above version and create up to version.
+// of that build: both read one version above version and create up to version. The page reads
+// the close's code through requireRevokedClose, so the row depends on ygo's deadline on that close
+// frame (Server.CloseFrameTimeout), which the test service sets to the test's give-up.
 func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t *testing.T) {
 	service, artifactID, server := newAdmissionServer(t, false)
 	version, creatable := pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
@@ -459,7 +463,11 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 
 // requireRevokedClose reads connection until it ends, and fails the test unless the server closed
 // it with the admission-revoked code; the read waits for that end until the shared wait gives up
-// (readDeadline).
+// (readDeadline). ygo writes that close within its deadline on a close frame
+// (Server.CloseFrameTimeout), a second from the moment its context watcher reads the clock in
+// production, past which it drops the frame and the page reads 1006. The test service sets that
+// deadline to the test's give-up (newTestServiceOn, Deps.CloseFrameDeadline), so a loaded machine
+// slow to write the frame delays the close and fails nothing.
 func requireRevokedClose(t *testing.T, connection *gws.Conn, what string) {
 	t.Helper()
 	_ = connection.SetReadDeadline(readDeadline(t))
@@ -544,12 +552,20 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 }
 
 // A revoke ends the socket with a close frame of ygo's own, which gorilla's WriteControl puts on
-// the connection between two of ygo's messages: it waits up to a second for a message already
-// going out and never cuts into one. Here the document's sync message is far past 64 KB and the
-// page reads nothing until the re-check has revoked its socket, so that message is part way out
-// when the revoke arrives. The page then reads every message whole and the close with the
+// the connection between two of ygo's messages: it waits for a message already going out and
+// never cuts into one. Here the document's sync message is far past 64 KB and the page reads
+// nothing until the re-check has revoked its socket, so that message's bytes are part way to the
+// page when the revoke arrives (most of them in the kernel's buffers, the server's write already
+// returned). The page then reads every message whole and the close with the
 // admission-revoked code after them - never a protocol error from a frame cut in half, and never
 // the bare 1006 of a connection closed without a frame.
+//
+// The row depends on both of ygo's deadlines on a socket, each of which ends that socket with no
+// close frame: the close's wait for the message in flight, a second in production
+// (Server.CloseFrameTimeout), and that message's write, ten seconds from its start in production
+// (Server.PeerWriteTimeout). The test service sets both to the test's give-up (newTestServiceOn,
+// Deps.CloseFrameDeadline and Deps.PeerWriteDeadline), so a loaded machine that slows the
+// server's write of that message or of the close delays the close and fails nothing.
 func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 	// The process stages one element it reads and cannot create, so it reads version, creates up
 	// to creatable, less than it reads, and a page one version older is still writable
@@ -620,9 +636,9 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 // The revoke's close is told from ygo's own ends of the same socket by its cause, not by when it
 // came: ygo writes a close frame only for a request context cancelled with a cause, as the
 // revoke cancels it (sjawhar/ygo provider/websocket/server.go, the WriteControl under
-// closeFrameTimeout), and the admission's cause is the admission-revoked code and reason. Its
-// write timeout (peer.go, writeTimeout) and its handshake deadline end a socket with no close
-// frame at all. The server's send buffer here holds the document with as much again free
+// Server.CloseFrameTimeout), and the admission's cause is the admission-revoked code and reason.
+// Its deadline on a write (Server.PeerWriteTimeout) and its handshake deadline end a socket with
+// no close frame at all. The server's send buffer here holds the document with as much again free
 // (slowPageMessageSize), so the close frame goes out whole behind the document and the stream
 // ends on it.
 
@@ -669,6 +685,13 @@ const postRevokeMarker = "afterrevoke"
 // hundred kilobytes still needs many seconds to reach the FIN, and timing that would measure the
 // runner's TCP pacing and nothing of the revoke. TCP delivers the server's bytes in order and
 // then that FIN, so the stream checked here is exactly what the page reads.
+//
+// The row depends on ygo's deadline on the close frame (Server.CloseFrameTimeout): the handshake
+// is all on the wire before the revoke (waitForTheDocumentOnTheWire), so the close waits behind
+// no message of it, but on production's second a machine slow between the moment ygo's context
+// watcher reads the clock and gorilla's write of the frame drops the frame, and the stream ends at
+// the cut. The test service sets that deadline to the test's give-up (newTestServiceOn,
+// Deps.CloseFrameDeadline), so such a machine delays the close and fails nothing.
 func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// The document is cut to the send buffer this host's kernel grants, read back before anything
 	// is seeded: the server's one write of it has to return with every byte queued, since a write

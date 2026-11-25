@@ -23,6 +23,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -88,10 +89,19 @@ func newTestServiceWith(t *testing.T, deps Deps) *Service {
 }
 
 // newTestServiceOn builds a document service on database through the package's test constructor
-// (newTestServiceWith), which shuts it down when the test ends.
+// (newTestServiceWith), which shuts it down when the test ends. ygo's deadlines on each write to
+// one of its sockets and on the close frame a cancelled socket is sent end at the test's give-up
+// (Deps.PeerWriteDeadline, Deps.CloseFrameDeadline), not at the fork's ten seconds and one
+// second: each bounds a step of the server's that a test waits behind, so a loaded machine that
+// is slow to take a page's writes, or to write the close a revoke sends, delays the socket's end
+// and fails nothing, where those spans would end the socket with no close frame (the revoke rows
+// of schema_admission_test.go).
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	return newTestServiceWith(t, testServiceDeps(database))
+	deps := testServiceDeps(database)
+	giveUp := clock.DeadlineAt(testwait.GiveUpAt(t))
+	deps.PeerWriteDeadline, deps.CloseFrameDeadline = giveUp, giveUp
+	return newTestServiceWith(t, deps)
 }
 
 func newTestService(t *testing.T) (*Service, string) {
