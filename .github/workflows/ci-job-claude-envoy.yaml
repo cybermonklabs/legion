@@ -108,8 +108,19 @@ jobs:
         working-directory: packages/claude-envoy
         env:
           LEGION_E2E: "1"
+      # The manifest declares this tree's daemon API contract as `legion.daemonApiVersion`
+      # (scripts/daemon-contract.sh), as every pack writes it and release.yaml's
+      # claude_envoy_build does (.github/scripts/release-claude-envoy-version.sh): the committed
+      # manifest names none, and the daemon built from this tree requires it.
       - name: Pack Claude Envoy plugin
-        run: bun pm pack --destination ../../out/pr-artifacts
+        run: |
+          contract=$(bash ../../scripts/daemon-contract.sh)
+          jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract' package.json > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" package.json
+          bun pm pack --destination ../../out/pr-artifacts
+          tar -xzOf ../../out/pr-artifacts/sjawhar-claude-envoy-*.tgz package/package.json \
+            | jq -e --argjson contract "$contract" '.legion.daemonApiVersion == $contract' > /dev/null \
+            || { echo "::error::the Claude Envoy tarball's package.json does not declare legion.daemonApiVersion $contract"; exit 1; }
         working-directory: packages/claude-envoy
       # The Codex plugin's package, built from the checked dist/ and packed and checked as
       # release.yaml's claude_envoy_build does, into the same artifact.

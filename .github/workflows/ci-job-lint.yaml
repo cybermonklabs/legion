@@ -130,11 +130,11 @@ jobs:
       # with: this job also runs on the bypass check's dispatched run at main's tip, where the
       # change has already merged. The condition tests `github.event_name` and no output of the
       # `changes` job, which rules 2 and 3 of .github/scripts/check-ci-filters.sh require of a
-      # step in this job.
-      - name: "Check the daemon API contract: the files that hold its number agree, and a change to it declares a number above the base's"
+      # step in this job. The check fetches its base from origin with git, one commit deep and
+      # without blobs; the checkout keeps no credentials, so that fetch is anonymous, and the
+      # step needs no token.
+      - name: "Check the daemon API contract: no numbered entry is added or renumbered, an entry and its fixture stay, and no file commits a number"
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: .github/scripts/check-daemon-api-contract.sh
 
       - name: Check the release workflows keep credentials out of jobs that run dependency code
