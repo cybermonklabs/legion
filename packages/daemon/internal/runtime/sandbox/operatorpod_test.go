@@ -55,6 +55,7 @@ func operatorRouteFixture(t *testing.T) Pod {
 // named for a Dispatch credential. It passes the Go live harnesses' operator pod, and an
 // operator's own settings overlay and a baseline variable it may override.
 func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
+	t.Parallel()
 	mountAt := func(path string) Pod {
 		return Pod{
 			Volumes:      []corev1.Volume{{Name: "creds", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "legion-creds"}}}},
@@ -89,6 +90,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		byRuntime    = "Legion's runtime sets in every pod"
 		byImage      = "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)"
 		byIdentity   = "every launch sets (the git identity the role's GitHub App commits as)"
+		byRoles      = "every launch sets (the identities of the issue's roles, which the push step reads)"
 		byEnvoy      = "every launch sets (the pointer to the launch secret ENVOY_TOKEN)"
 		bySessions   = "the pod baseline sets, and it decides where Oh My Pi keeps the session a resume reads"
 		byStore      = "Legion sets to place the sessions a resume reads (runtime.kubernetes.session_store)"
@@ -144,6 +146,13 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "Oh My Pi's config root override", pod: env("OMP_CONFIG_ROOT", "/var/lib/operator/omp"),
 			want: envSets("OMP_CONFIG_ROOT", "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)")},
 		{name: "a variable of the App's git identity", pod: env("JJ_USER", "operator"), want: envSets("JJ_USER", byIdentity)},
+		// Every workflow launch sets the identities of the issue's roles, which the push step of
+		// `legion jj` reads: an operator's value, or a provider key's, would forge another role's
+		// author.
+		{name: "the identities of the issue's roles", pod: env("LEGION_ROLE_IDENTITIES", `{"implementer":{"name":"x","email":"x@example.invalid"}}`),
+			want: envSets("LEGION_ROLE_IDENTITIES", byRoles)},
+		{name: "a provider key for the identities of the issue's roles", keys: map[string]string{"LEGION_ROLE_IDENTITIES": "identities"},
+			want: keyNames("LEGION_ROLE_IDENTITIES", byRoles)},
 		{name: "a variable pointing at a launch secret", pod: env("ENVOY_TOKEN_FILE", "/etc/envoy"), want: envSets("ENVOY_TOKEN_FILE", byEnvoy)},
 		// The daemon names its controller's Slack channels from the project's slack_channels alone: an
 		// operator's value would have the controller hear another project's mentions.
@@ -283,6 +292,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 // turns Dispatch off in every agent (a numeric last label that is no IPv4 address, invalid
 // punycode, a forbidden host character, a zone, an empty hostname, a port out of range).
 func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "dispatch-public-url.json"))
 	if err != nil {
 		t.Fatalf("read the public-URL fixture: %v", err)
@@ -312,6 +322,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 // provider key colliding with one of Options.LaunchSecrets' pointers, before anything touches the
 // cluster.
 func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*Options)
@@ -319,6 +330,9 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 	}{
 		{"an image variable", func(o *Options) { o.Pod.Env = map[string]string{"HOME": "/tmp"} },
 			"sandbox runtime: runtime.kubernetes.pod.env sets HOME, which the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)"},
+		{"the identities of the issue's roles", func(o *Options) {
+			o.Pod.Env = map[string]string{"LEGION_ROLE_IDENTITIES": `{"implementer":{"name":"x","email":"x@example.invalid"}}`}
+		}, "sandbox runtime: runtime.kubernetes.pod.env sets LEGION_ROLE_IDENTITIES, which every launch sets (the identities of the issue's roles, which the push step reads)"},
 		{"a launch secret's pointer", func(o *Options) {
 			o.LaunchSecrets, o.ProviderKeys = []string{"ENVOY_TOKEN"}, map[string]string{"ENVOY_TOKEN": "envoy"}
 		}, "sandbox runtime: provider_keys names ENVOY_TOKEN, whose pointer ENVOY_TOKEN_FILE every launch sets (the pointer to the launch secret ENVOY_TOKEN): the shim skips a key whose pointer the pod sets"},
@@ -345,6 +359,7 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 // and the list lacks is one an operator could override unrefused; one the list keeps that the
 // image dropped is refused for nothing.
 func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "daemon", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)

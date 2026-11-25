@@ -38,6 +38,13 @@
 #     Job says so in its own log, and the release lane, which reads the file from a checkout, is
 #     where those two are driven.
 #
+#   - the push step of `legion jj`, as the case `jj-push-author-from-trailer`, in a repository of
+#     its own: one identity makes a commit with `jj new`, the implementer's identity describes it
+#     with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark`
+#     sends it with LEGION_ROLE_IDENTITIES set for that push alone. On the head's image the remote
+#     commit's author must be the implementer's identity, which the step sets. On the control's
+#     image, which has no step, it must be the identity that made the commit.
+#
 #   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
 #     which jj would upload through that git, with no wrapper and so no pre-push hook: the image's
 #     jj wrapper refuses it before the upload starts, with exit 2 and its `LEAK CHECK SETUP ERROR`
@@ -79,10 +86,12 @@
 #
 # Exit statuses:
 #
-#   0  every check of every arm held: on the head's image the four refusable cases were refused
+#   0  every check of every arm held. On the head's image the four refusable cases were refused
 #      and named their class, the clean case landed, both shared-check failures refused under both
-#      commands, the gerrit upload was refused and the push outside the guard landed; on the
-#      control's image, if one was given, every push landed.
+#      commands, the gerrit upload was refused, the push outside the guard landed, and the remote
+#      commit of `jj-push-author-from-trailer` had the implementer's identity as its author. On
+#      the control's image, if one was given, every push landed, and that commit had as its author
+#      the identity that made it.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
@@ -142,10 +151,12 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       optional: an image published before the wrappers, driven as a second control,
-                  on which every push lands; the second positional argument too. The base branch's
-                  image carries the wrappers, so it is no control. Every run carries its own
-                  negative control: a jj git push with /opt/legion/bin off PATH, which must land.
+  --control       optional: an image published before the wrappers, driven as a second control.
+                  Every push lands on it, and in jj-push-author-from-trailer the remote commit's
+                  author is the identity that made the commit, not the implementer's. It is the
+                  second positional argument too. The base branch's image carries the wrappers, so
+                  it is no control. Every run carries its own negative control: a jj git push with
+                  /opt/legion/bin off PATH, which must land.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.

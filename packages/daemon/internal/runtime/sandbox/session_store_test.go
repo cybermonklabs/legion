@@ -70,6 +70,7 @@ func providersItems(pod corev1.PodSpec) []corev1.KeyToPath {
 // that impersonates nobody already runs. The image probe tells its Oh My Pi nothing of the store
 // under any of them.
 func TestASessionDatabaseIsWhereEveryRoleKeepsItsSession(t *testing.T) {
+	t.Parallel()
 	projection := corev1.KeyToPath{Key: "SESSION_DSN", Path: "OMP_SESSION_SQL_DSN"}
 	proxyFlags := []string{
 		"--session-instance", cloudSQLStore.Database.Instance,
@@ -243,6 +244,7 @@ func withoutSessionKey(pod *corev1.Pod) *corev1.Pod {
 // name each, and a change of either is a change of store — in the controller's pod too, whose
 // launcher runs the roles-dir form under a writer audience.
 func TestAPodsSessionStoreIsReadFromItsThreeRequiredFlags(t *testing.T) {
+	t.Parallel()
 	three := []string{
 		"--session-instance", cloudSQLStore.Database.Instance,
 		"--session-database", cloudSQLStore.Database.Name,
@@ -294,6 +296,7 @@ func TestAPodsSessionStoreIsReadFromItsThreeRequiredFlags(t *testing.T) {
 // account, or the same one, have not drifted. A pod an earlier release created under the file
 // store, which configure now refuses, has drifted under either database store.
 func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
+	t.Parallel()
 	runtimeFor := func(store ompsessions.Store) *Runtime {
 		t.Helper()
 		opts := testOptions()
@@ -354,6 +357,7 @@ func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
 // fails the daemon's boot. Under cloudsql-iam no URL key is held, so a deployment with no provider
 // key and no providers secret mounts no providers volume, and neither is told the directory.
 func TestTheProvidersDirectoryIsToldWhereThePodMountsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		store   ompsessions.Store
@@ -409,6 +413,7 @@ func TestTheProvidersDirectoryIsToldWhereThePodMountsIt(t *testing.T) {
 // file into the agent's environment unless its `_FILE` pointer is set, so without the pointer the
 // URL, password and all, would reach Claude Code and every command it runs.
 func TestAClaudeWorkerIsToldTheSessionStoreAsAnOhMyPiWorkerIs(t *testing.T) {
+	t.Parallel()
 	for _, store := range []ompsessions.Store{postgresStore, cloudSQLStore} {
 		t.Run(string(store.Kind), func(t *testing.T) {
 			opts := testOptions()
@@ -443,6 +448,7 @@ func TestAClaudeWorkerIsToldTheSessionStoreAsAnOhMyPiWorkerIs(t *testing.T) {
 // such session, so its launcher keeps nothing beside Oh My Pi. The id is the generation's, never
 // the pod's: no container of the pod carries it, so a pod the next generation reuses is unchanged.
 func TestAClaudeStartCommandNamesTheSessionItsLauncherKeeps(t *testing.T) {
+	t.Parallel()
 	for _, store := range []ompsessions.Store{postgresStore, cloudSQLStore} {
 		t.Run(string(store.Kind), func(t *testing.T) {
 			opts := testOptions()
