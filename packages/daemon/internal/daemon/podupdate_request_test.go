@@ -231,9 +231,9 @@ func TestPodUpdateTheControllerAsksForOverAnOpenRoundOpensNoSecond(t *testing.T)
 	t.Run("a drift's round the claims record", func(t *testing.T) {
 		rig := newPodUpdateRig(t,
 			podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-				contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+				contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift},
 			podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
-				contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+				contract: api.DaemonAPIVersion(), round: podUpdateRound, reasons: podUpdateDrift},
 		)
 		route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
 
@@ -336,7 +336,7 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T)
 	}{
 		{name: "no claim records a pod", status: http.StatusNotFound, code: "NO_POD", says: "no claim of " + podUpdateIssue + " records a process in a pod",
 			roles: []podUpdateRole{
-				{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+				{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion(),
 					suspendedBy: supervise.SuspendedByOperator},
 			}},
 		{name: "no claim runs a worker in the pod", status: http.StatusNotFound, code: "NO_POD", says: "no claim of " + podUpdateIssue + " runs a worker in its pod " + podUpdatePod,
@@ -346,11 +346,11 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T)
 		{name: "the claims record two pods", status: http.StatusConflict, code: "POD_CHANGING", says: "the claims of " + podUpdateIssue + " record two pods",
 			roles: []podUpdateRole{
 				readyWorker(claim.RoleImplementer),
-				{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion, pod: podUpdateReplacementPod},
+				{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion(), pod: podUpdateReplacementPod},
 			}},
 		{name: "a round over the pod before this one is ending", status: http.StatusConflict, code: "POD_CHANGING", says: "is over a pod its claims no longer record",
 			roles: []podUpdateRole{
-				{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion,
+				{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion(),
 					round: supervise.PodRound(podUpdatePreviousPod), reasons: podUpdateDrift},
 			}},
 	} {

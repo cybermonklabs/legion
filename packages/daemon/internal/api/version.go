@@ -1,7 +1,8 @@
 package api
 
-// DaemonAPIVersion is the contract this daemon speaks with the Legion plugin (@sjawhar/pi-legion):
-// the claim, credential, workflow, controller and state shapes the plugin's client parses
+// This file is the history of DaemonAPIVersion (contracts.go), the contract this daemon speaks
+// with the Legion plugin (@sjawhar/pi-legion): the claim, credential, workflow, controller and
+// state shapes the plugin's client parses
 // (`packages/pi-shared/src/daemon-client.ts`, through
 // `packages/contracts/src/legion-api.ts`), the pane environment it reads — every variable
 // the tmux runtime sets on a pane (`internal/runtime/tmux/spawn.go`'s `panePairs`) and the Sandbox
@@ -11,29 +12,35 @@ package api
 // and the command line of a pod's `legion launcher` container (each pod kind's
 // `launcherContainer` in `internal/runtime/sandbox/podkind.go`, and `sessionProxyFlags`), both of
 // which the image's own `legion` reads. The installed plugin declares the
-// number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
-// gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
+// number it was built against as `legion.daemonApiVersion` in the `package.json` its pack writes,
+// and the boot gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces raises this constant above the number its base
-// carries. The same commit writes the number in every other file that holds it:
-// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`, and the two fixtures
-// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
-// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
-// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
-// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The bump's history is its numbered entry in this file, below.
-// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant, and, naming a free number, a change that touches the contract
-// below (that script's header says which edits do) and declares no number above its base's.
+// Entry rule: a change to any of these surfaces adds one entry, and edits no number by hand.
+// `scripts/daemon-contract-entry.sh <slug>` writes the entry's file in this package,
+// `contract_<id>_<slug>.go`, whose id is the UTC second it was made; the author writes the
+// entry's text there, what the change does to the contract and why, with every row the change
+// adds to a table the daemon serves from, each naming the entry by its constant. In
+// `packages/daemon`, `go test ./internal/api -update` then writes the entry's fixture,
+// `packages/contracts/fixtures/daemon-api/contracts/<id>_<slug>.json`. The numbered entries below
+// end at LastNumberedContract, and no change adds one or moves one: each build numbers its new
+// entries LastNumberedContract plus their rank in the order main's first-parent history merged
+// them, which the release and worker-image builds stamp into the binary (contracts.go), so no
+// committed file holds a new entry's number. `legion version --contracts` prints each entry's
+// number in a build. `.github/scripts/check-daemon-api-contract.sh` refuses six changes: a
+// numbered entry added to this file or renumbered in it; an entry's file or fixture deleted or
+// renamed; an entry with no fixture, or a fixture with no entry; `legion.daemonApiVersion` in a
+// manifest, a `version.json`, or a `daemon` mark in a state golden; a changelog fragment that
+// names a number above LastNumberedContract; and an edit of an entry's fixture or of a frozen
+// record with no paragraph starting `Correction:` in that entry's text.
 //
 // Serving rule: a change that moves the shape of an answer a plugin parses serves the old shape to
-// each contract of `SupportedContracts` below this constant, through shaping.go's `shapeAnswer`: a
-// band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
-// (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
-// enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
-// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
+// each contract of `SupportedContracts` below DaemonAPIVersion, through shaping.go's
+// `shapeAnswer`: a band takes off a key the change adds (`stateNarrowings`), a stand-in writes
+// back a key it removes (`standIns`), and a value strip holds back a value newer than that
+// contract's enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape
+// gate in this package's tests (`contract_shapes_test.go`) refuses a change that does not, and a
+// record of an earlier contract changed with the serving-down that produces it passes, which a
+// reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -2195,7 +2202,7 @@ package api
 // brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
 // which the forward merge that brought main in at 86 left standing, and then 102 at the forward
 // merge of 2026-11-13 that brought main in at 94 — main stood at 104 after the merge of 17:3xZ
-// that day, which was then the entry right above this one, where 151 is now — since 88 is
+// that day, which was then the entry right above this one, where 144 is now — since 88 is
 // below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
 // since the two keys contract 94 added are served to a caller at the declared number alone
 // (api's phaseEntriesContract). It took 106 at the merge after that, because
@@ -3736,236 +3743,16 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 292: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
-// resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
-// four the operator already has, as controller routes beside `claims/fresh-session` and
-// `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
-// the same door (agentDoor: a controller grant, or `403 CONTROLLER_REQUIRED` for every other
-// grant, an architect's included, as those two routes answer it; an agent whose claim the daemon
-// supervises, or `404 NO_CLAIM`, its token built from the daemon's own project, so another
-// project's agent cannot be named): `POST /legion/v1/agents/stop` runs `legion claims stop`'s
-// effect, `POST /legion/v1/agents/retry` the plain `legion claims retry` (no fresh session),
-// `POST /legion/v1/agents/suspend` `legion claims suspend`'s, and `POST /legion/v1/agents/resume`
-// `legion claims resume`'s. Each answers `api.AgentActionResponse`: the claim's `state` after the
-// request and, where a suspension is over the agent, `suspendedBy`, `suspensionHeld` and
-// `suspensionHeldBy`, which these routes alone of the session-facing ones carry, since no plugin
-// below this contract calls them (the state still names no suspender, StrandedClaim); a
-// suspension held for the agent's turn, and a retry whose start the issue's phase queued, answer
-// 202. The actions are the controller's alone. The controller's suspension is recorded as its
-// own, `controller`, a new supervise.SuspendSource that `claims.suspended_by` admits from
-// migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
-// resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
-// `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
-// bearer reads; no shape moves. The controller's resume_agent, suspend, stop and retry, and its
-// fresh session, are refused an agent the operator's own suspension holds, held for a turn or
-// landed, with `409 SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not,
-// and refuses such an agent in its own codes. Its retry and resume of an agent whose claim is
-// stored working and that no such suspension holds are refused `409 CLAIM_IN_A_TURN`. The
-// controller gets one more route of its own beside these (#4065):
-// `POST /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and
-// opens the daemon's update round over that issue's pod as a drift opens one: each role of the
-// pod is asked to push its work and answer ready_for_update, and the pod is replaced once each
-// has answered, no turn runs and each role's report since its last turn names no running
-// background work, or at the round's bound (`pod_update_grace_minutes`), whatever the pod's
-// drift. The round's reasons say the project's controller asked for the replacement, and the
-// opening is held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`,
-// naming `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
-// `api.PodUpdateResponse`: the `round`, its `reasons`, and whether this request `opened` it, false
-// for a round already open over the pod, which it leaves as it stands. It takes a controller
-// grant alone (`403 CONTROLLER_REQUIRED`) and an issue key (`400 INVALID_ISSUE`); an issue of
-// another project, or one with no claim the daemon supervises that has not retired, is `404
-// NO_CLAIM`, one whose claims run no worker in a pod `404 NO_POD`, and one whose pod is being
-// replaced already — its claims in two pods, or the round over the pod before it still ending —
-// `409 POD_CHANGING`. It is the one route by which the controller removes an issue pod whose
-// workspace may hold work. It answers 200 only once a claim of the issue records the round in
-// the store, which a restart restores and the sweeps carry to the pod's replacement; a round no
-// claim records within its wait is `503 POD_UPDATE_NOT_RECORDED`, and may still open. A request
-// waits for the turn a sweep's walk over the project's issues holds while its own context lives
-// and at most the bound of its wait for the record (30 seconds); one whose context ends first, or
-// that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
-// `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
-// ended the wait, and the bound.
-// While the project is paused (178), the controller's `agents/resume` and `agents/retry` answer 409
-// `PROJECT_PAUSED`, with the `pause` that stands, for every agent, as its `claims/fresh-session`
-// and `claims/compact` do, and change nothing: an agent the pause stopped is the pause's to bring
-// back at the project's resume, and no agent action undoes the pause. Its `agents/stop` and
-// `agents/suspend` start nothing and still run. A suspension of the controller's or the operator's
-// and the pause's stop each keep their own source: the pause stops no agent such a suspension
-// already holds, an agent the pause stopped that such a suspension then takes over stays suspended
-// by it at the resume, and the resume brings back only what the pause stopped. `issues/pod-update`
-// answers 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything,
-// and 409 `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that
-// `PROJECT_PAUSED` check read the project as running, or a hold the resume left on a pod until a
-// role of the pod is live again; neither opens a round. Every `PROJECT_PAUSED` sentence, those of
-// 178's routes included, now ends by naming what lifts the pause (server.go's pauseLifts): the
-// project's resume, as the controller's `resume` operation of its `legion` tool, which names no
-// issue, and the operator's `legion project resume`; the fixture `project-paused.json` carries it.
-// The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the
-// issue's architect alone, as `session-lost` does: the controller is told of neither (#4065),
-// and no shape moves.
-// Contract 292 is served down by 193's rule (#3659): every answer goes through one writer, which
-// shapes it to the contract its caller reads. The agent actions' answer and the pod update's are
-// two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
-// `issues/pod-update`, each arrived whole with its routes at this contract (agentActionsContract),
-// so no contract below records either, and shapeAnswer serves each as written. The agent actions'
-// `state`, `suspendedBy` and `suspensionHeldBy` are enumerated fields of the table, each recorded
-// whole at this contract, so no value of them is held back, and the plugin reads every field of
-// both answers as optional, since its code hands each answer on whole and reads none of them
-// (`LEGION_ANSWER_READS`). Every refusal of the five routes is the refusal answer: `PROJECT_PAUSED`
-// is an `api.PauseFailure`, placed by the caller's pod where it states no contract and served
-// without its `pause` below 178, and every other code, from `CONTROLLER_REQUIRED` to
-// `POD_HELD_BY_PAUSE`, is an `api.Failure`, which no contract shapes. The five routes' request
-// records start at this contract (`packages/contracts/fixtures/daemon-api/request-shapes.json`). No
-// key and no value of any other answer moved, so this contract's records of every other answer are
-// 275's, under its own number. agentActionsContract is now the last number of answers.go's
-// SupportedContracts, after shapedAnswersContract, 199, repositoriesLiveContract,
-// childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract,
-// intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract and
-// dispatchCredentialContract, and a renumber of this entry moves that constant with it.
-// (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
-// every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
-// 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
-// open heads above it declared 134 (#4021), 135 (#3659), 137 (#4046), 138 (#4017), 139 (#2731,
-// #3711 and #3993), 140 (#3519), 141 (#3575 and #3730) and 142 (#3712), so 136 was the lowest
-// number above the base's that no open head declared. At the forward merge that brought main in
-// at b2e42742, which declares 144, the number moved to 150, the lowest number above 144 that no
-// open pull request declared, as .github/scripts/check-daemon-api-contract.sh named it. At the
-// forward merge that brought main in at 467e5371, which declares 146, it moved to 156, which that
-// check named at 2026-11-17T07:04:26Z as the lowest number above 146 that no open pull request
-// declared: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and this change's own #4065), 151
-// (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155 (#4273). It keeps 156 at the forward
-// merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106 at 151, and at the
-// forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730 as entry
-// 152, the number that base carried: 156 is still above it. Read the base's own number and every
-// open head again at the next merge rather than from this entry.)
-// (At the forward merge of 2026-11-19, which brought in 708ca88c, main had moved to 160 (#3519,
-// entry 160), above this entry's earlier 156, and a reading of `const DaemonAPIVersion` at
-// the head of every one of the 233 open pull requests, which ended at 2026-11-19T09:00:35Z, found
-// 161 (#4173, #4180, #4193 and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166
-// (#4432), 167 (#3831, #4030, #4485 and #4493) and 168 (#2230 and #4488) declared above main's
-// 160, so 169 is the lowest number above it that no open head declares, and this entry takes it.)
-// (At the forward merge of 2026-11-19 that brought main in at 5f3d552e, which declares 168
-// (entry 168), a reading of `const DaemonAPIVersion` at the head of every one of the 242 open
-// pull requests, made between 2026-11-19T18:25:20Z and 18:28:46Z, found 169 declared by #3831 as
-// well as by this change's own head, 170 by #2230, #4173, #4180 and #4193, and 172 to 176 by
-// others, so this entry moved to 171, the lowest number above main's 168 that no other open head
-// declares. Read the base's own number and every open head again at the next merge rather than
-// from this line.)
-// (At the forward merge of 2026-11-20 that brought main in at c3b75c69, which declares 178
-// (entry 178), .github/scripts/check-daemon-api-contract.sh named 184 as the lowest number above
-// main's 178 that no open pull request declares: 179 (#4392 and #4540), 180 (#4049 and #4175),
-// 181 (#4273 and #4553), 182 (#4173 and #4495) and 183 (#3712) were declared, so this entry moved
-// from 171 to 184. Read the base's own number and every open head again at the next merge rather
-// than from this line.)
-// (At the forward merge of 2026-11-20 that brought main in at 1c7c8253, which declares 188
-// (entry 188), .github/scripts/check-daemon-api-contract.sh named 193 at 2026-11-20T10:47Z as the
-// lowest number above main's 188 that no open pull request declares: 189 (#3831 and #4596), 190
-// (#4493 and #4578), 191 (#4495, #4573 and #4592) and 192 (#4611) were declared, so this entry
-// moved from 184 to 193. Read the base's own number and every open head again at the next merge
-// rather than from this line.)
-// (At the forward merge of 2026-11-20 that brought main in at f21107b285c7, which declares 189
-// (entry 189), .github/scripts/check-daemon-api-contract.sh named 197 at 2026-11-20T17:10Z as the
-// lowest number above main's 189 that no open pull request declares: 190 (#4578), 191 (#2230,
-// #4049 and #4573), 192 (#4173, #4175, #4182, #4193 and #4392), 193 (#3659, #3712 and #4553, as
-// well as this change's own head), 194 (#3831 and #4030), 195 (#4590) and 196 (#3993, #4273,
-// #4432, #4493, #4495, #4580 and #4592) were declared, so this entry moved from 193 to 197. Read
-// the base's own number and every open head again at the next merge rather than from this line.)
-// (At the forward merge of 2026-11-20 that brought main in at fcc746a38394, which declares 193
-// (entry 193, #3659), .github/scripts/check-daemon-api-contract.sh passed 197 as above the base's
-// 193 and, passing, read no open pull request; its own reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head of every open pull request, made between 2026-11-20T21:04:39Z and
-// 21:07:32Z, found 194 (#4030), 195 (#4590), 196 (#3993, #4173, #4193, #4273, #4392, #4432,
-// #4493, #4495, #4580, #4592 and #4596), 197 (#4553 and #4578, as well as this change's own
-// head), 198 (#4175 and #4589) and 199 (#3831) declared above main's 193, so this entry moved
-// from 197 to 200, the lowest number above it that no other open head declares. Read the base's
-// own number and every open head again at the next merge rather than from this line.)
-// (At the forward merge of 2026-11-21 that brought main in at 5f2bf9afeaff, which declares 199
-// (entry 199, #4495), a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of every one
-// of the 314 open pull requests, made between 2026-11-20T23:57:31Z and 2026-11-21T00:00:34Z,
-// found 200 declared by #4493 as well as by this change's own head, 201 by #4553 and #4611, and
-// 202 by #4580, so this entry moved from 200 to 203, the lowest number above main's 199 that no
-// other open head declares. Read the base's own number and every open head again at the next
-// merge rather than from this line.)
-// (At the forward merge of 2026-11-21 that brought main in at 1cdf5b9ceba6, which declares 202
-// (entry 202, #4493), a reading of `const DaemonAPIVersion` at refs/pull/<n>/head of every one
-// of the 346 open pull requests, made between 2026-11-21T04:01:42Z and 04:04:55Z, found 203
-// declared by #2230, #3993, #4175, #4553, #4592, #4596 and #4661 as well as by this change's own
-// head, 204 by #3831 and #4030, 205 by #4573 and 206 by #4540, so this entry moved from 203 to
-// 207, the lowest number above main's 202 that no other open head declares. The merge of main
-// `7009f289` moves it from 207 to 212: 207 to 211 are other open pull requests' (read at
-// refs/pull/<n>/head of all 395 open pull requests, 2026-11-21T11:08:11Z to 11:12:19Z). Round 22
-// moves it from 212 to 215: 203 to 214 are other open pull requests' (read at refs/pull/<n>/head
-// of all 411 open pull requests, 2026-11-21T18:33:51Z to 18:38:25Z). The merge of main
-// `98987d3f`, which declares 205 (#4573), keeps 215: 206 to 214 are other open pull requests',
-// and no other declares 215 (read at refs/pull/<n>/head of all 420 open pull requests,
-// 2026-11-21T22:30:48Z to 22:33:44Z). The merge of main `83b91235`, which declares 213,
-// moves it from 215 to 221: 214 is #4592's and #4918's, 215 is #4596's as well as
-// this change's own, 216 to 220 are other open pull requests', and no open head declares 221
-// (read at refs/pull/<n>/head of all 444 open pull requests, 2026-11-22T11:23:08Z to
-// 11:25:58Z). The merge of main `b537812f`, which still declares 213, moves it from 221 to 227:
-// 221 is #3993's, #4049's, #4392's, #4432's, #4771's and #4942's as well as this change's own,
-// 214 to 226 are other open pull requests', and no open head declares 227 (read at
-// refs/pull/<n>/head of all 445 open pull requests, 2026-11-22T15:30:04Z to 15:32:38Z). Taking
-// the architect's actions on an agent out of this change keeps 227: a reading of every one of the
-// 464 open pull requests at 2026-11-22T17:45Z found 227 declared by #4065 alone. The merge of main
-// `07c168a1`, which still declares 213, keeps 227 too: no open head but this one declares it
-// (read at refs/pull/<n>/head of all 501 open pull requests, 2026-11-22T20:22:11Z to 20:27:35Z).
-// The merge of main `8f332682`, which declares 217 (#4273), keeps 227: 218 to 226 are other open
-// pull requests', and no other declares 227 (read at refs/pull/<n>/head of all 525 open pull
-// requests, 2026-11-23T01:15:33Z to 01:21:05Z). The merge of main `74cb6855`, which still declares
-// 217, moves it from 227 to 223: 227 is #5162's as well as this change's own, 218 to 222 are other
-// open pull requests', and no open head declares 223 (read at refs/pull/<n>/head of all 507 open
-// pull requests, 2026-11-23T03:03:20Z to 03:08:55Z). The merge of main `cdf532a8`, which still
-// declares 217, moves it from 223 to 234: 223 is #3993's and #4661's as well as this change's own,
-// 218 to 222 and 224 to 233 are other open pull requests', and no open head declares 234 (read at
-// refs/pull/<n>/head of all 515 open pull requests, 2026-11-23T05:10:46Z to 05:16:54Z). The
-// merge of main `2a86374a`, which declares 219 (#4611), keeps 234: 220 to 233 are other open pull
-// requests', and no open head but this one declares 234 (read at refs/pull/<n>/head of all 504
-// open pull requests, 2026-11-23T17:11:36Z to 17:15:28Z). The merge of main `e3eedd6a`, which
-// still declares 219, keeps 234: no open head but this one declares it (read at
-// refs/pull/<n>/head of all 493 open pull requests, 2026-11-23T19:28:13Z to 19:30:52Z). The
-// merge of main `ae758e3b`, which declares 220 (#4930), keeps 234: 221 to 233 are other open pull
-// requests', and no open head but this one declares 234 (read at refs/pull/<n>/head of all 508
-// open pull requests, 2026-11-24T08:05:40Z to 08:08:24Z).
-// The merge of main `ce0420c3`, which still declares 220, keeps 234: no open head but this one
-// declares it (read at the head of each of the 494 open pull requests, 2026-11-24T09:45:39Z to
-// 09:48:06Z). The merge of main `7ccabcba`, which declares 228 (#4590, INFRA-1575),
-// keeps 234: 229 (#2230), 230 (#4580), 231 (#4540), 232 (#5271) and 233 (#4173, #4180, #4182, #4193
-// and #4932) are other open pull requests', and no open head but this one declares 234 (read at the
-// head of each of the 492 open pull requests, 2026-11-24T10:02:56Z to 10:05:20Z). The merge of main
-// `e01affc8`, which still declares 228, keeps 234: no open head but this one declares it (read at
-// the head of each of the 483 open pull requests, 2026-11-24T11:35:13Z to 11:37:36Z). The merge of
-// main `3dbaa2b2`, which declares 232 (#5271, INFRA-4508), keeps 234: 229 to 233 are
-// other open pull requests', and no open head but this one declares 234 (read at the head of each
-// of the 478 open pull requests, 2026-11-24T12:32:36Z to 12:35:22Z). The merge of main `9a4e7a14`,
-// which still declares 232, keeps 234: no open head but this one declares it (read at the head of
-// each of the 482 open pull requests, 2026-11-24T13:41:35Z to 13:44:24Z). The merge of main
-// `4e851eb1`, which still declares 232, keeps 234: no open head but this one declares it (read at
-// the head of each of the 480 open pull requests, 2026-11-24T15:09:20Z to 15:12:03Z). The merge of
-// main `7e75126f`, which declares 246 (#4960, the pod hold's entry), moves this entry from 234
-// to 248: 240 (#3712, #3993, #4539 and #4771), 241 (#4049, #4392 and #4682), 242 (#4596), 243
-// (#5349), 244 (#3831), 245 (#5158), 246 (#4194) and 247 (#4580 and #5384) are other open pull
-// requests', and no open head declares 248 (read at the head of each of the 477 open pull requests,
-// 2026-11-24T15:47:51Z to 15:50:22Z). The merge of main `69fcd649`, which still declares 246, keeps
-// 248 though #3993, #4049 and #4392 declare it too: while cybermonklabs/legion#5399, under which no
-// branch picks this number by hand, is open, a branch keeps the number it holds rather than take a
-// new one by a census. The merge of main `5df00e2f`, which declares 250 (#5365, the waiting line's
-// priority), moves this entry from 248 to 253: the rule above cannot hold once the base declares a
-// number above the one a branch keeps, since check-daemon-api-contract.sh refuses a number not
-// above the base's, and #5399 is still open. 251 (#5307) and 252 (#4540) are other open pull
-// requests', and no open head declares 253 (read at the head of each of the 488 open pull requests,
-// 2026-11-24T17:55:43Z to 18:01:07Z; #5399's head declares no number). The merge of main
-// `c56ad6a1`, which declares 256 (#5349, the claim views' cause times), moves this entry from 253
-// to 270: 253 is not above the base's 256, so check-daemon-api-contract.sh would refuse it, and 270
-// is the number this change was given at 2026-11-24T18:27:55Z by the session that hands out these
-// numbers while #5399 is still open. No open head declares 270 (read at the head of each of the 511
-// open pull requests, 2026-11-25T00:22:02Z to 00:28:44Z; 265 (#5285), 267 (#5168), 268 (#5384), 271
-// (#4173), 272 (#4049) and 274 (#3993) are other open pull requests'). The merge of main
-// `ac1c9a33`, which declares 275 (#4392, the daemon's own Dispatch credential), moves this entry
-// from 270 to 292: 270 is not above the base's 275, so check-daemon-api-contract.sh would refuse
-// it, and 292 is the number this change was given at 2026-11-25T09:29:13Z by the session that
-// hands out these numbers while #5399 is still open. No open head declares 292 (read at the head
-// of each of the 500 open pull requests, 2026-11-25T09:29:20Z to 09:30:46Z; the highest number
-// another open head declares is 290, #4661's). Read the base's own number and every open head
-// again at the next merge rather than from this line.)
-const DaemonAPIVersion = 292
+// Each change after LastNumberedContract is an entry of its own file, and takes no number here
+// (contracts.go).
+
+/*
+The line below is no Go and no contract number of this build. Main's contract check from before
+this change reads every open pull request's head for `const\s+DaemonAPIVersion\s*=\s*(\d+)` and
+fails each pull request it checks while one open head declares none, so this head keeps a line it
+reads, at the number main declared when the line was written. Its tab keeps it out of every reader
+of the number after the cutover (legion-pins, scripts/daemon-contract.sh and
+scripts/daemon-contract-convert.sh), which read `const DaemonAPIVersion = <n>` with one space, and
+the check of this change reads no open pull request.
+const	DaemonAPIVersion = 275
+*/

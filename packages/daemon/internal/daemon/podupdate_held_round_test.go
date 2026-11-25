@@ -26,9 +26,9 @@ func heldRoundRig(t *testing.T, suspendedBy supervise.SuspendSource) *podUpdateR
 	t.Helper()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleArchitect, state: supervise.StateReady, session: true, inPod: true,
-			contract: api.DaemonAPIVersion},
+			contract: api.DaemonAPIVersion()},
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
-			contract: api.DaemonAPIVersion, suspendedBy: suspendedBy},
+			contract: api.DaemonAPIVersion(), suspendedBy: suspendedBy},
 		readyWorker(claim.RoleTester),
 	)
 	rig.drifts(podUpdateDrift)

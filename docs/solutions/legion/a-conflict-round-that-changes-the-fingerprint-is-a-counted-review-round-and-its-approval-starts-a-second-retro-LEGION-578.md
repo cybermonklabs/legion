@@ -31,8 +31,8 @@ related_issues:
   → `Retro`), so a conflict round's new approval starts the implementer on retro a second time. The
   retro skill's "a conflict-forced rebase after retro moves these documents with the branch; retro
   does not re-run" is the other case: a rebase that changes nothing the reviewer re-decides, where
-  the approval stands and the tree goes to the merger. A second retro covers only what the merge,
-  the renumber and the review rounds since the first retro taught; it writes new files and edits
+  the approval stands and the tree goes to the merger. A second retro covers only what the merge
+  and the review rounds since the first retro taught; it writes new files and edits
   none of the first retro's, re-reads `mergeable` before committing
   (docs/solutions/legion/a-stopgap-that-lands-on-main-mid-plan-is-superseded-not-merged.md, item 7),
   and brings the body's `Size` and `Chain` lines up to date for its commit.

@@ -70,6 +70,7 @@ func idleRoot() pods.IdleView {
 // round open on the pod" — is the two rows below the plugin contract's: #2538 is on main now,
 // and the rule reads supervise.Claim.UpdateRound with supervise.IsPodRound.
 func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		view  pods.IdleView
@@ -506,6 +507,7 @@ func unownedIssue() pods.IdleView {
 // each row is the view, the clock, the idle period and whether the runtime holds the issue's
 // Sandbox, and nothing else.
 func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		view    pods.IdleView
@@ -780,6 +782,7 @@ func leftChild() pods.IdleView {
 // decline and no queued check: it is that check. It reads the moment the read began, and a turn
 // that started after it, by any claim, is one the read may not have seen.
 func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
+	t.Parallel()
 	standing := pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork}
 	// failedImplementer is leftChild with no live claim: its implementer failed and records no
 	// process, its tester suspended beside it.
@@ -889,6 +892,7 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 // mark that never clears. It is no record of this daemon's, so the rule holds the pod as one of
 // an issue the record does not hold (IdleHoldNoPod), and nothing is marked or queued.
 func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -949,6 +953,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 // Every hold the rule can report has a name of its own, which is what the daemon records of a pod
 // it kept: two holds that printed the same would make the record unreadable.
 func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
+	t.Parallel()
 	seen := map[string]IdleHold{}
 	for hold := IdleHoldNone; hold <= IdleHoldUnownedUnpushedWork; hold++ {
 		name := hold.String()

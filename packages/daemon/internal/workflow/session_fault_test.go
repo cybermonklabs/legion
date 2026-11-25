@@ -31,6 +31,7 @@ func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
 // (dispatch://INFRA-4108 R3): the notice's kind is part of what the architect hears, since the
 // outbox publishes each notice as `<kind> on <issue>`.
 func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
+	t.Parallel()
 	const session = "01a1f5de-4835-7667-b005-e99e3e17edd3"
 	for _, row := range []struct {
 		name   string
@@ -101,6 +102,7 @@ func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
 // opens a finding ask for the operator who owns the store, and it holds no phase: the claim keeps
 // its session and the daemon keeps trying.
 func TestASessionStoreFaultIsToldOnTheIssueAndToTheController(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")
 

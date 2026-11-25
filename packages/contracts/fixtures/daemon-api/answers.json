@@ -181,24 +181,5 @@
     ],
     "since": 228,
     "noBody": false
-  },
-  {
-    "id": "agent-action",
-    "routes": [
-      "POST /legion/v1/agents/stop",
-      "POST /legion/v1/agents/retry",
-      "POST /legion/v1/agents/suspend",
-      "POST /legion/v1/agents/resume"
-    ],
-    "since": 292,
-    "noBody": false
-  },
-  {
-    "id": "pod-update",
-    "routes": [
-      "POST /legion/v1/issues/pod-update"
-    ],
-    "since": 292,
-    "noBody": false
   }
 ]

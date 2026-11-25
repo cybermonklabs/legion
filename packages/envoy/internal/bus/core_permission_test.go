@@ -220,7 +220,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, testnats.SubscribeGrantConfig(public, "_INBOX.>"))
-	waitFor(t, 30*time.Second, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
+	waitFor(t, "CoreSubOK to read the restarted server's refusal of the re-sent subscription", func() bool {
 		return client.Connected() && !client.CoreSubOK()
 	})
 	if !held.IsValid() {
@@ -231,7 +231,7 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a server that grants the subscription has it again", func() bool {
+	waitFor(t, "CoreSubOK once a server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 	// The flush returns once the server has handled every protocol line the client sent before it,
@@ -297,7 +297,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
+	waitFor(t, "CoreSubOK to read the reload's revocation of the subscription", func() bool {
 		return !client.CoreSubOK()
 	})
 	if !client.Connected() {
@@ -315,7 +315,7 @@ func TestCoreSubOKIsFalseOnceAReloadRevokesTheSubscription(t *testing.T) {
 	}
 
 	server.Restart(t, granted)
-	waitFor(t, 30*time.Second, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
+	waitFor(t, "CoreSubOK once a restarted server that grants the subscription has it again", func() bool {
 		return client.Connected() && client.CoreSubOK()
 	})
 }
@@ -379,7 +379,7 @@ func TestResendRefusedCoreWaitsForTheMessagesTheRevokedSubscriptionHolds(t *test
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation", func() bool { return !client.CoreSubOK() })
+	waitFor(t, "CoreSubOK to read the reload's revocation", func() bool { return !client.CoreSubOK() })
 	sent := func(from int) int { return strings.Count(server.Log()[from:], "<<- [SUB "+subject+" ") }
 	from := len(server.Log())
 	if err := client.ResendRefusedCore(); err != nil {
@@ -396,7 +396,7 @@ func TestResendRefusedCoreWaitsForTheMessagesTheRevokedSubscriptionHolds(t *test
 	}
 
 	close(release)
-	waitFor(t, 10*time.Second, "the client to send the subscription again once the handler took both messages", func() bool {
+	waitFor(t, "the client to send the subscription again once the handler took both messages", func() bool {
 		if err := client.ResendRefusedCore(); err != nil {
 			t.Fatalf("resend: %v", err)
 		}
@@ -444,7 +444,7 @@ func revokedCoreClient(t *testing.T, subject, queue string) (*bus.Client, *testn
 	if err := server.Reload(t, testnats.SubscribeGrantConfig(public, "_INBOX.>")); err != nil {
 		t.Fatalf("reload without the grant: %v", err)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK to read the reload's revocation", func() bool { return !client.CoreSubOK() })
+	waitFor(t, "CoreSubOK to read the reload's revocation", func() bool { return !client.CoreSubOK() })
 	sent := func(from int) int { return strings.Count(server.Log()[from:], "<<- [SUB "+subject+" ") }
 	return client, server, granted, sent
 }
@@ -459,7 +459,7 @@ func TestCoreSubOKStaysFalseThroughAResendTheServerRefuses(t *testing.T) {
 	client, server, _, sent := revokedCoreClient(t, "notifications.>", "resend-answer-test")
 	from := len(server.Log())
 	for attempt := 1; attempt <= sends; attempt++ {
-		waitFor(t, 30*time.Second, "CoreSubOK to read the refusal before the next send", func() bool { return !client.CoreSubOK() })
+		waitFor(t, "CoreSubOK to read the refusal before the next send", func() bool { return !client.CoreSubOK() })
 		if err := client.ResendRefusedCore(); err != nil {
 			t.Fatalf("send %d: %v", attempt, err)
 		}
@@ -503,7 +503,7 @@ func TestResendRefusedCoreSendsNothingForTheRefusalOfTheSessionBeforeAReconnect(
 	case <-time.After(30 * time.Second):
 		t.Fatal("the restart's disconnect never reached the hook")
 	}
-	waitFor(t, 30*time.Second, "the client to reconnect while its reconnect callback waits", func() bool {
+	waitFor(t, "the client to reconnect while its reconnect callback waits", func() bool {
 		return client.Conn.Status() == natsgo.CONNECTED && client.Conn.Stats().Reconnects == 1
 	})
 	if err := client.Conn.Flush(); err != nil {
@@ -523,5 +523,5 @@ func TestResendRefusedCoreSendsNothingForTheRefusalOfTheSessionBeforeAReconnect(
 	if subs != 1 || unsubs != 0 {
 		t.Fatalf("after the reconnect and before its callback ran, the server received %d SUBs and %d UNSUBs; want nats.go's one SUB and no UNSUB", subs, unsubs)
 	}
-	waitFor(t, 30*time.Second, "CoreSubOK once the reconnect callback ran", client.CoreSubOK)
+	waitFor(t, "CoreSubOK once the reconnect callback ran", client.CoreSubOK)
 }

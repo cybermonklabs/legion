@@ -240,7 +240,7 @@ func (r *providerErrorLive) registerController() {
 	t := r.t
 	t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/controller/secret",
-		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion}, true)
+		api.ControllerSecretRequest{PluginContract: api.DaemonAPIVersion()}, true)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's boot secret = %d %s, want 200", status, body)
 	}
@@ -251,7 +251,7 @@ func (r *providerErrorLive) registerController() {
 	session := "ses_controller_" + randomSuffix(t)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
 	}

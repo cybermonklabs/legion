@@ -43,6 +43,7 @@ func checkTaskFor(cause, detail string, last bool) string {
 // started names the summary that report gave, and one the retry started names the retry, so a
 // reader can tell the look it asked for from the look it was given after saying nothing.
 func TestTheCheckTaskNamesWhatWokeItsOwnLook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range checkTaskWakes {
 		t.Run(tc.name, func(t *testing.T) {
 			task := checkTaskFor(tc.cause, tc.detail, false)
@@ -64,6 +65,7 @@ func TestTheCheckTaskNamesWhatWokeItsOwnLook(t *testing.T) {
 // hold the pod for a wake that never comes. The look ends with the report, and the agent's own
 // `wake_at` starts the next one.
 func TestNoCheckTaskNamesADeployWakeOrTellsItsReaderToWait(t *testing.T) {
+	t.Parallel()
 	retired := []string{"issue.deployed", "deploy workflow", "daemon's boot", "Dispatch serving build",
 		"Dispatch's build", "the deploy's event", "wakes the check on", "Wait for no deploy",
 		"await no reply", "deploy role"}
@@ -89,6 +91,7 @@ func TestNoCheckTaskNamesADeployWakeOrTellsItsReaderToWait(t *testing.T) {
 // refused (CHECK_WAKE_UNEXPECTED), so that task asks for none and says what to write before
 // reporting it.
 func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
+	t.Parallel()
 	const asks = "A pending report also carries wake_at, an RFC 3339 time: when you want your next look."
 	task := checkTaskFor(wakeMerge, "merge-43", false)
 	if !strings.Contains(task, asks) {
@@ -169,6 +172,7 @@ func isTaskFailClause(clause string) bool {
 // There a requirement still unobserved is a fail whether or not production carries the merge, and
 // the pending is only for an issue with none of those requirements.
 func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *testing.T) {
+	t.Parallel()
 	const pendsAnUnobservedRequirement = "pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow,"
 	for _, last := range []bool{false, true} {
 		task := checkTaskFor(wakeMerge, "merge-43", last)
@@ -202,6 +206,7 @@ func TestTheCheckTaskPendsADeployedMergeWhoseRequirementIsStillUnobserved(t *tes
 // production carries the merge". One fail clause at least holds those words, and one holds
 // "observed as not met", so the test cannot pass on a task that dropped the rule.
 func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarriesTheMerge(t *testing.T) {
+	t.Parallel()
 	for _, tc := range checkTaskWakes {
 		for _, last := range []bool{false, true} {
 			task := checkTaskFor(tc.cause, tc.detail, last)
@@ -243,6 +248,7 @@ func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarrie
 // task of a look before the last says nothing of a close as not run, since its pending names the
 // time of the next look.
 func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testing.T) {
+	t.Parallel()
 	const closes = "This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound."
 	for _, tc := range checkTaskWakes {
 		last := checkTaskFor(tc.cause, tc.detail, true)

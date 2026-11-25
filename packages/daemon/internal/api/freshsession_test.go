@@ -1070,7 +1070,7 @@ func TestAFreshSessionThatCouldNotStartTheClaimAgainAnswersACallerBelow104AsBefo
 					}
 					want := map[string]any{
 						"level": "INFO", "caller": "192.0.2.1:1234", "pod": "",
-						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion),
+						"pluginContract": float64(restoreContract(contract)), "daemonApiVersion": float64(DaemonAPIVersion()),
 						"follows": followsRestore, "claim": string(token), "request": "resume", "served": servedTheRefusedStep,
 					}
 					for key, value := range want {

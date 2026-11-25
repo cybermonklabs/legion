@@ -17,9 +17,9 @@ name: CI job test
 # its build-input list, the changelog fold, the guides' layout, and the lint and typecheck of the
 # script directories that are no workspace. Those are build, lint and typecheck checks, which run
 # on a pull request whatever their time. test runs the tests: the `*.test.sh` harness of each
-# script under .github/scripts, the Bun suites of scripts/ and the live proofs' libraries. Its
-# `test` output is held back on a pull request without the label full-ci or lane:test, so it runs
-# in the merge queue
+# script under .github/scripts (and of scripts/daemon-contract-order.sh), the Bun suites of
+# scripts/ and the live proofs' libraries. Its `test` output is held back on a pull request without
+# the label full-ci or lane:test, so it runs in the merge queue
 # (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 #
 # The daemon's Go tests, which the test job used to carry, are
@@ -34,8 +34,9 @@ name: CI job test
 # harness instead of all of them. A step of a called workflow cannot read
 # `needs.changes.outputs.<name>` - inside a reusable workflow the only context carrying a caller's
 # value is `inputs` - so each calling job of ci.yaml hands this file one input,
-# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a
-# dispatched run and on one whose filters fell open. Each gated step reads its own filter out of it,
+# `matched-filters`: the paths filter's own list of the filters that matched, or `all` on a run
+# that selects every job (a dispatch of main, or one given every-job) and on one whose filters fell
+# open. Each gated step reads its own filter out of it,
 # `inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"<filter>"')`, the quotes
 # matching one whole name of the list, and `.github/scripts/check-ci-filters.sh` resolves that
 # through the caller's `with:` and holds the step to that shape (its rule 23). A gate added here
@@ -74,8 +75,8 @@ on:
       matched-filters:
         description: >-
           `.github/workflows/ci.yaml#needs.changes.outputs.matched_filters`: the paths filter's list of the filters
-          that matched, as JSON (`["test","release_push_test"]`), or `all` on a dispatched run and
-          on one whose filters fell open.
+          that matched, as JSON (`["test","release_push_test"]`), or `all` on a run that selects
+          every job (a dispatch of main, or one given every-job) and on one whose filters fell open.
           Each gated step below runs when its own filter is in it.
         type: string
         required: true
@@ -368,6 +369,14 @@ jobs:
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"disk_watch_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/disk_watch.test.sh .github/scripts/disk_watch.test.sh
+
+      - name: Test the daemon contract order script (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"daemon_contract_order_test"')
+        run: .github/scripts/harness-pool.sh start scripts/daemon-contract-order.test.sh bash scripts/daemon-contract-order.test.sh
+
+      - name: Test the worker image's contract order step (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"image_order_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/worker-image-contract-order.test.sh bash .github/scripts/worker-image-contract-order.test.sh
 
       # main's #4929 added it as a step of its own after the pool was written; it reads nothing
       # outside its own mktemp directory and the go stand-ins it puts on PATH there, so it is

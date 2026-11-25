@@ -7,7 +7,8 @@ body: |-
   for the controller's own suspension. Every field of it is optional, since no plugin code reads
   one: the `legion` tool hands the answer on whole. The daemon's table of answers
   (`answers.json`) names it `agent-action`, and its `state`, `suspendedBy` and
-  `suspensionHeldBy` are rows of `enumerated-fields.json`. The daemon API contract moves to 292.
+  `suspensionHeldBy` are rows of `enumerated-fields.json`. The daemon API contract moves with entry
+  20261125182642 (`agent-actions`).
 time: 2026-11-20T16:00:00.000000000Z
 custom:
     Issue: pr4065
