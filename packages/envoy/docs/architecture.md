@@ -693,7 +693,12 @@ on the session's known-session record, and marks it recorded (`session.KnownSess
 `PrincipalRecorded`). The record's other writes, an interest change and a clean stop, keep the
 principal the bucket's stream leader holds, writing over the revision they read it at, so a
 listener whose copy has not applied another listener's registration yet never writes the
-principal that registration replaced back over it. The claim route writes the handover record
+principal that registration replaced back over it; where the leader does not answer they write
+nothing. A registration whose record a listener's copy holds unchanged inside the refresh age is
+skipped only where the leader holds its principal too, and a registration whose write failed
+while the record names another principal is answered `503` with `Retry-After: 1`
+(`session.ErrPrincipalUnrecorded`), so the session registers again until the record names the
+principal it registers as. The claim route writes the handover record
 only when the claim's credential, the claimant's last registration and the replaced session's
 last registration name one principal, none equal to none, each registration read from the
 bucket's leader (`session.KnownSessions.Read`). A replaced session with no record, one whose

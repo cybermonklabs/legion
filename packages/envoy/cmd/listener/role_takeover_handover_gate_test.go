@@ -485,3 +485,85 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 		})
 	}
 }
+
+// A registration whose known-session write failed leaves the record naming the principal the
+// session registered as before, which the handover gate would read as the one it last registered
+// as. So the registration route answers such a registration 503 with Retry-After: 1 rather than
+// 200 (session.ErrPrincipalUnrecorded), and the client registers again until the record names its
+// principal. The session first registers as a service; then the bucket takes no write (its
+// stream's largest message is one byte) and it registers again, with a new title so the record
+// is written rather than skipped as unchanged. The case is a registration as a person, which fails
+// where a failed write is answered 200 whatever principal it leaves recorded. The controls are a
+// registration as the same service, whose failed write leaves its own principal recorded and is
+// answered 200, and a registration as a person through a bucket that takes the write.
+func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing.T) {
+	const sessionID = "ses_gate_registration_unrecorded"
+	for _, row := range []struct {
+		name      string
+		refused   bool
+		registers func(rig *gateRig) string
+		status    int
+		stored    string
+	}{
+		{
+			name:      "case: the session registers again as a person and the bucket takes no write",
+			refused:   true,
+			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
+			status:    http.StatusServiceUnavailable,
+			stored:    gateService,
+		},
+		{
+			name:      "control: the session registers again as the same service and the bucket takes no write",
+			refused:   true,
+			registers: func(rig *gateRig) string { return rig.serviceToken(sessionID, gateService) },
+			status:    http.StatusOK,
+			stored:    gateService,
+		},
+		{
+			name:      "control: the session registers again as a person and the bucket takes the write",
+			registers: func(rig *gateRig) string { return rig.personToken(sessionID, gatePerson) },
+			status:    http.StatusOK,
+			stored:    gatePerson,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			rig.registerOn(t, rig.serviceToken(sessionID, gateService), sessionID)
+			if row.refused {
+				js := rig.harness.client.JS()
+				info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
+				if err != nil {
+					t.Fatalf("read the known-session stream: %v", err)
+				}
+				info.Config.MaxMsgSize = 1
+				if _, err := js.UpdateStream(&info.Config); err != nil {
+					t.Fatalf("make the known-session stream take no write: %v", err)
+				}
+			}
+			body, err := json.Marshal(map[string]any{
+				"session_id":      sessionID,
+				"self_subscribed": true,
+				"title":           "a session registered again",
+				"topics":          []string{},
+				"delivery":        map[string]any{"consumer": true, "epoch": "epoch-" + sessionID},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := rig.postOn(t, row.registers(rig), "/v1/interests/subscribe", string(body))
+			if recorder.Code != row.status {
+				t.Errorf("the registration answered %d %s; want %d", recorder.Code, recorder.Body.String(), row.status)
+			}
+			if row.status == http.StatusServiceUnavailable && recorder.Header().Get("Retry-After") != "1" {
+				t.Errorf("the 503 carries Retry-After %q; want 1", recorder.Header().Get("Retry-After"))
+			}
+			record, found, err := rig.deps.known.Read(t.Context(), sessionID)
+			if err != nil || !found {
+				t.Fatalf("read %s's record from the bucket's leader: found %t, %v", sessionID, found, err)
+			}
+			if record.Principal != row.stored {
+				t.Errorf("the bucket's record names %q; want %q", record.Principal, row.stored)
+			}
+		})
+	}
+}

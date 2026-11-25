@@ -3677,8 +3677,13 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// session as the one it replaces is held to (handoverRefusal): the session binding above
 		// refused a broker token naming any other session, so a principal is recorded only from
 		// this session's own credential or from one that acts for every session. A failed write is
-		// this WARN and nothing else: the registration is answered whatever it did
-		// (session.KnownSessions).
+		// a WARN and nothing else, and the registration is answered whatever it did
+		// (session.KnownSessions), with one exception: a failed write that leaves the record naming
+		// another principal than this registration's (session.ErrPrincipalUnrecorded), which the
+		// handover gate would read as the principal this session last registered as. That one is
+		// answered 503 with Retry-After: 1, so the client registers again until the record names
+		// the principal it registers as; everything this registration wrote before it stands, and
+		// its next attempt writes the same again.
 		if err := d.known.RecordRegistrationWithin(ctx, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,
@@ -3688,6 +3693,11 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		}); err != nil {
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			if errors.Is(err, session.ErrPrincipalUnrecorded) {
+				w.Header().Set("Retry-After", "1")
+				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()

@@ -28,8 +28,12 @@ body: |-
     registration of this build recorded its principal (`principal_recorded`): a record an earlier
     build wrote back reads as one whose principal nobody knows, and is refused, and an interest
     change or a clean stop keeps the principal the bucket's leader holds, by a compare-and-swap,
-    rather than the one a listener's own copy holds. A direct message that names no event id is
-    given one on its first copy, so two sessions that each replaced the other copy it once each.
+    rather than the one a listener's own copy holds, and writes nothing where the leader does not
+    answer. A registration whose record a listener's copy holds unchanged is skipped only where the
+    leader holds its principal too, and one whose write failed while the record names another
+    principal is answered `503` with `Retry-After: 1`, so the session registers again until the
+    record names its principal. A direct message that names no event id is given one on its first
+    copy, so two sessions that each replaced the other copy it once each.
     The new session may answer the delivery of a person's message handed over to it: Dispatch's
     reply routes ask the listener's new `GET /v1/sessions/{session_id}/successors` for the session
     the delivery names and accept the reply of a session it names, where they refused it `403
