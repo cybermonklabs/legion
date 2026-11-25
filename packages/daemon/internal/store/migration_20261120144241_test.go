@@ -207,22 +207,25 @@ func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	for _, row := range []struct {
 		shape            string
 		issue, kind      string
+		branch           string
 		position         int
 		head             string
 		code, constraint string
 	}{
-		{shape: "the pull request's own fence of h1", issue: "LEGION-208", kind: "pull_request", position: 0, head: "h1"},
-		{shape: "the pull request's own fence of h2", issue: "LEGION-208", kind: "pull_request", position: 1, head: "h2"},
-		{shape: "its head run's fence of h1", issue: "LEGION-208", kind: "head_run", position: 0, head: "h1"},
-		{shape: "a second fence of h1 of the pull request's own", issue: "LEGION-208", kind: "pull_request", position: 2, head: "h1",
+		{shape: "the pull request's own fence of h1", issue: "LEGION-208", branch: "legion/LEGION-208", kind: "pull_request", position: 0, head: "h1"},
+		{shape: "the pull request's own fence of h2", issue: "LEGION-208", branch: "legion/LEGION-208", kind: "pull_request", position: 1, head: "h2"},
+		{shape: "its head run's fence of h1", issue: "LEGION-208", branch: "legion/LEGION-208", kind: "head_run", position: 0, head: "h1"},
+		{shape: "a second fence of h1 of the pull request's own", issue: "LEGION-208", branch: "legion/LEGION-208", kind: "pull_request", position: 2, head: "h1",
 			code: "23505", constraint: "pull_request_settled_heads_pkey"},
-		{shape: "a fence of no known kind", issue: "LEGION-208", kind: "pull_requests", position: 2, head: "h3",
+		{shape: "a fence of no known kind", issue: "LEGION-208", branch: "legion/LEGION-208", kind: "pull_requests", position: 2, head: "h3",
 			code: "23514", constraint: "pull_request_settled_heads_kind_check"},
-		{shape: "a fence of an issue with no pull request recorded", issue: "LEGION-209", kind: "pull_request", position: 0, head: "h1",
+		{shape: "a fence of an issue with no pull request recorded", issue: "LEGION-209", branch: "legion/LEGION-209", kind: "pull_request", position: 0, head: "h1",
 			code: "23503", constraint: "pull_request_settled_heads_issue_fkey"},
 	} {
-		_, err := store.Pool().Exec(ctx, `insert into pull_request_settled_heads (issue, kind, position, head, fence)
-			values ($1, $2, $3, $4, '{"checkRuns": []}'::jsonb)`, row.issue, row.kind, row.position, row.head)
+		// Store.Migrate runs through 20261122122826, which keys what a pull request remembers by
+		// its issue and its branch, so each row names the branch of its pull request.
+		_, err := store.Pool().Exec(ctx, `insert into pull_request_settled_heads (issue, branch, kind, position, head, fence)
+			values ($1, $2, $3, $4, $5, '{"checkRuns": []}'::jsonb)`, row.issue, row.branch, row.kind, row.position, row.head)
 		switch {
 		case row.code == "" && err != nil:
 			t.Errorf("%s is refused: %v; the store writes it", row.shape, err)

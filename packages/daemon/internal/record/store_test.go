@@ -2448,7 +2448,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
 		"cleared_pull_requests":      {"repo", "number", "issue", "head_updated_at", "cleared_at"},
-		"pull_request_settled_heads": {"issue", "kind", "position", "head", "fence"},
+		"pull_request_settled_heads": {"issue", "kind", "position", "head", "fence", "branch"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {

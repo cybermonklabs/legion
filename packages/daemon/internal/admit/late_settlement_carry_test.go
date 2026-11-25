@@ -60,7 +60,7 @@ func TestAnEarlierSettlementOfACarriedPullRequestsHeadChangesNothing(t *testing.
 		var pr *record.PullRequest
 		inTx(t, pool, func(tx pgx.Tx) {
 			var err error
-			if pr, err = record.NewStore().PullRequest(context.Background(), tx, child); err != nil || pr == nil {
+			if pr, err = record.NewStore().MergePullRequest(context.Background(), tx, child); err != nil || pr == nil {
 				t.Fatalf("read the pull request after %s: %v, %v", eventID, pr, err)
 			}
 		})

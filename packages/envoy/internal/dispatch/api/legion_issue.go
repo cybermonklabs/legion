@@ -73,7 +73,7 @@ type legionIssueState struct {
 	PhaseSince     time.Time `json:"phase_since"`
 	PhaseStartSeen bool      `json:"phase_start_seen"`
 	// Roles is every role with a claim on the issue and the claim's state, a `retired` claim and a
-	// role Dispatch does not know included: the roles legionagents.Roles names first, in that
+	// role Dispatch does not know included: the roles legionclaim.Roles names first, in that
 	// order, then the others by name (legion.IssueState.Roles). It is [] where no role has a claim.
 	Roles []legion.RoleClaim `json:"roles"`
 	// Slot is the index of the admission slot the issue holds, null while it holds none.

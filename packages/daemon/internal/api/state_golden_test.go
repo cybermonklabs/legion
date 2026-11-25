@@ -1605,9 +1605,9 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 	// stranded claim names, which stands in none of `active`, `waiting` and `blocked`, reads
 	// `unlisted` with the sentence of its word in `admission.held` (heldSentences, the
 	// unclassified sentence where the table serves none), and no other issue reads that state.
-	// The arm passes over an issue whose work runs past its own review in a tree that runs
-	// (atWorkPastReview); the state does not say which trees run, so such an issue, one standing
-	// in accepting, retro or merging and not held, may read `unlisted` or nothing.
+	// The arm passes over an issue whose work runs in a phase that holds no slot in a tree that
+	// runs (atWorkInSlotlessPhase); the state does not say which trees run, so such an issue, one
+	// standing in accepting, retro or merging and not held, may read `unlisted` or nothing.
 	lined, blocked := map[string]bool{}, map[string]bool{}
 	for _, key := range admission.Waiting {
 		lined[key] = true
@@ -1620,7 +1620,7 @@ func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
 		_, stranded := stopped[key]
 		unlisted := inWorkflow(issue) && !stranded && !active[key] && !lined[key] && !blocked[key]
 		reads := issue.Why != nil && issue.Why.State == WhyUnlisted
-		if unlisted && issue.Phase != phase.Held && record.PastReview(record.Issue{Phase: issue.Phase}) {
+		if unlisted && issue.Phase != phase.Held && record.InSlotlessPhase(record.Issue{Phase: issue.Phase}) {
 			continue
 		}
 		switch {

@@ -117,7 +117,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 	// The bound at its least: the first failed delivery reaches the count, and no hour is waited.
 	spec.GiveUpDeliveries, spec.GiveUpAfter = 1, 0
 	run := consumerRun{spec: spec, repositories: spec.Repositories, pool: pool, maxAge: notificationStreamMaxAge, names: &issueNames{},
-		remade: &remadeFailures{}, dropped: newDroppedSettlements()}
+		remade: &remadeFailures{}, dropped: newDroppedSettlements(), noHeadRepo: &pacedCount{}}
 	failing := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
 		return Result{}, errors.New("the handler fails")
 	})

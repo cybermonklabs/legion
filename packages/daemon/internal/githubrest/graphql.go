@@ -89,7 +89,7 @@ func (c Client) GraphQL(ctx context.Context, query string, variables map[string]
 		Data   json.RawMessage `json:"data"`
 		Errors GraphQLErrors   `json:"errors"`
 	}
-	_, headers, err := c.exchange(ctx, http.MethodPost, c.API, encoded, &answer, graphQLAccept)
+	_, _, headers, err := c.exchange(ctx, http.MethodPost, c.API, encoded, &answer, graphQLAccept)
 	if err != nil {
 		return err
 	}

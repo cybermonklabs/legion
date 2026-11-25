@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/contracts/fixtures/daemon-api/* TestTheTaskDirFixture reads it (the write is under -update, which CI never passes)
+
 import (
 	"bytes"
 	"encoding/json"

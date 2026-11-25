@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads docs/kubernetes.md internal/textcheck/waiting_line_texts_test.go:496 reads it under ../../../.. for TestThePlanNeedsWayBackExtractIsTheGuidesWayBackBlock (assertTheExtractIsTheGuidesBlock, way_back_doc_test.go:136, shippedText)
+//ci:reads packages/daemon/internal/store/plan_needs_way_back_extract.txt internal/textcheck/waiting_line_texts_test.go:486 reads it as ../store/plan_needs_way_back_extract.txt for assertTheExtractIsTheGuidesBlock (way_back_doc_test.go:136), the committed copy it holds the guide's block of the needs' way back to (quotedBody)
+
 import "testing"
 
 // The way back of the release that records each task's needs runs no migration, so no migration

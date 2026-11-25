@@ -11,7 +11,7 @@ import (
 )
 
 // TestAnIssuesRolesAreTheKnownRolesInTheirOrderThenTheRestByName: Roles lists every claim with its
-// state, a `retired` one and a role legionagents.Roles does not name included, the known roles in
+// state, a `retired` one and a role legionclaim.Roles does not name included, the known roles in
 // that list's order (planner before implementer, which no sort by name gives) and the rest after
 // them by name. A claim written `null`, the sampler's word for a claim gone, and a claim whose
 // value is no string are no claim. Working is the roles whose claim is `working`, by name, which

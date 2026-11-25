@@ -71,3 +71,31 @@ func TestWorkspaceWorkAsksTheClaimOfTheRunningPod(t *testing.T) {
 		t.Fatalf("the shim was asked %+v, want one read of %s within %v", reads, testTree, runtime.WorkspaceWorkTimeout)
 	}
 }
+
+// A release reads the workspace through the shim of a live claim, and names the claim by its
+// token. Key a's agent works the tester's step in the claim it started as implementer, so the
+// claim that runs in the pod is `…-implementer` with the stored role tester, and no claim
+// `…-tester` runs at all: the read is asked of the claim named, over its own connection.
+func TestAWorkspaceReadIsAskedOfTheClaimThatRuns(t *testing.T) {
+	g := newRig(t, nil)
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	conn := fake.NewConn()
+	conn.SetWorkspaceWork(runtime.WorkspaceWork{Head: "abc", Changed: true})
+	g.conns.Register(keyed, conn)
+	loc := g.spawn(testSpec(t, keyed, claim.RoleTester, testTree))
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims, supervise.Claim{Token: keyed, Project: "legion", Tree: testTree, Issue: testTree,
+		Role: claim.RoleTester, Locator: &loc})
+	g.store.mu.Unlock()
+
+	work, err := g.r.WorkspaceWork(g.ctx, testTree, keyed)
+	if err != nil {
+		t.Fatalf("read the workspace through the claim that runs: %v", err)
+	}
+	if work.Head != "abc" || !work.Changed {
+		t.Fatalf("the read = %+v, want the shim's reading at abc with a change", work)
+	}
+	if reads := conn.WorkspaceWorkReads(); len(reads) != 1 || reads[0].Issue != testTree {
+		t.Fatalf("the claim's shim was asked %+v, want once for %s", reads, testTree)
+	}
+}

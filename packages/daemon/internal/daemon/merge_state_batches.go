@@ -471,7 +471,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 		if !place.climb && place.due.After(now) {
 			continue
 		}
-		_, pr, err := issueRecord(ctx, w.pool, w.records, issue)
+		stored, err := issueRecord(ctx, w.pool, w.records, issue, "")
 		if err != nil {
 			if ctx.Err() == nil {
 				w.log.Warn("github: read the record of a pull request owed a merge-state read; it is read at its next turn", "issue", issue, "error", err)
@@ -479,7 +479,11 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 			w.missed(key, issue, place, 0, place.alone)
 			continue
 		}
-		if pr == nil || pr.State != record.PullRequestOpen || (place.head != "" && pr.HeadSHA != place.head && !place.climb) {
+		pr := stored.pullRequest()
+		if place.head != "" && !place.climb {
+			pr = stored.openAt(place.head)
+		}
+		if pr == nil || pr.State != record.PullRequestOpen {
 			if !place.climb {
 				w.log.Info(followEndLine, "issue", issue, "head", place.head, "attempt", place.attempt+1, "wait", place.waitBefore(w.mergeStateWait()))
 			}

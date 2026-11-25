@@ -90,9 +90,9 @@ func claimsOfRows(t *testing.T, rig *idleRig, kind, op string) []claim.Token {
 }
 
 // releaseTwoClaims runs the idle rule over the rig's pod and requires the release it queues: the
-// save, a stop for each of the two live claims and the teardown. The publication of the role
-// holders that the claims' own writes queue is no row of the release, and is left out. A pod the
-// rule held is no case of either test below, so the hold it recorded is named.
+// workspace check, a stop for each of the two live claims and the teardown. The publication of
+// the role holders that the claims' own writes queue is no row of the release, and is left out. A
+// pod the rule held is no case of either test below, so the hold it recorded is named.
 func releaseTwoClaims(t *testing.T, rig *idleRig) {
 	t.Helper()
 	rig.w.releaseIdlePod(context.Background(), rig.issue.Key)
@@ -104,18 +104,18 @@ func releaseTwoClaims(t *testing.T, rig *idleRig) {
 	}
 }
 
-// A pod's idle release names each live claim it suspends: the save asks the first live claim's
-// shim, and each stop names its own claim. Key a's agent on the tester's step and the fresh tester
-// beside it are then each suspended as released, and the teardown, which waits while any claim of
-// the issue may still hold a process, takes the pod. Rows that named the role alone reached the
-// claim of the worker on the tester's step for both stops, so the fresh tester was never stopped
-// and the teardown waited on it.
+// A pod's idle release names each live claim it suspends: the workspace check asks the shim of the
+// live claim on an open step, else the first live claim, and each stop names its own claim. Key
+// a's agent on the tester's step and the fresh tester beside it are then each suspended as
+// released, and the teardown, which waits while any claim of the issue may still hold a process,
+// takes the pod. Rows that named the role alone reached the claim of the worker on the tester's
+// step for both stops, so the fresh tester was never stopped and the teardown waited on it.
 func TestTheReleaseRowsNameEachLiveClaimAndSuspendIt(t *testing.T) {
 	t.Parallel()
 	rig, fresh := twoClaimIdleRig(t)
 	releaseTwoClaims(t, rig)
 	if got, want := claimsOfRows(t, rig, string(record.OutboxKindIssueBundle), ""), []claim.Token{rig.token}; !slices.Equal(got, want) {
-		t.Fatalf("the save names %q, want %q: the first live claim's shim", got, want)
+		t.Fatalf("the workspace check names %q, want %q: the shim of the live claim on the open step", got, want)
 	}
 	if got, want := claimsOfRows(t, rig, string(record.OutboxKindSupervise), "release"), []claim.Token{rig.token, fresh.Claim().Token}; !slices.Equal(got, want) {
 		t.Fatalf("the release's stops name %q, want %q: one for each live claim", got, want)

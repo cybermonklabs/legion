@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
+// Roles are the six Legion roles, in the order of the default steps (claim.Roles,
 // LEGION_ROLES in packages/contracts). A role the deployment defines in its settings is a role of
 // an issue too (IsRole), and every reader that orders roles puts such a role after the six.
 var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}

@@ -79,7 +79,7 @@ func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 }
 
 // A row this release queues can name the claim it acts on: a supervise request, a release's
-// workspace save, an update round's ask, a hook's prompt, a merge forward's message and a
+// workspace check, an update round's ask, a hook's prompt, a merge forward's message and a
 // provider-errors controller notice. The release before knows no such key
 // and decodes a payload strictly, so such a row left in place at a rollback fails its decode at
 // every attempt. The way back the migration's header
@@ -99,7 +99,7 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 	}{
 		{kind: "supervise", shape: record.SuperviseRequest{},
 			payload: `{"op":"start","tree":"LEGION-208","role":"tester",` + keyed + `,"generation":1,"phase":"testing","entry":2,"task":"Test it."}`},
-		{kind: "issue_bundle", shape: record.IssueBundle{},
+		{kind: "issue_bundle", shape: record.IssueWorkspaceCheck{},
 			payload: `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester",` + keyed + `}`},
 		{kind: "update_ask", shape: record.UpdateAsk{},
 			payload: `{"role":"tester",` + keyed + `,"round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work."}`},

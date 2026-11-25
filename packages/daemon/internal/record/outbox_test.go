@@ -1462,10 +1462,10 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
 	pr := PullRequest{Repo: "sjawhar/legion"}
 	for at, want := range map[phase.Phase]string{
-		phase.Testing:   " Then tell the architect and the tester what you decided, each on its own role topic.",
+		phase.Testing:   " Then tell the architect and the tester what you decided, each on the topic of the claim that works its step.",
 		phase.Accepting: " Then tell the architect what you decided, on its role topic.",
-		phase.Retro:     " Then tell the architect and the implementer what you decided, each on its own role topic.",
-		phase.Merging:   " Then tell the architect and the merger what you decided, each on its own role topic.",
+		phase.Retro:     " Then tell the architect and the implementer what you decided, each on the topic of the claim that works its step.",
+		phase.Merging:   " Then tell the architect and the merger what you decided, each on the topic of the claim that works its step.",
 	} {
 		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
 			Phase: at, PullRequest: 42}

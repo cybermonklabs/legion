@@ -227,7 +227,8 @@ func seedOnBase(t *testing.T, pool *store.Pool, key string, number int, base str
 // recordedPull is the pull request issue's record holds.
 func recordedPull(t *testing.T, pool *store.Pool, issue string) *record.PullRequest {
 	t.Helper()
-	_, pr, err := issueRecord(context.Background(), pool, record.NewStore(), issue)
+	stored, err := issueRecord(context.Background(), pool, record.NewStore(), issue, "")
+	pr := stored.pullRequest()
 	if err != nil || pr == nil {
 		t.Fatalf("read %s's pull request: %v, %v", issue, pr, err)
 	}

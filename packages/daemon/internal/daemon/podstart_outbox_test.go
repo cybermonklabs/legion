@@ -229,7 +229,8 @@ func testerSuspendRow(t *testing.T, _ *podStopRig) record.OutboxRow {
 func testerReleaseRow(t *testing.T, r *podStopRig) record.OutboxRow {
 	t.Helper()
 	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
+		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Claims: []claim.Token{mustClaimToken(t, pauseIssue, claim.RoleTester)},
+			Roles: []claim.Role{claim.RoleTester}}, time.Now())
 	})
 	if err != nil || !marked {
 		t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)

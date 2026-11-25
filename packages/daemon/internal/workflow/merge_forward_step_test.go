@@ -3,9 +3,9 @@ package workflow
 // A merge forward is asked at step as at the phases of Legion's own workers that read the head: an
 // issue whose task runs a step of a role the deployment defines, with its head confirmed in
 // conflict with its base, keeps its step, the implementer is asked to merge the base forward, and
-// the role of that step is told to hold (record.MergeForwardPhases, record.MergeForwardReaches);
-// the landing of the merge tells that role it landed. The control is the same task's tester step,
-// whose tester is told the same way.
+// the role of that step is told to hold (classify.MergeForwardStands over the task's line, on which
+// that step stands as step; record.MergeForwardReaches); the landing of the merge tells that role
+// it landed. The control is the same task's tester step, whose tester is told the same way.
 
 import (
 	"reflect"
