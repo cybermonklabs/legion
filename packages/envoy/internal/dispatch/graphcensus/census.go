@@ -705,11 +705,15 @@ func commentPeople(authors string) string {
 // tie and not the node is a difference here. An ask a build before the store wrote states no
 // authored_by until the backfill marks its row, so it names no author here.
 //
-// The authors of artifact_versions name people and sessions too (T7 of the issue-tree plan):
-// every author of the version that first held each block whose authors the block_author kind
-// holds - an authored node or a block of an issue room, of a document that owes no block index
-// (blockVersionAuthors, blockAuthorsHeld) - since the block index states an authored_by to each of
-// them through graphstore.AuthorFacts, which writes the author's node.
+// The authors of blocks name people and sessions too (T7 of the issue-tree plan). They are read
+// for each block whose authors the block_author kind holds: an authored node or a block of an
+// issue room, of a document that owes no block index (blockVersionAuthors, blockAuthorsHeld). A
+// block that the issue conversion moved into its room takes the authors the conversion copied to
+// its node. Those are the authors its old node's authored_by names. Where that names none, they
+// are the authors of the first version of the old document that held the block, where Dispatch
+// knows that version. Every other block takes the authors of the version that first held it. The
+// block index and the conversion state each such authored_by through graphstore.AuthorFacts,
+// which writes the author's node. A copied authored_by names a node its first writer wrote.
 //
 // A node is history and never goes: a decision or a reading deleted or retyped since takes its
 // row and its current tie away and leaves its author's node standing, so every person and session

@@ -364,16 +364,26 @@ func blockAuthorsHeld(d, a string) string {
 }
 
 // blockFirstAuthors is the FROM and WHERE text over each document_blocks row d whose block's
-// authors the census holds (blockAuthorsHeld), with each author of the version v that first held
-// its block, as graphstore.AuthorOf names an actor (author.kind, author.id; an actor naming nobody
-// is left out). The version is the lowest one document_block_texts records a text of the block in,
-// read against the block's own document (refs.BlockDocumentSQL), the one refs.IndexBlocks takes
-// the block's authors from: the block index states one authored_by per author of it through
-// graphstore.AuthorFacts, which makes the author's person or session node, for every such block of
-// every document it indexes, a block an earlier build wrote included, so once a document owes
-// nothing each of its blocks names those authors (blockAuthorProjection) and each author is a node
-// the store holds (storedAuthors). A document still owed is on neither side, since the pass that
-// drains it writes them.
+// authors the census holds (blockAuthorsHeld), with each author its node is to name, as
+// graphstore.AuthorOf names an actor (author.kind, author.id; an actor naming nobody is left out),
+// and the time the author is read at (author.at). They are the authors of the version v that first
+// held the block, read against the block's own document (refs.BlockDocumentSQL), the one
+// refs.IndexBlocks takes the block's authors from: the block index states one authored_by per
+// author of it through graphstore.AuthorFacts, which makes the author's person or session node,
+// for every such block of every document it indexes, a block an earlier build wrote included, so
+// once a document owes nothing each of its blocks names those authors (blockAuthorProjection) and
+// each author is a node the store holds (storedAuthors). A document still owed is on neither side,
+// since the pass that drains it writes them.
+//
+// For a block no conversion moved, v is the lowest version document_block_texts records a text of
+// the block in under its row's own artifact. For a block the issue conversion moved into its room
+// (convertedBlock) they are what the conversion carried to its node before the room's pass (docs'
+// writeMoves, T19b of the issue-tree plan), which adds no author to a node that states one: the far
+// ends of the authored_by its old node states, at each tuple's time, where it states any; else the
+// authors of the version v that first held the block in its document under its old address, where
+// Dispatch knows that version, and nobody where it does not. The lowest text row the room records
+// of such a block is the conversion's own version of its document, whose one author is the
+// conversion, which names nobody.
 var blockFirstAuthors = `
 	from document_blocks d
 	join artifacts a on a.id = d.artifact_id
@@ -382,32 +392,104 @@ var blockFirstAuthors = `
 		where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
 		order by t.version limit 1
 	) first
-	join artifact_versions v on v.artifact_id = ` + refs.BlockDocumentSQL("d") + ` and v.number = first.version
-	cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
-	cross join lateral (select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `) author (kind, id)
+	` + convertedBlock + `
+	cross join lateral (
+		select carried.to_kind, carried.to_id, carried.at
+		from (` + carriedAuthors("converted.address") + `) carried
+		where converted.carries and carried.asserted
+		union all
+		select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `, v.created_at
+		from artifact_versions v
+		cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
+		where v.artifact_id = ` + refs.BlockDocumentSQL("d") + `
+		  and v.number = case when converted.address is null then first.version
+		                      when converted.known and not converted.carries then converted.version end
+	) author (kind, id, at)
 	where author.kind is not null and ` + blockAuthorsHeld("d", "a")
 
-// blockVersionAuthors are those authors as (kind, id, at) (storedAuthors), at the version's time.
-var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
+// convertedBlock is a left join lateral, aliased converted, over the move the issue conversion made
+// of the block of the document_blocks row d, of an issue's tree artifact a, whose lowest text row is
+// first: the moved_to the store asserts now into d's node from the address of a block of the
+// document whose fragment of the room holds the block (refs.BlockDocumentSQL), the one the
+// conversion appends from each block's old address in a document it takes into the room to the
+// block's node there (docs' writeMoves). No other writer states one into a block of a tree artifact
+// from its fragment's own document: the restore's moves end at the spec's own addresses, and a
+// block a version or the node route moves within the room keeps its address. Its columns are the
+// old address (address); whether the old node states an authored_by now (carries), which the
+// conversion then copied to the node; and the version F that first held the block in its document
+// under its old id (version), with whether Dispatch knows the block was made in F (known: F is 1,
+// or a block-aware build indexed F-1), as the conversion read them for a node that states none
+// (docs' conversionFirstAuthorsStatement). Every column is null for a block no conversion moved.
+//
+// The conversion read F off the document's own text rows before it retired the document's own
+// index, by a pass over the version it read as the latest holding no block (docs'
+// retireDocuments), which writes each old block's text null at that version. So F is read off
+// those rows as the retirement leaves them: the document's own rows of the old id below
+// first.version, which is the conversion's version of the document and the first the room records
+// the block in, the newest of them being the one the retirement wrote; F is the lowest that holds
+// a text or is that newest one. A block's text is recorded at the version it stands since (refs'
+// textSince), so a block no older row holds a text of was first held at the version the
+// retirement nulled. No row the room keys, no row at or past the conversion's version and no other
+// row whose text is null is read as F.
+var convertedBlock = `left join lateral (
+		select held.from_id as address, oldest.version, oldest.known,
+		       exists (select 1 from (` + carriedAuthors("held.from_id") + `) carried where carried.asserted) as carries
+		from (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.seq, t.asserted`,
+	`a.kind = 'tree' and t.to_kind = '`+refs.BlockNodeKind+`' and t.to_id = d.node_address and t.kind = '`+graphstore.TupleMovedTo+`'
+			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `) held
+		join artifacts origin on origin.ref_key = split_part(held.from_id, '#', 1) and origin.id = ` + refs.BlockDocumentSQL("d") + `
+		left join lateral (
+			select kept.version, kept.version = 1 or exists (
+			         select 1 from document_indexed_versions i where i.artifact_id = origin.id and i.version = kept.version - 1
+			       ) as known
+			from (
+				select t.version, t.text, max(t.version) over () as retired
+				from document_block_texts t
+				where t.artifact_id = origin.id and t.block_id = substr(held.from_id, strpos(held.from_id, '#') + 1)
+				  and t.version < first.version
+			) kept
+			where kept.text is not null or kept.version = kept.retired
+			order by kept.version limit 1
+		) oldest on true
+		where held.asserted and held.from_kind = '` + refs.BlockNodeKind + `'
+		order by held.seq limit 1
+	) converted on true`
+
+// carriedAuthors is the newest authored_by to each far end out of the block node whose address the
+// SQL text address names (graphstore.CurrentTupleRead), as (to_kind, to_id, at, asserted): the
+// authors a block's old node states, which the conversion copies to its node in the room.
+func carriedAuthors(address string) string {
+	return graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = `+address+` and t.kind = '`+graphstore.TupleAuthoredBy+`'
+		  and t.to_kind <> '`+graphstore.KindValue+`'`)
+}
+
+// blockVersionAuthors are those authors as (kind, id, at) (storedAuthors).
+var blockVersionAuthors = `select author.kind, author.id, author.at` + blockFirstAuthors
 
 // blockAuthorProjection is the census's kind of each block's authors (T7 of
 // the issue-tree plan), held triple by triple over the blocks blockAuthorsHeld reads: each
 // row is an authored_by of such a block's node to one author of the version that first held the
-// block (blockFirstAuthors), against every authored_by such a block's node states now while it is
-// present. So an authored node of a document that owes nothing and states no authored_by is a row
-// no tuple states, an author it names that its version does not is a tuple no row projects, and a
-// block either side leaves out - a decision, a reading, a block of a document still owed, a block
-// of a room that moved between fragments - the other leaves out too.
+// block, or of a block the issue conversion moved into its room to one author the conversion
+// carried to it (blockFirstAuthors), against every authored_by such a block's node states now
+// while it is present. So an authored node of a document that owes nothing and states no
+// authored_by is a row no tuple states, and so is a moved block whose node lost an author it was
+// carried; an author it names that its version does not is a tuple no row projects, and a block
+// either side leaves out - a decision, a reading, a block of a document still owed, a block of a
+// room that moved between fragments - the other leaves out too.
 var blockAuthorProjection = projection{
 	name:     "block_author",
 	nodeKind: refs.BlockNodeKind,
-	table:    "document_blocks, artifact_versions.authors",
+	table:    "document_blocks, artifact_versions.authors, graph_tuples.moved_to, graph_tuples.authored_by",
 	note: "who wrote each block whose node records its authors, held triple by triple over one set of document_blocks" +
 		" rows on both sides: each row is an authored_by of the node of a row of an authored node, or of a block of an" +
 		" issue's tree artifact but a decision and a reading, by the row's type, to each author of the version that" +
-		" first held the block, against every authored_by the present node of such a row states now; a block of a" +
-		" document that owes its block index, and a block of an issue room that has stood in more than one fragment," +
-		" whose text rows name no document, are on neither side",
+		" first held the block - for a block the issue conversion moved into its room through a moved_to from its old" +
+		" address in its own document, each author the authored_by of its old node names, or where it names none each" +
+		" author of the version of that document that first held it at its old address, where Dispatch knows that" +
+		" version, as the conversion carries them - against every authored_by the present node of such a row states" +
+		" now; a block of a document that owes its block index, and a block of an issue room that has stood in more" +
+		" than one fragment, whose text rows name no document, are on neither side",
 	rows: `
 		select distinct 'block_author ' || d.node_id || ' ' || author.kind || ':' || author.id, d.node_kind, d.node_address,
 		       '` + graphstore.TupleAuthoredBy + `', author.kind, author.id` + blockFirstAuthors + `
