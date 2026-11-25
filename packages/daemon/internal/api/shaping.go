@@ -605,8 +605,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
-	{contract: stateSeqContract, state: withoutStateSeq,
-		dropped: "daemon.stateSeq, daemon.stateId and daemon.stateRun"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1159,27 +1157,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // change's own number, and answers.go's SupportedContracts names the constant rather than its
 // number for that reason.
 const causeTimesContract = 256
-
-// stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
-// state event the project's daemon committed, read in the body's own snapshot, and beside it
-// `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
-// daemon run that serves the body (version.go's 293, DaemonInfo.StateSeq, StateID and
-// StateRun). A plugin before it is served the daemon block without the three keys
-// (withoutStateSeq, its row of stateNarrowings): one built before sjawhar/legion#2788 reads the
-// state with a strict schema and would refuse the whole body for a key it does not name, and one
-// built after strips the keys instead, so the strip is what keeps them from a caller that did not
-// ask for them rather than what keeps such a caller reading at all. The same contract added the
-// observed view of the state route, shaping.go's answer AnswerObservedState, which is no row of
-// Answers: it carries the same daemon block, and observedFor narrows it by the same band.
-// dispatchCredentialContract stands below it with no row of stateNarrowings between the two, so a
-// caller at or above dispatchCredentialContract and below this contract is served 275's keys and
-// none of the three.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys arrived at stays where it is. It is the last number
-// of answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason.
-const stateSeqContract = 293
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

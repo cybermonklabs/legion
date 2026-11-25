@@ -10,8 +10,8 @@
     "stateRun": "2d8f4b6a-9c1e-4e73-b5a0-7f3c1d9e6b28"
   },
   "contract": {
-    "daemon": 293,
-    "caller": 293
+    "daemon": 275,
+    "caller": 275
   },
   "admission": {
     "cap": 5,
