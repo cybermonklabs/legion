@@ -158,3 +158,15 @@ func seededIssueKey(project string, number int) string {
 func seededRank(index int) string {
 	return fmt.Sprintf("%08d", index)
 }
+
+// issuesLastEventAtFill is the statement of 20261125094600_issues_last_event_at_backfill.up.sql,
+// letter for letter: it fills each issue's newest-event pair (last_event_at, last_event_at_seq)
+// from its event of last_seq. A corpus written by COPY holds the pair null, as a deployment's rows
+// do before that migration runs; a corpus that runs this stands as a deployment does after it.
+const issuesLastEventAtFill = `update issues
+set (last_event_at, last_event_at_seq) = (
+  select e.created_at, e.seq
+  from events e
+  where e.issue_key = issues.key and e.seq = issues.last_seq
+)
+where last_seq > 0 and last_event_at_seq is distinct from last_seq;`

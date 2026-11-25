@@ -83,8 +83,10 @@ type readCorpus struct {
 	census   readCorpusCensus
 }
 
-// seedPrioritiesReadCorpus writes the corpus, settles it (settleSpeedCorpus) and reads its
-// counts. The caller prints them as its first line and holds them (readCorpusCensus.hold).
+// seedPrioritiesReadCorpus writes the corpus, fills each issue's newest-event pair as
+// 20261125094600 fills a deployment's (issuesLastEventAtFill), so the corpus stands as a
+// deployment does once this release has migrated it, settles it (settleSpeedCorpus) and reads
+// its counts. The caller prints them as its first line and holds them (readCorpusCensus.hold).
 func seedPrioritiesReadCorpus(t *testing.T) readCorpus {
 	t.Helper()
 	database := withJITOff(t, storetest.Open(t))
@@ -125,6 +127,9 @@ func seedPrioritiesReadCorpus(t *testing.T) readCorpus {
 		t.Fatalf("write the corpus (testdata/priorities-read-corpus.sql): %v", err)
 	}
 	connection.Release()
+	if _, err := database.Pool.Exec(ctx, issuesLastEventAtFill); err != nil {
+		t.Fatalf("fill the corpus's newest-event pair: %v", err)
+	}
 	settleSpeedCorpus(t, database)
 	corpus := readCorpus{database: database, census: readCorpusCensusOf(t, database)}
 	corpus.census.took = time.Since(began)

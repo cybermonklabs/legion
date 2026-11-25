@@ -2084,7 +2084,7 @@ def by_name_job(path: Path) -> str:
     return "the envoy-go-claim-model job" if path.as_posix() in CLAIM_MODEL_TESTS else "the text-check job"
 
 
-# The priorities read's three tests over its corpus of production's counts (internal/dispatch/api,
+# The priorities read's tests over its corpus of production's counts (internal/dispatch/api,
 # INFRA-5791), keyed by path as TEXT_CHECK_TESTS is. Each carries `//go:build !race`, so the walk
 # below puts them in envoy-go's plain step, where they stay. The bound's test reads each
 # statement's database time from pg_stat_statements and stops where the server does not preload
@@ -2104,7 +2104,7 @@ PG_STAT_STATEMENTS_TESTS = {
     f"{ENVOY}/internal/dispatch/api/priority_read_merge_base_test.go": {
         "TestThePrioritiesReadAnswersAsTheMergeBaseAnswers"},
     f"{ENVOY}/internal/dispatch/api/priority_read_plan_stable_test.go": {
-        "TestThePrioritiesReadKeepsItsPlansWithAProjectNamed"},
+        "TestThePrioritiesReadKeepsItsPlansWithAProjectNamed", "TestThePrioritiesReadWalksIssuesOnceOnTheCorpus"},
 }
 PG_STAT_STATEMENTS_STEP = "Start a Postgres that preloads pg_stat_statements"
 PG_STAT_STATEMENTS_URL = "postgres://postgres:ci@localhost:5433/postgres?sslmode=disable"
