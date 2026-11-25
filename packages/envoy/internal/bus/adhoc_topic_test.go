@@ -14,74 +14,159 @@ import (
 
 const grantedTopic = "notifications.lxspec.granted"
 
-// Which transport each kind of topic takes for a client that has not read the deployed stream's
-// subjects, which decides by the subjects this build compiles: the role lanes and their exception
-// lanes, and every notification topic the stream does not capture, over core NATS; every topic the
-// stream captures, its exception lane included, and every subject outside notifications., through
-// JetStream. An exception lane follows the same rule as any other topic: the stream captures the
-// lane of an agent subject and of a team topic and no other lane, so the lane of any other
-// captured topic takes core NATS.
+// compiledTopicKinds is each kind of topic with the transport it takes for a client that has not
+// read the deployed stream's subjects, which decides by the subjects this build compiles: the role
+// lanes and their exception lanes, and every notification topic the stream does not capture, over
+// core NATS; every topic the stream captures, its exception lane included, and every subject
+// outside notifications., through JetStream. An exception lane follows the same rule as any other
+// topic: the stream captures the lane of an agent subject and of a team topic and no other lane, so
+// the lane of any other captured topic takes core NATS.
+var compiledTopicKinds = []struct {
+	topic string
+	core  bool
+}{
+	{contracts.RoleTopicPrefix + "reviewer", true},
+	{ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
+	{"notifications.team.deploy-squad", false},
+	{"notifications.team.deploy-squad.all", false},
+	{ExceptionTopicPrefix + "notifications.team.deploy-squad", false},
+	{"notifications.lxspec.probe.all", true},
+	// A `*` or `>` in a published topic is a character of it, not a wildcard: the stream's
+	// literal-prefix subjects capture none of these, so they take core NATS.
+	{"notifications.>", true},
+	{"notifications.*.deploy", true},
+	{ExceptionTopicPrefix + ">", true},
+	{contracts.AgentTopicPrefix + "ses_a", false},
+	{ExceptionTopicPrefix + contracts.AgentTopicPrefix + "ses_a", false},
+	{"notifications.dispatch.issue.ACME-1.ask.opened", false},
+	{"notifications.github.acme.widgets.pr.1", false},
+	{"notifications.slack.T1.C1.message", false},
+	{"notifications.legion.ACME.controller", false},
+	{"notifications.ghostwispr.s1.summary.ready", false},
+	{"notifications.whatsapp.15551234567.5551234567@s.whatsapp.net.message", false},
+	{"team.deploy-squad.all", false},
+	{"$KV.envoy_roles.reviewer", false},
+}
+
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		topic string
-		core  bool
-	}{
-		{contracts.RoleTopicPrefix + "reviewer", true},
-		{ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
-		{"notifications.team.deploy-squad", false},
-		{"notifications.team.deploy-squad.all", false},
-		{ExceptionTopicPrefix + "notifications.team.deploy-squad", false},
-		{"notifications.lxspec.probe.all", true},
-		// A `*` or `>` in a published topic is a character of it, not a wildcard: the stream's
-		// literal-prefix subjects capture none of these, so they take core NATS.
-		{"notifications.>", true},
-		{"notifications.*.deploy", true},
-		{ExceptionTopicPrefix + ">", true},
-		{contracts.AgentTopicPrefix + "ses_a", false},
-		{ExceptionTopicPrefix + contracts.AgentTopicPrefix + "ses_a", false},
-		{"notifications.dispatch.issue.ACME-1.ask.opened", false},
-		{"notifications.github.acme.widgets.pr.1", false},
-		{"notifications.slack.T1.C1.message", false},
-		{"notifications.legion.ACME.controller", false},
-		{"notifications.ghostwispr.s1.summary.ready", false},
-		{"notifications.whatsapp.15551234567.5551234567@s.whatsapp.net.message", false},
-		{"team.deploy-squad.all", false},
-		{"$KV.envoy_roles.reviewer", false},
-	} {
+	for _, tc := range compiledTopicKinds {
 		if got := (&Client{}).UsesCoreTransport(tc.topic); got != tc.core {
 			t.Errorf("UsesCoreTransport(%q) = %t, want %t", tc.topic, got, tc.core)
 		}
 	}
 }
 
-// A client that has read the deployed stream's subjects decides by them, not by the subjects this
-// build compiles: a topic only the deployed stream captures takes JetStream, one only this build
-// captures takes core NATS. A role lane and its exception lane take core NATS even from a stream
-// that still captures them.
-func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testing.T) {
+// narrowedAsTheQuiesce is subjects as a hub move's quiesce narrows them, so that the stream
+// stores nothing a client publishes: the first wildcard token of each subject becomes
+// __envoy_move_frozen, a `>` becoming __envoy_move_frozen.>. A subject with no wildcard is left as
+// it is. The tests outside this package take bustest.NarrowedAsTheQuiesce, which this package
+// cannot import.
+func narrowedAsTheQuiesce(subjects []string) []string {
+	narrowed := make([]string, len(subjects))
+	for i, subject := range subjects {
+		tokens := strings.Split(subject, ".")
+		for j, token := range tokens {
+			if token == "*" {
+				tokens[j] = "__envoy_move_frozen"
+				break
+			}
+			if token == ">" {
+				tokens[j] = "__envoy_move_frozen.>"
+				break
+			}
+		}
+		narrowed[i] = strings.Join(tokens, ".")
+	}
+	return narrowed
+}
+
+// The one verdict the bus gives each topic (publishPathOf), and the two questions read from it
+// (UsesCoreTransport, ReachesNoSession), for a client that holds a deployed list. A topic the
+// deployed stream captures takes JetStream, also one only a newer build's subject captures; a
+// topic this build stores that the deployed stream does not capture is refused, so nothing is
+// sent; a role lane and its exception lane take core NATS even from a stream that captures them,
+// and so does a notification topic neither list captures. A subject outside notifications. takes
+// JetStream.
+//
+// The row of an agent topic over the first deployed list took core NATS before the refusal: the
+// deployed list lacks notifications.agent.>, so an agent topic read as an ad-hoc topic and went
+// where nothing stores it.
+func TestThePublishPathOfEachTopicKind(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		deployed []string
-		topic    string
-		core     bool
-	}{
-		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.x.y", false},
-		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.x.y.z", true},
-		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.x", true},
-		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.github.acme.widgets.pr.1", false},
-		{[]string{"notifications.github.>", "notifications.x.*"}, contracts.AgentTopicPrefix + "ses_a", true},
-		{[]string{"notifications.>"}, "notifications.team.deploy-squad", false},
-		{[]string{"notifications.>"}, contracts.RoleTopicPrefix + "reviewer", true},
-		{[]string{"notifications.>"}, ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
-		{[]string{"notifications.>"}, "team.deploy-squad.all", false},
-	} {
+	withDeployed := func(deployed []string) *Client {
 		client := &Client{}
-		client.deployedSubjects.Store(&tc.deployed)
-		if got := client.UsesCoreTransport(tc.topic); got != tc.core {
-			t.Errorf("deployed %v: UsesCoreTransport(%q) = %t, want %t", tc.deployed, tc.topic, got, tc.core)
+		client.deployedSubjects.Store(&deployed)
+		return client
+	}
+	type row struct {
+		topic string
+		path  publishPath
+	}
+	check := func(t *testing.T, client *Client, rows []row) {
+		t.Helper()
+		for _, tc := range rows {
+			if got := client.publishPathOf(tc.topic); got != tc.path {
+				t.Errorf("publishPathOf(%q) = %s, want %s", tc.topic, got, tc.path)
+			}
+			if got, want := client.UsesCoreTransport(tc.topic), tc.path == overCoreNATS; got != want {
+				t.Errorf("UsesCoreTransport(%q) = %t, want %t", tc.topic, got, want)
+			}
+			// A topic reaches no session exactly when it takes core NATS and is no role lane: an
+			// ad-hoc topic, or the exception lane of a role lane. A refused topic is one this build
+			// stores, which reaches its sessions once the stream captures it again.
+			wantNoSession := tc.path == overCoreNATS && !strings.HasPrefix(tc.topic, contracts.RoleTopicPrefix)
+			if got := client.ReachesNoSession(tc.topic); got != wantNoSession {
+				t.Errorf("ReachesNoSession(%q) = %t, want %t", tc.topic, got, wantNoSession)
+			}
 		}
 	}
+	t.Run("a deployed list of github and x.*", func(t *testing.T) {
+		check(t, withDeployed([]string{"notifications.github.>", "notifications.x.*"}), []row{
+			{contracts.AgentTopicPrefix + "ses_a", refusedUndeployed},
+			{"notifications.team.t", refusedUndeployed},
+			{ExceptionTopicPrefix + contracts.AgentTopicPrefix + "ses_a", refusedUndeployed},
+			{"notifications.x.y", overJetStream},
+			{"notifications.x.y.z", overCoreNATS},
+			{"notifications.x", overCoreNATS},
+			{"notifications.github.acme.widgets.pr.1", overJetStream},
+		})
+	})
+	t.Run("a deployed list of every notification", func(t *testing.T) {
+		check(t, withDeployed([]string{"notifications.>"}), []row{
+			{contracts.RoleTopicPrefix + "reviewer", overCoreNATS},
+			{ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", overCoreNATS},
+			{"notifications.team.t", overJetStream},
+			{"notifications.team.deploy-squad", overJetStream},
+			{"team.deploy-squad.all", overJetStream},
+		})
+	})
+	t.Run("the compiled list narrowed as the quiesce narrows it", func(t *testing.T) {
+		client := withDeployed(narrowedAsTheQuiesce(streamCarriedSubjects))
+		var rows []row
+		for _, tc := range compiledTopicKinds {
+			want := overJetStream
+			switch {
+			case tc.core:
+				want = overCoreNATS
+			case strings.HasPrefix(tc.topic, NotificationTopicPrefix):
+				want = refusedUndeployed
+			}
+			rows = append(rows, row{tc.topic, want})
+		}
+		check(t, client, rows)
+	})
+	t.Run("a client that has read nothing", func(t *testing.T) {
+		var rows []row
+		for _, tc := range compiledTopicKinds {
+			want := overJetStream
+			if tc.core {
+				want = overCoreNATS
+			}
+			rows = append(rows, row{tc.topic, want})
+		}
+		check(t, &Client{}, rows)
+	})
 }
 
 // StreamCaptures reads each stream subject as a literal prefix and `.>`; a subject of any other

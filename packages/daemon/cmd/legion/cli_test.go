@@ -85,7 +85,7 @@ var legionHidden = [][]string{
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
 	{"workspace-init"}, {"workspace-init", "fetch"},
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
-	{"git-credential"}, {"git"}, {"gh"},
+	{"git-credential"}, {"git"}, {"jj"}, {"gh"},
 	{"leak-check"}, {"leak-check", "pre-push"}, {"leak-check", "text"},
 }
 

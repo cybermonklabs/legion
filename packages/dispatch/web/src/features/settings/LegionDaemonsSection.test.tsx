@@ -89,6 +89,7 @@ async function renderSection(
       key,
       name: key,
       open_asks: 0,
+      proven_sessions: false,
     }))
   );
   spies.push(whoAmI, getLegionDaemon, listProjects);
