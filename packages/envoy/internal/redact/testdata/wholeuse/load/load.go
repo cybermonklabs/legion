@@ -16,7 +16,7 @@ import (
 
 // Host is the target of the machine a listing runs on, GOOS/GOARCH: each listing's default
 // -targets.
-var Host = runtime.GOOS + "/" + runtime.GOARCH
+const Host = runtime.GOOS + "/" + runtime.GOARCH
 
 // Loaded is what Modules loaded: every package of every load, the target of the load each came
 // of, and the targets in the order they were first loaded.
