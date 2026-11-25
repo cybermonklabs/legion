@@ -508,6 +508,8 @@ type AttributedHead struct {
 	LinkedRepo      string
 	MergedAt        *time.Time
 	AttributionRule int
+	// NewestMerged is selected by SQL with newestMergeFirst, not a second Go ordering rule.
+	NewestMerged bool
 }
 
 // MergeTime is one merged pull request row as a read that orders merged pull requests by when
@@ -763,10 +765,10 @@ type pullRequestKey struct {
 // (answerArray.present).
 type answerColumns struct {
 	repo, headSHA, baseRef, state, headRef, mergeCommit []string
-	number, attributionRule []int32
-	issueKey, renamedFrom         []*string
-	complete, hasMerge []bool
-	eventAt, checkedAt, mergedAt moments
+	number, attributionRule                             []int32
+	issueKey, renamedFrom                               []*string
+	complete, hasMerge                                  []bool
+	eventAt, checkedAt, mergedAt                        moments
 }
 
 // answerArray is one array HeadAnswers.args answers: its name, which answeredHeadsRelation gives
@@ -945,7 +947,8 @@ func (a HeadAnswers) args() []any {
 // repository — and `linked_repo desc` keeps the linked arm's copy: the row is of a repository the
 // issue does not resolve to, which is what the name says.
 var headsAttributedQuery = `
-	select repo, number, head_sha, is_open, checked_at, event_at, linked_repo, merged_at, attribution_rule from (
+	select repo, number, head_sha, is_open, checked_at, event_at, linked_repo, merged_at, attribution_rule,
+		(not is_open and row_number() over (partition by is_open order by ` + newestMergeFirst + `) = 1) as newest_merged from (
 		select distinct on (number, head_sha, checked_at, event_at)
 			repo, number, head_sha, is_open, checked_at, event_at, linked_repo, merged_at, attribution_rule
 		from (
@@ -999,7 +1002,7 @@ func (a *Attributor) HeadsAttributedTo(ctx context.Context, q refs.Queryer, issu
 	for rows.Next() {
 		var head AttributedHead
 		if err := rows.Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.Open, &head.CheckedAt, &head.EventAt,
-			&head.LinkedRepo, &head.MergedAt, &head.AttributionRule); err != nil {
+			&head.LinkedRepo, &head.MergedAt, &head.AttributionRule, &head.NewestMerged); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)
@@ -1049,7 +1052,7 @@ func NewestPullRequestHead(ctx context.Context, q refs.Queryer, issueKey string,
 var newestPullRequestHeadQuery = `
 	select repo, number, head_sha from pull_request_heads
 	where issue_key = $1 and state in ('open', 'merged')
-	order by state = 'open' desc, merged_at desc nulls last, number desc
+	order by state = 'open' desc, ` + newestMergeFirst + `
 	limit 1`
 
 // newestPullRequestHeadRead is newestPullRequestHeadQuery whole, for both callers.
@@ -1121,7 +1124,6 @@ const headStoredAtAnswers = `lower(answer.repo) = lower($1) and answer.head_sha 
 // headsStoredAtCommit is the key of each row stored for repository $1, compared without case, whose
 // head is commit $2.
 const headsStoredAtCommit = `select repo, number from public.pull_request_heads where lower(repo) = lower($1) and head_sha = $2`
-
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
 // reconcile reads it again.
@@ -1525,26 +1527,17 @@ func (a *Attributor) readPullRequestHead(
 // Its caller adds the answer to its request's HeadAnswers instead of the shared store.
 func (a *Attributor) ReadPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
-	repoFull string, number int, now time.Time,
+	repoFull string, number int, now time.Time, answers HeadAnswers,
 ) (CommitPulls, error) {
 	pulls, stamp, err := a.readPullRequestHead(ctx, pool, client, repoFull, number, now)
 	if !stamp {
 		return pulls, err
 	}
-	// A writer stamps the existing row, even when its repository cannot be read. Carry that
-	// same row and its new read time; this is no newly learned merge or attribution.
-	var head PullRequestHead
-	readErr := pool.QueryRow(ctx, `
-		select repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at,
-			merge_commit_sha, merged_at
-		from pull_request_heads where repo = $1 and number = $2
-	`, repoFull, number).Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.HeadRef, &head.BaseRef,
-		&head.State, &head.IssueKey, &head.EventAt, &head.MergeCommitSHA, &head.MergedAt)
-	if errors.Is(readErr, pgx.ErrNoRows) {
-		return CommitPulls{}, err
-	}
-	if readErr != nil {
-		return CommitPulls{}, errors.Join(err, fmt.Errorf("read the pull request row a refresh would stamp: %w", readErr))
+	// Stamp the row the writer would now see, including this request's earlier answers.
+	// No attribution, merge metadata or branch fact is replaced by a stale physical row.
+	head, found, readErr := headForRefresh(ctx, pool, repoFull, number, answers)
+	if readErr != nil || !found {
+		return CommitPulls{}, errors.Join(err, readErr)
 	}
 	head.CheckedAt = &now
 	return CommitPulls{Heads: []PullRequestHead{head}, storedUnder: repoFull, stamped: true}, err

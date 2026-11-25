@@ -156,4 +156,3 @@ var mergeInQuery = `
 		where lower(l.repo) = lower($2) and h.state = 'merged'
 	) merged
 	order by ` + newestMergeFirst
-

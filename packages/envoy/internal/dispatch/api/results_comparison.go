@@ -144,18 +144,19 @@ type comparisonReader struct {
 	// same caller, and it cannot change within one read.
 	readOnly bool
 	// at is the one commit the reader named, and noCommitNamed where it named none.
-	at           string
-	repos        map[string]repositoryAnswer
-	defaults     map[string]defaultBranchAnswer
-	bases        map[[2]string]comparison
-	linkedBases  map[[3]string]comparison
-	linkedMerges map[string]linkedMergesAnswer
-	mergeSets    map[[2]string]mergeSet
-	merges       map[[3]string]mergeAnswer
-	holdAnswers  map[[3]string]delivery.HoldAnswer
-	readThroughs map[[2]string]struct{}
-	storedHeads  map[[2]string]bool
-	commits      map[[3]string]delivery.BranchAnswer
+	at             string
+	repos          map[string]repositoryAnswer
+	defaults       map[string]defaultBranchAnswer
+	bases          map[[2]string]comparison
+	headGeneration uint64
+	linkedBases    map[[3]string]comparison
+	linkedMerges   map[string]linkedMergesAnswer
+	mergeSets      map[[2]string]mergeSet
+	merges         map[[3]string]mergeAnswer
+	holdAnswers    map[[3]string]delivery.HoldAnswer
+	readThroughs   map[[2]string]struct{}
+	storedHeads    map[[2]string]bool
+	commits        map[[3]string]delivery.BranchAnswer
 	// headCI is the read of each check CI proves at each head it was read at, by the check's block
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
@@ -287,8 +288,8 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		merges:       map[[3]string]mergeAnswer{},
 		holdAnswers:  map[[3]string]delivery.HoldAnswer{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]delivery.BranchAnswer{},
-		fills:   &mergeTimeFills{},
+		commits:    map[[3]string]delivery.BranchAnswer{},
+		fills:      &mergeTimeFills{},
 		askedPulls: map[[2]string]struct{}{},
 	}
 	reader.fills.readOnly, reader.fills.answers = reader.readOnly, &reader.answers
@@ -349,17 +350,38 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 		return comparison{bases: []model.CheckBasis{{Kind: model.CheckBasisNamed, Commit: c.at}}}
 	}
 	key := [2]string{check.IssueKey, check.When}
-	if memoized, held := c.bases[key]; held {
-		return c.withLiveDeploy(ctx, check, memoized)
+	for {
+		if c.headGeneration != c.fills.generation {
+			c.clearHeadComparisons()
+		}
+		generation := c.fills.generation
+		compared, held := c.bases[key]
+		if !held {
+			if check.When == docs.CheckWhenBeforeMerge {
+				compared = c.headBases(ctx, check.IssueKey)
+			} else {
+				compared = c.branchBases(ctx, check)
+			}
+		}
+		answer := c.withLiveDeploy(ctx, check, compared)
+		if generation != c.fills.generation {
+			// A refresh can remove a head from this issue or change the row ordering. Re-read
+			// the whole head set; patching only the old slice's merge time keeps stale subjects.
+			continue
+		}
+		c.bases[key] = compared
+		return answer
 	}
-	var compared comparison
-	if check.When == docs.CheckWhenBeforeMerge {
-		compared = c.headBases(ctx, check.IssueKey)
-	} else {
-		compared = c.branchBases(ctx, check)
-	}
-	c.bases[key] = compared
-	return c.withLiveDeploy(ctx, check, compared)
+}
+
+// clearHeadComparisons keeps every head-derived memo on the same learned head generation.
+func (c *comparisonReader) clearHeadComparisons() {
+	clear(c.bases)
+	clear(c.linkedBases)
+	clear(c.linkedMerges)
+	clear(c.mergeSets)
+	clear(c.merges)
+	c.headGeneration = c.fills.generation
 }
 
 // branchBases names the own branches and the merged linked repositories' branches. Placement
@@ -518,11 +540,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 		}
 	}
 	if learned {
-		clear(c.bases)
-		clear(c.linkedBases)
-		clear(c.linkedMerges)
-		clear(c.mergeSets)
-		clear(c.merges)
+		c.clearHeadComparisons()
 	}
 }
 
@@ -615,7 +633,7 @@ func (c *comparisonReader) commitStands(
 // its run was read at, and nil for every other result.
 func (c comparison) derivedAt(result model.CheckResult) *model.CheckBasis {
 	for _, subject := range c.subjects {
-		if read := c.ci[ciHeadKey{repo: subject.repo, commit: subject.basis.Commit}]; read != nil && read.Result != "" && read.Result == result.ID {
+		if read := c.ci[ciHeadKeyOf(subject.repo, subject.basis.Commit)]; read != nil && read.Result != "" && read.Result == result.ID {
 			basis := subject.basis
 			return &basis
 		}

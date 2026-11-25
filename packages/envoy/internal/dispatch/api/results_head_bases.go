@@ -74,8 +74,8 @@ func (c *comparisonReader) mergedInOrder(ctx context.Context, heads []delivery.A
 // delivery.Attributor.HeadsAttributedTo lists them (headBasis), and among them the subjects, each
 // with the repository of its row: where open, some pull request of heads is open, the head of each
 // open one; otherwise, where ordered, the merged heads can be ordered by when each merged
-// (mergedInOrder), the final head of the one that merged last (mergedAfter), the first of them
-// where two share that place; and where they cannot be ordered, none.
+// (mergedInOrder), the final head SQL marks newest by delivery's one merge ordering; and where
+// they cannot be ordered, none.
 func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, ordered bool) ([]model.CheckBasis, []headSubject) {
 	bases := make([]model.CheckBasis, 0, len(heads))
 	var subjects []headSubject
@@ -86,7 +86,7 @@ func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, 
 		switch {
 		case open && head.Open:
 			subjects = append(subjects, headSubject{basis: basis, repo: head.Repo})
-		case !open && (newestMerged < 0 || mergedAfter(head, heads[newestMerged])):
+		case !open && head.NewestMerged:
 			newestMerged = index
 		}
 	}
@@ -94,20 +94,6 @@ func pullRequestBases(heads []delivery.AttributedHead, issueRepo *string, open, 
 		subjects = append(subjects, headSubject{basis: bases[newestMerged], repo: heads[newestMerged].Repo})
 	}
 	return bases, subjects
-}
-
-// mergedAfter reports whether merged pull request a merged after b, in the order
-// delivery.NewestPullRequestHead reads them by: the later time of merge first, a head holding no
-// time after every head that holds one, and the higher number first between two of one time or
-// of none.
-func mergedAfter(a, b delivery.AttributedHead) bool {
-	switch {
-	case a.MergedAt != nil && b.MergedAt != nil && !a.MergedAt.Equal(*b.MergedAt):
-		return a.MergedAt.After(*b.MergedAt)
-	case (a.MergedAt == nil) != (b.MergedAt == nil):
-		return a.MergedAt != nil
-	}
-	return a.Number > b.Number
 }
 
 // headBasis is one stored pull request head as the surface names it: the commit, the pull

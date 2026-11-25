@@ -109,7 +109,7 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
 	for _, head := range compared.subjects {
-		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKey{repo: head.repo, commit: head.basis.Commit}])
+		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKeyOf(head.repo, head.basis.Commit)])
 		stands.Subjects = append(stands.Subjects, subject)
 		switch {
 		case subject.Answer == model.PassStandsNo:

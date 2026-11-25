@@ -886,6 +886,7 @@ type parityGitHub struct {
 	compare    func(base, head string) (int, string)
 	limited    map[int]bool
 	runs       map[string][]map[string]any
+	details    map[int]string
 	linked     *parityLinked
 }
 
@@ -1131,11 +1132,19 @@ func parityStandIn(t *testing.T, script *parityGitHub, calls *parityCalls) strin
 		}
 		number, _ := strconv.Atoi(r.PathValue("number"))
 		state := ""
+		detail := ""
 		script.mu.Lock()
+		if repoOf(r) == parityRepo {
+			detail = script.details[number]
+		}
 		if repoOf(r) == parityLinkedRepo {
 			state = script.linked.states[number]
 		}
 		script.mu.Unlock()
+		if detail != "" {
+			fmt.Fprint(w, detail)
+			return
+		}
 		switch state {
 		case "open":
 			fmt.Fprintf(w, `{"number":%d,"state":"open","merged":false,"merged_at":null}`, number)
@@ -1574,7 +1583,13 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				}
 			}
 		case []any:
-			for _, inner := range value {
+			for place, inner := range value {
+				if id, isString := inner.(string); isString {
+					if index := slices.Index(s.ids, id); index >= 0 {
+						value[place] = fmt.Sprintf("result %d", index)
+						continue
+					}
+				}
 				walk(inner)
 			}
 		}
