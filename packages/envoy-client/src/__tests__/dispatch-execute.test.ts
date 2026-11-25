@@ -11208,7 +11208,7 @@ describe("executeDispatchTool", () => {
         status: 409,
         message:
           'document edit precondition failed: the edit removes block "nested-1", which the block guard does not cover; compare the token this refusal gives it with the token your own read listed for it: if they match, name it in the guard at the token you read and send the edit again; if they differ, or your read listed no token for it, another writer changed or added it since your read, so read the document again before you remove it\n' +
-          "Block guard: this edit would remove a block the guard did not name: nested-1 (token sha256:nested). A guard names a block as {id, token} in precondition.blocks (--precondition-json).",
+          "Block guard: this edit would remove a block the guard did not name: nested-1 (token sha256:nested). A guard names a block as {id, token} in precondition.blocks (--precondition-json), at the token your own read listed.",
         current,
         mismatches: [],
         unguardedBlocks: one,
@@ -11232,7 +11232,7 @@ describe("executeDispatchTool", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         code: "PRECONDITION_FAILED",
-        message: `${plural}\nBlock guard: this edit would remove 2 blocks the guard did not name: nested-1 (token sha256:nested), nested-2 (token sha256:deeper). A guard names a block as {id, token} in precondition.blocks (--precondition-json).`,
+        message: `${plural}\nBlock guard: this edit would remove 2 blocks the guard did not name: nested-1 (token sha256:nested), nested-2 (token sha256:deeper). A guard names a block as {id, token} in precondition.blocks (--precondition-json), at the token your own read listed.`,
         unguardedBlocks: two,
       })
     );

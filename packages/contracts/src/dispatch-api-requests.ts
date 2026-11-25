@@ -120,10 +120,8 @@ export interface DispatchServiceErrorShape {
   readonly mismatches?: EditPreconditionMismatch[];
   /** On a `409 PRECONDITION_FAILED` of an edit under a block guard, each block the edit would
    *  remove that the guard does not name, with the token it carries now: a token to compare with
-   *  the one the caller's own read listed, never one to send. Where they match, the guard that
-   *  names the block at the token read takes the edit; where they differ, or the read listed no
-   *  token for the block, another writer changed or added it since that read, and the caller
-   *  reads the document again. */
+   *  the one the caller's own read listed, never one to send. Dispatch's refusal, in `error`, says
+   *  how to answer it (`unguardedReason` in packages/envoy/internal/dispatch/docs/edits.go). */
   readonly unguarded_blocks?: EditBlockPrecondition[];
   /** On a `409 PARENT_STATUS_CONFLICT`: each issue whose status the write would leave out of line
    *  with its parent's or its children's, with its status and whether it is the parent or a child. */

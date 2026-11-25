@@ -76,11 +76,9 @@ type editPreconditionCurrent struct {
 // editPreconditionError is the 409 PRECONDITION_FAILED body every document write answers a
 // precondition the document no longer meets. UnguardedBlocks is, for an edit under a block guard
 // that would remove blocks the guard does not cover, each of them with the token it carries now
-// (docs.ErrPreconditionFailed.Unguarded): the token the caller compares with the token its own
-// read listed, never the one it sends. Where they match, the caller adds the block to its guard
-// at the token it read and sends the edit again; where they differ, or its read listed no token
-// for the block, another writer changed or added the block since that read, and the caller reads
-// the document again. It is absent from every other refusal.
+// (docs.ErrPreconditionFailed.Unguarded): a token to compare with the token the caller's own read
+// listed, never one to send, and Error says how to answer it (docs.unguardedReason). It is absent
+// from every other refusal.
 type editPreconditionError struct {
 	Code            string                           `json:"code"`
 	Current         editPreconditionCurrent          `json:"current"`

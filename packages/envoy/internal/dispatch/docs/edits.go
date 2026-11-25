@@ -597,11 +597,9 @@ type ErrPreconditionFailed struct {
 	// (adviseRemovedPreconditionBlock). It is empty for every other mismatch.
 	Advice string
 	// Unguarded is each block an edit under a block guard removes that the guard does not cover,
-	// with the token it carries now (requirePreconditionCoverage). That token is for the caller
-	// to compare with the token its own read listed, never to send: where the two match, a guard
-	// naming the block at the token read takes the edit; where they differ, or the read listed no
-	// token for the block, another writer changed or added it since that read, and the caller
-	// reads the document again. It is empty for a stale token.
+	// with the token it carries now (requirePreconditionCoverage). That token is one to compare
+	// with the token the caller's own read listed, never one to send, and the refusal says how to
+	// answer it (unguardedReason). It is empty for a stale token.
 	Unguarded []model.EditBlockPrecondition
 }
 
@@ -872,10 +870,8 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 // refused when it takes a block that neither the guard names nor a named block contains
 // (pmdoc.ValidDocument.UncoveredBlocks): it is refused as a stale token is
 // (ErrPreconditionFailed.Unguarded), with nothing written, and the refusal names each such block
-// with the token it carries now. The caller compares that token with the token its own read
-// listed: where they match, it adds the block to its guard at the token it read and sends the edit
-// again; where they differ, or its read listed no token for the block, another writer changed or
-// added the block since that read, and the caller reads the document again before it removes it. A
+// with the token it carries now. That token is one to compare with the token the caller's own
+// read listed, never one to send, and the refusal says how to answer it (unguardedReason). A
 // list, a list item or a quote the removal empties of blocks the guard covers holds nothing of its
 // own but its attributes, which no listed token covers, so it is taken. A guard that names a block
 // is held to its token as to any other block (checkEditPrecondition). A typed block a replace's

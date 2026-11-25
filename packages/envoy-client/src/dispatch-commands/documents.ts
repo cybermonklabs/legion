@@ -406,13 +406,11 @@ async function refuseRemovingOpenDecisionBlocks(
 /**
  * A `409 PRECONDITION_FAILED` naming the blocks an edit would remove that its block guard leaves
  * out (`unguarded_blocks`), each at the token it carries now, with a line under Dispatch's own
- * words that names each with that token and says how a guard names a block. Dispatch's words say
- * how to answer it, and the line does not say it again: that token is one to compare with the
- * token the caller's own read listed for the block, never one to send. Where they match, the
- * caller adds the block to the guard at the token it read and sends the edit again; where they
- * differ, or its read listed no token for the block, another writer changed or added the block,
- * and the caller reads the document again before it removes it. Every other error is returned as
- * it is, so a refusal naming no such block, an older server's among them, reads as it always did.
+ * words that names each with that token and says how a guard names a block, and at which token.
+ * That token is one to compare with the token the caller's own read listed, never one to send,
+ * and Dispatch's refusal says how to answer it (`unguardedReason` in
+ * packages/envoy/internal/dispatch/docs/edits.go). Every other error is returned as it is, so a
+ * refusal naming no such block, an older server's among them, reads as it always did.
  */
 function withUnguardedBlocks(error: unknown): unknown {
   if (!dispatchAnswered(error, 409) || error.code !== "PRECONDITION_FAILED") return error;
@@ -421,7 +419,7 @@ function withUnguardedBlocks(error: unknown): unknown {
   return new DispatchServiceError(
     error.code,
     error.status,
-    `${error.message}\nBlock guard: this edit would remove ${guardedBlockList(unguarded, "block")}. A guard names a block as {id, token} in precondition.blocks (--precondition-json).`,
+    `${error.message}\nBlock guard: this edit would remove ${guardedBlockList(unguarded, "block")}. A guard names a block as {id, token} in precondition.blocks (--precondition-json), at the token your own read listed.`,
     error
   );
 }

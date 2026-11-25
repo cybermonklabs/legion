@@ -4,9 +4,10 @@
  * The watch offers a reload once another build is live, from a check the tab's `focus` starts
  * (`features/shell/DeploymentResilience.tsx`). The entry asks for it with `import()` beside the
  * app (`TheDeploymentWatch` in `main.tsx`, dispatch://INFRA-341, R11), so between the page's
- * `load` and the watch's first commit there is a window in which nothing is listening for a
- * focus. A focus in that window reaches no listener, so without this record no check would start
- * and no new deployment would be offered until the tab is focused again.
+ * `load` and the watch's first commit there is a window in which the watch's own `focus`
+ * listener is not bound. A focus in that window reaches none of the app's listeners, so without
+ * this record no check would start and no new deployment would be offered until the tab is
+ * focused again.
  *
  * So the entry listens from its own task and holds whether it heard a focus until the watch binds
  * its own listener, which then runs the check that focus asked for. The focus is answered late
