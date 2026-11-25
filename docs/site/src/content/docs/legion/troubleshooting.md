@@ -540,6 +540,11 @@ The daemon records an architect's sign-off or move back, and the start that it m
 - The stranded claims never name a claim the work hold stopped, because the gate's opening starts it.
 - The daemon logs each stop and each start of the hold with the issue, the role and the version.
 
+A pod update round that opens during the hold keeps the pod while a stopped worker's work is not pushed, until the hold ends or a read finds that work pushed.
+A role that answered the round goes on with its work: the daemon tells it so once, and asks it again before it replaces the pod.
+Under `dispatch_token_broker: true`, a pod built before the exchange identity takes no launch while `dispatch_token_transition_file` is not set, so no role of the issue that is not running starts until the hold ends, and the controller is told once for each launch that waits.
+Set `dispatch_token_transition_file`, or end the hold, to start them ([The disk dies with its pod](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#the-disk-dies-with-its-pod)).
+
 The work starts again when a person approves that version, or when Dispatch carries the approval
 after an exact undo. The daemon then starts each claim it stopped with one task. The task names the
 version that closed the gate, carries the open message, and tells the worker to check what its turn

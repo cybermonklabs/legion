@@ -7593,14 +7593,32 @@ The round still asks the held claim nothing and waits for no answer of it.
 It goes on once a role process runs in the pod, often the architect's, since the hold stops no architect: a launch into the pod keeps the pod, and the round replaces it through that process where its read finds no work.
 It goes on too once the hold ends: the claim is no longer stopped by the hold, the round asks it, and it pushes its work before it answers.
 
+While held work keeps the pod, an answer to the round holds none of its claim's tasks (`liftAnswerHolds`, `supervise.Claim.UpdateHoldToldAt`): the round cannot end before the hold ends or a read finds the held work pushed, and the answer would otherwise hold every task of its claim, an architect's among them, for the whole hold.
+The daemon tells that claim's role once, on the role's own topic: `This pod update round waits until the tree's work hold ends. Go on with your work: the daemon asks you again before it replaces the pod.`
+The answer still counts for the round, so the round does not ask that claim again at each sweep.
+When the replacement can be made again, at the hold's opening or when a read finds the held work pushed, the round asks each claim it told again (`askRoundAgain`, `supervise.Claim.UpdateAskedAgainAt`).
+The new ask names a new bound of the round's whole length from that ask (`roundStartedAt`), and the round replaces the pod only once each of those claims has answered again and no turn runs.
+Both marks are in the claim's row (`20261125105345_claim_round_hold_marks`), so a restart tells no role again, holds no task again and reads the new bound.
+
+A launch into the kept pod is refused in one state: under `dispatch_token_broker: true`, a pod built before the exchange identity, with no `dispatch_token_transition_file` set, takes no launch, which waits for the round's new pod ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
+The hold keeps the old pod, so no role of the issue starts until the hold ends.
+The daemon tells the operator's side once for each launch that begins to wait, and not at its one-minute retries, on the round's late notice (`record.UpdateStalled`, `tellWaitingLaunches`).
+Its reason names the issue, the pod, the waiting claim, the claims the hold stopped and the remedy: `A launch waits for the pod of the update round of <issue>, and the work hold keeps that pod. The daemon cannot start the <role> (claim <token>) in pod <pod>: dispatch_token_broker is on, the pod has no exchange identity, and dispatch_token_transition_file is not set.`
+The cost is each role of the issue that is not running when the hold closes: it starts only when the hold ends.
+The remedy is to set `dispatch_token_transition_file`, which lets the launch into the old pod, or to end the hold.
+
 Everything a round decides comes from its claim columns, so a daemon restart resumes a round where it stood, and each claim shows it as `updateRound` and `updateHead` on every claim view, except to a caller in a pod whose claims record a plugin contract below 46, whose strict reader knows neither field: `GET /legion/v1/state` serves that caller, known by the pod that holds its address, the claim views without them.
-The sweep keeps four records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
+The sweep keeps six records of its own in memory and none in the store, and a restart costs each of them one thing (`reconcilePodUpdates`):
 
 - the pace of its openings (`podUpdateOpenings`): a daemon that has just booted opens its first round at its first sweep;
 
 - the read of the workspace that a round made before its replacement (`podUpdateWorkspace`), so a replacement that was refused or failed reads nothing again at a later sweep: a daemon that has just booted reads the workspace again before that replacement;
 
 - the rounds it has ended whose end a member's machine has not taken yet (`podUpdateEnded`): a daemon that has just booted makes such an end once more (below);
+
+- the waits it told the operator's side of (`podUpdateWaitsTold`), by claim: a daemon that has just booted tells the first wait it sees again, since the start of a wait is the claim's machine's memory too;
+
+- the rounds whose pod held work kept at the last replacement attempt (`podUpdateHeld`), so the walk lifts an answer's hold on tasks before the round reaches its replacement again: a daemon that has just booted reads the keep from the stored marks of the answers it lifted, and a keep that lifted none is kept again at its next replacement attempt;
 
 - what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted reads a pod that a launch replaced as a pod gone, whose message names the same members (below).
 

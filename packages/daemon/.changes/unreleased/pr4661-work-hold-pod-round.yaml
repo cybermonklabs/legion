@@ -1,0 +1,18 @@
+kind: Added
+custom:
+  Issue: pr4661
+body: |-
+  Under `gates.hold: work`, a pod update round whose pod the hold keeps for a stopped worker's
+  unpushed work no longer holds the tasks of a role that answered it: the round cannot end before
+  the hold ends or a read finds that work pushed, and an architect's tasks waited for that whole
+  time. The daemon tells such a role once that the round waits for the hold and that it is asked
+  again, and when the replacement can be made again, at the hold's opening or when a read finds
+  the work pushed, the round asks each such role again with a new bound of the round's length from
+  that ask, and replaces the pod once each has answered. Both marks are in the claim's row, so a
+  restart tells no role again and reads the new bound. Under `dispatch_token_broker: true`, a pod
+  built before the exchange identity takes no launch while `dispatch_token_transition_file` is not
+  set, so no role of the issue that is not running starts in the kept pod until the hold ends; the
+  daemon tells the controller once for each launch that begins to wait, on the round's late notice,
+  with the remedy: set `dispatch_token_transition_file`, or end the hold. The migration
+  `20261125105345_claim_round_hold_marks.up.sql` adds the two columns; a rollback needs no
+  statement, since the release before names each column it reads and writes.
