@@ -234,8 +234,9 @@ func (m markedHorizon) QueryRow(ctx context.Context, sql string, args ...any) pg
 // markedHorizonPool is traced's horizon pool, wrapped so each statement the event horizon sends
 // through it is marked (markedHorizon), for a server to observe through (Deps.HorizonDB) so a
 // count of the traced store's statements tells the horizon's own from every other
-// (ownStatements). Both rigs that count a server's statements give their server its horizon
-// through it: the one read's (newMeInboxRig) and c-p99's (bootOneInboxHere).
+// (ownStatements). Each rig that counts a server's statements gives its server its horizon
+// through it: the one read's (newMeInboxRig), the gate's (newGateRig) and c-p99's
+// (bootOneInboxHere).
 func markedHorizonPool(t *testing.T, traced *store.Store) events.HorizonDB {
 	t.Helper()
 	pool, err := traced.Pool.Horizon()

@@ -160,23 +160,25 @@ func versionReads(texts []string) (probes int, beside []string) {
 
 // newGateRig is newMeInboxRig's test server, its store traced by a meInboxStatements of its own
 // that counts each statement of a batch on its own (eachOfABatch) for the one request marked
-// countedRead, the read the test sends. It is not newMeInboxRig because that rig's recorder may
-// count by a window the test arms rather than by the marked request (legion/INFRA-1152's
-// f43afdc7), which this test does not arm; a recorder built here counts the marked request on
-// either.
+// countedRead, the read the test sends, and its horizon observing through the marked horizon pool
+// (markedHorizonPool), so ownStatements leaves out the horizon's own. It is not newMeInboxRig
+// because that rig's recorder may count by a window the test arms rather than by the marked
+// request (legion/INFRA-1152's f43afdc7), which this test does not arm; a recorder built here
+// counts the marked request on either.
 func newGateRig(t *testing.T) *meInboxRig {
 	t.Helper()
 	database := storetest.Open(t)
 	statements := &meInboxStatements{eachOfABatch: true}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	handler, _, _ := newTestServer(t, testServerOptions{
-		store:    traced,
-		identity: headerIdentity(database),
+		store:     traced,
+		identity:  headerIdentity(database),
+		horizonDB: markedHorizonPool(t, traced),
 		// A document's settlement is database work of its own on the traced pool; a delay no
 		// test reaches keeps it out of the read's statements.
 		settle: time.Hour,
 	})
-	return &meInboxRig{database: database, traced: traced, handler: handler, statements: statements}
+	return &meInboxRig{database: database, handler: handler, statements: statements}
 }
 
 // The one read carries each entry's approval gate in its one statement (c-approval-one-statement):
@@ -216,10 +218,10 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	// every statement the read sent, each of its batch on its own.
 	read := func(rows int) (meInboxResponse, []string, []string) {
 		t.Helper()
-		rig.statements.ownStatements(t, rig.traced)
+		rig.statements.ownStatements()
 		marked := context.WithValue(context.Background(), countedRead{}, true)
 		answer := decodeMeInbox(t, meInboxRequestAs(t, handler, marked, "alice", url.Values{"state": {myRepliesStateInbox}}))
-		sent := rig.statements.ownStatements(t, rig.traced)
+		sent := rig.statements.ownStatements()
 		if len(answer.Entries) != rows {
 			t.Fatalf("alice's Inbox holds %d rows, want the %d seeded: %v", len(answer.Entries), rows, meInboxNodes(answer))
 		}
