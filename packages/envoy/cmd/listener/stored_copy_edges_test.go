@@ -137,20 +137,30 @@ func TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy(t *testing.T) {
 	if err := cutTheDuplicateWindow(js, info.Config, forgottenIdWindow); err != nil {
 		t.Fatal(err)
 	}
+	fresh := awaitARepeatStoredOnceForgotten(t, rig, sender, subject, key, first)
+	fresh.requireHeld(t, "the repeat after the stream forgot the id", heldCopy(t, rig.harness.client, subject), false)
+}
+
+// forgottenIdWindow is the duplicate window the forgotten-id rows cut the stream's to: seconds,
+// standing in for the 72 hours of the deployed one.
+const forgottenIdWindow = 3 * time.Second
+
+// awaitARepeatStoredOnceForgotten waits for a repeat of first, the publish from sender on subject
+// under key, to be stored as a new copy once the stream forgets the id: a 200 that is no
+// duplicate, with an envelope of its own. It returns that answer. The forgotten-id rows share it,
+// so the bound and the reading they hold the cut to are one.
+func awaitARepeatStoredOnceForgotten(t *testing.T, rig *senderLimitRig, sender, subject string, key map[string]any, first heldAnswer) heldAnswer {
+	t.Helper()
 	var fresh heldAnswer
 	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
 		fresh = held(t, rig.publishFrom(t, sender, subject, key))
-		return fresh.status == http.StatusOK
+		return fresh.status == http.StatusOK && !fresh.Duplicate
 	})
 	if fresh.envelope.EventID == first.envelope.EventID {
 		t.Fatalf("the repeat after the stream forgot the id answered the first copy's event %s, want its own", fresh.envelope.EventID)
 	}
-	fresh.requireHeld(t, "the repeat after the stream forgot the id", heldCopy(t, rig.harness.client, subject), false)
+	return fresh
 }
-
-// forgottenIdWindow is the duplicate window the row above cuts the stream's to: seconds, standing
-// in for the 72 hours of the deployed one.
-const forgottenIdWindow = 3 * time.Second
 
 // cutTheDuplicateWindow cuts the stream config's stream to the duplicate window window, in two
 // stream updates: one to a second more than window, then one to window itself. config is the
@@ -158,14 +168,15 @@ const forgottenIdWindow = 3 * time.Second
 //
 // Two updates work around a defect of nats-server v2.15.1 and v2.15.3, not a choice of style. A
 // stream update whose duplicate window changes re-arms the stream's purge of remembered ids to
-// fire in a microsecond (server/stream.go:2796-2799) before it stores the new window
-// (server/stream.go:2978-2981); the purge takes the dedupe lock alone, which the update holds
-// across neither step, so a purge runs between the two and reads the window being replaced. After
-// a cut from 72 hours it keeps the id and re-arms itself for about 72 hours, and the duplicate
-// check is a lookup of the id with no test of its age (server/stream.go:5619), so the stream never
-// forgets the id and every repeat answers the stored-copy 503. The second update re-arms the purge
-// once the first one's window is stored, so whichever window that purge reads, the old or the new,
-// is seconds long.
+// fire in a microsecond (server/stream.go:2795-2800) before it stores the new window
+// (server/stream.go:2979-2981). It holds the dedupe lock during each of those steps and drops it
+// between them; across both it holds the stream's own lock, which the purge
+// (server/stream.go:5628) never takes, so a purge can run between the two and read the window
+// being replaced. After a cut from 72 hours it keeps the id and re-arms itself for about 72
+// hours, and the duplicate check is a lookup of the id with no test of its age
+// (server/stream.go:5619), so the stream never forgets the id and every repeat answers the
+// stored-copy 503. The second update re-arms the purge once the first one's window is stored, so
+// whichever window that purge reads, the old or the new, is seconds long.
 //
 // This cut can go back to one update when packages/envoy/go.mod moves to a nats-server release
 // that stores the new window before it re-arms the purge. The proof to run then is the

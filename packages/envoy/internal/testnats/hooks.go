@@ -72,12 +72,11 @@ const (
 	// DedupeReset is a stream update whose duplicate window changes, past the re-arm of the
 	// stream's purge of remembered duplicate ids ("Let it fire right away", server/stream.go) and
 	// before the store of the new window. The update re-arms that purge to fire at once, and only
-	// while the stream remembers an id, so a hold here parks a purge of its own only for a stream
-	// that remembers one; the purge then reads the window being replaced, keeps an id the new
-	// window would drop and re-arms itself for as long as that old window. Event.Window is the old
-	// window and Event.NewWindow the one the update will store. A goroutine held here holds the
-	// stream's own lock, which this server version's purge does not take, so the hold forces the
-	// order that defect needs.
+	// while the stream remembers an id. A hold here parks the update, with the stream's own lock
+	// held, which this server version's purge does not take: the purge the re-arm fired runs
+	// during the park, reads the window being replaced, keeps an id the new window would drop and
+	// re-arms itself for as long as that old window, the order the defect needs. Event.Window is
+	// the old window and Event.NewWindow the one the update will store.
 	DedupeReset Point = "dedupe.reset"
 	// DedupePurged is a purge of remembered duplicate ids that has done its work, with the dedupe
 	// lock still held: Event.Window is the window it measured the ids' ages against, which no
@@ -180,6 +179,8 @@ func (e Event) String() string {
 		if e.NewWindow != 0 {
 			fmt.Fprintf(&b, "->%s", e.NewWindow)
 		}
+	}
+	if e.Point == DedupePurged {
 		fmt.Fprintf(&b, " remembered=%d", e.Remembered)
 	}
 	if e.Recovering {
@@ -234,8 +235,8 @@ func Consumer(name string) Match {
 }
 
 // Stream takes the events of the stream named name: a StreamApply of it, a MetaApply of one of its
-// consumers, a message get from it (msgget.timeSelected), or a file store point of one of its
-// consumers.
+// consumers, a message get from it (msgget.timeSelected), a duplicate-window point of it
+// (DedupeReset, DedupePurged), or a file store point of one of its consumers.
 func Stream(name string) Match {
 	return Match{"stream " + name, func(e Event) bool {
 		if e.Stream != "" {

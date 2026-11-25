@@ -9,7 +9,6 @@ package main
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -21,23 +20,24 @@ import (
 
 // A repeat is stored once the stream forgets its id even when the purge of remembered ids runs at
 // the cut of the duplicate window, between the update's re-arm of that purge and the store of its
-// new window (testnats.DedupeReset). Held there, the purge reads the window being replaced, the
-// deployed 72 hours, so it keeps the id and re-arms itself for about 72 hours: the order CI met by
-// chance, which the row TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy failed under before
-// its cut became two updates (cybermonklabs/legion#5497).
+// new window (testnats.DedupeReset). With the update held there, the purge reads the window being
+// replaced, the deployed 72 hours, so it keeps the id and re-arms itself for about 72 hours: the
+// order CI met by chance, which the row TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy
+// failed under before its cut became two updates (cybermonklabs/legion#5497).
 //
 // The hold is what makes the order certain, so this row is the control that cut must keep: with
-// one update the purge held here is the stream's last, the id is never forgotten, and the wait
-// below fails; with two, the second update re-arms the purge once the first one's window is
-// stored, whatever this held purge did. Two readings inside the row can fail before that one: the
-// repeat before the cut, which must answer the first copy as a duplicate, and the purge's own
-// report, which must say it kept the id under the deployed window.
+// one update the purge that runs during the hold is the stream's last, the id is never
+// forgotten, and the closing wait (awaitARepeatStoredOnceForgotten) fails; with two, the second
+// update re-arms the purge once the first one's window is stored, whatever that purge did. Two
+// readings inside the row can fail before that one: the repeat before the cut, which must answer
+// the first copy as a duplicate, and the purge's own report, which must say it kept the id under
+// the deployed window.
 func TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut(t *testing.T) {
 	if ok, why := testnats.DedupeReset.Exists(); !ok {
 		t.Skipf("nats-server %s has no %s: %s", natsserver.VERSION, testnats.DedupeReset, why)
 	}
-	// The keeper is held off for the reason the row above it holds it off: a pass of it between
-	// the cut and the forget would put the deployed window back.
+	// The keeper is held off for the reason TestARepeatAfterTheStreamForgetsTheIdStoresANewCopy
+	// holds it off: a pass of it between the cut and the forget would put the deployed window back.
 	rig, server := newSenderLimitRigOnServer(t, bus.WithKeepInterval(backgroundReadsHeld))
 	hooks := testnats.Hook(t)
 	js := rig.harness.client.JS()
@@ -62,7 +62,7 @@ func TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut(t *testing.T) {
 	}
 	deployed := info.Config.Duplicates
 	onTheStream := []testnats.Match{testnats.OnServer(server), testnats.Stream(bus.Stream),
-		testnats.Where("replacing the deployed window "+deployed.String(), func(e testnats.Event) bool { return e.Window == deployed })}
+		testnats.Where("under the deployed window "+deployed.String(), func(e testnats.Event) bool { return e.Window == deployed })}
 	hold := hooks.Hold(testnats.DedupeReset, onTheStream...)
 
 	// The cut runs in a goroutine of its own: its first update is the one the hold parks, and the
@@ -72,20 +72,12 @@ func TestForcedOrderARepeatIsStoredThoughThePurgeRanAtTheCut(t *testing.T) {
 	reached := hold.Reached(t)
 	purged := hooks.Await(t, testnats.DedupePurged, onTheStream...)
 	if purged.Remembered == 0 {
-		t.Fatalf("the purge at %s kept no id (%s): the cut was not held where a purge keeps the id under the window being replaced, so the wait below would pass whatever the cut does",
+		t.Fatalf("the purge at %s kept no id (%s): the cut was not held where a purge keeps the id under the window being replaced, so the closing wait would pass whatever the cut does",
 			reached, purged)
 	}
 	hold.Release()
 	if err := <-cut; err != nil {
 		t.Fatal(err)
 	}
-
-	var fresh heldAnswer
-	waitFor(t, 30*time.Second, "a repeat to be stored once the stream forgets the id", func() bool {
-		fresh = held(t, rig.publishFrom(t, sender, subject, key))
-		return fresh.status == http.StatusOK && !fresh.Duplicate
-	})
-	if fresh.envelope.EventID == first.envelope.EventID {
-		t.Fatalf("the repeat after the stream forgot the id answered the first copy's event %s, want its own", fresh.envelope.EventID)
-	}
+	awaitARepeatStoredOnceForgotten(t, rig, sender, subject, key, first)
 }

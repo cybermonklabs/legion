@@ -71,21 +71,23 @@ func (o *consumerFileStore) measureWriteFile(name string, data []byte, perm fs.F
 
 // measureDedupeReset reports a stream update whose duplicate window changes, past its re-arm of
 // the stream's purge of remembered duplicate ids and before the store of the new window, so a
-// purge that runs here measures the ids' ages against oldWindow, the window being replaced. The
-// update re-arms that purge only while the stream remembers an id; the report comes either way,
-// and a hold here parks a purge of its own only for a stream that remembers one. It reports
-// nothing when the two windows are the same, since the update touches the purge only when they
-// differ.
+// purge that runs while the update is here measures the ids' ages against oldWindow, the window
+// being replaced. The update re-arms that purge only while the stream remembers an id; the report
+// comes either way, and a hold here parks the update, not the purge, which runs during the park.
+// It reports nothing when the two windows are the same, since the update touches the purge only
+// when they differ.
 //
 // It takes no lock the point's own caller holds: the update holds the stream's lock here, so the
-// stream's name is the update's own (a stream is never renamed) and the store directory the
-// server's. It does not wait for the purge the re-arm fires either, so the two reports can come
-// in either order; both are after that re-arm and before the store of the new window.
+// stream's name is the update's own (a stream is never renamed), and the server's options lock is
+// the only one it takes. It does not wait for the purge the re-arm fires either, so the two
+// reports can come in either order; while a hold parks the update here, both come after that
+// re-arm and before the store of the new window, and with no hold the purge can run after the
+// store instead.
 func measureDedupeReset(mset *stream, name string, oldWindow, newWindow time.Duration, point string) {
 	if MeasureHook.Load() == nil || oldWindow == newWindow {
 		return
 	}
-	measure(&MeasureEvent{Point: point, Store: measureStoreDir(mset), Stream: name, Window: oldWindow, NewWindow: newWindow})
+	measure(&MeasureEvent{Point: point, Store: mset.srv.getOpts().StoreDir, Stream: name, Window: oldWindow, NewWindow: newWindow})
 }
 
 // measureDedupePurged reports a purge of remembered duplicate ids that has done its work, with
@@ -98,16 +100,6 @@ func measureDedupePurged(mset *stream, point string) {
 	if MeasureHook.Load() == nil {
 		return
 	}
-	measure(&MeasureEvent{Point: point, Store: measureStoreDir(mset), Stream: mset.getCfgName(),
+	measure(&MeasureEvent{Point: point, Store: mset.srv.getOpts().StoreDir, Stream: mset.getCfgName(),
 		Window: mset.ddwin, Remembered: len(mset.ddmap)})
-}
-
-// measureStoreDir is the store directory of the server the stream runs in, or none for a stream
-// with no server. It takes the server's options lock alone, which no caller of a duplicate-window
-// point holds.
-func measureStoreDir(mset *stream) string {
-	if mset == nil || mset.srv == nil {
-		return _EMPTY_
-	}
-	return mset.srv.getOpts().StoreDir
 }
