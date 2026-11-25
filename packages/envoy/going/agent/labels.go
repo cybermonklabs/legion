@@ -54,16 +54,19 @@ const (
 // The labels of the run's own tools that no spec of Dispatch states: find_tools; propose_plan,
 // which names how many changes its plan holds; ask_person, whose kind draws no line, since the
 // reply that calls it is the run's answer and sends no frame of the call (saveReply); the review
-// of a plan; the test hooks; and a tool no label names, which a model made up or call_tool names
-// wrongly: a slip (slipWords), which the model mends itself. search and read are dispatch_search
-// and dispatch_read, and their labels are those tools' own.
+// of a plan; the test hooks; a tool no label names, which a model made up or call_tool names
+// wrongly; and a tool of Dispatch the bar does not offer its model (going.UnofferedTools), which
+// call_tool refuses by name: each of the last two a slip (slipWords), which the model mends
+// itself. search and read are dispatch_search and dispatch_read, and their labels are those tools'
+// own.
 var (
-	findToolsLabel   = contracts.ToolLabel{Kind: kindLook, Verb: "look", Present: "Looking for a way to {need}", Past: "Looked for a way to {need}"}
-	proposePlanLabel = contracts.ToolLabel{Kind: kindPlan, Verb: "propose", Present: "Proposing a plan of {changes}", Past: "Proposed a plan of {changes}"}
-	askPersonLabel   = contracts.ToolLabel{Kind: kindWrite, Verb: "ask", Present: "Asking you a question", Past: "Asked you a question"}
-	reviewPlanLabel  = contracts.ToolLabel{Kind: kindReview, Verb: "review", Present: "Reviewing the plan", Past: "Reviewed the plan"}
-	hookLabel        = contracts.ToolLabel{Kind: kindRead, Verb: "run", Present: "Running a test hook", Past: "Ran a test hook"}
-	unknownToolLabel = contracts.ToolLabel{Kind: kindRead, Verb: "try", Present: "Trying a step Dispatch does not have", Past: "Tried a step Dispatch does not have"}
+	findToolsLabel     = contracts.ToolLabel{Kind: kindLook, Verb: "look", Present: "Looking for a way to {need}", Past: "Looked for a way to {need}"}
+	proposePlanLabel   = contracts.ToolLabel{Kind: kindPlan, Verb: "propose", Present: "Proposing a plan of {changes}", Past: "Proposed a plan of {changes}"}
+	askPersonLabel     = contracts.ToolLabel{Kind: kindWrite, Verb: "ask", Present: "Asking you a question", Past: "Asked you a question"}
+	reviewPlanLabel    = contracts.ToolLabel{Kind: kindReview, Verb: "review", Present: "Reviewing the plan", Past: "Reviewed the plan"}
+	hookLabel          = contracts.ToolLabel{Kind: kindRead, Verb: "run", Present: "Running a test hook", Past: "Ran a test hook"}
+	unknownToolLabel   = contracts.ToolLabel{Kind: kindRead, Verb: "try", Present: "Trying a step Dispatch does not have", Past: "Tried a step Dispatch does not have"}
+	unofferedToolLabel = contracts.ToolLabel{Kind: kindRead, Verb: "try", Present: "Trying a step the command bar does not offer", Past: "Tried a step the command bar does not offer"}
 )
 
 // goingReadLabels are the labels of the reads the server makes by going's names (going.ReadSpecs),
@@ -109,8 +112,13 @@ func stepLabel(tool string, input json.RawMessage) (contracts.ToolLabel, map[str
 
 // namedLabel is the label of the tool named name that call_tool runs or a plan's row changes: a
 // tool of Dispatch, a read the server makes by going's name, a read outside Dispatch or
-// draw_block.
+// draw_block. A tool of Dispatch the bar does not offer (going.UnofferedTools) is a step the
+// command bar does not offer (unofferedToolLabel), and a name no tool has a step Dispatch does not
+// have (unknownToolLabel).
 func namedLabel(name string) contracts.ToolLabel {
+	if _, unoffered := going.UnofferedTools[name]; unoffered {
+		return unofferedToolLabel
+	}
 	if spec, known := dispatchTool(name); known {
 		return spec.Label
 	}
@@ -643,13 +651,15 @@ func didWords(label contracts.ToolLabel, arguments map[string]any) string {
 // slipWords is the words of a model's call that failed by the model's own slip, which it mends
 // with its next call and its person cannot act on, and whether result says the call is one: a
 // tool no findable tool is named (noSuchTool), or that the server has not (UNKNOWN_TOOL), "Tried a
-// step Dispatch does not have"; a change call_tool does not run, which only a plan makes, "Tried
-// to update DEMO-7 outside a plan"; and arguments refused - by the tool's schema or translation
-// (CALL_REFUSED), by the block's spec (BLOCK_REFUSED), by the route as a bad request (400), or by
-// the agent's own tool, which takes other arguments - "Tried to read DEMO-12 the wrong way". A
-// call refused for anything else - no access, not found, the run stopped, the server failing - is
-// no slip: its failure sentence (failedWords) says why. Only the model's own calls are judged so:
-// a refused row of a plan the person approved is the person's to know of.
+// step Dispatch does not have", or "Tried a step the command bar does not offer" where label is
+// that of a tool of Dispatch the bar does not offer (unofferedToolLabel); a change call_tool does
+// not run, which only a plan makes, "Tried to update DEMO-7 outside a plan"; and arguments refused
+// - by the tool's schema or translation (CALL_REFUSED), by the block's spec (BLOCK_REFUSED), by
+// the route as a bad request (400), or by the agent's own tool, which takes other arguments -
+// "Tried to read DEMO-12 the wrong way". A call refused for anything else - no access, not found,
+// the run stopped, the server failing - is no slip: its failure sentence (failedWords) says why.
+// Only the model's own calls are judged so: a refused row of a plan the person approved is the
+// person's to know of.
 func slipWords(label contracts.ToolLabel, arguments map[string]any, result string) (string, bool) {
 	answer, answered := parseResult(result)
 	switch {
@@ -658,6 +668,9 @@ func slipWords(label contracts.ToolLabel, arguments map[string]any, result strin
 			return "", false
 		}
 	case strings.HasPrefix(result, noSuchTool), refusedCode(result) == agentwire.CodeUnknownTool:
+		if label == unofferedToolLabel {
+			return unofferedToolLabel.Past, true
+		}
 		return unknownToolLabel.Past, true
 	case strings.Contains(result, writeNotRunHere):
 		return cutWords("Tried to "+didWords(label, arguments)+" outside a plan", labelLimit), true

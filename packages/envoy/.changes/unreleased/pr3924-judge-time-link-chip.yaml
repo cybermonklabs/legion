@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The command bar's eval reads a time link whose words are an issue's key as the chip the bar
+  draws, the issue's key, status and title, then the date its hover shows. A refused call of a
+  tool the bar does not offer is labelled "Tried a step the command bar does not offer"; a name
+  that is no tool keeps "Tried a step Dispatch does not have".

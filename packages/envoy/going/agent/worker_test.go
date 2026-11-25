@@ -1708,10 +1708,11 @@ func TestACallOfANameNoToolHasNamesTheNearest(t *testing.T) {
 // TestASlipIsNoFailureOfThePersons: the preview's bar showed a guessed tool name in red, "Could not
 // run a tool Dispatch does not have: Dispatch refused it", and counted it a failed step, though
 // the model went on without it. A call of the model's that fails by its own slip - a name no tool
-// has, a change call_tool does not run, arguments the tool's schema or the route refuses - has a
-// tool frame that is a slip and no error, which says what the model tried in plain words; the
-// model is still told the refusal, as an error. A call its person can act on - no access - keeps
-// its failure sentence and its error. A refusal for any other cause is no slip.
+// has, a tool of Dispatch the bar does not offer, a change call_tool does not run, arguments the
+// tool's schema or the route refuses - has a tool frame that is a slip and no error, which says
+// what the model tried in plain words; the model is still told the refusal, as an error. A call
+// its person can act on - no access - keeps its failure sentence and its error. A refusal for any
+// other cause is no slip.
 func TestASlipIsNoFailureOfThePersons(t *testing.T) {
 	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
 		if len(request.ToolResults()) > 0 {
@@ -1723,6 +1724,7 @@ func TestASlipIsNoFailureOfThePersons(t *testing.T) {
 			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_issues", "arguments": map[string]any{"project": "demo"}}},
 			{Name: toolSearch, Arguments: map[string]any{"query": "x"}},
 			{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-12"}},
+			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_api", "arguments": map[string]any{"path": "/api/v1/issues/DEMO-7/events"}}},
 		}}
 	})
 	server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
@@ -1769,6 +1771,7 @@ func TestASlipIsNoFailureOfThePersons(t *testing.T) {
 		4: {Label: "Tried to list the issues of demo the wrong way", Slip: true},
 		5: {Label: `Tried to search Dispatch for "x" the wrong way`, Slip: true},
 		6: {Label: "Could not read DEMO-12: you have no access", Error: true},
+		7: {Label: "Tried a step the command bar does not offer", Slip: true},
 	} {
 		got := frames[step]
 		if got.Label != want.Label || got.Slip != want.Slip || got.Error != want.Error {

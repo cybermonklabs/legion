@@ -14,7 +14,9 @@ import (
 // model gave the link (going/chips). The judge reads the answer so, and a fact the person reads in
 // a chip is stated, and words the chip replaced are not. A time the model wrote as a link
 // ([5 days ago](dispatch-time:2026-11-18T11:35:00Z), the web's dispatch-time.tsx) shows its words
-// and its full date on hover, so the judge reads both.
+// and its full date on hover, so the judge reads both; a time link whose words are an issue's key
+// shows the issue's chip in place of its words (the web's timeLinkIssue), so the judge reads the
+// chip and the date.
 
 // RenderAnswer is answer, an answer's markdown, with each link the bar draws as an item written in
 // place as the words the bar draws for it, read from items (chips.Target.Words), between square
@@ -26,8 +28,12 @@ import (
 // or to an agent's file, which items holds no words of, is its bare reference, such as [DEMO-404],
 // so it carries no fact the store does not hold. A time link is its words and then the full date
 // its hover shows (timeLinkWords): [5 days ago](dispatch-time:2026-11-18T11:35:00Z) is "5 days ago
-// (18 Nov 2026, 11:35 UTC)". Every other link - a web address, a picture, a reference the bar does
-// not read - and all other text, code included, stays as written.
+// (18 Nov 2026, 11:35 UTC)". A time link whose words are an issue's key and nothing else, which
+// the bar draws as the issue's chip with the time on hover, is the words of the issue's chip
+// between square brackets and then that date: [DEMO-12](dispatch-time:2026-10-10T09:00:00Z) is
+// "[DEMO-12 · In progress · Export: CSV and PDF] (10 Oct 2026, 09:00 UTC)", and the bare key in
+// brackets for an issue items does not hold. Every other link - a web address, a picture, a
+// reference the bar does not read - and all other text, code included, stays as written.
 //
 // The links are markdown's inline links, [words](href), and its autolinks, <dispatch://...>; a
 // dashboard path names its item as it does on the dashboard's own origin. A web address names no
@@ -36,7 +42,7 @@ import (
 // any task, which the calibration answers of labels.json are read against.
 func RenderAnswer(answer string, items chips.Items) string {
 	return chips.RewriteLinks(answer, func(out *strings.Builder, written, words, href string) {
-		if timed, ok := timeLinkWords(words, href); ok {
+		if timed, ok := timeLinkWords(words, href, items); ok {
 			out.WriteString(timed)
 			return
 		}
@@ -56,16 +62,49 @@ const timeScheme = "dispatch-time:"
 // INSTANT): a date, a time to the minute or finer, and its zone.
 var timeInstant = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$`)
 
+// timeLinkKey is an issue's key as Dispatch writes one: the words of a time link that the bar
+// draws as the issue's chip, which are the key and nothing else (the web's timeLinkIssue).
+var timeLinkKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*$`)
+
+// shownWords is a link's words as the page reads them for its chip, the text it draws
+// (textContent): spaces around them, a pair of emphasis or code marks around the whole, and a
+// backslash before a hyphen left out, so `**DEMO-12**` and `DEMO\-12` are the key DEMO-12 there
+// as they are here. A mark that is not one of a pair stays, as Markdown draws it.
+func shownWords(words string) string {
+	shown := strings.ReplaceAll(strings.TrimSpace(words), `\-`, "-")
+	for {
+		trimmed := shown
+		for _, mark := range []string{"**", "__", "*", "_", "`"} {
+			if len(shown) > 2*len(mark) && strings.HasPrefix(shown, mark) && strings.HasSuffix(shown, mark) {
+				trimmed = strings.TrimSpace(shown[len(mark) : len(shown)-len(mark)])
+				break
+			}
+		}
+		if trimmed == shown {
+			return shown
+		}
+		shown = trimmed
+	}
+}
+
 // timeLinkWords is what the bar shows for a link whose words are words and whose address is
 // href, and whether href is a time's address at all, of any case and spaces around it, as the
-// web's isTimeAddress reads it. For an address that names an instant, the words and then, in
-// parentheses, the instant's full date and time in UTC, as the hover shows it: "5 days ago (18
-// Nov 2026, 11:35 UTC)", its seconds too where it has some. For an address that names none, such
-// as dispatch-time:last week, the words alone, as the bar draws them.
-func timeLinkWords(words, href string) (string, bool) {
+// web's isTimeAddress reads it. Its words are words, or, where they are an issue's key and nothing
+// else, around spaces (timeLinkKey), the words of the issue's chip read from items
+// (chips.Target.Words) between square brackets, as the bar draws that issue's chip in their place.
+// For an address that names an instant, the words and then, in parentheses, the instant's full
+// date and time in UTC, as the hover shows it: "5 days ago (18 Nov 2026, 11:35 UTC)", its seconds
+// too where it has some. For an address that names none, such as dispatch-time:last week, the
+// words alone, as the bar draws them.
+func timeLinkWords(words, href string, items chips.Items) (string, bool) {
 	href = strings.TrimSpace(href)
 	if len(href) < len(timeScheme) || !strings.EqualFold(href[:len(timeScheme)], timeScheme) {
 		return "", false
+	}
+	if key := shownWords(words); timeLinkKey.MatchString(key) {
+		if issue, ok := chips.ParseTarget("dispatch://" + key); ok {
+			words = "[" + issue.Words(items) + "]"
+		}
 	}
 	at, ok := linkInstant(href[len(timeScheme):])
 	if !ok {

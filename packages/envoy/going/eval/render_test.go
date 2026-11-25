@@ -111,6 +111,53 @@ func TestATimeLinkIsRenderedWithTheDateItsHoverShows(t *testing.T) {
 	}
 }
 
+// TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate: the agent writes when an issue
+// last moved as a time link whose words are the issue's key, [DEMO-12](dispatch-time:...), and
+// the bar draws those words as the issue's chip, its key, status and title, with the time on hover
+// (the web's timeLinkIssue in MarkdownBody's timeLinkAnchors). The judge reads the chip's words, as
+// it reads a link to the issue, and then the date: the bare key for an issue the store does not
+// hold, and the chip alone for an address that names no instant. Words around the key with spaces
+// are the key; words that are more than a key, or a key the web reads as none, stay words.
+func TestATimeLinkWhoseWordsAreAKeyIsRenderedAsTheChipAndTheDate(t *testing.T) {
+	seed, err := LoadSeed(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, answer, want string }{
+		{
+			"the key of an issue the seed holds",
+			"[DEMO-12](dispatch-time:2026-10-10T09:00:00Z) moved last, and [ DEMO-11 ](dispatch-time:2026-11-15T09:59:01+01:00) closed.",
+			"[DEMO-12 · In progress · Export: CSV and PDF] (10 Oct 2026, 09:00 UTC) moved last, and [DEMO-11 · Done · Board: card titles cut off at two lines] (15 Nov 2026, 08:59:01 UTC) closed.",
+		},
+		{
+			"the key of an issue the seed does not hold",
+			"[DEMO-404](dispatch-time:2026-10-10T09:00:00Z) moved last.",
+			"[DEMO-404] (10 Oct 2026, 09:00 UTC) moved last.",
+		},
+		{
+			"a key whose address names no instant",
+			"[DEMO-12](dispatch-time:tomorrow) moved last.",
+			"[DEMO-12 · In progress · Export: CSV and PDF] moved last.",
+		},
+		{
+			"a key the page reads through its marks",
+			"[**DEMO-12**](dispatch-time:2026-10-10T09:00:00Z) and [DEMO\\-11](dispatch-time:2026-11-15T09:59:01+01:00) moved, [*DEMO-12 moved*](dispatch-time:2026-10-10T09:00:00Z) not.",
+			"[DEMO-12 · In progress · Export: CSV and PDF] (10 Oct 2026, 09:00 UTC) and [DEMO-11 · Done · Board: card titles cut off at two lines] (15 Nov 2026, 08:59:01 UTC) moved, *DEMO-12 moved* (10 Oct 2026, 09:00 UTC) not.",
+		},
+		{
+			"words that are not a key alone",
+			"[DEMO-12 moved](dispatch-time:2026-10-10T09:00:00Z), [demo-12](dispatch-time:2026-10-10T09:00:00Z), [DEMO-12/plan](dispatch-time:2026-10-10T09:00:00Z) and [OPS](dispatch-time:2026-10-10T09:00:00Z).",
+			"DEMO-12 moved (10 Oct 2026, 09:00 UTC), demo-12 (10 Oct 2026, 09:00 UTC), DEMO-12/plan (10 Oct 2026, 09:00 UTC) and OPS (10 Oct 2026, 09:00 UTC).",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := RenderAnswer(c.answer, seed); got != c.want {
+				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
+			}
+		})
+	}
+}
+
 // TestAnAnswerWhoseLinksKeepTheirWordsRendersThem: the server stores an answer with the words of
 // each link that say more than its chip draws written beside the chip (chips.KeepLinkWords), so
 // the judge reads them where it read the chip alone (c13 at 9ae5605b): a session's name written

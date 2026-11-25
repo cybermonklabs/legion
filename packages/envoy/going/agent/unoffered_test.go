@@ -19,7 +19,9 @@ import (
 // it for neither its name nor a need in its words, and answers from exactly the tools it would
 // answer from were dispatch_api no tool of Dispatch, so every answer of it is that answer and the
 // list leaves out that tool alone. call_tool and propose_plan refuse it by name with its reason
-// before any call, and the bar reads the refusal as the model's slip.
+// before any call, and the bar reads the call as the model's slip of a step the command bar does
+// not offer, which Dispatch has: a name no tool has stays a step Dispatch does not have, of the
+// same kind.
 func TestTheBarsModelIsNotOfferedDispatchAPI(t *testing.T) {
 	const api = "dispatch_api"
 	reason := going.UnofferedTools[api]
@@ -60,15 +62,24 @@ func TestTheBarsModelIsNotOfferedDispatchAPI(t *testing.T) {
 	})
 	a := &agent{client: client, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
 	w = newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Level: "standard", LeaseToken: "lease-1"}, func() {})
-	arguments := map[string]any{"path": "/api/v1/issues/DEMO-7/events"}
-	told, refused := w.callTool(t.Context(), 3, json.RawMessage(`{"tool":"dispatch_api","arguments":{"path":"/api/v1/issues/DEMO-7/events"}}`))
-	if !refused || !strings.HasPrefix(told, noSuchTool+` "dispatch_api"`) || !strings.Contains(told, reason) {
-		t.Errorf("call_tool of %s told %q (refused %t), want it refused by name with the reason %q", api, told, refused, reason)
+	for step, c := range []struct{ tool, present, past string }{
+		{api, "Trying a step the command bar does not offer", "Tried a step the command bar does not offer"},
+		{"dispatch_route_read", "Trying a step Dispatch does not have", "Tried a step Dispatch does not have"},
+	} {
+		input := json.RawMessage(`{"tool":` + strconv.Quote(c.tool) + `,"arguments":{"path":"/api/v1/issues/DEMO-7/events"}}`)
+		told, refused := w.callTool(t.Context(), 3+step, input)
+		if !refused || !strings.HasPrefix(told, noSuchTool+" "+strconv.Quote(c.tool)) || (c.tool == api) != strings.Contains(told, reason) {
+			t.Errorf("call_tool of %s told %q (refused %t), want it refused by name, with the reason %q for %s alone", c.tool, told, refused, reason, api)
+		}
+		label, arguments := stepLabel(toolCallTool, input)
+		if present := presentLabel(label, arguments); present != c.present || label.Kind != kindRead {
+			t.Errorf("call_tool of %s shows %q of the kind %q while it runs, want %q of the kind %q", c.tool, present, label.Kind, c.present, kindRead)
+		}
+		if words, slip := slipWords(label, arguments, told); !slip || words != c.past {
+			t.Errorf("call_tool's refusal of %s reads as %q (slip %t), want the slip %q", c.tool, words, slip, c.past)
+		}
 	}
-	if words, slip := slipWords(namedLabel(api), arguments, told); !slip || words != unknownToolLabel.Past {
-		t.Errorf("call_tool's refusal of %s reads as %q (slip %t), want the slip %q", api, words, slip, unknownToolLabel.Past)
-	}
-	told, refused = w.proposePlan(t.Context(), 4, json.RawMessage(`{"summary":"Read the events.","changes":[{"tool":"dispatch_api","arguments":{"path":"/api/v1/issues/DEMO-7/events"}}]}`))
+	told, refused := w.proposePlan(t.Context(), 5, json.RawMessage(`{"summary":"Read the events.","changes":[{"tool":"dispatch_api","arguments":{"path":"/api/v1/issues/DEMO-7/events"}}]}`))
 	if !refused || !strings.Contains(told, `"dispatch_api"`) || !strings.Contains(told, reason) {
 		t.Errorf("propose_plan of %s told %q (refused %t), want it refused by name with the reason %q", api, told, refused, reason)
 	}
