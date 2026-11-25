@@ -149,7 +149,8 @@ business.
    back to the implementer, and through the steps after it again.
 6. Where the plan has the architect's acceptance step (in the default steps, once the reviewer
    approves), the architect reads the evidence and accepts the change (or sends it back); once the
-   plan's last step passes, the retrospective runs. The merger then reads the pull request and merges it
+   plan's last step passes, each check a CI job runs passes at the head and no fix of one still
+   runs, the retrospective runs. The merger then reads the pull request and merges it
    itself, at the head it read, under a message it writes rather than GitHub's default; it lands
    under the repository's own rules, and the coordinator closes the issue when it reads that
    merge: it is Done.

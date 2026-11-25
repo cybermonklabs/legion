@@ -7746,7 +7746,7 @@ None of it reaches the next pod: the issue's scratch, a role's temporary directo
 A kept volume carries all of it to the issue's next pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), and the round's message still tells each role to push, because a reset or a suspension of the issue deletes that volume.
 What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
-the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;
+the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in, and, while a fix runs, the branches of their own that the fix and each step beside it push to;
 the issue's record in the daemon's own Postgres; and the repository's cache, which fills the next pod's feed.
 A release adds one thing to that list: the git bundle of the workspace's unpushed work, which the daemon holds in its own database until the next pod restores it ([Idle release](#idle-release)).
 
@@ -7932,6 +7932,7 @@ The move to `backlog` suspends the issue, and the suspension deletes its Sandbox
 After the move to `todo`, the issue's next launch makes a new Sandbox, and its pod provisions on a new, empty volume.
 For a root, the two moves give every issue of its tree a new volume.
 Have each role push its work first, because the reset deletes all the work on the volume that no role pushed.
+The move to `backlog` also has the daemon delete the branches beside a fix of the issue's tasks, so let a running fix end, or copy those branches, before the reset.
 
 Never delete the claim by hand.
 Agent Sandbox then makes a new, empty claim under the live Sandbox.
