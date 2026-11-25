@@ -1073,13 +1073,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // the pause the resume ended (ProjectPause). Each is queued in the pause's or the resume's own
 // transaction (store's Pause and Resume); the controller's own pause or resume tells it nothing.
 //
-// A status-scope notice tells the controller that Dispatch refused a status write of the daemon's
-// with 403 LEGION_STATUS_SCOPE_REQUIRED: the daemon's token lacks the scope Dispatch asks of a
-// write of a Legion issue's status (R26 of dispatch://INFRA-3320; decision 12 of
-// dispatch://INFRA-4730). Its issue is the issue whose write was refused, and its Reason names the
-// code and the issue and says that a person must give the daemon a Dispatch token that holds the required scope. The
-// write is kept and written again; the first such refusal in a daemon run queues one notice (the
-// daemon's status executor), and no architect is told, since no architect can change a token.
+// A status-scope notice tells the controller that Dispatch refused the daemon's token: a status
+// write with 403 LEGION_STATUS_SCOPE_REQUIRED, or a role-holder publication with 403
+// ROLE_HOLDER_FORBIDDEN or 403 ROLE_HOLDER_NOT_PROVEN (R26 of dispatch://INFRA-3320; decision 12
+// of dispatch://INFRA-4730; dispatch://INFRA-4730/comment/14e96b87-f9a1-4b67-8fda-7d0c6605be9b).
+// Its issue is the issue whose write or publication was refused, and its Reason names the code,
+// the issue, and the three broker changes a person makes to give the daemon a token that proves
+// its session with the legion-status scope. The row is kept and written again; the first refusal
+// of any of the three codes in a daemon run queues one notice, and no architect is told, since no
+// architect can change a token.
 //
 // An intake-gave-up notice counts the messages the intake gave up while it waited for its
 // publish, and names the first giveUpNoticeNames of them by their records' ids (Count, GiveUps).

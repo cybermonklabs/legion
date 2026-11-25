@@ -652,19 +652,22 @@ func (r *stopReturnRig) allAt(status string, keys ...string) {
 // that holds the scope (R26 of dispatch://INFRA-3320; decision 12 of dispatch://INFRA-4730). The
 // wait is not silent: each refusal logs a line naming the code and the issue, and the first
 // refusal in a daemon run queues one notice to the project's controller alone, naming the code and
-// the issue and saying that a person must give the daemon a Dispatch token that holds the required scope. A 401 and
-// a 403 of another code keep and retry the row as they always did, and tell nobody. A publication
-// of role holders that Dispatch refuses with 403 ROLE_HOLDER_FORBIDDEN, read from the answer
-// captured from a real Dispatch (internal/dispatch/testdata/role_holders_forbidden.http), is kept
-// and written again the same way, with a line of its own for each refusal, and the first refusal of
-// either code in the run queues that one notice: a role-holder refusal after a status write's scope
-// refusal tells nobody again.
+// the issue and saying that a person must give the daemon a Dispatch token that holds the
+// legion-status scope, with the three changes that give it one (statusScopeSteps). A 401 and a 403
+// of another code keep and retry the row as they always did, and tell nobody. A publication of role
+// holders that Dispatch refuses with 403 ROLE_HOLDER_FORBIDDEN, read from the answer captured from
+// a real Dispatch (internal/dispatch/testdata/role_holders_forbidden.http), or with 403
+// ROLE_HOLDER_NOT_PROVEN (dispatch://INFRA-4730/comment/14e96b87-f9a1-4b67-8fda-7d0c6605be9b), is
+// kept and written again the same way, with a line of its own for each refusal, and the first
+// refusal of any of the three codes in the run queues that one notice: a role-holder refusal after
+// a status write's scope refusal tells nobody again.
 //
 // Negative controls, run when this was written: with the refusal read as every 403 is read
 // (statusRefusal's scope arm taken out, so dispatch.PermanentRefusal alone decides) and no notice
 // queued, the "scope refused twice" case fails on its notice count; with a role-holder publication
 // refused with ROLE_HOLDER_FORBIDDEN queuing no notice, "role holders forbidden twice" fails on its
-// notice count.
+// notice count; with ROLE_HOLDER_NOT_PROVEN taken out of publishRoleHolders' refusal check, "role
+// holders not proven twice" fails on its refusal lines.
 func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 	t.Parallel()
 	scope := &dispatch.Error{Status: http.StatusForbidden, Code: statusScopeCode, Message: "this token lacks the legion-status scope"}
@@ -717,9 +720,8 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("status-scope notices = %+v, want %d", told, tc.notices)
 			}
 			for _, notice := range told {
-				if !strings.Contains(notice.Reason, statusScopeCode) || !strings.Contains(notice.Reason, issue) ||
-					!strings.Contains(notice.Reason, "a person gives the daemon a Dispatch token that holds the required scope") {
-					t.Fatalf("status-scope notice reason = %q, want the code, the issue and the token a person must give", notice.Reason)
+				if !strings.Contains(notice.Reason, statusScopeCode) || !strings.Contains(notice.Reason, issue) || !namesStatusScopeSteps(notice.Reason) {
+					t.Fatalf("status-scope notice reason = %q, want the code, the issue, the token a person must give and the three changes that give it", notice.Reason)
 				}
 			}
 			if architect := noticesOf(t, pool, issue); architect != 0 {
@@ -728,16 +730,26 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 		})
 	}
 	forbidden := capturedRoleHoldersRefusal(t)
-	const roleHoldersLine = "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session to Dispatch; the publication is kept and written again"
+	// notProven is the 403 ROLE_HOLDER_NOT_PROVEN of a publication on a project whose
+	// proven_sessions is on, with the message putIssueRoleHolders answers
+	// (packages/envoy/internal/dispatch/api/issue_role_holders.go in cybermonklabs/legion#4601).
+	notProven := &dispatch.Error{Status: http.StatusForbidden, Code: roleHolderNotProvenCode,
+		Message: "project LEGION records proven sessions, so it takes the role holders of LEGION-209 only on a credential that proves session legion-daemon:LEGION. This request's credential does not prove that session."}
+	const roleHoldersLine = "outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again"
 	for _, tc := range []struct {
 		name string
+		// refusal is Dispatch's answer to each refused publication, and code its code.
+		refusal error
+		code    string
 		// scopeFirst runs a status write of another issue to its LEGION_STATUS_SCOPE_REQUIRED
 		// before the publication runs.
 		scopeFirst bool
 		refusals   int
 	}{
-		{name: "role holders forbidden twice", refusals: 2},
-		{name: "a status write's scope refusal and then a role-holder refusal", scopeFirst: true, refusals: 1},
+		{name: "role holders forbidden twice", refusal: forbidden, code: roleHolderForbiddenCode, refusals: 2},
+		{name: "a status write's scope refusal and then a role-holder refusal", refusal: forbidden, code: roleHolderForbiddenCode, scopeFirst: true, refusals: 1},
+		{name: "role holders not proven twice", refusal: notProven, code: roleHolderNotProvenCode, refusals: 2},
+		{name: "a status write's scope refusal and then a not-proven refusal", refusal: notProven, code: roleHolderNotProvenCode, scopeFirst: true, refusals: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -765,7 +777,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				}
 			}
 			for range tc.refusals {
-				client.holderRefusals = append(client.holderRefusals, forbidden)
+				client.holderRefusals = append(client.holderRefusals, tc.refusal)
 			}
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, record.RoleHoldersPublish{Issue: issue}, time.Now()))
 			for range tc.refusals + 1 {
@@ -784,8 +796,8 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("role-holder refusal lines = %d, want one for each of the %d refusals", len(lines), tc.refusals)
 			}
 			for _, line := range lines {
-				if line["code"] != roleHolderForbiddenCode || line["issue"] != issue {
-					t.Fatalf("role-holder refusal line = %v, want it to name %s and %s", line, roleHolderForbiddenCode, issue)
+				if line["code"] != tc.code || line["issue"] != issue {
+					t.Fatalf("role-holder refusal line = %v, want it to name %s and %s", line, tc.code, issue)
 				}
 			}
 			told := controllerNoticesOfKind(t, pool, issue, record.StatusScopeNotice)
@@ -797,9 +809,8 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("status-scope notices of %s = %+v, want %d: the run queues one notice for the first refusal of either code", issue, told, want)
 			}
 			for _, notice := range told {
-				if !strings.Contains(notice.Reason, roleHolderForbiddenCode) || !strings.Contains(notice.Reason, issue) ||
-					!strings.Contains(notice.Reason, "a person gives the daemon a Dispatch token that holds the required scope") {
-					t.Fatalf("status-scope notice reason = %q, want the code, the issue and the token a person must give", notice.Reason)
+				if !strings.Contains(notice.Reason, tc.code) || !strings.Contains(notice.Reason, issue) || !namesStatusScopeSteps(notice.Reason) {
+					t.Fatalf("status-scope notice reason = %q, want the code, the issue, the token a person must give and the three changes that give it", notice.Reason)
 				}
 			}
 			if architect := noticesOf(t, pool, issue); architect != 0 {
@@ -807,6 +818,26 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 			}
 		})
 	}
+}
+
+// statusScopeSteps are the words of the status-scope notice (statusScopeRemedy) for an issue of the
+// project LEGION: that a person must give the daemon a Dispatch token that holds the legion-status
+// scope, and each of the three changes that give it one under cybermonklabs/legion#4601.
+var statusScopeSteps = []string{
+	"A person must give the daemon a Dispatch token that holds the legion-status scope.",
+	"run the daemon with dispatch_token_broker: true in place of dispatch_token_file.",
+	"give the daemon's ServiceAccount a BROKER_EXCHANGE_ACCOUNTS entry that names the project LEGION and fixes the session legion-daemon:LEGION.",
+	"run a secrets broker release that has the change that added the legion-status scope to the broker, cybermonklabs/legion pull request #4601.",
+}
+
+// namesStatusScopeSteps says whether reason holds every one of statusScopeSteps.
+func namesStatusScopeSteps(reason string) bool {
+	for _, step := range statusScopeSteps {
+		if !strings.Contains(reason, step) {
+			return false
+		}
+	}
+	return true
 }
 
 // refusingStatus is outboxDispatch whose status write answers each of refusals in turn, and then

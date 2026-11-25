@@ -205,7 +205,7 @@ type outbox struct {
 	// production, and zero in an outbox a test builds by hand, which reads the log at once.
 	seenWait time.Duration
 	// scopeTold is whether this daemon's run has queued the controller's status-scope notice, of
-	// which it queues one for both refusals it is told of (tellStatusScopeOnce).
+	// which it queues one for all three refusals it is told of (tellStatusScopeOnce).
 	scopeTold atomic.Bool
 	// refreshPause reads the project's open pause into the daemon's flag
 	// (internal/pause's Service.Refresh) at each sweep (decision 18 of dispatch://INFRA-3759), so a
@@ -1357,11 +1357,23 @@ func (r *outbox) awaitAfter(ctx context.Context, row record.OutboxRow, payload r
 const statusScopeCode = "LEGION_STATUS_SCOPE_REQUIRED"
 
 // roleHolderForbiddenCode is Dispatch's code of the 403 it answers a publication of an issue's
-// role holders whose actor is not the session of the issue's project's daemon
-// (putIssueRoleHolders in packages/envoy/internal/dispatch/api/issue_role_holders.go), which a
-// token that does not prove that session gets once R26's refusal is on (R26 of
-// dispatch://INFRA-3320). The two spellings change together, as statusScopeCode's do.
+// role holders from a token it does not take as the daemon's own (putIssueRoleHolders in
+// packages/envoy/internal/dispatch/api/issue_role_holders.go; R26 of dispatch://INFRA-3320). With
+// DISPATCH_LEGION_STATUS_SCOPE on, Dispatch takes a publication only from a token that proves the
+// session legion-daemon:<PROJECT> of the issue's project and holds the legion-status scope. The
+// secrets broker grants that scope only to the token it mints for a BROKER_EXCHANGE_ACCOUNTS entry
+// that names PROJECT and fixes that session (isLegionDaemon in
+// packages/envoy/internal/cipher/exchange/exchange.go), so no bearer that dispatch_token_file names
+// passes. With the setting off, Dispatch answers it a publication whose actor is not that session.
+// The two spellings change together, as statusScopeCode's do.
 const roleHolderForbiddenCode = "ROLE_HOLDER_FORBIDDEN"
+
+// roleHolderNotProvenCode is Dispatch's code of the 403 it answers a publication of an issue's
+// role holders on a project whose proven_sessions is on, from a token that does not prove the
+// session legion-daemon:<PROJECT> (putIssueRoleHolders, after the body's checks and the read of
+// the issue). publishRoleHolders reads it as it reads roleHolderForbiddenCode. The two spellings
+// change together, as statusScopeCode's do.
+const roleHolderNotProvenCode = "ROLE_HOLDER_NOT_PROVEN"
 
 // statusRefusal answers the two refusals of a status write that the row decides itself rather
 // than as dispatch.PermanentRefusal reads them, and says whether err was one of them; the error it
@@ -1371,8 +1383,9 @@ const roleHolderForbiddenCode = "ROLE_HOLDER_FORBIDDEN"
 // the record counted before its echo (intake.StatusRefused, decision 12 of dispatch://INFRA-4730).
 // A 403 LEGION_STATUS_SCOPE_REQUIRED keeps the row, as every 403 is kept, to be written again with
 // backoff once the daemon's token holds the scope: each refusal logs a line naming the code and
-// the issue, and the first refusal of it or of a role-holder publication's ROLE_HOLDER_FORBIDDEN
-// in this daemon's run queues the controller's one status-scope notice (tellStatusScopeOnce).
+// the issue, and the first refusal in this daemon's run of it or of a role-holder publication's
+// ROLE_HOLDER_FORBIDDEN or ROLE_HOLDER_NOT_PROVEN queues the controller's one status-scope notice
+// (tellStatusScopeOnce).
 func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, err error) (bool, error) {
 	var refusal *dispatch.Error
 	if !errors.As(err, &refusal) {
@@ -1386,7 +1399,7 @@ func (r *outbox) statusRefusal(ctx context.Context, row record.OutboxRow, payloa
 			"row", row.ID, "issue", row.Issue, "status", payload.Status, "code", refusal.Code)
 		written := fmt.Errorf("set Dispatch issue %s to %s: %w", row.Issue, payload.Status, err)
 		if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
-			"Dispatch refused the daemon's status write on %s with %d %s: the token the daemon writes Dispatch with lacks the scope Dispatch asks of a write of a Legion issue's status. The daemon keeps the write and writes it again, and every later status write waits the same way, %s",
+			"Dispatch refused the daemon's status write on %s with %d %s. Dispatch takes a write of a Legion issue's status from a token that holds the legion-status scope, and the token the daemon writes Dispatch with does not hold it. The daemon keeps the write and writes it again. Every later status write of the daemon waits the same way. %s",
 			row.Issue, refusal.Status, refusal.Code, statusScopeRemedy(row.Issue))); tellErr != nil {
 			return true, errors.Join(written, tellErr)
 		}
@@ -1424,24 +1437,32 @@ func (r *outbox) parentRuleRefused(ctx context.Context, row record.OutboxRow, pa
 }
 
 // statusScopeRemedy is the end of the controller's status-scope notice for a refused write on
-// issue: the write waits until a person gives the daemon a Dispatch token that holds the required
-// scope, and the notice names where that token comes from. Under dispatch_token_broker it is the
-// token the secrets broker issues for the daemon's own session, legion-daemon:<PROJECT>
-// (dispatch.DaemonSession); otherwise it is the bearer dispatch_token_file names, which the daemon
-// reads at boot.
+// issue: the three changes a person makes so that the daemon's token holds the legion-status
+// scope, and so proves the daemon's own session, legion-daemon:<PROJECT> (dispatch.DaemonSession),
+// with that scope. Under cybermonklabs/legion#4601 the secrets broker alone grants the scope, to
+// the token it mints for a BROKER_EXCHANGE_ACCOUNTS entry that names one project and fixes the
+// session legion-daemon:<that project> (isLegionDaemon in
+// packages/envoy/internal/cipher/exchange/exchange.go; writeProjectScope in
+// packages/envoy/internal/cipher/oauth/exchange.go). Dispatch reads it only on a broker token
+// named to one project (brokerTokenActor in packages/envoy/internal/dispatch/api/broker_token.go),
+// and no personal token or bearer can hold it (model.ScopeLegionStatus), so the bearer
+// dispatch_token_file names is no fix. A broker release without #4601 grants no such scope, so
+// the notice names the change by which a person knows the release, and the scopes whoami answers
+// for the daemon's token once it holds the scope.
 func statusScopeRemedy(issue string) string {
-	return fmt.Sprintf("until a person gives the daemon a Dispatch token that holds the required scope. Under dispatch_token_broker, that token is the one the secrets broker issues for the session %s; otherwise it is the bearer dispatch_token_file names, which the daemon reads at boot.",
-		dispatch.DaemonSession(issue))
+	return fmt.Sprintf("A person must give the daemon a Dispatch token that holds the legion-status scope. Only the secrets broker mints such a token, for the daemon's own account entry. No bearer token that dispatch_token_file names can hold the scope. The person makes three changes. First, run the daemon with dispatch_token_broker: true in place of dispatch_token_file. Second, give the daemon's ServiceAccount a BROKER_EXCHANGE_ACCOUNTS entry that names the project %s and fixes the session %s. Third, run a secrets broker release that has the change that added the legion-status scope to the broker, cybermonklabs/legion pull request #4601. A token that the broker mints for that entry after that release holds the scope, and an earlier token does not. For a token that holds the scope, Dispatch's GET /api/v1/whoami answers \"scopes\": [\"legion-status\"].",
+		claim.KeyProject(issue), dispatch.DaemonSession(issue))
 }
 
 // tellStatusScopeOnce queues the controller's status-scope notice of row's refusal, whose reason
-// names the code and the issue and says that a person must give the daemon a Dispatch token that
-// holds the required scope (statusScopeRemedy), unless this daemon's run has queued it already:
-// one notice for the run, whichever of the
-// two refusals it is told of comes first (statusRefusal's LEGION_STATUS_SCOPE_REQUIRED,
-// publishRoleHolders' ROLE_HOLDER_FORBIDDEN; decision 12 of dispatch://INFRA-4730). The notice is
-// queued in a transaction of its own whose commit wakes its lane; a queue that fails leaves the
-// notice to the next refusal.
+// names the code and the issue and tells a person the three changes that give the daemon a token
+// that holds the legion-status scope (statusScopeRemedy), unless this daemon's run has queued it
+// already: one notice for the run, whichever of the three refusals it is told of comes first
+// (statusRefusal's LEGION_STATUS_SCOPE_REQUIRED, publishRoleHolders' ROLE_HOLDER_FORBIDDEN and
+// ROLE_HOLDER_NOT_PROVEN; decision 12 of dispatch://INFRA-4730, and
+// dispatch://INFRA-4730/comment/14e96b87-f9a1-4b67-8fda-7d0c6605be9b for ROLE_HOLDER_NOT_PROVEN).
+// The notice is queued in a transaction of its own whose commit wakes its lane; a queue that fails
+// leaves the notice to the next refusal.
 func (r *outbox) tellStatusScopeOnce(ctx context.Context, row record.OutboxRow, reason string) error {
 	if !r.scopeTold.CompareAndSwap(false, true) {
 		return nil
@@ -2079,12 +2100,18 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // so the daemon and Dispatch deploy in either order. Every other answer is decided by
 // permanentRefusal: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row, and a 5xx, a
 // codeless 4xx, a 401, a 403, a handler's 404 NOT_FOUND "not found" and a transport failure are
-// failures retried on the row's backoff. Of those, a 403 ROLE_HOLDER_FORBIDDEN, which Dispatch
-// answers a token that does not prove the daemon's own session once R26's refusal is on, is read
-// as a status write's LEGION_STATUS_SCOPE_REQUIRED is (decision 12 of dispatch://INFRA-4730): the
-// row is kept and written again, each refusal logs a line naming the code and the issue, and the
-// first refusal of either code in this daemon's run queues the controller's one status-scope
-// notice (tellStatusScopeOnce).
+// failures retried on the row's backoff. Of those, two 403s refuse the daemon's token
+// (putIssueRoleHolders in packages/envoy/internal/dispatch/api/issue_role_holders.go). A Dispatch
+// whose DISPATCH_LEGION_STATUS_SCOPE is on answers ROLE_HOLDER_FORBIDDEN to every token but one
+// that proves the session legion-daemon:<PROJECT> of the issue's project and holds the
+// legion-status scope (roleHolderForbiddenCode). On a project whose proven_sessions is on, Dispatch
+// answers ROLE_HOLDER_NOT_PROVEN to a token that does not prove that session
+// (roleHolderNotProvenCode). Each is read as a status write's LEGION_STATUS_SCOPE_REQUIRED is
+// (decision 12 of dispatch://INFRA-4730; dispatch://INFRA-4730/comment/14e96b87-f9a1-4b67-8fda-7d0c6605be9b
+// for ROLE_HOLDER_NOT_PROVEN): the row is kept and written again, each refusal logs a line naming
+// the code and the issue, and the first refusal of any of the three codes in this daemon's run
+// queues the controller's one status-scope notice (tellStatusScopeOnce). That notice tells a person
+// how to give the daemon such a token (statusScopeRemedy).
 func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, payload record.RoleHoldersPublish) error {
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")
@@ -2107,14 +2134,15 @@ func (r *outbox) publishRoleHolders(ctx context.Context, row record.OutboxRow, p
 	}
 	published := fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
 	var refusal *dispatch.Error
-	if !errors.As(err, &refusal) || refusal.Status != http.StatusForbidden || refusal.Code != roleHolderForbiddenCode {
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusForbidden ||
+		(refusal.Code != roleHolderForbiddenCode && refusal.Code != roleHolderNotProvenCode) {
 		return published
 	}
-	r.log.Warn("outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session to Dispatch; the publication is kept and written again",
+	r.log.Warn("outbox role-holder publication refused by Dispatch: the daemon's token does not prove the daemon's own session with the legion-status scope; the publication is kept and written again",
 		"row", row.ID, "issue", payload.Issue, "code", refusal.Code)
 	if tellErr := r.tellStatusScopeOnce(ctx, row, fmt.Sprintf(
-		"Dispatch refused the daemon's publication of the role holders of %s with %d %s: the token the daemon writes Dispatch with does not prove the daemon's own session with the scope Dispatch asks of a write of a Legion issue. The daemon keeps the publication and writes it again, and the architects' own status writes that Dispatch reads it for wait the same way, %s",
-		payload.Issue, refusal.Status, refusal.Code, statusScopeRemedy(payload.Issue))); tellErr != nil {
+		"Dispatch refused the daemon's publication of the role holders of %s with %d %s. Dispatch takes a publication from a token that proves the session %s and holds the legion-status scope, and the token the daemon writes Dispatch with is not such a token. The daemon keeps the publication and writes it again. Dispatch lets the issue's architect write the status of the issues below it only once the daemon's own token has published that architect. %s",
+		payload.Issue, refusal.Status, refusal.Code, dispatch.DaemonSession(payload.Issue), statusScopeRemedy(payload.Issue))); tellErr != nil {
 		return errors.Join(published, tellErr)
 	}
 	return published

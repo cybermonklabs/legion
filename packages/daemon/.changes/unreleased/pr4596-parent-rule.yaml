@@ -6,9 +6,11 @@ body: |-
   status-change route with a request key. A close of an issue waits until
   each child of it is `done` in Dispatch, and a merged issue with a child that is not `done` waits
   in `merging`, its architect told once by `pr-merged`. A refused close changes nothing and is
-  written again once the children are done. A `403 LEGION_STATUS_SCOPE_REQUIRED` keeps the write
-  queued, logs the code and the issue, and tells the controller once per daemon run in a
-  `status-scope` notice that a person must give the daemon a token that holds the scope. A
+  written again once the children are done. A `403 LEGION_STATUS_SCOPE_REQUIRED` on a status
+  write, or a `403 ROLE_HOLDER_FORBIDDEN` or `403 ROLE_HOLDER_NOT_PROVEN` on a role-holder
+  publication, keeps the row queued, logs the code and the issue, and tells the controller once
+  per daemon run in a `status-scope` notice how to give the daemon a broker token that proves its
+  session with the `legion-status` scope. A
   session's status write on a labelled issue is judged by the architect claim the Dispatch chain
   names, as that claim stood when the write was written, and one on an unknown chain is held
   until the chain is known.
