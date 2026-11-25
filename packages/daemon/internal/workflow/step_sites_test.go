@@ -582,8 +582,8 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 		if end.ID != start.ID || end.Agent != "" || end.StartedAt == nil || !end.StartedAt.Equal(*start.StartedAt) {
 			t.Fatalf("the merge's end = %+v, want the start's id %s, no agent and the start's moment %v", end, start.ID, start.StartedAt)
 		}
-		if got := issueAt(t, pool, "LEGION-208"); got != phase.Done {
-			t.Fatalf("LEGION-208 stands at %s, want done", got)
+		if got := issueAt(t, pool, "LEGION-208"); got != phase.Verifying {
+			t.Fatalf("LEGION-208 stands at %s, want verifying: its close waits for its checks", got)
 		}
 	})
 }
