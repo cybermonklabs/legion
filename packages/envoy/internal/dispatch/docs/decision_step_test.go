@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // catchUpCommit is the commit the step of these tests serves. No process is registered, so
@@ -108,7 +109,7 @@ func beginAsThePreviousBuild(t *testing.T, database *store.Store, issue string) 
 	if err != nil {
 		t.Fatalf("begin the previous build's write: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	if err := store.LockOwner(ctx, tx, store.IssueOwner(issue)); err != nil {
 		t.Fatalf("take issue %s's owner lock: %v", issue, err)
 	}
@@ -592,7 +593,7 @@ func TestABootWaitsForTheStepsLockOnlyWhilePhaseOneOwesARow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the connection that holds the step's lock: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	testcleanup.Add(t, func() { _ = conn.Close(context.Background()) })
 	holder, err := conn.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the transaction that holds the step's lock: %v", err)
