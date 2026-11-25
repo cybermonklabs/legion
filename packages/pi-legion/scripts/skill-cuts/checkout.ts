@@ -99,9 +99,12 @@
  * what the glob matches, a link among them), a `cd` to a glob word, a `cd` that names no
  * directory, and, where the shell may be in a directory whose real path in the copy is not its
  * path as written, a word holding `..`), would show a value of
- * the runner's (`$HOME`, `$PATH`, and a word of any command, `echo`'s among them, with an
- * unquoted `~` at its start or after its `=` or a `:`, where bash puts a home directory of the
- * runner's), or runs jj where its repository may be one the checkout tracks (a `.jj` between the
+ * the runner's (`$PATH`; and, where the copy names no home of the session's, `CheckoutCopy.home`,
+ * `$HOME` and a word of any command, `echo`'s among them, with an unquoted `~` at its start or
+ * after its `=` or a `:`, where bash puts a home directory of the runner's: where it names one,
+ * `$HOME`, `${HOME}` and each `~` bash expands, `homeTildes`, stand for that home, read as any
+ * other path, inside the root or refused as outside it, and a `~user`, `~+` or `~-` is refused),
+ * or runs jj where its repository may be one the checkout tracks (a `.jj` between the
  * directory jj starts from, its `-R`'s or the working directory, and the root, or at the root where
  * no colocation of the runner's made it: in the sandbox jj stops there at its configuration, which
  * it cannot move to the read-only home, and such a store may name a git repository outside the
@@ -139,7 +142,12 @@
  * global git configuration, GIT_CONFIG through GIT_CONFIG_COUNT: no fsmonitor, no hooks, a bare
  * repository used only where named, no transport, no pager, the index's stat data trusted though
  * the namespace shows each file's owner as root; GIT_OPTIONAL_LOCKS=0; jj's
- * SANDBOX_JJ_CONFIG, which names no external tool and no signing program); a time limit (the
+ * SANDBOX_JJ_CONFIG, which names no external tool and no signing program; where the copy names
+ * the session's home, the command's HOME is that home as the sandbox shows it, `sandboxHome`: its
+ * place in the copy where it is the root or inside it, else an empty, read-only directory of the
+ * sandbox's own with the copy bound again at the root's place under it, mapped back to the home
+ * in the output; never one that shows a file of the copy where git reads the user's
+ * configuration, HOME_GIT_CONFIG); a time limit (the
  * command's, from when its sandbox is made: the queue, below), past which every process it
  * started is ended, and an output cap. The sandbox's fresh `/proc` still
  * lists, in `/proc/self/mountinfo`, the mount points of the pod it was made from (the hidden ones
@@ -171,9 +179,12 @@
  * separate timeout, which the queue does not change.
  *
  * - `read` (keys `path`, `i`): a whole read by path that resolves (cases.ts's `resolvedReadPath`,
- *   against the session's working directory) to a file under the checkout's root, in the form
+ *   against the session's working directory, and a `~` path against the session's home where the
+ *   copy names one, `CheckoutCopy.home`) to a file under the checkout's root, in the form
  *   arms.ts writes a whole read by path (`pathAnswer`, its rows as the arm's reads by path show
- *   them), or Oh My Pi's not-found result `Path '<path>' not found` for a file the copy lacks. A
+ *   them; its hashline header's path relative to the working directory, else `~/<rest>` under the
+ *   session's home, as the pin's `shortenPath` shows it, read-format.ts lines 70-83, else
+ *   absolute), or Oh My Pi's not-found result `Path '<path>' not found` for a file the copy lacks. A
  *   file that is no prose is answered so too: a UTF-8 text file that is no notebook, SVG or
  *   document markit converts. A whole read of such a file of 100 lines or more (newlines and one
  *   more, `read.summarize.minTotalLines`) is the pin's structural summary where the pin's
@@ -200,18 +211,22 @@
  *   3281-3358, workspace-tree.ts lines 57-90 and 166-314, crates/pi-natives/src/workspace.rs
  *   lines 160-190; `directoryListing`): `.`, then each entry to two levels below it (hidden ones
  *   too, `.DS_Store` left out, no `.gitignore` read), `- <name>` (a directory's `<name>/`)
- *   indented two blanks a level, a directory's own entries after it; a directory under it of more
- *   than 12 entries shows 11 of them, `- … <n> more` and its last; `(empty directory)` for none.
- *   The pin orders each directory's entries by their time of change, newest first, a tie by name
- *   (`localeCompare`), keeps the 11 newest and the oldest, and shows after each name its age from
- *   its time of change (and a file's size); the copy does not keep the session's times of change,
- *   so every entry is taken as changed at one time: by name, as the pin orders a tie, each line
- *   as the pin shows an entry whose age it shows as none (`formatLines`: its name alone). A
- *   symbolic link is listed as a file is; one cli.ts removed from the copy is not listed. Not
+ *   indented two blanks a level, a directory's own entries after it, each directory's newest
+ *   first by the time of change the copy's own files hold (an lstat's, in whole milliseconds), a
+ *   tie by name (`localeCompare`); a directory under it of more than 12 entries shows its 11
+ *   newest, `- … <n> more` and its oldest; after each name, where its age is not 0 s, a file's
+ *   size (`0B` for a symbolic link) and its age (`just now`, `<n>m ago`, `<n>h ago`, `<n>d ago`,
+ *   `<n>w ago`, `<n>mo ago`); `(empty directory)` for none. The pin measures an age from the time
+ *   of its call; the runner measures it from the time the copy was made (`CheckoutCopy.madeAt`,
+ *   recorded once in the copy's marker by cli.ts), never from the time of its own call, so a
+ *   listing reads the same in every arm and every run of a case. A symbolic link is listed as a
+ *   file is; one cli.ts removed from the copy is not listed. Not
  *   answered: a read with another selector (`:raw`, a list, `:-N`, …), a ranged read of a
- *   directory, a listing that would show `.git` or `.jj` (the copy's, not the session's), or past
- *   50 KB, a read outside the root, under `~` or `.git`, a file past 4 MiB (the pin streams it,
- *   with a notice of its own and no block context), a read whose block context or summary needs
+ *   directory, a listing of a copy that records no time it was made, one that would show `.git`
+ *   or `.jj` (the copy's, not the session's), or past 50 KB, a read outside the root, under
+ *   `.git` or, where the copy names no home of the session's, under `~`, a file past 4 MiB (the
+ *   pin streams it, with a notice of its own and no block context), a read whose block context
+ *   or summary needs
  *   a WebAssembly grammar not installed beside the addon (the pin downloads it first, and the
  *   session's rows came from it or, where the download failed, from the scan of the brackets, or
  *   the file was unsummarized), and a file the arms refuse for another reason (`pathFormFault`:
@@ -262,7 +277,10 @@
  *   the missing paths' note on the next line; `No more results (<n> files total; skip=<k> is past
  *   the end)` for a page past the last. Its paths are
  *   relative to the working directory when under it, else absolute (path-utils.ts lines
- *   512-531); its regular expression is JavaScript's in Unicode mode, case-sensitive unless `case`
+ *   512-531, `formatPathRelativeToCwd`, which shows no `~`: a path under the session's home is
+ *   absolute, where a read's header shows `~/…`; a `~` path given resolves against the session's
+ *   home where the copy names one); its regular expression is JavaScript's in Unicode mode,
+ *   case-sensitive unless `case`
  *   is false, which backtracks where the pin's (Rust's regex) does not, so the answer is worked
  *   out in a worker thread (`answerInWorker`), never the runner's own, within BASH_TIME_LIMIT_MS
  *   (30 s), past which the worker is ended; and since JavaScriptCore stops a backtracking match
@@ -290,25 +308,35 @@
  *   first segment with a glob character (one that starts with a glob character is searched at
  *   every depth); a pattern with none is a directory, every file and directory under which
  *   matches, or a file, which answers itself. The matching files and directories (a directory's
- *   path ending in `/`), as a prefix-folded tree (`formatGroupedPaths`), or `No files found
+ *   path ending in `/`; each path as grep's is, relative to the working directory or absolute),
+ *   as a prefix-folded tree in their order (`formatGroupedPaths`), or `No files found
  *   matching pattern`; dotfiles left out when `hidden` is false; then, each on a line of its own,
  *   `Requested limit <n> clamped to the max of 200` for a limit above it and `Skipped missing
- *   paths: <patterns>` for the patterns of a list whose directory is not there. Oh My Pi orders
- *   them by their time of change, which the copy does not keep, so in path order. Its matching
+ *   paths: <patterns>` for the patterns of a list whose directory is not there. The order is the
+ *   pin's (glob.ts lines 582, 600-605, 635 and 644-657; crates/pi-walker/src/glob.rs lines
+ *   270-279 and 334-340): newest first by the time of change the copy's own files hold (an
+ *   lstat's, in whole milliseconds; a file named alone, its followed stat's), each pattern's
+ *   matches a tie by their path below its base in byte order, then the patterns' paths merged,
+ *   each once, a tie kept in their order. Its matching
  *   (Bun.Glob's, of each path under its base) is worked out in a worker thread (`answerInWorker`),
  *   within BASH_TIME_LIMIT_MS, as grep's is. Not answered: a
  *   list joined by commas or blanks, a base outside the root, one pattern (or every pattern of a
  *   list) whose base is not there or is a file under a glob (the pin's error is not rebuilt),
  *   more matches than `limit` (200 when absent), and a search past the time limit.
- * - `bash` (keys `command`, `cwd`, `timeout`, `i`): the command run in the sandbox of the copy
+ * - `bash` (keys `command`, `cwd`, `timeout`, `i`, and `pty`, `async`, `name` and `ready` where
+ *   each asks for nothing, `bashOptionFault`): the command run in the sandbox of the copy
  *   (above; its working directory the session's mapped into the copy; the checkout's root in the
  *   command mapped to CHECKOUT_MOUNT, and that path and the copy's own, as given and as its real
- *   path, back to the root in the output), by `bash -c` with its standard error joined to its
+ *   path, back to the root in the output; its HOME the session's home as the sandbox shows it,
+ *   `sandboxHome`, where the copy names one), by `bash -c` with its standard error joined to its
  *   output, within BASH_TIME_LIMIT_MS of when its sandbox is made (the queue, above); its text
  *   as Oh My Pi's bash tool gives it (bash.ts lines
  *   765-922): the output as printed, `(no output, exit code 0)` or `(no output)` for none, `Wall
- *   time: <s> seconds` after it when the command (from when its sandbox was made) took a second
- *   or more, and `Command exited with code <n>` after it, an error, when it failed. Oh My Pi's
+ *   time: <s> seconds` after it (`<s>` to two places) when the command took 1,000 ms or more
+ *   (WALL_TIME_NOTICE_MIN_MS and `formatWallTimeNotice`, packages/tui/src/tools/bash.ts lines
+ *   222-232; bash.ts lines 830-845), measured from its sandbox's ready marker, as its command
+ *   starts, to its end (neither its wait in the queue nor its sandbox's making counts), and
+ *   `Command exited with code <n>` after it, an error, when it failed. Oh My Pi's
  *   bash interceptor is off at its default settings (exec/settings.ts lines 170-180), so no
  *   command is blocked. Its git commands run on the copy's own history: the copy is the shared
  *   checkout of the commit (cli.ts's `sharedCheckout`: a fetch of the commit 50 commits deep with
@@ -322,7 +350,9 @@
  *   repository (`colocateJj`), so they answer as in a jj workspace at the commit, each with
  *   `--ignore-working-copy` (the snapshot the colocation took, no lock taken, nothing written);
  *   where it ran none, as jj does in a checkout that is no jj repository (`There is no jj repo`),
- *   since the sandbox shows no directory above the copy. Not answered: a git or jj command where
+ *   since the sandbox shows no directory above the copy. Not answered: `pty: true`, `async: true`,
+ *   a service's `name`, a `ready` with a log or a port, and an option's value the pin's validation
+ *   reads in a way the runner does not rebuild (`bashOptionFault`); a git or jj command where
  *   the copy is GitHub's tarball instead (the fetch failed: `CheckoutCopy.git` false), a jj
  *   command where the copy could not be made a jj repository (`CheckoutCopy.jj` a why) or the
  *   runner has no jj, a command a word of which may lead outside the copy (`escapes`), a jj
@@ -1718,19 +1748,36 @@ export function readOnlyCall(name: string | undefined, input: unknown): boolean 
  *  context session ran jj (cli.ts), true when the copy was made a colocated jj repository
  *  (`colocateJj`), whose jj commands answer as in a jj workspace at the commit, else why it could
  *  not be, and no jj command is answered (absent, a jj command answers as jj does in a checkout
- *  that is no jj repository); `answers`, the answers to its `read`, `grep` and `glob` calls, by
- *  tool, rows and input, each kept from when the call is first made (so the same call made again
- *  while its answer is still worked out waits for that one; an answer whose working out fails is
- *  dropped) (the copy is read-only once made, so each such answer depends on those alone; a `bash`
- *  answer is not kept, its wall time being its own run's), which one stage's runs share (cli.ts);
- *  absent, none is kept. */
+ *  that is no jj repository); `home`, the session's home directory (`sessionHome`), which a `~`
+ *  or a `$HOME` of a call stands for and under which a read's header shows `~/…` (absent, such a
+ *  call is not answered, and a header shows the absolute path); `madeAt`, when the copy was made
+ *  (milliseconds since the epoch, from its marker, cli.ts's `sharedCheckout`), from which a
+ *  directory listing measures each entry's age, so a listing reads the same in every arm and run
+ *  (absent, no listing is answered); `answers`, the answers to its `read`, `grep` and `glob`
+ *  calls, by tool, rows and input, each kept from when the call is first made (so the same call
+ *  made again while its answer is still worked out waits for that one; an answer whose working out
+ *  fails is dropped) (the copy is read-only once made, so each such answer depends on those alone;
+ *  a `bash` answer is not kept, its wall time being its own run's), which one stage's runs share
+ *  (cli.ts); absent, none is kept. */
 export interface CheckoutCopy {
   readonly dir: string;
   readonly root: string;
   readonly cwd: string;
   readonly git: boolean;
   readonly jj?: true | Unanswered;
+  readonly home?: string;
+  readonly madeAt?: number;
   readonly answers?: Map<string, Promise<CheckoutAnswer | Unanswered>>;
+}
+
+/** The session's home directory, which a written case's checkout copy expands `~` and `$HOME` to
+ *  (`CheckoutCopy.home`), from what the case records: `recorded`, the home its `pathCopy` names
+ *  (build.ts's `sessionDirs`: the part of its session's transcript path before `/.omp/`, where
+ *  Oh My Pi keeps its sessions under the home it resolves `~` against), else `/home/<user>` where
+ *  its checkout's root `root` is under one (a written case records no `pathCopy`: build.ts writes
+ *  none for it), else none. */
+export function sessionHome(root: string, recorded: string | undefined): string | undefined {
+  return recorded ?? /^\/home\/[^/]+(?=\/|$)/.exec(root)?.[0];
 }
 
 /** A call's answer: the text the tool gives, and whether it is an error. */
@@ -1752,6 +1799,15 @@ const CHECKOUT_MOUNT = "/mnt/checkout";
  *  repository holds (a `.gitconfig`, a `.jjconfig.toml`) is read as the user's configuration, even
  *  where the command unsets GIT_CONFIG_GLOBAL. */
 const SANDBOX_HOME = "/mnt/home";
+/** Where a sandbox shows the session's home directory (`CheckoutCopy.home`) when the copy does not
+ *  hold it (`sandboxHome`): a directory of the sandbox's own read-only file system, empty but for
+ *  the copy bound again at the checkout's root's place under it, which the command gets as its
+ *  HOME and its output maps back to the session's home. */
+const SESSION_HOME_MOUNT = "/mnt/session-home";
+/** The files of a home directory git reads as the user's configuration where a command unsets
+ *  GIT_CONFIG_GLOBAL (with XDG_CONFIG_HOME unset): no sandbox's HOME may show the copy's file at
+ *  one of them (`sandboxHome`), which could name a program for git to run. */
+const HOME_GIT_CONFIG = [".gitconfig", ".config/git/config"];
 /** The sandbox's jj configuration (JJ_CONFIG, and `--config-file` on jj's command line, which
  *  outranks a repository's own): no pager, jj's default diff formatter, no signature shown by its
  *  templates, no file-system monitor, and no signing backend, each backend's program (jj 0.45's
@@ -1908,24 +1964,28 @@ function mountName(target: string): string {
 
 /** The sandbox's making, in bash, run as the root of its own user namespace (`runSandboxed`): its
  *  own file system at /mnt; then, in one `mount -a` of a mount table of its own, the copy bound at
- *  CHECKOUT_MOUNT (read-only unless `rw`), the directory of the runner's jj bound read-only at
- *  /mnt/jj, and an empty, read-only file system over each hidden directory and /dev/null over each
- *  hidden file (`hiddenPaths`, each with its name in the table; one the sandbox's user can neither
- *  enter nor read, as `/root`, needs none, since no command of it can either); the runner's home
- *  made again, empty, in the one that holds it, made read-only after; the jj wrapper at
- *  /mnt/bin/jj, SANDBOX_HOME and SANDBOX_JJ_CONFIG, then /mnt made read-only; a host name of its
- *  own; the working directory in the copy entered; each of the programs it is given (`programs`,
- *  blank-separated) looked for on PATH, the first it finds none of named on standard error
- *  (SANDBOX_LACKS) and no command run; then SANDBOX_READY, and the command, its standard
- *  error joined to its output, with no capability (setpriv), so it can neither unmount what hides a
- *  directory nor mount anything, nor gain one. A step that fails says which on standard error, and
- *  no command runs. */
-const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10}
-shift 10
+ *  CHECKOUT_MOUNT (read-only unless `rw`) and, where the command gets the session's home as
+ *  SESSION_HOME_MOUNT (`sandboxHome`), bound again, read-only, at the checkout's root's place
+ *  under it (`homebind`, its name in the table `homebindname`; the directories to it, or
+ *  SESSION_HOME_MOUNT alone, `homedir`, made first), the directory of the runner's jj bound
+ *  read-only at /mnt/jj, and an empty, read-only file system over each hidden directory and
+ *  /dev/null over each hidden file (`hiddenPaths`, each with its name in the table; one the
+ *  sandbox's user can neither enter nor read, as `/root`, needs none, since no command of it can
+ *  either); the runner's home made again, empty, in the one that holds it, made read-only after;
+ *  the jj wrapper at /mnt/bin/jj, SANDBOX_HOME and SANDBOX_JJ_CONFIG, then /mnt made read-only; a
+ *  host name of its own; the working directory in the copy entered; each of the programs it is
+ *  given (`programs`, blank-separated) looked for on PATH, the first it finds none of named on
+ *  standard error (SANDBOX_LACKS) and no command run; then SANDBOX_READY, and the command, its
+ *  standard error joined to its output, its HOME `sessionhome` where one is given, with no
+ *  capability (setpriv), so it can neither unmount what hides a directory nor mount anything, nor
+ *  gain one. A step that fails says which on standard error, and no command runs. */
+const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14}
+shift 14
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
 command -v setpriv >/dev/null || fail "find setpriv"
 mount -t tmpfs -o mode=0755 checkout-sandbox /mnt || fail "mount a file system of its own at /mnt"
 mkdir ${CHECKOUT_MOUNT} ${SANDBOX_HOME} /mnt/bin /mnt/jj || fail "make its directories"
+if [ -n "$homedir" ]; then mkdir -p "$homedir" || fail "make the session's home"; fi
 homemounted=
 {
   if [ "$mode" = ro ]; then
@@ -1933,6 +1993,7 @@ homemounted=
   else
     printf '%s ${CHECKOUT_MOUNT} none bind 0 0\\n' "$copyfs"
   fi
+  if [ -n "$homebind" ]; then printf '%s %s none bind,ro 0 0\\n' "$copyfs" "$homebindname"; fi
   if [ -n "$jjfs" ]; then printf '%s /mnt/jj none bind,ro 0 0\\n' "$jjfs"; fi
   while [ $# -gt 1 ]; do
     each=$1 target=$2
@@ -1966,6 +2027,7 @@ for program in $programs; do
   type -P "$program" >/dev/null || { printf 'lacks %s\\n' "$program" >&2; exit 125; }
 done
 unset PWD OLDPWD
+if [ -n "$sessionhome" ]; then export HOME="$sessionhome"; fi
 printf 'ready\\n' >&2
 exec env -u SHLVL -u _ setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- bash --noprofile --norc -c "{ $command
 } 2>&1" 2>/dev/null
@@ -2001,17 +2063,24 @@ type SandboxSpawn = (argv: string[]) => SandboxChild;
 const spawnWithBun: SandboxSpawn = (argv) =>
   Bun.spawn(argv, { env: SANDBOX_ENV, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 let spawnSandbox: SandboxSpawn = spawnWithBun;
+/** The clock a command's wall time is read from (`runChild`), in milliseconds. */
+const performanceClock = () => performance.now();
+let sandboxClock: () => number = performanceClock;
 
 /** Starts each sandbox's child with `spawn` in place of `Bun.spawn`, so a row of checkout.test.ts
- *  drives the queue and the limits with a child whose output and end it controls. Production
- *  callers never call this. */
-export function setSandboxSpawnForTests(spawn: SandboxSpawn): void {
+ *  drives the queue and the limits with a child whose output and end it controls, and reads a
+ *  command's wall time from `clock` where one is given (in place of `performance.now`), so a row
+ *  sets it without waiting. Production callers never call this. */
+export function setSandboxSpawnForTests(spawn: SandboxSpawn, clock?: () => number): void {
   spawnSandbox = spawn;
+  if (clock !== undefined) sandboxClock = clock;
 }
 
-/** Puts `Bun.spawn` back, as the file that set a stand-in must when it ends. */
+/** Puts `Bun.spawn` and `performance.now` back, as the file that set a stand-in must when it
+ *  ends. */
 export function resetSandboxSpawnForTests(): void {
   spawnSandbox = spawnWithBun;
+  sandboxClock = performanceClock;
 }
 
 /** The one queue of a runner process's sandboxes (`runSandboxed`): each runs alone, in the order it
@@ -2036,8 +2105,10 @@ const checkoutQueue = new Limiter(1);
  * process, and the kernel the rest), once `limitMs` pass from the spawn without the sandbox's
  * ready marker (SANDBOX_READY), once `limitMs` pass from that marker, and once its output passes
  * OUTPUT_BYTES. Its output (standard error joined to it), exit code and wall time (from when the
- * sandbox is made); else why none: no `unshare`, a sandbox not made, a program it lacks, the time
- * limit or the output cap.
+ * sandbox is made and its command starts, at that marker); else why none: no `unshare`, a sandbox
+ * not made, a program it lacks, the time limit or the output cap. With `home` (`sandboxHome`),
+ * the command's HOME is `home.env`, the directory `home.dir` is made first, and the copy is bound
+ * again at `home.bind`, where those are given.
  */
 async function runSandboxed(
   dir: string,
@@ -2047,12 +2118,14 @@ async function runSandboxed(
     writable,
     limitMs,
     programs,
+    home,
   }: {
     command: string;
     cwd: string;
     writable: boolean;
     limitMs: number;
     programs: readonly string[];
+    home?: SandboxHomeView;
   }
 ): Promise<SandboxRun | Unanswered> {
   const unshare = Bun.which("unshare");
@@ -2092,6 +2165,10 @@ async function runSandboxed(
     hidden.homeTree,
     command,
     programs.join(" "),
+    home?.env ?? "",
+    home?.dir ?? "",
+    home?.bind ?? "",
+    home === undefined || home.bind === "" ? "" : mountName(home.bind),
     ...hidden.paths.flatMap((each) => [each, mountName(each)]),
   ];
   return checkoutQueue.run(() => runChild(argv, limitMs));
@@ -2112,7 +2189,7 @@ async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | U
     eachChunk(child.stderr, limit, (chunk) => {
       said += decoder.decode(chunk, { stream: true });
       if (ready === undefined && said.endsWith(SANDBOX_READY)) {
-        ready = performance.now();
+        ready = sandboxClock();
         // The command's limit starts here: the setup had the same limit from the spawn.
         if (!limit.timedOut()) limit.touch();
       }
@@ -2129,7 +2206,7 @@ async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | U
     }),
   ]);
   const exitCode = await child.exited;
-  const ended = performance.now();
+  const ended = sandboxClock();
   limit.clear();
   if (limit.timedOut()) return { why: `it ran past the ${limitMs / 1000} s limit` };
   if (over) return { why: `its output passes the ${OUTPUT_BYTES} bytes Oh My Pi shows whole` };
@@ -2147,10 +2224,53 @@ async function runChild(argv: string[], limitMs: number): Promise<SandboxRun | U
   return { output: Buffer.concat(chunks), exitCode, wallTimeMs: ended - ready };
 }
 
+/** How a sandbox shows the session's home (`sandboxHome`): `env`, the HOME its command runs with;
+ *  `dir`, a directory made for it ("" for none); `bind`, where the copy is bound again ("" for
+ *  none). */
+interface SandboxHomeView {
+  readonly env: string;
+  readonly dir: string;
+  readonly bind: string;
+}
+
+/** What a sandbox of `copy` shows as the session's home (`CheckoutCopy.home`), the HOME its
+ *  commands run with, so `~` and `$HOME` lead where the session's did: where the home is the
+ *  checkout's root or inside it, its place in the copy at CHECKOUT_MOUNT; else SESSION_HOME_MOUNT,
+ *  the copy bound again at the root's place under it where the root is inside the home (output
+ *  maps SESSION_HOME_MOUNT back to the home). Undefined where the copy names no home (the command
+ *  then runs with SANDBOX_HOME). Why not where that home would show a file of the copy at one of
+ *  HOME_GIT_CONFIG, which git reads as the user's configuration where a command unsets
+ *  GIT_CONFIG_GLOBAL: such a copy's commands run with SANDBOX_HOME, and one that expands `~` or
+ *  `$HOME` is not answered (`escapes`). */
+function sandboxHome(copy: CheckoutCopy): SandboxHomeView | Unanswered | undefined {
+  const home = copy.home;
+  if (home === undefined) return undefined;
+  const held = insideRoot(copy.root, home);
+  const under = insideRoot(home, copy.root);
+  const config = HOME_GIT_CONFIG.find((file) => {
+    if (held !== undefined) return existsSync(path.join(copy.dir, held, file));
+    if (under === undefined || (file !== under && !file.startsWith(`${under}/`))) return false;
+    return existsSync(path.join(copy.dir, file.slice(under.length + 1)));
+  });
+  if (config !== undefined) {
+    return {
+      why: `the session's home ${home} holds the checkout's own ${home}/${config}, git's configuration of the user, which may name a program for git to run, so no sandboxed command gets that home, and none that expands ~ or $HOME is answered`,
+    };
+  }
+  if (held !== undefined) {
+    return { env: held === "" ? CHECKOUT_MOUNT : `${CHECKOUT_MOUNT}/${held}`, dir: "", bind: "" };
+  }
+  if (under === undefined) return { env: SESSION_HOME_MOUNT, dir: SESSION_HOME_MOUNT, bind: "" };
+  const bind = `${SESSION_HOME_MOUNT}/${under}`;
+  return { env: SESSION_HOME_MOUNT, dir: bind, bind };
+}
+
 /** Runs the `bash` command `command` as each answered one runs (`runSandboxed`), from the session's
- *  working directory `cwd`: the session's checkout root in it mapped to CHECKOUT_MOUNT, and in its
- *  output that path, and the copy's own (as given and as its real path), mapped back to the root;
- *  not run where one of `programs` (those the command runs that are no builtin of bash's) is on no
+ *  working directory `cwd`: the session's checkout root in it mapped to CHECKOUT_MOUNT, its HOME
+ *  the session's home as the sandbox shows it (`sandboxHome`; SANDBOX_HOME where the copy names
+ *  none, or where that home may not be shown), and in its output that path, the copy's own (as
+ *  given and as its real path) and SESSION_HOME_MOUNT mapped back to the root and the home; not
+ *  run where one of `programs` (those the command runs that are no builtin of bash's) is on no
  *  directory of the sandbox's PATH. Its output, exit code and wall time, or why none. Exported for
  *  checkout.test.ts's negative control, which runs through it commands that the read-only rule
  *  refuses. */
@@ -2160,18 +2280,24 @@ export async function sandboxedBash(
   cwd = copy.cwd,
   programs: readonly string[] = []
 ): Promise<{ output: string; exitCode: number; wallTimeMs: number } | Unanswered> {
+  const view = sandboxHome(copy);
+  const home = view === undefined || "why" in view ? undefined : view;
   const ran = await runSandboxed(copy.dir, {
     command: command.split(copy.root).join(CHECKOUT_MOUNT),
     cwd: insideRoot(copy.root, cwd) ?? "",
     writable: false,
     limitMs: BASH_TIME_LIMIT_MS,
     programs,
+    home,
   });
   if ("why" in ran) return ran;
   const real = realpathSync(copy.dir);
+  const text = ran.output.toString("utf8");
   const output = [CHECKOUT_MOUNT, real, copy.dir].reduce(
-    (text, own) => text.split(own).join(copy.root),
-    ran.output.toString("utf8")
+    (each, own) => each.split(own).join(copy.root),
+    home?.env === SESSION_HOME_MOUNT && copy.home !== undefined
+      ? text.split(SESSION_HOME_MOUNT).join(copy.home)
+      : text
   );
   return { output, exitCode: ran.exitCode, wallTimeMs: ran.wallTimeMs };
 }
@@ -2337,6 +2463,66 @@ function otherKeys(input: Record<string, unknown>, keys: readonly string[]): str
     : `its options ${other.join(", ")} are none the copy answers`;
 }
 
+/** Whether `value`, an optional field of a tool call's input, is one Oh My Pi's argument
+ *  validation drops before the tool reads it: `null` or the text `null` (pi-ai's
+ *  utils/validation.ts lines 950-970, and lines 1006-1022 for an unknown key of a nested object),
+ *  or absent. */
+function dropped(value: unknown): boolean {
+  return value === undefined || value === null || value === "null";
+}
+
+/**
+ * Why the `bash` call's `input` names an option the copy does not answer, or undefined (see the
+ * file's header). At its default settings the pin's bash tool takes `command`, `timeout`, `cwd`,
+ * `pty`, `async`, `name` and `ready` (bash.ts lines 441-454; `launch.enabled` and `async.enabled`
+ * are on, tools/settings.ts lines 588-591 and 964-969), and reads each of the last four as absent
+ * where it asks for nothing (bash.ts lines 472-498 and 1291-1311): one validation drops (`null`,
+ * `"null"`; `""` too for `pty`, `async` and `ready`, whose schema takes no text), `pty` and
+ * `async` false (only `true` is a terminal or a background job: lines 726, 1298, 1340, 1471-1479
+ * and 1860-1863), a blank `name` (`blankToUndefined`), and a `ready` with no log and no port
+ * (`normalizeReady`; a host or a timeout alone asks for no condition and adds no notice). Not
+ * answered: `pty: true` and `async: true`, a service's `name`, a `ready` with a log or a port
+ * (the pin adds `Ignored ready: service-only, and no service name was given.`), and any other
+ * value, whose reading by validation the runner does not rebuild.
+ */
+function bashOptionFault(input: Record<string, unknown>): string | undefined {
+  const other = otherKeys(input, ["command", "cwd", "timeout", "pty", "async", "name", "ready"]);
+  if (other !== undefined) return other;
+  const unread = (key: string, value: unknown) =>
+    `its ${key} is ${JSON.stringify(value)}, a value whose reading by Oh My Pi's validation the runner does not rebuild`;
+  for (const key of ["pty", "async"]) {
+    const value = input[key];
+    if (dropped(value) || value === "" || value === false) continue;
+    if (value !== true) return unread(key, value);
+    return key === "pty"
+      ? "its pty: true runs the command on a terminal, which the copy does not answer"
+      : "its async: true runs the command as a background job, whose answer names the job, which the copy does not answer";
+  }
+  const name = input.name;
+  if (!dropped(name) && !(typeof name === "string" && name.trim() === "")) {
+    return typeof name === "string"
+      ? `its name ${JSON.stringify(name)} starts a service, which the copy does not answer`
+      : unread("name", name);
+  }
+  const ready = input.ready;
+  if (dropped(ready) || ready === "") return undefined;
+  if (typeof ready !== "object" || Array.isArray(ready)) return unread("ready", ready);
+  for (const [key, value] of Object.entries(ready as Record<string, unknown>)) {
+    if (dropped(value)) continue;
+    const kind =
+      key === "log" || key === "host"
+        ? "string"
+        : key === "port" || key === "timeout"
+          ? "number"
+          : undefined;
+    if (kind === undefined || typeof value !== kind) return unread(`ready.${key}`, value);
+    if ((key === "log" && String(value).trim() !== "") || (key === "port" && value !== 0)) {
+      return "its ready gives a log or a port and no service name, so Oh My Pi adds the notice Ignored ready: service-only, and no service name was given., which the runner does not rebuild";
+    }
+  }
+  return undefined;
+}
+
 /** The path Oh My Pi's search tools show for the session's absolute path `full`: relative to the
  *  working directory when under it (`.` for it), else absolute (path-utils.ts lines 512-531). */
 function relativeToCwd(copy: CheckoutCopy, full: string): string {
@@ -2369,7 +2555,7 @@ function searchTarget(
   if (target.slice(target.lastIndexOf("/") + 1).includes(":")) {
     return { why: `its path ${target} holds a selector` };
   }
-  const full = resolvedReadPath(target, { cwd: copy.cwd });
+  const full = resolvedReadPath(target, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
     return { why: `its path ${target} is outside the session's checkout ${copy.root}` };
@@ -2397,7 +2583,7 @@ function readAnswer(
     };
   }
   const read = ranged?.path ?? target;
-  const full = resolvedReadPath(read, { cwd: copy.cwd });
+  const full = resolvedReadPath(read, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   if (full === undefined || inside === undefined) {
     return { why: `${target} is no file of the session's checkout ${copy.root}` };
@@ -2419,7 +2605,7 @@ function readAnswer(
   if (read.endsWith("/")) {
     return { why: `${target} names a directory the session's checkout does not hold as one` };
   }
-  const shown = shownPath(read, full, { cwd: copy.cwd });
+  const shown = shownPath(read, full, { cwd: copy.cwd, home: copy.home });
   if (ranged?.range !== undefined) {
     const answer = pathRangeAnswer(copy.dir, {
       file: inside,
@@ -2442,45 +2628,103 @@ function readAnswer(
   return { text: answer.text, isError: answer.isError };
 }
 
-/** The read tool's listing of the directory `inside` of the copy, read as `target` (see the file's
- *  header): `.`, then each entry to LISTING_DEPTH below it, each directory's by name. */
+/** The time of change `mtimeNs` (an lstat's, in nanoseconds) of an entry of the copy, in whole
+ *  milliseconds (floored), as the pin's native walk reports it (crates/pi-walker/src/fs/native/
+ *  linux.rs lines 477-489, the lstat's mtime, a link not followed; crates/pi-natives/src/glob.rs
+ *  lines 142-147, `millis`, nanoseconds divided by 1,000,000 rounded down). */
+function walkMillis(mtimeNs: bigint): number {
+  const whole = mtimeNs / 1_000_000n;
+  return Number(mtimeNs < 0n && whole * 1_000_000n !== mtimeNs ? whole - 1n : whole);
+}
+
+/** An age of `seconds` as the pin shows it (packages/utils/src/format.ts lines 106-120): none for
+ *  0, `just now` under a minute, else its months (of 30 days), weeks, days, hours or minutes, the
+ *  first that is one or more, `<n><unit> ago`. */
+function formatAge(seconds: number): string {
+  if (seconds === 0) return "";
+  const mins = Math.floor(seconds / 60);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  const weeks = Math.floor(days / 7);
+  const months = Math.floor(days / 30);
+  if (months > 0) return `${months}mo ago`;
+  if (weeks > 0) return `${weeks}w ago`;
+  if (days > 0) return `${days}d ago`;
+  if (hours > 0) return `${hours}h ago`;
+  if (mins > 0) return `${mins}m ago`;
+  return "just now";
+}
+
+/**
+ * The read tool's listing of the directory `inside` of the copy, read as `target` (see the file's
+ * header; read.ts lines 3289-3358, workspace-tree.ts lines 57-90 and 166-314): `.`, then each
+ * entry to LISTING_DEPTH below it (hidden ones too, `.DS_Store` left out: workspace.rs lines
+ * 170-191), each directory's entries after it, newest first by their time of change as the copy
+ * holds it (`walkMillis`, a link's own), a tie by name (`byRecency`, `localeCompare`); a directory
+ * under it of more than LISTING_CHILD_LIMIT entries shows its 11 newest, `- … <n> more` and its
+ * oldest (`assembleTree`). Each line `- <name>` (`<name>/` for a directory) indented two blanks a
+ * level, then, where its age is not 0 s, a file's size (`formatBytes` of a regular file's, `0B`
+ * for a link's) and its age (`formatAge` of the whole seconds from its time of change to the time
+ * the copy was made, `CheckoutCopy.madeAt`: the pin measures from the time of its call, which no
+ * replay knows, so the copy's own fixed time makes the listing the same in every arm and run;
+ * `formatLines`' compact form). `(empty directory)` for none.
+ */
 function directoryListing(
   copy: CheckoutCopy,
   inside: string,
   target: string
 ): CheckoutAnswer | Unanswered {
+  const madeAt = copy.madeAt;
+  if (madeAt === undefined) {
+    return {
+      why: `the listing of ${target} shows each entry's age, and the copy records no time it was made to measure it from`,
+    };
+  }
   interface Entry {
     readonly name: string;
     readonly dir: boolean;
+    readonly size: number;
+    readonly millis: number;
     readonly children: Entry[];
   }
   const list = (at: string, depth: number): Entry[] | Unanswered => {
     const entries: Entry[] = [];
-    for (const entry of readdirSync(path.join(copy.dir, at), { withFileTypes: true })) {
-      if (entry.name === ".DS_Store") continue;
-      if (entry.name === ".git" || entry.name === ".jj") {
+    for (const name of readdirSync(path.join(copy.dir, at))) {
+      if (name === ".DS_Store") continue;
+      if (name === ".git" || name === ".jj") {
         return {
-          why: `the listing of ${target} shows ${entry.name}, which the copy holds as the runner made it, not as the session's checkout held it`,
+          why: `the listing of ${target} shows ${name}, which the copy holds as the runner made it, not as the session's checkout held it`,
         };
       }
-      const dir = entry.isDirectory();
+      const below = at === "" ? name : `${at}/${name}`;
+      const stats = lstatSync(path.join(copy.dir, below), { bigint: true });
+      const dir = stats.isDirectory();
       let children: Entry[] = [];
       if (dir && depth < LISTING_DEPTH) {
-        const below = list(at === "" ? entry.name : `${at}/${entry.name}`, depth + 1);
-        if ("why" in below) return below;
-        children = below;
+        const listed = list(below, depth + 1);
+        if ("why" in listed) return listed;
+        children = listed;
       }
-      entries.push({ name: entry.name, dir, children });
+      entries.push({
+        name,
+        dir,
+        size: stats.isFile() ? Number(stats.size) : 0,
+        millis: walkMillis(stats.mtimeNs),
+        children,
+      });
     }
-    return entries.sort((a, b) => a.name.localeCompare(b.name));
+    return entries.sort((a, b) => b.millis - a.millis || a.name.localeCompare(b.name));
   };
   const top = list(inside, 1);
   if ("why" in top) return top;
   const lines = ["."];
   const render = (entries: readonly Entry[], depth: number): void => {
-    const line = (text: string) => lines.push(`${"  ".repeat(depth)}- ${text}`);
+    const indent = "  ".repeat(depth);
     const shown = (entry: Entry) => {
-      line(`${entry.name}${entry.dir ? "/" : ""}`);
+      const label = `${indent}- ${entry.name}${entry.dir ? "/" : ""}`;
+      const age = formatAge(Math.max(0, Math.floor((madeAt - entry.millis) / 1000)));
+      const size = entry.dir ? "" : ` ${formatBytes(entry.size)}`;
+      lines.push(age === "" ? label : `${label}${size} ${age}`);
       render(entry.children, depth + 1);
     };
     if (depth === 1 || entries.length <= LISTING_CHILD_LIMIT) {
@@ -2488,7 +2732,7 @@ function directoryListing(
       return;
     }
     for (const entry of entries.slice(0, LISTING_CHILD_LIMIT - 1)) shown(entry);
-    line(`… ${entries.length - LISTING_CHILD_LIMIT} more`);
+    lines.push(`${indent}- … ${entries.length - LISTING_CHILD_LIMIT} more`);
     shown(entries.at(-1) as Entry);
   };
   render(top, 1);
@@ -3372,7 +3616,7 @@ function answerInWorker(
 ): Promise<CheckoutAnswer | Unanswered> {
   const call: WorkerCall = {
     tool,
-    copy: { dir: copy.dir, root: copy.root, cwd: copy.cwd, git: copy.git },
+    copy: { dir: copy.dir, root: copy.root, cwd: copy.cwd, git: copy.git, home: copy.home },
     input,
     rows,
   };
@@ -3413,7 +3657,7 @@ function pathLikeInput(given: string): string {
 /** Whether the path `target` names, resolved against the session's working directory, is inside
  *  the root and there in the copy (a link as itself). */
 function copyHolds(copy: CheckoutCopy, target: string): boolean {
-  const full = resolvedReadPath(target, { cwd: copy.cwd });
+  const full = resolvedReadPath(target, { cwd: copy.cwd, home: copy.home });
   const inside = full === undefined ? undefined : insideRoot(copy.root, full);
   return (
     inside !== undefined &&
@@ -3499,7 +3743,18 @@ function globAnswer(
   // In a list, a path whose base is not there is skipped and noted (glob.ts lines 236-248).
   const missing =
     targets.length > 1 ? targets.filter((each) => copyStat(copy, each.inside) === undefined) : [];
-  const found = new Set<string>();
+  // Each path found, once, with the time of change the pin ranks it by (glob.ts lines 582 and
+  // 600-605; crates/pi-walker/src/glob.rs lines 270-279 and 334-340): a target's matches newest
+  // first, by the millisecond of each one's own time of change (`walkMillis`), a tie by its path
+  // below the target's base in byte order; a file named alone at its own (followed) time of
+  // change (glob.ts lines 506-510); the targets' in their order, each path where it is first.
+  const found: { shown: string; millis: number }[] = [];
+  const seen = new Set<string>();
+  const add = (shown: string, millis: number) => {
+    if (seen.has(shown)) return;
+    seen.add(shown);
+    found.push({ shown, millis });
+  };
   const unique = new Set(
     targets.filter((each) => !missing.includes(each)).map((each) => each.pattern)
   );
@@ -3514,21 +3769,27 @@ function globAnswer(
     }
     const full = sessionPath(copy, target.inside);
     if (!target.hasGlob && stats?.isFile()) {
-      found.add(relativeToCwd(copy, full));
+      add(relativeToCwd(copy, full), stats.mtimeMs);
       continue;
     }
     if (!stats?.isDirectory()) continue;
     const glob = new Bun.Glob(target.glob.replace(/\/+$/, ""));
     const directoryOnly = target.glob.endsWith("/");
-    let matched = 0;
+    const matches: { shown: string; millis: number; walked: Buffer }[] = [];
     for (const each of entriesUnder(copy, target.inside)) {
       const below = target.inside === "" ? each.path : each.path.slice(target.inside.length + 1);
       if (input.hidden === false && below.split("/").some((part) => part.startsWith("."))) continue;
       if ((directoryOnly && !each.dir) || !glob.match(below)) continue;
-      matched++;
-      found.add(`${relativeToCwd(copy, sessionPath(copy, each.path))}${each.dir ? "/" : ""}`);
+      const { mtimeNs } = lstatSync(path.join(copy.dir, each.path), { bigint: true });
+      matches.push({
+        shown: `${relativeToCwd(copy, sessionPath(copy, each.path))}${each.dir ? "/" : ""}`,
+        millis: walkMillis(mtimeNs),
+        walked: Buffer.from(below),
+      });
     }
-    if (matched > limit) return { why: `it finds more than its limit of ${limit} paths` };
+    if (matches.length > limit) return { why: `it finds more than its limit of ${limit} paths` };
+    matches.sort((a, b) => b.millis - a.millis || Buffer.compare(a.walked, b.walked));
+    for (const match of matches) add(match.shown, match.millis);
   }
   if (missing.length === targets.length) {
     return {
@@ -3536,18 +3797,21 @@ function globAnswer(
     };
   }
   const notes = [
-    ...(found.size > 0 && requested > GLOB_LIMIT
+    ...(found.length > 0 && requested > GLOB_LIMIT
       ? [`Requested limit ${requested} clamped to the max of ${GLOB_LIMIT}`]
       : []),
     ...(missing.length > 0
       ? [`Skipped missing paths: ${missing.map((each) => each.pattern).join(", ")}`]
       : []),
   ];
-  if (found.size === 0) {
+  if (found.length === 0) {
     return { text: ["No files found matching pattern", ...notes].join("\n"), isError: false };
   }
-  if (found.size > limit) return { why: `it finds more than its limit of ${limit} paths` };
-  const lines = pathTreeEvents([...found].sort()).map((event) =>
+  if (found.length > limit) return { why: `it finds more than its limit of ${limit} paths` };
+  // The targets' paths merged newest first, a tie in the order found (glob.ts lines 644-657), as
+  // a prefix-folded tree in that order (`formatGroupedPaths`).
+  found.sort((a, b) => b.millis - a.millis);
+  const lines = pathTreeEvents(found.map((each) => each.shown)).map((event) =>
     event.kind === "dir" ? `${"#".repeat(event.depth + 1)} ${event.name}/` : event.name
   );
   const text = lines.join("\n");
@@ -3742,15 +4006,19 @@ function escapeFault(
       }
     }
     // bash puts a home directory in place of an unquoted `~` at a word's start, or after its `=`
-    // or a `:` (`~user` any user's, from the machine's /etc/passwd): the runner's, not the
-    // session's. A quoted `~` is a literal.
-    if (/(^|[=:])~/.test(bareText(word))) {
+    // or a `:` (`~user` any user's, from the machine's /etc/passwd). Where the copy names the
+    // session's home, `escapes` has read each such `~` as `$HOME` (`homeTildes`), and any left is
+    // a literal; where it names none, that home would be the runner's, not the session's. A
+    // quoted `~` is a literal.
+    if (copy.home === undefined && /(^|[=:])~/.test(bareText(word))) {
       return `${wordText(word)} is under ~, a home directory of the runner's, not the session's`;
     }
   }
   const program = first === undefined ? undefined : literal(first);
   if (program === "cd" && args.every((word) => (literal(word) ?? "").startsWith("-"))) {
-    return "its cd names no directory, so it goes to $HOME, which is the runner's";
+    return copy.home === undefined
+      ? "its cd names no directory, so it goes to $HOME, which is the runner's"
+      : `its cd names no directory, so it goes to $HOME, the session's home ${copy.home}, and the runner follows no such cd`;
   }
   const reaches = program !== undefined && !Object.hasOwn(NO_PATH_PROGRAMS, program);
   for (const word of [...(reaches ? args : []), ...command.redirects.map((each) => each.target)]) {
@@ -3845,13 +4113,135 @@ function escapeFault(
   return undefined;
 }
 
+/** What a `~` that bash expands to the home directory stands for once `homeTildes` reads it: a
+ *  quoted `$HOME`, since bash neither splits nor globs what a tilde expands to. */
+const HOME_PART: WordPart = { kind: "var", name: "HOME", quoted: true };
+
+/**
+ * `word` with each `~` that bash's tilde expansion puts the home directory in place of read as
+ * HOME_PART (bash 5 in its default mode, as the sandbox runs it): an unquoted `~` at the word's
+ * start, or, in an assignment's value (`assigned`) or after the `=` of a word that reads as one
+ * (`NAME=…`: bash expands an argument or a redirection's target of that form too), at the value's
+ * start or after an unquoted `:`, whose tilde-prefix (what follows up to the next unquoted `/`,
+ * or there `:`, or the word's end) is empty. Any other `~` is a literal (`--opt=~/x`, `x:~/y`,
+ * `"~"`, `\~`). Why not answered where a tilde-prefix is not empty: `~user` (the machine's user
+ * of that name), `~+` and `~-` (the shell's directories), or one holding a quoted part, which
+ * bash leaves as it is.
+ */
+function homeTildes(word: Word, assigned: boolean): { readonly word: Word } | Unanswered {
+  // The word as units: each unquoted character, or one part that is no unquoted text.
+  type Unit = { readonly ch: string } | { readonly part: WordPart };
+  const units: Unit[] = word.flatMap((part): Unit[] =>
+    part.kind === "text" && !part.quoted ? [...part.text].map((ch) => ({ ch })) : [{ part }]
+  );
+  const bare = (at: number): string | undefined => {
+    const unit = units[at];
+    return unit !== undefined && "ch" in unit ? unit.ch : undefined;
+  };
+  const named = assigned ? undefined : assignmentOf(word);
+  // Where an assignment's value starts: tildes there and after each unquoted `:` expand too.
+  const value = assigned ? 0 : named === undefined ? undefined : named.name.length + 1;
+  const starts = [0];
+  if (value !== undefined) {
+    starts.push(value);
+    for (let at = value; at < units.length; at++) if (bare(at) === ":") starts.push(at + 1);
+  }
+  let expanded = false;
+  for (const start of starts) {
+    if (bare(start) !== "~") continue;
+    let end = start + 1;
+    while (end < units.length && bare(end) !== "/" && !(value !== undefined && bare(end) === ":")) {
+      end++;
+    }
+    if (end > start + 1) {
+      return {
+        why: `${wordText(word)} has a ~ with more after it (~user, ~+, ~-, or a quoted part), which bash reads as a user's home directory or one of the shell's own, or leaves as it is, a form the runner does not rebuild`,
+      };
+    }
+    units[start] = { part: HOME_PART };
+    expanded = true;
+  }
+  if (!expanded) return { word };
+  const parts: WordPart[] = [];
+  let text = "";
+  for (const unit of units) {
+    if ("ch" in unit) {
+      text += unit.ch;
+      continue;
+    }
+    if (text !== "") parts.push({ kind: "text", text, quoted: false });
+    text = "";
+    parts.push(unit.part);
+  }
+  if (text !== "") parts.push({ kind: "text", text, quoted: false });
+  return { word: parts };
+}
+
+/** `script` with each word read by `homeTildes` (an assignment's value as one, every other word
+ *  and each redirection's target as a word), in its groups and command substitutions too; or the
+ *  first why it gives. */
+function homeScript(script: Script): { readonly script: Script } | Unanswered {
+  let why: string | undefined;
+  const wordOf = (word: Word, assigned: boolean): Word => {
+    const subbed = word.map((part) =>
+      part.kind === "sub" ? { ...part, script: scriptOf(part.script) } : part
+    );
+    const read = homeTildes(subbed, assigned);
+    if ("why" in read) {
+      why ??= read.why;
+      return subbed;
+    }
+    return read.word;
+  };
+  const commandOf = (command: SimpleCommand | Group): SimpleCommand | Group => {
+    const redirects = command.redirects.map((each) => ({
+      ...each,
+      target: wordOf(each.target, false),
+    }));
+    if (command.kind === "group")
+      return { ...command, script: scriptOf(command.script), redirects };
+    return {
+      ...command,
+      assignments: command.assignments.map((each) => ({
+        ...each,
+        value: wordOf(each.value, true),
+      })),
+      words: command.words.map((word) => wordOf(word, false)),
+      redirects,
+    };
+  };
+  const scriptOf = (inner: Script): Script =>
+    inner.map((pipelines) => pipelines.map((pipeline) => pipeline.map(commandOf)));
+  const mapped = scriptOf(script);
+  return why === undefined ? { script: mapped } : { why };
+}
+
+/** Whether a word of `script` (in its groups and command substitutions too) expands `$HOME`. */
+function expandsHome(script: Script): boolean {
+  return script
+    .flat(2)
+    .some(
+      (command) =>
+        (command.kind === "group" && expandsHome(command.script)) ||
+        commandWords(command).some((word) =>
+          word.some(
+            (part) =>
+              (part.kind === "var" && part.name === "HOME") ||
+              (part.kind === "sub" && expandsHome(part.script))
+          )
+        )
+    );
+}
+
 /** Why `script`, run from the session's working directory `cwd` (`local`, its path in the copy on
  *  this machine), may reach a file outside the session's checkout or show a value of the runner's,
  *  or undefined (see the file's header, **Confinement**). Each word a program may open (every word
  *  after the program but those of NO_PATH_PROGRAMS, and every redirection's target) is read at
  *  each value it may take (`walkScript`: a variable the command assigned, `$PWD` and `$(pwd)` as
  *  each directory the shell may be in, `$(git rev-parse --show-toplevel)` where git meets no
- *  repository of the checkout's own below the root first, and, in a colocated copy, `$(jj root)`). */
+ *  repository of the checkout's own below the root first, and, in a colocated copy, `$(jj root)`;
+ *  where the copy names the session's home, `$HOME` and each `~` bash expands, `homeTildes`, as
+ *  that home). */
 function escapes(
   copy: CheckoutCopy,
   cwd: string,
@@ -3895,7 +4285,17 @@ function escapes(
   } catch {
     // No such directory: bashAnswer refuses the working directory.
   }
-  return walkScript(script, { vars: new Map(), cwds: [cwd], linked }, false, walk);
+  const vars = new Map<string, Values>();
+  let walked = script;
+  if (copy.home !== undefined) {
+    const read = homeScript(script);
+    if ("why" in read) return read.why;
+    const view = sandboxHome(copy);
+    if (view !== undefined && "why" in view && expandsHome(read.script)) return view.why;
+    walked = read.script;
+    vars.set("HOME", new Set([copy.home]));
+  }
+  return walkScript(walked, { vars, cwds: [cwd], linked }, false, walk);
 }
 
 /** The `bash` call's answer (see the file's header). */
@@ -3903,8 +4303,8 @@ async function bashAnswer(
   copy: CheckoutCopy,
   input: Record<string, unknown>
 ): Promise<CheckoutAnswer | Unanswered> {
-  const other = otherKeys(input, ["command", "cwd", "timeout"]);
-  if (other !== undefined) return { why: other };
+  const option = bashOptionFault(input);
+  if (option !== undefined) return { why: option };
   const command = input.command;
   const script = readOnlyScript(command);
   if (typeof command !== "string" || script === undefined) {
@@ -3937,7 +4337,7 @@ async function bashAnswer(
   }
   let cwd = copy.cwd;
   if (typeof input.cwd === "string") {
-    const resolved = resolvedReadPath(input.cwd, { cwd: copy.cwd });
+    const resolved = resolvedReadPath(input.cwd, { cwd: copy.cwd, home: copy.home });
     if (resolved === undefined || insideRoot(copy.root, resolved) === undefined) {
       return { why: `its working directory ${input.cwd} is outside the session's checkout` };
     }

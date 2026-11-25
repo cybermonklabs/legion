@@ -371,6 +371,7 @@ import {
   closeSync,
   cpSync,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -434,6 +435,7 @@ import {
   messagesRunJj,
   readOnlyCall,
   removeOutsideLinks,
+  sessionHome,
   type Unanswered,
 } from "./checkout";
 import {
@@ -3150,16 +3152,21 @@ async function runStage(
       // time, a jj call among its own messages.
       const ranJj = c.checkout.jj ?? messagesRunJj(c.messages);
       const shared = await sharedCheckout(r, repo, commit, ranJj);
-      const { git, depth, removedLinks, jj } = shared.marker;
+      const { git, depth, removedLinks, jj, madeAt } = shared.marker;
       // A copy whose colocation failed answers the jj commands of a session that ran none as a
       // checkout that is no jj repository does.
       const copyJj = jj === true || ranJj ? jj : undefined;
+      // The session's home, which its `~` and `$HOME` stand for (checkout.ts's `sessionHome`),
+      // and when the copy was made, from which a listing measures each entry's age.
+      const home = sessionHome(root, c.pathCopy?.home);
       checkout = {
         dir: shared.dir,
         root,
         cwd,
         git,
         ...(copyJj === undefined ? {} : { jj: copyJj }),
+        ...(home === undefined ? {} : { home }),
+        madeAt,
         answers: new Map(),
       };
       save({
@@ -3241,14 +3248,44 @@ async function runGit(args: readonly string[]): Promise<{ code: number; stderr: 
  *  whether it is a git checkout (else GitHub's tarball of the commit, with why the git one failed),
  *  the depth of its history, whether it holds the blobs of each commit of it (`blobs`; absent on a
  *  git checkout fetched before with none, which is made again), the symbolic links removed from
- *  it, whether it is a colocated jj repository, and the seconds and the bytes its making took. */
+ *  it, whether it is a colocated jj repository, the seconds and the bytes its making took, and
+ *  when it was made (`madeAt`, milliseconds since the epoch, from which a directory listing of it
+ *  measures each entry's age: checkout.ts's `CheckoutCopy.madeAt`; absent on a marker written
+ *  before it was recorded, whose copy takes its marker file's time of change, `copyMadeAt`). */
 const CheckoutMarker = SharedCheckout.extend({
   blobs: z.literal(true).optional(),
   seconds: z.number().nonnegative(),
   bytes: z.int().nonnegative(),
   why: z.string().optional(),
+  madeAt: z.int().nonnegative().optional(),
 });
 type CheckoutMarker = z.infer<typeof CheckoutMarker>;
+/** A marker as `sharedCheckout` gives it: with the time its copy was made (`readCheckoutMarker`). */
+type MadeMarker = CheckoutMarker & { readonly madeAt: number };
+
+/** The marker in `markerFile` (CheckoutMarker), or undefined where none is there, with when its
+ *  copy was made: the time it records, else, for a marker written before it recorded one, the
+ *  whole millisecond of the file's own time of change (it is written last, once the copy is made,
+ *  and written again only to colocate the copy, which then records this time), read through the
+ *  descriptor its text is read from, so every answer of that copy measures from one time. Read in
+ *  one step, so a marker the lock's holder removes as it makes the checkout again is none to a
+ *  run that waits for it, never an error between a test of its path and its read. Exported for
+ *  cli.test.ts. */
+export function readCheckoutMarker(markerFile: string): MadeMarker | undefined {
+  let fd: number;
+  try {
+    fd = openSync(markerFile, "r");
+  } catch (error) {
+    if (hasErrnoCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  try {
+    const marker = CheckoutMarker.parse(JSON.parse(readFileSync(fd, "utf8")));
+    return { ...marker, madeAt: marker.madeAt ?? Math.floor(fstatSync(fd).mtimeMs) };
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** The last ask of this process for each shared checkout, by `<cache dir>\0<repo>@<commit>`: the
  *  next ask waits for it, since a process never waits for its own lock. */
@@ -3294,7 +3331,7 @@ function sharedCheckout(
   repo: string,
   commit: string,
   jj: boolean
-): Promise<{ dir: string; marker: CheckoutMarker }> {
+): Promise<{ dir: string; marker: MadeMarker }> {
   const key = `${r.cacheDir}\0${repo}@${commit}`;
   const before = sharedCheckouts.get(key) ?? Promise.resolve();
   const made = before.then(() => makeSharedCheckout(r, repo, commit, jj));
@@ -3311,31 +3348,18 @@ async function makeSharedCheckout(
   repo: string,
   commit: string,
   jj: boolean
-): Promise<{ dir: string; marker: CheckoutMarker }> {
+): Promise<{ dir: string; marker: MadeMarker }> {
   const dir = path.join(r.cacheDir, "checkouts", repo, commit);
   const markerFile = `${dir}.ready.json`;
   const lock = `${dir}.lock`;
   mkdirSync(path.dirname(dir), { recursive: true });
-  // The marker, or undefined where none is there yet: read in one step, so that a marker the
-  // lock's holder removes as it makes the checkout again is none to a run that waits for it, never
-  // an error between a test of its path and its read.
-  const madeMarker = (): CheckoutMarker | undefined => {
-    let text: string;
-    try {
-      text = readFileSync(markerFile, "utf8");
-    } catch (error) {
-      if (hasErrnoCode(error, "ENOENT")) return undefined;
-      throw error;
-    }
-    return CheckoutMarker.parse(JSON.parse(text));
-  };
   // A made checkout serves the ask when it holds its commits' blobs (or is the tarball) and,
   // where the ask is for jj, is a colocated jj repository (or is no git checkout).
   const holdsBlobs = (marker: CheckoutMarker) => !marker.git || marker.blobs === true;
   const serves = (marker: CheckoutMarker) =>
     holdsBlobs(marker) && (!jj || !marker.git || marker.jj !== undefined);
   for (;;) {
-    const found = madeMarker();
+    const found = readCheckoutMarker(markerFile);
     if (found !== undefined && serves(found)) return { dir, marker: found };
     // The lock, made whole: its pid is written into a file of this process's own, then linked to
     // the lock's name, which fails when the lock is there.
@@ -3368,7 +3392,7 @@ async function makeSharedCheckout(
     try {
       const started = performance.now();
       const seconds = () => Math.round((performance.now() - started) / 100) / 10;
-      const made = madeMarker();
+      const made = readCheckoutMarker(markerFile);
       if (made !== undefined && holdsBlobs(made)) {
         if (serves(made)) continue;
         const marker = { ...made, jj: await colocateJj(dir) };
@@ -3415,7 +3439,7 @@ async function makeSharedCheckout(
       }
       const removedLinks = removeOutsideLinks(dir);
       const colocated = jj && why === undefined ? await colocateJj(dir) : undefined;
-      const marker: CheckoutMarker = {
+      const marker: MadeMarker = {
         git: why === undefined,
         depth: why === undefined ? CHECKOUT_DEPTH : null,
         ...(why === undefined ? { blobs: true as const } : {}),
@@ -3424,6 +3448,7 @@ async function makeSharedCheckout(
         seconds: seconds(),
         bytes: bytesUnder(dir),
         ...(why === undefined ? {} : { why }),
+        madeAt: Date.now(),
       };
       writeWhole(markerFile, json(marker));
       const jjWords =

@@ -1,5 +1,13 @@
-import { expect, jest, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { expect, jest, setSystemTime, test } from "bun:test";
+import {
+  existsSync,
+  lstatSync,
+  lutimesSync,
+  mkdirSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -15,6 +23,7 @@ import {
   removeOutsideLinks,
   resetSandboxSpawnForTests,
   sandboxedBash,
+  sessionHome,
   setSandboxSpawnForTests,
 } from "./checkout";
 import { pinNatives } from "./test-natives";
@@ -829,6 +838,12 @@ test("a glob of a directory with no glob character lists it, one of a file answe
     "src/app.py": "def main():\n    return 0\n",
     ".jj/repo/store.md": "# Store\n",
   });
+  // The guide the newest, so its directory comes first in a list's merged answer.
+  setTimes(copy.dir, {
+    "docs/guide.md": MADE_AT - MINUTE,
+    "docs/api/ref.md": MADE_AT - HOUR,
+    "src/app.py": MADE_AT - DAY,
+  });
   const glob = (target: string) => answerCall(copy, "glob", { path: target }, "hashline");
   for (const [target, text] of [
     ["docs", "# docs/\nguide.md\n## api/\nref.md"],
@@ -860,6 +875,47 @@ test("a glob of a directory with no glob character lists it, one of a file answe
     text: "No matches found",
     isError: false,
   });
+}, 60_000);
+
+// Catches: a glob's paths answered in path order (the sweep of R4's answers: the pin sorts its
+// matches by time of change, newest first, glob.ts lines 582 and 656), a tie broken by name as
+// JavaScript compares it where the pin's walk compares bytes, or a list's patterns answered one
+// after another where the pin merges them by time.
+test("a glob answers its matches newest first by the copy's own times of change, a tie by path below its base in byte order; a ;-list's patterns merged by time, each path once, a tie in the list's order; a file named alone at its own time", async () => {
+  const copy = filesCopy("glob-order", {
+    "src/old.ts": "",
+    "src/new.ts": "",
+    "src/B.ts": "",
+    "src/a.ts": "",
+    "lib/mid.ts": "",
+    "lib/deep/x.ts": "",
+  });
+  setTimes(copy.dir, {
+    "src/old.ts": MADE_AT - 3 * DAY,
+    "src/new.ts": MADE_AT - MINUTE,
+    // Two of one millisecond: `B.ts` before `a.ts` in byte order (by name, `a.ts` first).
+    "src/B.ts": MADE_AT - HOUR,
+    "src/a.ts": MADE_AT - HOUR,
+    // As new as `src/new.ts`.
+    "lib/mid.ts": MADE_AT - MINUTE,
+    "lib/deep/x.ts": MADE_AT - 2 * DAY,
+  });
+  const glob = (target: string) => answerCall(copy, "glob", { path: target }, "hashline");
+  const src = "# src/\nnew.ts\nB.ts\na.ts\nold.ts";
+  for (const [target, text] of [
+    ["src/*.ts", src],
+    // One walk: `lib/mid.ts` and `src/new.ts` tie, and `lib/…` comes first in byte order.
+    ["**/*.ts", `# lib/\nmid.ts\n## deep/\nx.ts\n${src}`],
+    // A list: its patterns' paths merged by time, the tie in the list's order.
+    ["lib/*.ts;src/*.ts", `# lib/\nmid.ts\n${src}`],
+    ["src/*.ts;lib/*.ts", `${src}\n# lib/\nmid.ts`],
+    ["src/old.ts;src/new.ts", "# src/\nnew.ts\nold.ts"],
+  ] as const) {
+    expect({ target, answer: await glob(target) }).toEqual({
+      target,
+      answer: { text, isError: false },
+    });
+  }
 }, 60_000);
 
 // The security review of the runner at dd14a587 found read-only calls that act or read outside the
@@ -1246,7 +1302,26 @@ function filesCopy(name: string, files: Record<string, string>): CheckoutCopy {
   return { dir, root: ROOT, cwd: ROOT, git: false };
 }
 
-/** The made-up checkout's files of the grep list and listing rows: a package with tests, a test
+/** When the made-up copies of the listing and glob rows were made (`CheckoutCopy.madeAt`), and
+ *  the spans their entries' times of change are set back from it. */
+const MADE_AT = Date.UTC(2026, 10, 20, 12, 0, 0);
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** Sets the time of change of each entry `times` names under `dir` (its path to milliseconds since
+ *  the epoch), in the order given (a directory after its entries, whose making changes its time):
+ *  with `utimes`, and a symbolic link's own with `lutimes`. */
+function setTimes(dir: string, times: Record<string, number>): void {
+  for (const [entry, millis] of Object.entries(times)) {
+    const file = path.join(dir, entry);
+    const at = new Date(millis);
+    if (lstatSync(file).isSymbolicLink()) lutimesSync(file, at, at);
+    else utimesSync(file, at, at);
+  }
+}
+
+/** The made-up checkout's files of the grep list and cd rows: a package with tests, a test
  *  directory, a generated directory of 14 files, an app, and an installed dependency. */
 const LISTED: Record<string, string> = {
   "apps/web/e.ts": "export const kind = 'web';\n",
@@ -1471,39 +1546,91 @@ test("a grep keeps 20 matches a file of several and 200 of one, with grep's noti
 }, 60_000);
 
 // Catches: a read of a directory left unanswered, or answered with entries the pin leaves out
-// (`.DS_Store`), past its depth, or past its cap of a directory under it; or a listing answered
-// that would show the copy's own `.git`.
-test("a read of a directory is answered with the pin's listing: entries two levels down by name, a directory under it capped at 12 with the count of the rest, .DS_Store left out; an empty one says so; a listing that shows .git, or a ranged read of a directory, is not answered", async () => {
-  const copy = filesCopy("listing", LISTED);
-  mkdirSync(path.join(copy.dir, "empty"), { recursive: true });
+// (`.DS_Store`), past its depth, or past its cap of a directory under it; with its entries in name
+// order, not newest first, with no size and age after each name (the sweep of R4's answers: the
+// pin shows `<size> <age>` and orders by time of change), or with ages measured from the time of
+// the call, so two runs of one case differ; or a listing answered that would show the copy's own
+// `.git`.
+test("a read of a directory is answered with the pin's listing: entries two levels down, newest first by the copy's own times of change, a tie by name, a file's size and each one's age from the time the copy was made; a directory under it capped at its 11 newest, the count of the rest and its oldest; .DS_Store left out; an empty one says so; the same at any time of the call; a copy that records no time it was made, a listing that shows .git, or a ranged read of a directory, is not answered", async () => {
+  const gen = (n: number) => `gen/g${String(n).padStart(2, "0")}.ts`;
+  const made = filesCopy("listing", {
+    "fresh.txt": "",
+    "notes.md": "x".repeat(2048),
+    "docs/a.md": "aa\n",
+    "docs/B.md": "b\n",
+    "docs/.DS_Store": "",
+    "docs/sub/deep.md": "deep\n",
+    ...Object.fromEntries(Array.from({ length: 14 }, (_, n) => [gen(n + 1), "export {};\n"])),
+  });
+  symlinkSync("a.md", path.join(made.dir, "docs", "link.md"));
+  mkdirSync(path.join(made.dir, "empty"));
+  setTimes(made.dir, {
+    "fresh.txt": MADE_AT - 400,
+    "notes.md": MADE_AT - 30_000,
+    "docs/a.md": MADE_AT - 2 * DAY,
+    "docs/B.md": MADE_AT - 2 * DAY,
+    "docs/link.md": MADE_AT - 5 * MINUTE,
+    "docs/sub/deep.md": MADE_AT - DAY,
+    "docs/sub": MADE_AT - 3 * HOUR,
+    docs: MADE_AT - 14 * DAY,
+    // g14 the newest, a minute old; g01 the oldest, 14 minutes old.
+    ...Object.fromEntries(
+      Array.from({ length: 14 }, (_, n) => [gen(n + 1), MADE_AT - (14 - n) * MINUTE])
+    ),
+    gen: MADE_AT - 40 * DAY,
+    empty: MADE_AT - HOUR,
+  });
+  const copy = { ...made, madeAt: MADE_AT };
   const listing = [
     ".",
-    "  - .eslintrc",
-    "  - a.test.ts",
-    "  - a.ts",
-    "  - gen/",
-    ...Array.from({ length: 11 }, (_, n) => `    - g${String(n + 1).padStart(2, "0")}.ts`),
+    "  - fresh.txt",
+    "  - notes.md 2.0KB just now",
+    "  - empty/ 1h ago",
+    "  - docs/ 2w ago",
+    "    - link.md 0B 5m ago",
+    "    - sub/ 3h ago",
+    "    - a.md 3B 2d ago",
+    "    - B.md 2B 2d ago",
+    "  - gen/ 1mo ago",
+    ...Array.from({ length: 11 }, (_, n) => `    - ${gen(14 - n).slice(4)} 11B ${n + 1}m ago`),
     "    - … 2 more",
-    "    - g14.ts",
-    "  - tests/",
-    "    - c.ts",
+    "    - g01.ts 11B 14m ago",
   ].join("\n");
-  const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
-  for (const target of ["packages/ed/src", "packages/ed/src/", `${ROOT}/packages/ed/src`]) {
+  const read = (target: string, of: CheckoutCopy = copy) =>
+    answerCall(of, "read", { path: target }, "hashline");
+  for (const target of [".", "./", ROOT]) {
     expect({ target, answer: await read(target) }).toEqual({
       target,
       answer: { text: listing, isError: false },
     });
   }
-  expect(await read("packages")).toEqual({
-    text: [".", "  - ed/", "    - node_modules/", "    - package.json", "    - src/"].join("\n"),
+  // A year later the copy's listing is the same: its ages count to the time the copy was made.
+  setSystemTime(new Date(MADE_AT + 365 * DAY));
+  try {
+    expect(await read(".")).toEqual({ text: listing, isError: false });
+  } finally {
+    setSystemTime();
+  }
+  // A copy made an hour later shows each age an hour longer.
+  expect(await read("docs", { ...made, madeAt: MADE_AT + HOUR })).toEqual({
+    text: [
+      ".",
+      "  - link.md 0B 1h ago",
+      "  - sub/ 4h ago",
+      "    - deep.md 5B 1d ago",
+      "  - a.md 3B 2d ago",
+      "  - B.md 2B 2d ago",
+    ].join("\n"),
     isError: false,
   });
   expect(await read("empty")).toEqual({ text: "(empty directory)", isError: false });
+  expect(await read("docs", made)).toEqual({
+    why: expect.stringContaining("the copy records no time it was made"),
+  });
   mkdirSync(path.join(copy.dir, ".git"), { recursive: true });
   for (const [target, why] of [
     [".", "shows .git"],
-    ["packages/ed/src:1-3", "a ranged read of a directory"],
+    ["docs:1-3", "a ranged read of a directory"],
   ] as const) {
     expect({ target, answer: await read(target) }).toEqual({
       target,
@@ -1588,6 +1715,169 @@ test("a quoted word is a literal: a single-quoted one, or a double-quoted one wh
   ] as const) {
     expect({ command, answer: await bashText(copy, command) }).toEqual({
       command,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+}, 60_000);
+
+/** The made-up session's home directory, which holds its checkout ROOT. */
+const HOME_DIR = "/work/acme";
+
+// Catches: the session's home taken from nowhere the case records, so a written case whose
+// checkout is under `/home/<user>` gets none and its `~` calls stay unanswered, or one taken where
+// the case records none.
+test("sessionHome is the home the case records, else /home/<user> where the checkout's root is under one, else none", () => {
+  for (const [root, recorded, home] of [
+    ["/home/agent/src/acme", undefined, "/home/agent"],
+    ["/home/agent", undefined, "/home/agent"],
+    ["/work/acme/proj", HOME_DIR, HOME_DIR],
+    ["/home/agent/src/acme", HOME_DIR, HOME_DIR],
+    ["/work/acme/proj", undefined, undefined],
+    ["/home", undefined, undefined],
+    ["/homes/agent/src", undefined, undefined],
+  ] as const) {
+    expect({ root, recorded, home: sessionHome(root, recorded) }).toEqual({ root, recorded, home });
+  }
+});
+
+// Catches: a bash command whose `~` or `$HOME` the session's shell expanded to the session's home
+// left unanswered as the runner's home (the sweep of R4's answers: 186 runs of 26 cases), answered
+// from the runner's own home, a `~` expanded where bash leaves it as it is, or one followed
+// outside the checkout.
+test("where the copy names the session's home, ~ and $HOME (bare, braced or in double quotes) of a bash command stand for it as bash expands them, and so does a ~ cwd: a path inside the checkout is answered, one outside refused; a quoted ~ or $HOME, and a ~ bash leaves, are literals; ~user, ~+ and a bare cd are refused; a home that would show the copy's own git configuration is given to no command", async () => {
+  const copy = { ...filesCopy("home-bash", { "docs/guide.md": GUIDE }), home: HOME_DIR };
+  for (const [command, text] of [
+    ["cat ~/proj/docs/guide.md", GUIDE],
+    ["cat $HOME/proj/docs/guide.md", GUIDE],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell command's own `${HOME}`
+    ["cat ${HOME}/proj/docs/guide.md", GUIDE],
+    ['cat "$HOME"/proj/docs/guide.md', GUIDE],
+    ['cat "$HOME/proj/docs/guide.md"', GUIDE],
+    ["X=~/proj/docs; cat $X/guide.md", GUIDE],
+    ["cd ~/proj/docs && pwd", `${ROOT}/docs\n`],
+    ["echo ~ $HOME", `${HOME_DIR} ${HOME_DIR}\n`],
+    [`echo '~' '$HOME' "~" --opt=~/x x:~/y a=~/z`, `~ $HOME ~ --opt=~/x x:~/y a=${HOME_DIR}/z\n`],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({ command, answer: text });
+  }
+  expect(await bashText(copy, "pwd", "~/proj/docs")).toBe(`${ROOT}/docs\n`);
+  for (const [command, why] of [
+    ["cat ~/other/notes.md", "is outside the session's checkout"],
+    ["ls ~", "is outside the session's checkout"],
+    ["cat $HOME/.profile", "is outside the session's checkout"],
+    ["cat ~root/x", "has a ~ with more after it"],
+    ["echo ~+", "has a ~ with more after it"],
+    ["cd", `goes to $HOME, the session's home ${HOME_DIR}`],
+  ] as const) {
+    expect({ command, answer: await bashText(copy, command) }).toEqual({
+      command,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+  // The home is the checkout's root: its place in the copy.
+  const rooted = { ...filesCopy("home-root", { "docs/guide.md": GUIDE }), home: ROOT };
+  expect(await bashText(rooted, "cat ~/docs/guide.md && echo ~")).toBe(`${GUIDE}${ROOT}\n`);
+  // That home holds the checkout's own .gitconfig, which git would read once a command unsets
+  // GIT_CONFIG_GLOBAL: no command gets it, and one that expands ~ is not answered.
+  const configured = {
+    ...filesCopy("home-config", { "docs/guide.md": GUIDE, ".gitconfig": "[core]\n" }),
+    home: ROOT,
+  };
+  expect(await bashText(configured, "cat ~/docs/guide.md")).toEqual({
+    why: expect.stringContaining(`holds the checkout's own ${ROOT}/.gitconfig`),
+  });
+  expect(await bashText(configured, "cat docs/guide.md")).toBe(GUIDE);
+}, 60_000);
+
+// Catches: a read's header of a file under the session's home shown absolute where the pin shows
+// `~/…` (the sweep of R4's answers: `[~/src/…#…]`, read-format.ts lines 70-83), a `~` path of a
+// read, grep or glob left unanswered where the copy names the home, or grep's and glob's paths
+// under the home shown `~/…`, which the pin's formatPathRelativeToCwd never does.
+test("where the copy names the session's home, a read's header of a file under it outside the working directory is ~/…, and a ~ path resolves there; grep and glob show such a path absolute; with no home the header is absolute and a ~ path is not answered", async () => {
+  const made = filesCopy("home-paths", { "README.md": "# Proj\n", "docs/guide.md": GUIDE });
+  const copy = { ...made, cwd: `${ROOT}/docs`, home: HOME_DIR };
+  const tag = snapshotTag("# Proj\n");
+  const answer = (of: CheckoutCopy, name: string, input: Record<string, unknown>) =>
+    answerCall(of, name, input, "hashline");
+  for (const target of [`${ROOT}/README.md`, "../README.md", "~/proj/README.md"]) {
+    expect({ target, answer: await answer(copy, "read", { path: target }) }).toEqual({
+      target,
+      answer: { text: `[~/proj/README.md#${tag}]\n1:# Proj`, isError: false },
+    });
+  }
+  expect(await answer(copy, "read", { path: "~/proj/docs/guide.md" })).toEqual({
+    text: `[guide.md#${snapshotTag(GUIDE)}]\n1:# Guide\n2:\n3:Run the app.`,
+    isError: false,
+  });
+  expect(await answer(copy, "grep", { pattern: "Proj", path: "~/proj/README.md" })).toEqual({
+    text: `[${ROOT}/README.md#${tag}]\n*1:# Proj`,
+    isError: false,
+  });
+  expect(await answer(copy, "glob", { path: "~/proj/*.md" })).toEqual({
+    text: `# ${ROOT}/\nREADME.md`,
+    isError: false,
+  });
+  const homeless = { ...made, cwd: `${ROOT}/docs` };
+  expect(await answer(homeless, "read", { path: "../README.md" })).toEqual({
+    text: `[${ROOT}/README.md#${tag}]\n1:# Proj`,
+    isError: false,
+  });
+  for (const [name, input, why] of [
+    ["read", { path: "~/proj/README.md" }, "is no file of the session's checkout"],
+    ["grep", { pattern: "Proj", path: "~/proj/README.md" }, "outside the session's checkout"],
+    ["glob", { path: "~/proj/*.md" }, "outside the session's checkout"],
+  ] as const) {
+    expect({ name, input, answer: await answer(homeless, name, input) }).toEqual({
+      name,
+      input,
+      answer: { why: expect.stringContaining(why) },
+    });
+  }
+}, 60_000);
+
+// Catches: a bash call that gives `pty`, `async`, `name` or `ready` as a placeholder (R4's
+// sessions give `pty: false, async: false, name: null` or `"null"`, `ready: null`, or a `ready` of
+// blank fields, on 131 calls) left unanswered where Oh My Pi reads it as absent, or a call that
+// asks for a terminal, a background job or a service answered as a plain command.
+test("a bash call's pty, async, name and ready are answered as absent where Oh My Pi reads them so: null, the text null, empty, false, a blank name, a ready with no log and no port; pty: true, async: true, a service's name, a ready with a log or a port, and another value are not answered", async () => {
+  const copy = filesCopy("bash-options", { "docs/guide.md": GUIDE });
+  const answer = async (options: Record<string, unknown>) => {
+    const given = await answerCall(
+      copy,
+      "bash",
+      { command: "cat docs/guide.md", ...options },
+      "hashline"
+    );
+    return "why" in given ? given : given.text.replace(/\n\nWall time: \d+\.\d\d seconds/, "");
+  };
+  for (const options of [
+    { pty: false },
+    { async: null },
+    { name: "" },
+    { ready: null },
+    { pty: false, async: false, name: "null", ready: null },
+    { pty: false, async: false, name: null, ready: null },
+    { pty: false, async: false, name: "", ready: { log: "", port: 0, host: "", timeout: 30 } },
+    { pty: "null", async: "", name: "  ", ready: "" },
+    { ready: { host: "127.0.0.1", timeout: 5, log: null } },
+  ]) {
+    expect({ options, answer: await answer(options) }).toEqual({ options, answer: GUIDE });
+  }
+  for (const [options, why] of [
+    [{ pty: true }, "its pty: true runs the command on a terminal"],
+    [{ async: true }, "its async: true runs the command as a background job"],
+    [{ name: "web" }, 'its name "web" starts a service'],
+    [{ ready: { log: "listening" } }, "Ignored ready: service-only"],
+    [{ name: null, ready: { port: 8080 } }, "Ignored ready: service-only"],
+    [{ pty: "false" }, 'its pty is "false", a value whose reading'],
+    [{ name: 5 }, "its name is 5, a value whose reading"],
+    [{ ready: { port: "8080" } }, 'its ready.port is "8080", a value whose reading'],
+    [{ ready: [] }, "its ready is [], a value whose reading"],
+    [{ ready: { wait: 1 } }, "its ready.wait is 1, a value whose reading"],
+    [{ env: { A: "1" } }, "its options env are none the copy answers"],
+  ] as const) {
+    expect({ options, answer: await answer(options) }).toEqual({
+      options,
       answer: { why: expect.stringContaining(why) },
     });
   }
@@ -2438,12 +2728,14 @@ interface SandboxRig {
 }
 
 /** Runs `row` with a stand-in child (`fakeSandbox`) for each of the `count` sandboxes the runner
- *  starts, on Bun's fake clock, and the real spawn and clock put back after. A row that stops
- *  early leaves a command waiting for its place, so each call it tracked is let finish first: the
- *  children end at once and the queue empties, with no real sandbox started. */
+ *  starts, on Bun's fake clock (and `clock` as the one a command's wall time is read from, where
+ *  given), and the real spawn and clocks put back after. A row that stops early leaves a command
+ *  waiting for its place, so each call it tracked is let finish first: the children end at once
+ *  and the queue empties, with no real sandbox started. */
 async function onFakeSandboxes(
   count: number,
-  row: (rig: SandboxRig) => Promise<void>
+  row: (rig: SandboxRig) => Promise<void>,
+  clock?: () => number
 ): Promise<void> {
   const events: string[] = [];
   const made = Array.from({ length: count }, () => Promise.withResolvers<FakeSandbox>());
@@ -2462,7 +2754,7 @@ async function onFakeSandboxes(
     slot.resolve(sandbox);
     if (over) sandbox.exit(1);
     return child;
-  });
+  }, clock);
   jest.useFakeTimers();
   try {
     await row({
@@ -2560,4 +2852,55 @@ test("sandbox queue: a command 30 s past its ready marker, and a sandbox not mad
     expect(two.killedWith()).toBe("SIGKILL");
     expect(events).toEqual(["spawn 1", "kill 1", "spawn 2", "kill 2"]);
   });
+});
+
+// Catches: a bash answer with no `Wall time:` notice where its command took a second or more (the
+// sweep of R4's answers: the pin says `Wall time: 2.13 seconds`, bash.ts lines 830-845), one with
+// the notice under a second, or a wall time that counts the command's wait in the queue or its
+// sandbox's making. The children are stand-ins and the wall time's clock is the row's own: no
+// sandbox is made and no row waits on a real clock.
+test("bash wall time: a command that took 1,000 ms or more from its sandbox's ready marker to its end gets the pin's Wall time: <s> seconds notice, before the exit code's; one under it gets none; neither its wait in the queue nor its sandbox's making counts", async () => {
+  const copy = filesCopy("wall-time", { "docs/guide.md": GUIDE });
+  let now = 0;
+  await onFakeSandboxes(
+    3,
+    async ({ started, track }) => {
+      const bash = (command: string) => track(answerCall(copy, "bash", { command }, "hashline"));
+      const first = bash("cat docs/guide.md");
+      const second = bash("head -n 1 docs/guide.md");
+      // The first's setup takes 5 s and its command 4 s, while the second waits in the queue.
+      const one = await started(1);
+      now = 5_000;
+      one.ready();
+      await nextTurn();
+      now = 9_000;
+      one.print(GUIDE);
+      one.exit(0);
+      expect(await first).toEqual({ text: `${GUIDE}\n\nWall time: 4.00 seconds`, isError: false });
+      // Its setup takes 3 s and its command 999 ms: no notice, though 12.999 s passed since it
+      // asked.
+      const two = await started(2);
+      now = 12_000;
+      two.ready();
+      await nextTurn();
+      now = 12_999;
+      two.print("# Guide\n");
+      two.exit(0);
+      expect(await second).toEqual({ text: "# Guide\n", isError: false });
+      // A failed command of 2,134 ms: the notice, then the exit code's.
+      const third = bash("cat docs/missing.md");
+      const three = await started(3);
+      now = 20_000;
+      three.ready();
+      await nextTurn();
+      now = 22_134;
+      three.print("cat: docs/missing.md: No such file or directory\n");
+      three.exit(1);
+      expect(await third).toEqual({
+        text: "cat: docs/missing.md: No such file or directory\n\n\nWall time: 2.13 seconds\n\nCommand exited with code 1",
+        isError: true,
+      });
+    },
+    () => now
+  );
 });

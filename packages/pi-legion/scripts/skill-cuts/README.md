@@ -473,7 +473,9 @@ the git checkout is then made a colocated jj repository (`checkout.ts`'s `coloca
 the answers' sandbox, below, the copy writable there, with the runner's jj, found on its PATH); and
 its marker (`<commit>.ready.json`: whether it is git, its depth, `"blobs": true` for a checkout
 that holds its commits' blobs, the links removed, `jj` when made a jj repository, the seconds and
-bytes of its making) is written last, so a half-made checkout is never used. A git checkout whose
+bytes of its making, and `madeAt`, when it was made, in milliseconds since the epoch; a marker
+written before `madeAt` was recorded takes its file's time of change, kept when the marker is
+written again) is written last, so a half-made checkout is never used. A git checkout whose
 marker records no blobs (fetched before with `--filter=blob:none`) is made again, and said so. A
 written case records whether its context session ran jj (`checkout.jj`: build-cases reads it from
 that session's transcript, a `bash` call whose command holds the word `jj`); a case written before
@@ -500,7 +502,9 @@ repository (`Error: There is no jj repo in "."`) where the case's session ran no
 it one, since the sandbox shows jj no directory above the copy (where such a checkout tracks a
 `.jj` at its root, no jj command is answered: jj would answer from that store). The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
-case's reads by path show them, or `Path '<path>' not found`; a file that is no prose too (no
+case's reads by path show them, its hashline header's path relative to the session's working
+directory, else `~/<rest>` under the session's home (the pin's `shortenPath`), else absolute,
+or `Path '<path>' not found`; a file that is no prose too (no
 notebook, SVG or document). A whole read of such a file of 100 lines or more (as the pin counts
 them: its newlines and one more), of at most 20,000 lines and 2 MiB, is the pin's structural
 summary where the pin's tree-sitter parse of it, through its native addon (below), is clean and
@@ -564,14 +568,20 @@ pin's notice alone, no error (`Line <n> is beyond end of file (<lines> lines tot
 read from the start, or :<lines> to read the last line.`; so is
 such a range of the cut's own copy read by path, in every arm); a read of a directory with Oh My
 Pi's listing (`.`, then each entry to two levels below it, hidden ones too and `.DS_Store` left
-out, `- <name>` or `- <name>/` indented two blanks a level; a directory under it of more than 12
-entries shows 11 of them, `- … <n> more` and its last; `(empty directory)` for none): Oh My Pi
-orders each directory's entries by their time of change and shows each one's age, which a
-checkout does not keep, so every entry is taken as changed at one time, by name, each line its name
-alone, as Oh My Pi shows an entry with no age; a listing that would show `.git` or `.jj`, or a
-ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
-forms (`glob`'s paths in path order, since a checkout keeps no times of change; `.git` and `.jj`
-left out of both); a `grep` and a `glob` are each worked out in a worker thread, never the
+out, `- <name>` or `- <name>/` indented two blanks a level, each directory's entries newest first
+by the time of change the checkout copy's own files hold, a tie by name; a directory under it of
+more than 12 entries shows its 11 newest, `- … <n> more` and its oldest; after each name, unless
+its age is under a second, a file's size (`0B` for a symbolic link) and its age, `just now`,
+`<n>m ago`, `<n>h ago`, `<n>d ago`, `<n>w ago` or `<n>mo ago`; `(empty directory)` for none).
+Oh My Pi measures an age from the time of its call; the runner measures it from the time the copy
+was made, which its marker records (`madeAt`), never from the time of its own call, so a listing
+reads the same in every arm and every run of a case. A listing that would show `.git` or `.jj`,
+or a ranged read of a directory, is not answered. `grep` and `glob` are answered in their tools'
+forms (`glob`'s paths newest first by the copy's own times of change, as Oh My Pi orders them: a
+pattern's matches a tie by path, then the patterns of a list merged, each path once; `.git` and
+`.jj` left out of both; their paths relative to the working directory, else absolute, a path
+under the session's home too, since neither shows `~`); a `grep` and a `glob` are each worked
+out in a worker thread, never the
 runner's own, since grep's JavaScript regular expression may backtrack where Oh My Pi's Rust one
 does not (`(a+)+b` over a long line), and glob's matcher of each path may take seconds for a long
 pattern in a large checkout; past 30 s the worker is ended and the call is not answered. A `grep`
@@ -615,11 +625,21 @@ after the paths (`Skipped missing paths: <patterns>`), and a limit above 200 is 
 blanks, a `glob` pattern (or every pattern of a list) whose base is not there, a file under a
 glob, a `grep` path (or every path of a list) the checkout lacks, and a `grep` exclusion of a
 form the runner does not read (a class, an escape, a nested group) are not answered (the pin's
-error is not rebuilt). `bash` runs in the checkout's sandbox (below), its working directory and
+error is not rebuilt). A `read`, `grep`, `glob` or `bash` `cwd` path under `~` resolves against
+the session's home where the case records one (cli.ts sets it on the copy, `checkout.ts`'s
+`sessionHome`: the home the case's `pathCopy` names, else `/home/<user>` where the checkout's
+root is under one, since a written case records no `pathCopy`); where it records none, such a
+call is not answered. `bash` runs in the checkout's sandbox (below), its working directory and
 the checkout's root mapped between the session's paths and the sandbox's (`/mnt/checkout`), its
-output as Oh My Pi's bash tool gives it, within 30 s of when its sandbox is made (its wall time
-counts from then too; the wait in the queue, below, is no part of either). An output past 50 KB,
-one with a line past 768 bytes, and one of 1,000 characters or more
+output as Oh My Pi's bash tool gives it, within 30 s of when its sandbox is made. `Wall time: <s>
+seconds` (two places) follows the output where the command took 1,000 ms or more, as the pin's
+`WALL_TIME_NOTICE_MIN_MS` and `formatWallTimeNotice` give it, the time measured from the
+sandbox's ready marker, as the command starts, to its end (the wait in the queue, below, and the
+sandbox's making are no part of it). The call's `pty`, `async`, `name` and `ready` are answered as
+absent where Oh My Pi reads them so (null or the text `null`, which its validation drops; `""`;
+`pty` or `async` false; a blank `name`; a `ready` with no log and no port); `pty: true`, `async:
+true`, a service's `name`, a `ready` with a log or a port, or any other value are not answered.
+An output past 50 KB, one with a line past 768 bytes, and one of 1,000 characters or more
 that Oh My Pi's minimizer may rewrite (a command whose top level is simple commands joined by
 `&&`, `;` or `||`, one of which, unpiped, runs `ls`, `tree`, `find`, `grep`, `rg`, `wc`, `cat`,
 `stat`, `git` or `jj`; not one in a group or a subshell) are not answered: Oh My Pi shows each
@@ -655,9 +675,16 @@ may be in holds any name starting with `-`, or is none the checkout holds; so `w
 leading `.` only so, `dotglob` off, so it may match `.`, `..` before bash 5.2, or `.git`: `cat
 .gi*/config`) or comes before a `..` (`a/l*/../x`: the kernel walks the `..` from what the glob
 matches, a link among them); nor a `cd` that names no
-directory, which goes to `$HOME`; nor one that expands `$HOME` or `$PATH`, whose value would be the
-runner's, or holds, in a word of any command (`echo`'s among them), an unquoted `~` at its start
-or after its `=` or a `:`, where bash puts a home directory of the runner's (`~legion`, `~root`);
+directory, which goes to `$HOME`; nor one that expands `$PATH`, whose value would be the
+runner's. Where the case records the session's home (above), `$HOME`, `${HOME}` (unquoted or in
+double quotes) and each `~` bash expands stand for that home (bash's rules: an unquoted `~` at a
+word's start, and in an assignment's value, or a word of the form `NAME=…`, after its `=` and
+after each unquoted `:`, where what follows up to the next `/` is nothing), each such path read
+as any other, inside the root or refused as outside it; a `~user`, `~+` or `~-` is refused, and
+any other `~` (`--opt=~/x`, `x:~/y`, `"~"`) is a literal. Where it records none, a command that
+expands `$HOME` or holds, in a word of any command (`echo`'s among them), an unquoted `~` at its
+start or after its `=` or a `:` is not answered, since bash would put a home directory of the
+runner's there (`~legion`, `~root`);
 nor a `jj` command whose repository may be a `.jj` the checkout tracks (one between the directory
 jj starts from, its `-R`'s or the working directory, and the root: in the sandbox jj stops there
 at its configuration, which it cannot move to the read-only home, and such a store may name a git
@@ -696,7 +723,13 @@ broker's keys and the store's address among them; a directory the sandbox's user
 `/root` may be, needs none; a file in a directory the sandbox needs is mounted over alone, and where
 it cannot be, no command runs); no network; no capability, so
 nothing it runs can unmount what hides a directory; an environment of only what it needs (`PATH`,
-`LANG=C.UTF-8`, `HOME` an empty directory, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`LANG=C.UTF-8`, `HOME` an empty directory (where the case records the session's home, that home
+as the sandbox shows it: its place in the copy where it is the checkout's root or inside it, else
+an empty, read-only directory of the sandbox's own with the copy bound again at the root's place
+under it, mapped back to the home in the output; never one that would show a file of the copy
+at `.gitconfig` or `.config/git/config`, where git reads the user's configuration once a command
+unsets `GIT_CONFIG_GLOBAL`, and then a command that expands `~` or `$HOME` is not answered),
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_OPTIONAL_LOCKS=0`, git's `core.fsmonitor=false`, `core.hooksPath=/dev/null`,
 `safe.bareRepository=explicit`, `protocol.allow=never`, `core.pager=cat`, `core.checkStat=minimal`
 and `core.trustctime=false` through `GIT_CONFIG_COUNT` (the last two so git trusts the stat data
@@ -739,7 +772,8 @@ An expired call remains unanswered, so the replay receives no verdict and retrie
 The same queue holds the commands that make a colocated jj checkout, with a 30-minute setup and command deadline.
 
 A reply one of whose read-only calls the copy answers in no form (a read with another selector, a
-path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj
+path outside the checkout, or under `~` where the case records no home, a `bash` option that
+asks for a terminal, a job or a service, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
 sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
 name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a read of
