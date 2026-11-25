@@ -3272,8 +3272,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	type midPhaseMember struct {
 		issue record.Issue
-		// owner is the role whose phase the member stands in, empty where that phase is an
-		// architect's (accepting).
+		// owner is the role whose phase worker the return starts for the member, empty wherever
+		// it starts none: a phase an architect works (accepting), a phase no role works, a member
+		// in awaiting_children, and a merging member whose pull request has merged.
 		owner claim.Role
 		roles []roleToken
 		// carriedSlot is k12's exemption of the member's carried start, which the root's walk
@@ -3391,12 +3392,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 		}
-		// R9 judges the member before any role of it comes back. The phase's own worker, found
-		// once among the member's roles, has its start held where the return makes that start
-		// (StartPromotedWorker); every other member is judged by StopPromotedWorker, which moves
-		// only a member that stands in a phase R9 holds. A member R9 holds has moved to
-		// awaiting_children: it brings back no other role and starts no step, whether its start
-		// was new or already written.
+		// R9 judges the member before any role of it comes back, as startMidPhaseMembers' doc says.
 		var held bool
 		var err error
 		owned := slices.IndexFunc(standing.roles, func(r roleToken) bool { return r.role == standing.owner })

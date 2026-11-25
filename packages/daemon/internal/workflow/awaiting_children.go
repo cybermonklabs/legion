@@ -246,10 +246,7 @@ func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, i
 
 // samePhaseExempt says whether R9 leaves alone a start of the phase issue stands in that open
 // children would hold because the role of that phase stands on an entry a move out of retro or
-// merging raised (acceptedEntry), and answers that role's phases row. A merged pull request, R9's
-// other exemption, is read beside each caller's own guard: childrenHoldingStart's for a start of
-// the same phase (childrenHoldingSamePhaseStart), and the admission pass's stop's
-// (StopForChildren).
+// merging raised (acceptedEntry), and answers that role's phases row.
 func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.PhaseRow, bool, error) {
 	entry, err := e.phaseRow(ctx, tx, issue.Key, RoleFor(issue.Phase))
 	if err != nil {
@@ -462,12 +459,9 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	return true, e.awaitChildren(ctx, tx, issue, w, hold)
 }
 
-// StopPromotedWorker is R9's judgment of a re-admitted tree's mid-phase member whose phase start
-// the return does not make (admit's startMidPhaseMembers), such as a member whose phase worker it
-// finds already started or queued, which has no new start to hold. The open children that hold
-// the phase the member stands in move it to awaiting_children through the admission pass's stop
-// (StopForChildren), which reads R9's exemptions and finishes the owed rows; a member in a phase
-// R9 does not hold has none (childrenHoldingStart). It answers whether it moved the member.
+// StopPromotedWorker moves issue to awaiting_children through the admission pass's stop
+// (StopForChildren), owed being its owed starts, where open Dispatch children hold the phase it
+// stands in, and otherwise changes nothing. It answers whether it moved the issue.
 func (e *Engine) StopPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, owed []record.OwedStart) (bool, error) {
 	open, err := e.childrenHoldingStart(ctx, tx, issue, issue.Phase, nil)
 	if err != nil {
@@ -481,8 +475,7 @@ func (e *Engine) StopPromotedWorker(ctx context.Context, tx pgx.Tx, issue record
 // holding the resume task, without a launch, a new entry or a phase-ended message. Besides the
 // merged pull request and accepted-entry exemptions (childrenHoldingSamePhaseStart), carriedSlot
 // exempts the start: it is k12's exemption of "a root handed over from another tree carrying its
-// slot in `implementing` (`record.QueuedRoot`)", which admission reads whole where it promotes
-// that root (admit's promoteHolds) and carries to the root's walk (startMidPhaseMembers).
+// slot in `implementing` (`record.QueuedRoot`)".
 func (e *Engine) holdPromotedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, task string, carriedSlot bool) (bool, error) {
 	if carriedSlot {
 		return false, nil

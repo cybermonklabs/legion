@@ -706,12 +706,10 @@ func BasisChangesRequest(gate record.DesignGate, changes bool, version int, acto
 // or of its issue, is a cue for gate: a step that waits, closed, on that request
 // (record.DesignGate.PendingOnBasis), for which such an event queues the step's pending-basis seed
 // (readBasisLater), whose read of Dispatch alone opens or ends the wait (pendingBasisRead,
-// judgeBasisRead). Of the events its callers pass it, the cues are an event of the basis document
-// at the basis version or a newer one, other than the basis version's own version event; a close
-// of the request other than a person's answer (readBasisOnCue leaves out an answer, whose review
-// is an event of the document, before any step is read); and an event of the ancestor's issue that
-// shows it leaving R1's first condition, the only issue event readBasisOnCue passes. It is the one
-// place an event is judged a cue for a particular step.
+// judgeBasisRead). The cues are an event of the basis document at the basis version or a newer
+// one, other than the basis version's own version event; a close of the pending request; and an
+// event of the ancestor's issue. It is the one place an event is judged a cue for a particular
+// step.
 func pendingBasisCue(gate record.DesignGate, fact intake.Fact) bool {
 	if !gate.PendingOnBasis() {
 		return false
