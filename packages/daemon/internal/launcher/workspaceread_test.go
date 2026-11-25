@@ -43,9 +43,8 @@ import (
 // the files are gone. A workspace the guards refuse, here one whose .jj/repo names another
 // repository than the shared clone, is not read: the read is refused, and the daemon keeps the pod
 // as for any read that cannot be made.
-//
-// No row of this package calls t.Parallel (gitlocks_test.go).
 func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (the fixture's home and PATH).
 	for _, tool := range []string{"git", "jj"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Fatalf("this row drives the real %s, which the worker image and CI both install: %v", tool, err)
