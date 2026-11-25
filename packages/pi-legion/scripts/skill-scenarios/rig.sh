@@ -677,7 +677,11 @@ EOF
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
 # timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# wait reads only its own exit line. The pane's variables reach omp through the launch file's
+# environment, never through a process's arguments, which every user of this machine reads: a
+# tester's pane carries the batch's NATS URL, which can carry a credential. The launch file starts
+# itself again with an empty environment, exports each KEY=value line of the pane file with the
+# shell's own `export`, and execs omp, whose environment is then the pane's lines and nothing else.
 launch() {
   local system='' extra='' omp
   omp=$(pinned_omp "$pin") || exit 1
@@ -687,9 +691,12 @@ launch() {
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
+[ "\${1:-}" = clean ] || exec env -i "\$BASH" "\$0" clean
 cd $(printf %q "$R/cwd")
+export -n PWD OLDPWD
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
+for var in "\${vars[@]}"; do export "\$var"; done
+exec env -u SHLVL mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -861,6 +868,30 @@ given_services() {
   [ -n "${SKILL_SCENARIOS_POSTGRES_URL:-}" ] && [ -n "${SKILL_SCENARIOS_NATS_URL:-}" ]
 }
 
+# owner_only FILE writes its standard input to FILE, readable and writable by its owner alone. It
+# removes FILE first, since a write onto a file that is there keeps that file's mode. The services
+# file and a tester's pane file go through it: each holds the batch's NATS URL, whose credential no
+# other user of this machine may read.
+owner_only() {
+  (umask 077 && rm -f -- "$1" && cat >"$1")
+}
+
+# tester_pane writes the tester's pane file, $R/pane.env: the pane worker-pane.ts composed
+# ($R/worker.env), the batch's services file, which carries the NATS URL, and the rig's own
+# variables, owner-only (owner_only), since the URL can carry a credential.
+tester_pane() {
+  {
+    cat "$R/worker.env" "$services_env"
+    echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
+    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
+    echo "GIT_CONFIG_COUNT=0"
+    echo "JJ_USER=Rig Worker"
+    echo "JJ_EMAIL=rig@example.invalid"
+    echo "JJ_CONFIG=$R/jj.toml"
+    echo "GH_REPO=$worker_repo"
+  } | owner_only "$R/pane.env"
+}
+
 # safe_url URL prints URL without its password, for a note, a failure message and a run's
 # dispatch.json: a server the operator gave can carry one in its URL. A postgres:// or
 # postgresql:// URL loses its password as pg_url_without_password (pg-url.sh, sourced above) takes
@@ -869,17 +900,16 @@ given_services() {
 # percent-decoded as libpq decodes it (`%73slpassword=` is `sslpassword=`), the other parameters
 # stay in their order, and a query that keeps none prints no `?`. For a URL pg-url.sh refuses,
 # pg-url.sh names the fault on standard error, and safe_url prints a fixed placeholder, never the
-# URL. Any other URL, the NATS one, loses its whole user info, as bus.NATSURLWithoutUserinfo takes
-# it out: nats.go reads a user name with no password as a token, so the user name is the credential
-# too. It is read as Go's net/url reads it, which nats.go parses a server URL with: the user info
-# runs to the last `@` before the path, the query or the fragment, so a raw `@` in it goes too.
+# URL. It reads no other URL: for one that is not a Postgres URL, a NATS one among them, it prints
+# a fixed placeholder and no part of it. A NATS server is named by the host and port nats_endpoint
+# read (services_up), never from its URL, so no spelling of that URL decides what is printed.
 safe_url() {
   local url scheme rest user='' kept='' param key
   local -a params=()
   case $1 in
   postgres://* | postgresql://*) ;;
   *)
-    printf '%s\n' "$1" | sed -E 's,^([a-z]+://)[^/?#]*@,\1,'
+    printf '%s\n' '<a URL that is not a Postgres one>'
     return
     ;;
   esac
@@ -920,43 +950,48 @@ pg_sql() {
   PGCONNECT_TIMEOUT=5 pg_url_run "$1" psql -X -q -w -v ON_ERROR_STOP=1 -A -t -F $'\t' -c "$2"
 }
 
-# nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every
+# nats_ready HOST PORT succeeds when a server answers on HOST and PORT with the INFO line every
 # NATS server sends on connect, so it tells a NATS from any other process holding the port. bash's
 # own /dev/tcp opens the connection, in a child with a timeout of its own: the probe needs no
-# client, and a host that swallows the connection cannot hold its caller past its bound. It cuts
-# the path before the user info, so a `@` in the path is not read as the end of a user info: the
-# host and port are the authority's, the one nats_url_host read, after its last `@`.
+# client, and a host that swallows the connection cannot hold its caller past its bound. It reads
+# no URL: services_up hands it the host and port nats_endpoint read, the ones the loopback check
+# passed, so one reading of the URL decides both the check and the probe.
 nats_ready() {
-  local hostport=${1#*://} line=''
-  hostport=${hostport%%/*}
-  hostport=${hostport##*@}
+  local line=''
   line=$(timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2" && IFS= read -r -t 5 -u 3 line && printf "%s" "$line"' \
-    -- "${hostport%:*}" "${hostport##*:}" 2>/dev/null) || return 1
+    -- "$1" "$2" 2>/dev/null) || return 1
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
-# nats_url_host URL prints the host URL, a given NATS's, names, and succeeds when that host is on
-# this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost, or a loopback
-# address, read from the URL and never resolved, its root dot dropped. The host is what follows
-# the last `@` of the authority, as Go's net/url reads it, so it never holds the URL's user info. A
-# URL it cannot read prints nothing and fails, and so does a URL that holds a `,`: nats.go splits
-# its URL on `,` into a list of servers and dials any of them, so the one host read here would not
-# be the one server dialed. python3 reads the URL from its environment, never from its arguments:
-# a given URL can carry a password or a token, and every user of this machine reads a process's
-# arguments.
-nats_url_host() {
-  NATS_URL_HOST_URL=$1 python3 -c '
+# nats_endpoint URL prints the host and the port URL, a given NATS's, names, `<host> <port>`, and
+# succeeds when that host is on this machine's loopback as fixturebuckets reads it
+# (bus.LocalNATSURL): localhost, or a loopback address, read from the URL and never resolved, its
+# root dot dropped. The URL is read as Go's net/url reads it, which nats.go parses a server URL
+# with: a URL with no scheme is read as nats://, the authority ends at the first `/`, `?` or `#`,
+# the host follows its last `@`, so it never holds the URL's user info, and a URL with no port
+# names nats.go's 4222. A URL it cannot read, or that names no host, prints nothing and fails, and
+# so does a URL that holds a `,`: nats.go splits its URL on `,` into a list of servers and dials any
+# of them, so the one server read here would not be the one dialed. Every message and probe of the
+# batch's NATS takes this host and port, so one reading of the URL decides them all. python3 reads
+# the URL from its environment, never from its arguments: a given URL can carry a password or a
+# token, and every user of this machine reads a process's arguments.
+nats_endpoint() {
+  NATS_ENDPOINT_URL=$1 python3 -c '
 import ipaddress, os, sys, urllib.parse
-raw = os.environ["NATS_URL_HOST_URL"].strip()
+raw = os.environ["NATS_ENDPOINT_URL"].strip()
 if "," in raw:
     sys.exit(1)
 if "://" not in raw:
     raw = "nats://" + raw
 try:
-    host = (urllib.parse.urlsplit(raw).hostname or "").rstrip(".")
+    parts = urllib.parse.urlsplit(raw)
+    host = (parts.hostname or "").rstrip(".")
+    port = parts.port or 4222
 except ValueError:
     sys.exit(1)
-print(host)
+if not host:
+    sys.exit(1)
+print(host, port)
 try:
     sys.exit(0 if host == "localhost" or ipaddress.ip_address(host).is_loopback else 1)
 except ValueError:
@@ -1002,10 +1037,13 @@ connections_needed() {
 # bucket a listener copies (fixturebuckets), which refuses a list of servers and any server off
 # loopback. services_up refuses both beside the Postgres URL's checks, before anything starts or
 # connects: a URL that holds a `,`, which nats.go reads as a list it dials any server of, and a host
-# nats_url_host does not read as loopback.
+# nats_endpoint does not read as loopback. Every message, note and probe of the NATS takes the host
+# and port nats_endpoint read, or the container's, never the URL: only fixturebuckets, the listener
+# and the runs, which connect to the server, are handed the URL, each in its environment or in a
+# file of its owner's alone.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host nats_host run_url tool rest param key
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host nats_host nats_at endpoint run_url tool rest param key
   local -a params=()
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
@@ -1031,14 +1069,19 @@ services_up() {
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
     [[ $SKILL_SCENARIOS_NATS_URL != *,* ]] ||
       fail "SKILL_SCENARIOS_NATS_URL names a list of servers (it holds a ','), and nats.go would dial any of them: the batch provisions one NATS of its own with every bucket a listener copies, so give it that server alone"
-    nats_host=$(nats_url_host "$SKILL_SCENARIOS_NATS_URL") ||
+    endpoint=$(nats_endpoint "$SKILL_SCENARIOS_NATS_URL") || {
+      nats_host=${endpoint% *}
       fail "SKILL_SCENARIOS_NATS_URL must name 127.0.0.1, localhost or ::1: it names ${nats_host:+the host }${nats_host:-no host the batch can read}, and the batch provisions that server with every bucket a listener copies (fixturebuckets), which provisions only a server on this machine's loopback"
+    }
+    nats_host=${endpoint% *} nats_port=${endpoint##* }
+    nats_at=$nats_host:$nats_port
+    [[ $nats_host != *:* ]] || nats_at="[$nats_host]:$nats_port"
     connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
-    until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
+    until_true 60 "NATS at $nats_at to send its INFO line" nats_ready "$nats_host" "$nats_port"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
     fits=$(((admits - 20) / per_run))
     [ "$fits" -ge 1 ] ||
@@ -1063,7 +1106,7 @@ services_up() {
     docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
     nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
     [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
-    nats_url=nats://127.0.0.1:$nats_port
+    nats_url=nats://127.0.0.1:$nats_port nats_at=127.0.0.1:$nats_port
     until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
     until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
   fi
@@ -1072,17 +1115,19 @@ services_up() {
   # No listener creates a bucket it copies: the batch provisions its own NATS with them before the
   # listener starts. A given NATS's URL can carry a password or a token, so fixturebuckets takes it
   # in its environment (FIXTUREBUCKETS_URL), out of the process list, the failure names the server
-  # as safe_url prints it, and fixturebuckets names it in its log without the URL's user info.
+  # by its host and port, and fixturebuckets names it in its log without the URL's user info.
   FIXTUREBUCKETS_URL=$nats_url "$S/fixturebuckets" >"$S/logs/fixturebuckets.log" 2>&1 ||
-    fail "fixturebuckets could not provision $(safe_url "$nats_url") with the buckets a listener copies; see $S/logs/fixturebuckets.log"
+    fail "fixturebuckets could not provision the NATS at $nats_at with the buckets a listener copies; see $S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
+  # The services file hands the runs the NATS URL, credential included, as ENVOY_NATS_URL, so it is
+  # its owner's alone, as the given Postgres URL's file is.
   {
     echo "ENVOY_URL=http://127.0.0.1:$envoy_port"
     echo "ENVOY_NATS_URL=$nats_url"
     echo "ENVOY_TOKEN_FILE=$S/envoy-token"
-  } >"$services_env"
-  note "services up: listener :$envoy_port, NATS $(safe_url "$nats_url"), Postgres $(safe_url "$pg_url")"
+  } | owner_only "$services_env"
+  note "services up: listener :$envoy_port, NATS $nats_at, Postgres $(safe_url "$pg_url")"
 }
 
 # services_down stops and removes what this batch started and made: the listener, the two
@@ -1805,16 +1850,7 @@ run_tester_proof() {
   # worker.env and system-args. standins runs first, since worker-pane.ts names its $R/bin/gh, the
   # recording stand-in, as the pane's real gh.
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
-  {
-    cat "$R/worker.env" "$services_env"
-    echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
-    echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
-    echo "GIT_CONFIG_COUNT=0"
-    echo "JJ_USER=Rig Worker"
-    echo "JJ_EMAIL=rig@example.invalid"
-    echo "JJ_CONFIG=$R/jj.toml"
-    echo "GH_REPO=$worker_repo"
-  } >"$R/pane.env"
+  tester_pane
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
