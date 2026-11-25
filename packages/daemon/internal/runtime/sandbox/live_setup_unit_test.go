@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -211,11 +213,10 @@ func TestLiveSetupNegativeControl(t *testing.T) {
 			if tc.away != "" {
 				r.mktemp(tc.away)
 			}
-			_, lines := r.run(r.start, []string{"/bin/true"})
-			if strings.Contains(strings.Join(lines, "\n"), setupRigOutageToken) || strings.Contains(strings.Join(lines, "\n"), "eyJ") {
-				t.Fatalf("the marker holds the token the control's error carried: %q", lines)
+			setup := r.probe(r.start)
+			if err := setupMarkerLeak(setup); err != nil {
+				t.Fatal(err)
 			}
-			setup := parseSetupMarkerOrFail(t, lines[0])
 			if tc.away != "" && !strings.HasPrefix(filepath.Base(setup.gitFrom), strings.TrimRight(tc.away, "X")) {
 				t.Fatalf("git_from = %q, want a directory the rig's mktemp made from %s", setup.gitFrom, tc.away)
 			}
@@ -390,6 +391,69 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 			class, detail := controlClass(t, 128, tc.stderr)
 			if class != "failed" || detail != tc.want {
 				t.Errorf("control = %q, %q; want failed, %q", class, detail, tc.want)
+			}
+		})
+	}
+}
+
+// setupMarkerLeak finds a JWT in any field of a record but its two paths: in the control's error
+// and in a field no program's text should reach, with its header as compact JSON or with
+// whitespace. It is quiet on CI's record, whose git_from, a name mktemp drew at random, holds eyJ,
+// on a JWT in the paths themselves, and on a dotted host name in the control's error.
+func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
+	ci := parseSetupMarkerOrFail(t, "setup:architect:pod-1/3 cwd=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/start uid=1001 ppid=67790 git_from=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/tmp/tmp.eyJ2Sg7LkC helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=failed git_without_helper_error=exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com")
+	jwt := func(header, claims, signature string) string {
+		encode := base64.RawURLEncoding.EncodeToString
+		return encode([]byte(header)) + "." + encode([]byte(claims)) + "." + encode([]byte(signature))
+	}
+	appJWT := jwt(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
+	for name, tc := range map[string]struct {
+		plant func(m *setupMarker)
+		leak  bool
+	}{
+		"a GitHub App's JWT in the control's error": {
+			plant: func(m *setupMarker) { m.gitWithoutHelperError = "exit 128: fatal: bearer " + appJWT + " refused" },
+			leak:  true,
+		},
+		// RFC 7519's unsecured JWT: the shortest payload, {}, and an empty signature.
+		"an unsecured JWT with no claims in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + jwt(`{"alg":"none"}`, `{}`, "") + " refused"
+			},
+			leak: true,
+		},
+		// RFC 7515 lets a header hold whitespace, and `{ "alg"` opens eyAi, not eyJ.
+		"a JWT whose header holds whitespace in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + jwt(`{ "alg":"HS256"}`, `{"iss":"123456"}`, "signature") + " refused"
+			},
+			leak: true,
+		},
+		"the rig's outage token in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: unable to access 'https://x-access-token:" + setupRigOutageToken + "@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com"
+			},
+			leak: true,
+		},
+		// parseSetupMarker takes any word as the uid, so a script that printed the wrong variable
+		// there would put the token in it.
+		"the rig's outage token as the uid": {plant: func(m *setupMarker) { m.uid = setupRigOutageToken }, leak: true},
+		"CI's record":                       {plant: func(*setupMarker) {}},
+		"a JWT in the setup's own paths": {
+			plant: func(m *setupMarker) { m.cwd, m.gitFrom = "/legion/"+appJWT+"/start", "/tmp/"+appJWT },
+		},
+		// Three dotted parts, each base64url, with no JSON header among them.
+		"a dotted host name in the control's error": {
+			plant: func(m *setupMarker) {
+				m.gitWithoutHelperError = "exit 128: fatal: unable to access 'https://api.github.com/sjawhar/legion-smoke/': Could not resolve host: api.github.com"
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := ci
+			tc.plant(&m)
+			if err := setupMarkerLeak(m); (err != nil) != tc.leak {
+				t.Errorf("setupMarkerLeak(%+v) = %v, want a leak: %t", m, err, tc.leak)
 			}
 		})
 	}
@@ -732,9 +796,49 @@ const (
 
 const setupRigToken = "fake-installation-token"
 
-// setupRigOutageToken is a GitHub-token-shaped string the rig's outage errors carry, so a test
-// can see the control's recorded error never holds it.
+// setupRigOutageToken is a GitHub-token-shaped string the rig's outage errors carry, ghs_ and an
+// id before a JWT, so a test can see the control's recorded error never holds it (setupMarkerLeak).
 const setupRigOutageToken = "ghs_1234567_eyJhbGciOiJSUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOjF9.c2lnbmF0dXJl"
+
+// setupMarkerLeak is an error when a setup record carries a JWT, as setupRigOutageToken does. It
+// reads every field but the two paths the setup made itself, cwd (pwd -P) and git_from (mktemp -d,
+// whose random name can open with eyJ as a JWT's header does), which carry no credential. The field
+// meant to hold another program's text is git_without_helper_error, a failed control's first
+// stderr line. fmt prints the fields with a space between them, so no JWT spans two.
+func setupMarkerLeak(m setupMarker) error {
+	m.cwd, m.gitFrom = "", ""
+	if holdsJWT(fmt.Sprint(m)) {
+		return fmt.Errorf("the setup record, its paths aside, holds a JWT: %+v", m)
+	}
+	return nil
+}
+
+// holdsJWT reports whether text holds a JWT in compact serialization: a header, a dot, a payload
+// (`{}` is e30; a JWE's encrypted key may be empty), a dot and the rest, each part base64url. The
+// header is the one part read: it is a JSON object that names its alg (RFC 7515 4.1.1, RFC 7516
+// 4.1.1). Decoding it finds a header written with whitespace, `{ "alg"` (eyAi), as well as compact
+// JSON's eyJ, and finds one behind other base64url characters, as setupRigOutageToken's follows
+// ghs_1234567_; a dotted name such as api.github.com has no such header.
+func holdsJWT(text string) bool {
+	notBase64URL := func(r rune) bool {
+		return !('A' <= r && r <= 'Z' || 'a' <= r && r <= 'z' || '0' <= r && r <= '9' || r == '-' || r == '_')
+	}
+	parts := strings.Split(text, ".")
+	for i := range len(parts) - 2 {
+		if strings.IndexFunc(parts[i+1], notBase64URL) >= 0 {
+			continue
+		}
+		run := parts[i][strings.LastIndexFunc(parts[i], notBase64URL)+1:]
+		for start := range len(run) {
+			header, err := base64.RawURLEncoding.DecodeString(run[start:])
+			var fields map[string]json.RawMessage
+			if err == nil && json.Unmarshal(header, &fields) == nil && fields["alg"] != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 const setupRigGit = `#!/bin/sh
 real=%s
