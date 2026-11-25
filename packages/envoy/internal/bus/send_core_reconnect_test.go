@@ -258,8 +258,9 @@ func TestAReleasedAttemptIsNotSentAgainByAReconnectDuringItsDrain(t *testing.T) 
 	restartAndReconnect := func(what string) {
 		reconnects := conn.Stats().Reconnects
 		server.Restart(t, granting)
-		testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, what, func() bool {
-			return conn.Status() == nats.CONNECTED && conn.Stats().Reconnects > reconnects
+		testwait.Until(t, what, func() (nats.Status, bool) {
+			status := conn.Status()
+			return status, status == nats.CONNECTED && conn.Stats().Reconnects > reconnects
 		})
 		// nats.go reads CONNECTED before it sends the subscriptions again, under the connection's
 		// lock, so this flush's PONG comes once the server holds every subscription it was sent.
