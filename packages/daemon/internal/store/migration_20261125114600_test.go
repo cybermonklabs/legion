@@ -11,18 +11,18 @@ import (
 
 // claimSessionAgentVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const claimSessionAgentVersion = 20261125053850
+const claimSessionAgentVersion = 20261125114600
 
 // claimSessionAgentRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
 const claimSessionAgentRelease = "the release that records the agent of a claim's session"
 
-// 20261125053850 adds claims.session_agent, the agent whose session a claim holds
+// 20261125114600 adds claims.session_agent, the agent whose session a claim holds
 // (supervise.Claim.SessionAgent). Every claim the release before left whose name no key's plan row
 // holds, as here, takes the default, the empty string, which records no agent: such a claim takes
 // the agent of the next step's start that reaches it, brought back or still running, and keeps the
 // session it holds for that agent (a claim whose name a key's row holds records that key:
-// migration_20261125053850_keys_test.go). A row the release before inserts names no such column
+// migration_20261125114600_keys_test.go). A row the release before inserts names no such column
 // and takes the default.
 //
 // This release also names a step's agent on each supervise start (record.SuperviseRequest.Agent),
@@ -100,7 +100,7 @@ func TestTheClaimRecordsTheAgentOfItsSessionAndTheWayBackForgetsIt(t *testing.T)
 	if got := rowsAsText(t, store, `select payload::text from outbox where kind = 'notice'`); len(got) != 1 || !jsonHas(t, got[0], "agent") {
 		t.Fatalf("the notice after the way back = %v, want it as it was: the way back takes the key off supervise rows alone", got)
 	}
-	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261125053850`); !reflect.DeepEqual(got, []string{"0"}) {
+	if got := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261125114600`); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("the version rows of the migration after the way back = %v, want none", got)
 	}
 

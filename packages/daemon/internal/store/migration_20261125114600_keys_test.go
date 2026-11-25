@@ -24,7 +24,7 @@ import (
 // the claim implementer. Version 2, `implementer reviewer`, is named from version 1's rows, which
 // name key a, so its implementer takes implementer-2, and its write replaces those rows. Version 3,
 // `planner implementer reviewer`, finds no row of key a, and its implementer is a new agent: it
-// takes implementer-2 again, never implementer, since 20261125053850 recorded key a on the claim
+// takes implementer-2 again, never implementer, since 20261125114600 recorded key a on the claim
 // implementer, from version 1's rows (record.KeySessionsOf). Version 4, `implementer:a reviewer`,
 // gives key a implementer again. The fault: version 3's implementer took implementer.
 //
@@ -36,7 +36,7 @@ import (
 // The claim of a name only an agent with no key held, reviewer, records that agent, the agent of
 // step 2 (`step:2:t`), and the steps give that agent to a queued start of such a claim, which names
 // none, so the next start of another agent that reaches the claim starts a session of its own
-// (20261125053850's header).
+// (20261125114600's header).
 func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t *testing.T) {
 	ctx := context.Background()
 	st := emptyStore(t)
@@ -156,7 +156,7 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 	})
 }
 
-// 20261125053850 records on a claim from before it, where no start the release before kept
+// 20261125114600 records on a claim from before it, where no start the release before kept
 // (step_starts) names the agent that ran on it last, the agent the issue's plan rows give its name
 // last: the agent of the latest row of the name in record.Postgres.PlanStepsOf's order, leaving
 // out the owner's rows and rows that hold no name, `key:<key>` where that row names a key and

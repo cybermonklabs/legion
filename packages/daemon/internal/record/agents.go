@@ -70,7 +70,7 @@ type KeyName struct {
 // and, since a version replaces the rows of each task it gives and so can leave no row that names
 // the key, the name the lasting record holds for it, and the name whose claim holds its session
 // (KeySessionsOf). That holds whatever release wrote the rows: a claim of a release before the
-// claim recorded its session's agent records, once 20261125053850 has run, the agent
+// claim recorded its session's agent records, once 20261125114600 has run, the agent
 // that ran on it last where that release kept its latest start, else the agent the rows gave its
 // name last, so where that agent is a key's, the name stays the key's after the last row that said
 // so is gone. Where the agent recorded is one with no key that the release before gave a key's name

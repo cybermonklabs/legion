@@ -19,7 +19,7 @@ import (
 
 // A start that names no agent and makes its claim, which only a start the release before the
 // record of a claim's agent queued is among the starts of a step, records on that claim the agent
-// the steps give the claim's name (claim_agent_from_steps, the rule 20261125053850 fills each claim
+// the steps give the claim's name (claim_agent_from_steps, the rule 20261125114600 fills each claim
 // of the release before by), so the next start of another agent that reaches the claim starts in a
 // session of its own. The migration writes nothing into the start itself, so a daemon of the
 // release before that reads the row finds it as that release wrote it. Here the plan in force runs

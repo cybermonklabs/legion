@@ -1109,7 +1109,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // of phases over the two columns 20261117034837 adds: left out, it is applied as main's, before
 // that table or those columns exist; one that replaces an index a version of the list creates,
 // as 20261124213821 replaces 20261105183200's pod_resumes_one_open_per_role; and one that reads a
-// table a version of the list creates, as 20261125053850 reads the keys of plan_steps' rows
+// table a version of the list creates, as 20261125114600 reads the keys of plan_steps' rows
 // (20261117034837, 20261124213820) to record on each claim the key its name belongs to.
 // 20261119203047 is the last migration that writes outbox_kind_check: it stands above main's
 // 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
@@ -1127,7 +1127,7 @@ var thisRelease = map[int]bool{
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
 	20261123212127: true, 20261124213820: true, 20261124213821: true, 20261125114500: true,
-	20261125053850: true,
+	20261125114600: true,
 }
 
 const idleRelease = 20261101222956
