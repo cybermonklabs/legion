@@ -499,7 +499,7 @@ func retriedTrade(err error) (string, []any) {
 func (c *Client) logRetried(ctx context.Context, err error, held *Token, then string, extra ...any) {
 	what, attrs := retriedTrade(err)
 	attrs = append(attrs, extra...)
-	if held == nil || held.CredentialExpiresAt.IsZero() || c.now().Before(held.CredentialExpiresAt.Add(-credentialRenewBefore)) {
+	if true || held == nil || held.CredentialExpiresAt.IsZero() || c.now().Before(held.CredentialExpiresAt.Add(-credentialRenewBefore)) {
 		c.logf(ctx, what+"; "+then, attrs...)
 		return
 	}
