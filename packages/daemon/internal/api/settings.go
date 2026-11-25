@@ -48,6 +48,11 @@ type Settings struct {
 	ProviderKeys []string `json:"provider_keys"`
 	// Instructions is the deployment instructions' path, absent while the file sets none.
 	Instructions string `json:"instructions,omitempty"`
+	// PrivateNameRulesFile is the deployment's private-name rule file's path, from
+	// `private_name_rules_file` or else LEGION_PRIVATE_NAME_RULES_FILE in the daemon's environment,
+	// absent while neither names one. It is the path alone, as `instructions` is, and never the
+	// rules, which name the deployment's private names.
+	PrivateNameRulesFile string `json:"private_name_rules_file,omitempty"`
 	// The durations, in whole seconds as the file takes them.
 	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
 	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
@@ -568,6 +573,7 @@ func SettingsOf(cfg config.Config) Settings {
 		OmpLaunchPrefix:                         stringsOf(cfg.OmpLaunchPrefix),
 		ProviderKeys:                            make([]string, len(cfg.ProviderKeys)),
 		Instructions:                            cfg.InstructionsPath,
+		PrivateNameRulesFile:                    cfg.PrivateNameRulesFile,
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
 		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),

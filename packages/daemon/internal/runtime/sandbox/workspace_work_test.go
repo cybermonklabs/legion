@@ -17,6 +17,7 @@ import (
 // refusal naming why, never an answer of no work, and no shim is asked. The answer the shim gives
 // is the runtime's, asked with the read's own budget.
 func TestWorkspaceWorkAsksTheClaimOfTheRunningPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	stale := sandboxLocator(workerToken, "uid-pod-stale")
@@ -77,6 +78,7 @@ func TestWorkspaceWorkAsksTheClaimOfTheRunningPod(t *testing.T) {
 // claim that runs in the pod is `…-implementer` with the stored role tester, and no claim
 // `…-tester` runs at all: the read is asked of the claim named, over its own connection.
 func TestAWorkspaceReadIsAskedOfTheClaimThatRuns(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	conn := fake.NewConn()

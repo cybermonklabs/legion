@@ -455,6 +455,8 @@ const (
 // for its children at its retro, and a stopped task at the step the stop ended, whose own role's
 // report is the run the stop ended and is no left phase's, so a run of a left phase is never also
 // that run.
+// A left phase is reported only if its row holds this run's started task (ranUnreported), not
+// merely a claim that may have been created to look at a production check.
 func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact intake.HandoffComplete, reported phase.Phase) (pastReport, error) {
 	issue := s.issue
 	left, err := e.leftItsPhase(ctx, tx, issue, fact.Role, fact.Claim)
@@ -475,8 +477,8 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, s TaskScope, fact 
 // lateReport is the refusal of fact, role's report of reported, a phase issue no longer stands in,
 // where issue's run has plan rows and a stop of its task ended the run the report is of. past is
 // the run the report is of (pastReportOf). The report of the phase a stop holds the issue from is
-// late where it is of the run the stop ended (ranUnreported); its first sentence is the reason the
-// task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
+// late only where its row still holds this run's started task (ranUnreported); its first sentence
+// is the reason the task stores (LateReportOfStoppedTask). Every other report gets nil: the first report of a run an
 // event ended, whatever step the task stands at now, which handoff takes as it takes one on an
 // issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
 // gone; one of the retro or the merge; one of a task whose issue left the workflow

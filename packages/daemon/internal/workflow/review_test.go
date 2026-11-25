@@ -1705,11 +1705,9 @@ func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 }
 
-// seedClaimSession records a claims row for token holding session, so the workflow's read of the
-// reviewer's claim (record.Store.ClaimSession) finds it (byReviewer) and the daemon is known to
-// have started the reviewer on the issue (engine's leftItsPhase). A row already seeded takes the
-// session given, so a fixture that records the claim and a test that then names its session do not
-// collide.
+// seedClaimSession records the claim's session identity for byReviewer's ClaimSession read.
+// It proves no started step: that needs the phases row's EntryTask. A row already seeded takes
+// the given session, so separate claim and session fixtures do not collide.
 func seedClaimSession(t *testing.T, pool *pgxpool.Pool, token claim.Token, session string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,

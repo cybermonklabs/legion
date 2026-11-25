@@ -2337,6 +2337,11 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// the issue, and is recorded on its row (workflow's leftItsPhase).
 			const reviewerClaim = "legion-legion-legion-208-reviewer"
 			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Claim: reviewerClaim, Entry: 1, EntryTask: "review this change"})
+			}); err != nil {
+				t.Fatal(err)
+			}
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"

@@ -20,6 +20,7 @@ GATE = gate("pi_shared", "pi-shared", reads=reads(
      "`packages/pi-shared/src/git-lock.test.ts#daemonNote` reads it and holds git-lock.ts's copy to it"),
 ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                      "@legion/envoy-client/* (exports.bun -> src)")
+  + dispatch_api_types(at("pi-shared", "Typecheck pi-shared"))
   + install_jj("pi-shared") + bun_job("pi-shared"))
 GATE = with_reads(GATE, [
     Read('packages/envoy-client/test/**', "filter pi_shared held packages/envoy-client/test/** by hand before the filters were computed: it selected 10 file(s) no other read of this gate declares"),
