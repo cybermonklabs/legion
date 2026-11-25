@@ -172,6 +172,8 @@ var readsWithoutAViewer = map[string]string{
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
+	"DocumentCopiedFrom": serverWork + " - settlement's claimCopies reads the copied_from each block node of its document holds, " +
+		"to retract it from a block that is no longer an ask copy",
 	"DocumentIsCited":      noNode,
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,

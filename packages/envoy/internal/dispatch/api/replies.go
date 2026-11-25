@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -757,7 +756,7 @@ func (s *server) readMyReplyRows(
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	rows.Close()
-	if err := answerReplyRows(ctx, tx, read, answered); err != nil {
+	if err := answerReplyRows(ctx, tx, read, answered, s.deps.ServerURL); err != nil {
 		return nil, err
 	}
 	return read, nil
@@ -766,14 +765,15 @@ func (s *server) readMyReplyRows(
 // answerReplyRows sets the reply of each row of read that answered names, a row whose newest write
 // by somebody else is its ask's answer, from that answer as the ask's node holds it
 // (askAnswerRead), as every read of an answer reads it (R3): kind answer, the answerer as its
-// author, and the answer's options and then its text, joined by " - ", as its first line. A row
+// author, and the answer's options and then its text, joined by " - ", as its first line, cut as
+// the page cuts every other first line (refs.FirstLine), so no reference is cut in half. A row
 // whose ask holds no answer as its node holds it keeps the reply the page's statement read for it,
 // a reply with no author and no line. It is a statement of its own, over the asks of those rows
 // alone, rather than a lateral of the page's: the node's facts are read through one text
 // (askNodeFacts), whose relations and values no one index orders, and the page's plan is held to
 // sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the page's transaction,
 // so it reads the snapshot the page read.
-func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int) error {
+func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, answered []int, serverURL string) error {
 	if len(answered) == 0 {
 		return nil
 	}
@@ -811,7 +811,7 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 		if ask.Answer.Text != nil && *ask.Answer.Text != "" {
 			line = append(line, *ask.Answer.Text)
 		}
-		reply.FirstLine = contracts.OneLineSummary(strings.Join(line, " - "))
+		reply.FirstLine = refs.FirstLine(strings.Join(line, " - "), serverURL)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the answers of my replies: %w", err)
