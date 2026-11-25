@@ -2210,8 +2210,9 @@ claim needs - on ubuntu-24.04, since the Oh My Pi release ships linux-x64 alone.
 suite (14.8 minutes at the 90th percentile as the one job it was), held back behind its
 `pi_legion` output (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request).
 pi-legion-build builds contracts, typechecks the plugin, runs the skills' guard
-(src/skills-guard.test.ts: every skill within its budget, every link resolving) and packs the
-plugin as the release does, uploading the tarball as
+(src/skills-guard.test.ts: every skill within its budget, every link resolving, and the Legion
+guides' sentences on what counts a review round) and packs the plugin as the release does,
+uploading the tarball as
 `pi-legion-pr`: a build, a typecheck and a text check, which a pull request runs (0.8 minutes),
 on ubuntu-24.04-arm, since it installs no Oh My Pi. The guard also runs in pi-legion's suite in
 the merge queue, where it costs under a second.

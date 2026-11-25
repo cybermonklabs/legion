@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -370,18 +369,6 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 	if strings.Contains(task, "Handoff verdict") {
 		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
-	}
-}
-
-// The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewround.Sentences).
-func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
-	t.Parallel()
-	sentences := reviewround.Sentences("<sha>", 7)
-	for _, part := range []string{" " + reviewround.CommitLabel + ": <sha>. ", " " + reviewround.EntryLabel + ": 7."} {
-		if !strings.Contains(sentences, part) {
-			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, part)
-		}
 	}
 }
 

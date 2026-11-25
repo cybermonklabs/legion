@@ -27,15 +27,13 @@ import (
 func noAppOwners(claim.Role) []string { return nil }
 
 // A tree's root architect is told the design-gate steps its deployment gates after its
-// addressing, in its "Design gate steps" line. No other claim is told the steps: a child's spec is
-// never gated. A deployment that gates spec and not criteria adds one sentence to the line, which
-// names the step a root that registers it is held on too; the case holds that sentence by the step
-// it names (`criteria`), not by its words. A two-step deployment and one on `root-issues` give
-// their root architects different prompts, so what a launch is told follows the configuration
-// rather than a policy word that says nothing about which steps hold its tree. Every architect's
-// addressing then ends with the project's production check (ProductionCheckFragment), the root's
-// after the steps, which TestEveryArchitectIsToldTheProjectsProductionCheck reads for both
-// settings.
+// addressing, in its "Design gate steps" line, which the daemon writes (DesignGateFragment). No
+// other claim is told the steps: a child's spec is never gated. A two-step deployment and one on
+// `root-issues` give their root architects different prompts, so what a launch is told follows the
+// configuration rather than a policy word that says nothing about which steps hold its tree.
+// Every architect's addressing then ends with the project's production check
+// (ProductionCheckFragment), the root's after the steps, which
+// TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
 func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -47,13 +45,13 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 		name  string
 		steps []record.DesignStep
 		line  string
-		// joins is whether the line goes on with the sentence that names `criteria`.
-		joins bool
 	}{
-		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}, "Design gate steps: `decisions`, `spec`.", true},
-		{"root-issues", config.DesignGateRootIssues.Steps(), "Design gate steps: `spec`.", true},
-		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`.", false},
-		{"off", config.DesignGateOff.Steps(), "Design gate steps: none.", false},
+		{"two steps", []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
+			"Design gate steps: `decisions`, `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"root-issues", config.DesignGateRootIssues.Steps(),
+			"Design gate steps: `spec`. A root that registers its Verification document as `criteria` is held on that step too."},
+		{"the criteria and the spec", []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}, "Design gate steps: `criteria`, `spec`."},
+		{"off", config.DesignGateOff.Steps(), "Design gate steps: none."},
 	} {
 		for _, tc := range []struct {
 			name, issue string
@@ -75,17 +73,8 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 					t.Fatalf("SpawnSpec: %v", err)
 				}
 				check := " " + ProductionCheckFragment("")
-				told := false
-				if at := strings.LastIndex(spec.Prompt.Addressing, " "+deployment.line); at >= 0 {
-					rest := spec.Prompt.Addressing[at+len(" "+deployment.line):]
-					joined, ends := strings.CutSuffix(rest, check)
-					told = ends && (joined != "") == deployment.joins &&
-						(!deployment.joins || strings.HasPrefix(joined, " ") && strings.HasSuffix(joined, ".") &&
-							!strings.Contains(joined, ". ") && strings.Contains(joined, "`"+string(record.DesignStepCriteria)+"`"))
-				}
-				if told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
-					t.Fatalf("addressing %q; want it to end with %q, then a sentence naming `criteria` (%t), then %q: %t",
-						spec.Prompt.Addressing, deployment.line, deployment.joins, check, tc.root)
+				if told := strings.HasSuffix(spec.Prompt.Addressing, " "+deployment.line+check); told != tc.root || !tc.root && strings.Contains(spec.Prompt.Addressing, "Design gate steps") {
+					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, deployment.line+check, tc.root)
 				}
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)

@@ -457,6 +457,7 @@ func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 // the phase, here a child's, whose key is not the tree's. The words around them are the daemon's,
 // for the holder; this holds the values.
 func TestAHoldersNewsNamesTheTreeTheIssueAndThePhaseItHolds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		issue string
 		held  phase.Phase
@@ -484,6 +485,7 @@ func TestAHoldersNewsNamesTheTreeTheIssueAndThePhaseItHolds(t *testing.T) {
 // paragraph: a stale plan is the planner's own work. The words around the name are the daemon's,
 // for the planner; this holds the value and whom it goes to.
 func TestOnlyThePlannersNewsNamesThePlanDocument(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		held    phase.Phase
 		planner bool
@@ -670,6 +672,7 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 // hands them. The words of each line are the daemon's, for the architect; this holds what each
 // line is about.
 func TestTheRootSummaryNamesItsTreeThenItsPairsAndItsMembers(t *testing.T) {
+	t.Parallel()
 	news := treeSummaryNews()
 	text := RenderNews(news)
 	paragraphs := strings.Split(text, "\n\n")
@@ -678,25 +681,34 @@ func TestTheRootSummaryNamesItsTreeThenItsPairsAndItsMembers(t *testing.T) {
 	}
 	var members []string
 	for _, member := range news.Members {
-		members = append(members, member.Issue)
+		members = append(members, "- "+member.Issue+",")
 	}
-	for i, want := range [][]string{{"(artifact-spec)", "(artifact-checks)", "(artifact-spec)"}, members} {
-		header, list, _ := strings.Cut(paragraphs[i], "\n")
+	// Each list, in the order of the paragraphs, with what each of its items must hold: a pair's
+	// item names its document, and a member's item opens with the member's key.
+	for i, list := range []struct {
+		name  string
+		want  []string
+		holds func(item, want string) bool
+	}{
+		{"the pairs", []string{"(artifact-spec)", "(artifact-checks)", "(artifact-spec)"}, strings.Contains},
+		{"the members", members, strings.HasPrefix},
+	} {
+		header, body, _ := strings.Cut(paragraphs[i], "\n")
 		if strings.HasPrefix(header, "- ") || !strings.Contains(header, " "+newsTree) {
-			t.Errorf("the header of the summary's list %d = %q, want a line naming the tree %s", i+1, header, newsTree)
+			t.Errorf("the header of %s = %q, want a line naming the tree %s", list.name, header, newsTree)
 		}
 		var items []string
-		for _, line := range strings.Split(list, "\n") {
+		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "- ") {
 				items = append(items, line)
 			}
 		}
-		if len(items) != len(want) {
-			t.Fatalf("the summary's list %d has %d items, want %d, one for each of %q:\n%s", i+1, len(items), len(want), want, paragraphs[i])
+		if len(items) != len(list.want) {
+			t.Fatalf("%s has %d items, want %d, one for each of %q:\n%s", list.name, len(items), len(list.want), list.want, paragraphs[i])
 		}
 		for j, item := range items {
-			if i == 0 && !strings.Contains(item, want[j]) || i == 1 && !strings.HasPrefix(item, "- "+want[j]+",") {
-				t.Errorf("item %d of the summary's list %d = %q, want it of %s", j+1, i+1, item, want[j])
+			if !list.holds(item, list.want[j]) {
+				t.Errorf("item %d of %s = %q, want it to hold %q", j+1, list.name, item, list.want[j])
 			}
 		}
 	}

@@ -94,15 +94,8 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	return readJoined(t, parts.RolePromptPaths...)
-}
-
-// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
-// test (t.Fatalf), naming the path.
-func readJoined(t *testing.T, paths ...string) string {
-	t.Helper()
 	var text strings.Builder
-	for _, path := range paths {
+	for _, path := range parts.RolePromptPaths {
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)

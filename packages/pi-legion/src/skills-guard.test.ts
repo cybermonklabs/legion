@@ -67,8 +67,8 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
-// Whitespace is collapsed before a match, as shipped-agents.test.ts collapses it, so a rule read
-// out of a guide survives a rewrap of the file it is in.
+// Whitespace is collapsed before a match, so a rule read out of a guide survives a rewrap of the
+// file it is in.
 const collapsed = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");
 
 // Only a review that requests changes counts a review round (the daemon's recordRound): a tester's

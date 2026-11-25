@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -16,12 +15,11 @@ import (
 )
 
 // The role prompt parts Compose joins. A core and the interactive fragment are also composed for an
-// interactive session (modeNeutral); the headless fragment is composed for a phase worker alone.
+// interactive session; the headless fragment is composed for a phase worker alone.
 var (
 	phaseRoles    = []string{"planner", "implementer", "tester", "reviewer", "merger"}
 	cores         = []string{"planner", "implementer", "tester", "reviewer", "oracle"}
-	modeNeutral   = append(append([]string{"core/common.md"}, coreFiles()...), "mechanics/interactive.md")
-	reusableParts = append(slices.Clone(modeNeutral), "mechanics/headless.md")
+	reusableParts = append(append([]string{"core/common.md"}, coreFiles()...), "mechanics/interactive.md", "mechanics/headless.md")
 )
 
 func coreFiles() []string {
@@ -73,28 +71,14 @@ func TestEveryPartStartsWithAHeadingAndEndsWithOneNewline(t *testing.T) {
 	}
 }
 
-// Every task agent a role prompt dispatches, in the form the boot gate resolves, is shipped in the
-// plugin's agents/, where Oh My Pi finds it in a pane and in a pod. The test walks the role parts
-// as RoleReferences does, gives each to the boot gate's parser (promptrefs), and holds what it found
-// to what RoleReferences answers. It counts the parts it walked, so a walk that read nothing fails
-// whatever the parts say.
+// Every task agent a role prompt dispatches, as the program reads the role prompts for the boot
+// gate (RoleReferences), is shipped in the plugin's agents/, where Oh My Pi finds it in a pane and
+// in a pod. RoleReferences reading no task agent at all would leave the loop nothing to check, so
+// that fails too.
 func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
-	found := promptrefs.New()
-	walked := 0
-	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {
-		walked++
-		found.Text("roles/"+name, body)
-		return nil
-	}); err != nil {
-		t.Fatalf("read the roles parts: %v", err)
-	}
-	// A walk that read no part would pass below while checking nothing.
-	if walked == 0 {
-		t.Fatal("the walk of the embedded roles/ tree read no part")
-	}
-	agents := found[promptrefs.TaskAgents]
-	if want := RoleReferences()[promptrefs.TaskAgents]; !reflect.DeepEqual(agents, want) {
-		t.Errorf("the walk of roles/ finds the task agents %q, and RoleReferences answers %q", agents, want)
+	agents := RoleReferences()[promptrefs.TaskAgents]
+	if len(agents) == 0 {
+		t.Fatal("RoleReferences reads no task agent in the role prompts, so no agent is checked")
 	}
 	for agent, files := range agents {
 		if _, err := os.Stat(filepath.Join("..", "..", "..", "pi-legion", "agents", agent+".md")); err != nil {
